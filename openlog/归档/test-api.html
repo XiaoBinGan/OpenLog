@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>OpenLog API Test</title>
+</head>
+<body>
+  <h1>OpenLog API 测试</h1>
+  <pre id="output"></pre>
+  
+  <script>
+    const log = (msg) => {
+      document.getElementById('output').textContent += msg + '\n';
+      console.log(msg);
+    };
+    
+    async function testAPI() {
+      try {
+        log('📡 测试 API...');
+        
+        // 测试服务器列表
+        const serversRes = await fetch('/api/remote/servers');
+        log('服务器列表响应状态: ' + serversRes.status);
+        
+        const serversData = await serversRes.json();
+        log('服务器列表: ' + JSON.stringify(serversData, null, 2));
+        
+        if (serversData.servers && serversData.servers.length > 0) {
+          const serverId = serversData.servers[0].id;
+          
+          // 测试统计
+          log('\n📊 测试统计 API...');
+          const statsRes = await fetch(`/api/remote/servers/${serverId}/stats`);
+          log('统计响应状态: ' + statsRes.status);
+          const statsData = await statsRes.json();
+          log('统计数据: ' + JSON.stringify(statsData, null, 2));
+          
+          // 测试文件列表
+          log('\n📁 测试文件列表 API...');
+          const filesRes = await fetch(`/api/remote/servers/${serverId}/files?path=/var/log`);
+          log('文件列表响应状态: ' + filesRes.status);
+          const filesData = await filesRes.json();
+          log('文件列表: ' + JSON.stringify(filesData, null, 2).substring(0, 500) + '...');
+        }
+        
+        log('\n✅ 所有 API 测试完成！');
+        
+      } catch (err) {
+        log('❌ 错误: ' + err.message);
+        console.error(err);
+      }
+    }
+    
+    testAPI();
+  </script>
+</body>
+</html>
