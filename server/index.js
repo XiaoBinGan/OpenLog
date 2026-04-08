@@ -34,7 +34,20 @@ const settings = {
   model: 'qwen3.5:9b',
   logPath: path.join(os.homedir(), 'logs'),
   watchFiles: '*.log',
-  refreshInterval: '5000'
+  refreshInterval: '5000',
+  // 🚀 主动分析开关（默认开启）
+  autoAnalysis: true,
+  // 多服务日志目录配置
+  watchSources: [
+    {
+      id: 'default',
+      name: '默认服务',
+      path: path.join(os.homedir(), 'logs'),
+      pattern: '*.log',
+      enabled: true,
+      autoAnalysis: true
+    }
+  ]
 };
 
 // Default settings
@@ -59,57 +72,131 @@ function broadcast(data) {
   });
 }
 
-// Log watcher
-let watcher = null;
+// ============================================================
+// 多源日志监控
+// ============================================================
+const watchers = new Map(); // sourceId -> chokidar watcher
+
+// 文件偏移量记录（每个文件的已读字节位置）
+const fileOffsets = new Map(); // filePath -> lastReadBytes
+
+function readLastLine(filePath, sourceId) {
+  try {
+    const stat = fs.statSync(filePath);
+    const size = stat.size;
+    const lastPos = fileOffsets.get(filePath) ?? 0;
+
+    // 文件被轮转（变小了），从头开始读
+    if (size < lastPos) {
+      fileOffsets.set(filePath, 0);
+    }
+
+    if (size === lastPos) return null; // 无新内容
+
+    // 读取新增内容（从上次位置到文件末尾）
+    const fd = fs.openSync(filePath, 'r');
+    const buf = Buffer.alloc(Math.min(size - lastPos, 512 * 1024)); // 最多 512KB
+    fs.readSync(fd, buf, 0, buf.length, lastPos);
+    fs.closeSync(fd);
+    fileOffsets.set(filePath, size);
+
+    const content = buf.toString('utf-8');
+    const lines = content.split('\n').filter(l => l.trim());
+    if (lines.length === 0) return null;
+
+    // 返回最后一行（以及所有新行用于记录）
+    const lastLine = lines[lines.length - 1];
+    return { lastLine, sourceId };
+  } catch (err) {
+    console.error(`[${sourceId}] Read error: ${err.message}`);
+    return null;
+  }
+}
 
 function startLogWatcher() {
-  const logPath = settings.logPath || path.join(os.homedir(), 'logs');
-  const watchFiles = settings.watchFiles || '*.log';
-  
-  if (watcher) {
-    watcher.close();
+  // 关闭所有旧 watcher
+  watchers.forEach(w => w.close());
+  watchers.clear();
+  fileOffsets.clear();
+
+  const sources = settings.watchSources || [];
+
+  if (sources.length === 0) {
+    // 兼容旧配置
+    const single = {
+      id: 'default',
+      name: '默认服务',
+      path: settings.logPath || path.join(os.homedir(), 'logs'),
+      pattern: settings.watchFiles || '*.log',
+      enabled: true,
+      autoAnalysis: settings.autoAnalysis ?? true
+    };
+    startSourceWatcher(single);
+    return;
   }
-  
-  // Ensure directory exists
-  if (!fs.existsSync(logPath)) {
+
+  sources.forEach(source => {
+    if (!source.enabled) {
+      console.log(`[${source.id}] 跳过（已禁用）`);
+      return;
+    }
+    startSourceWatcher(source);
+  });
+}
+
+function startSourceWatcher(source) {
+  const logDir = source.path;
+  const pattern = source.pattern || '*.log';
+
+  if (!fs.existsSync(logDir)) {
     try {
-      fs.mkdirSync(logPath, { recursive: true });
-      console.log(`Created log directory: ${logPath}`);
+      fs.mkdirSync(logDir, { recursive: true });
+      console.log(`[${source.id}] Created directory: ${logDir}`);
     } catch (err) {
-      console.error('Failed to create log directory:', err.message);
+      console.error(`[${source.id}] Failed to create directory: ${err.message}`);
       return;
     }
   }
-  
+
   try {
-    watcher = chokidar.watch(path.join(logPath, watchFiles), {
+    const watcher = chokidar.watch(path.join(logDir, pattern), {
       persistent: true,
-      ignoreInitial: true
+      ignoreInitial: false  // 初始也扫描（用于记录偏移量）
     });
-    
+
     watcher.on('add', (filePath) => {
-      console.log(`Watching file: ${filePath}`);
+      console.log(`[${source.id}] 📄 监听: ${path.basename(filePath)}`);
+      fileOffsets.set(filePath, 0);
     });
-    
+
     watcher.on('change', (filePath) => {
-      try {
-        const content = fs.readFileSync(filePath, 'utf-8');
-        const lines = content.split('\n').filter(line => line.trim());
-        const lastLine = lines[lines.length - 1];
-        
-        if (lastLine) {
-          const logEntry = parseLogLine(lastLine, path.basename(filePath));
-          saveLog(logEntry);
-          broadcast({ type: 'log', data: logEntry });
-        }
-      } catch (err) {
-        console.error('Error reading log file:', err.message);
-      }
+      const result = readLastLine(filePath, source.id);
+      if (!result || !result.lastLine) return;
+
+      const logEntry = parseLogLine(result.lastLine, `${source.name}/${path.basename(filePath)}`);
+      logEntry.sourceId = source.id;
+      saveLog(logEntry, source);
+      broadcast({ type: 'log', data: logEntry });
     });
-    
-    console.log(`Started watching: ${logPath}/${watchFiles}`);
+
+    watcher.on('error', (err) => {
+      console.error(`[${source.id}] Watcher error: ${err.message}`);
+    });
+
+    watchers.set(source.id, watcher);
+    console.log(`[${source.id}] 🚀 开始监听: ${logDir} (${pattern})`);
   } catch (err) {
-    console.error('Failed to start log watcher:', err.message);
+    console.error(`[${source.id}] Failed to start watcher: ${err.message}`);
+  }
+}
+
+// 停止指定服务监控
+function stopSourceWatcher(sourceId) {
+  const w = watchers.get(sourceId);
+  if (w) {
+    w.close();
+    watchers.delete(sourceId);
+    console.log(`[${sourceId}] 已停止`);
   }
 }
 
@@ -127,12 +214,182 @@ function parseLogLine(line, source) {
   };
 }
 
-function saveLog(log) {
+// 多任务分析队列：每个服务（sourceId）独立队列
+const analysisQueues = new Map(); // sourceId -> { running: bool, pending: [] }
+const analysisDebounce = new Map(); // key -> timestamp
+const DEBOUNCE_MS = 30_000;
+
+// 分析历史记录（内存存储，最多 500 条）
+const analysisHistory = [];
+const MAX_ANALYSIS_HISTORY = 500;
+
+function getQueue(sourceId) {
+  if (!analysisQueues.has(sourceId)) {
+    analysisQueues.set(sourceId, { running: false, pending: [] });
+  }
+  return analysisQueues.get(sourceId);
+}
+
+function processQueue(sourceId) {
+  const q = getQueue(sourceId);
+  if (q.running || q.pending.length === 0) return;
+  q.running = true;
+
+  const { log, source } = q.pending.shift();
+  runAnalysis(log, source).finally(() => {
+    q.running = false;
+    processQueue(sourceId); // 继续处理下一个
+  });
+}
+
+function saveLog(log, source = null) {
   logs.unshift(log);
-  
+
   // Keep only last 10000 logs
   if (logs.length > 10000) {
     logs.pop();
+  }
+
+  // 🚀 主动分析：ERROR/FATAL 日志出现时加入分析队列
+  const autoAnalysisEnabled = settings.autoAnalysis && (source?.autoAnalysis ?? true);
+  if ((log.level === 'ERROR' || log.level === 'FATAL') && autoAnalysisEnabled) {
+    enqueueAnalysis(log, source);
+  }
+}
+
+function enqueueAnalysis(log, source) {
+  const sourceId = source?.id || 'default';
+  const q = getQueue(sourceId);
+
+  // 防抖：同类错误 30s 内不重复
+  const key = `${sourceId}:${log.message.slice(0, 120)}`;
+  const now = Date.now();
+  if (analysisDebounce.has(key)) {
+    const last = analysisDebounce.get(key);
+    if (now - last < DEBOUNCE_MS) {
+      console.log(`[${sourceId}] ⏭️ 防抖跳过: ${log.message.slice(0, 60)}`);
+      return;
+    }
+  }
+  analysisDebounce.set(key, now);
+
+  q.pending.push({ log, source });
+  console.log(`[${sourceId}] 📋 加入分析队列 (待处理: ${q.pending.length})`);
+  processQueue(sourceId);
+}
+
+async function runAnalysis(errorLog, source) {
+  const sourceId = source?.id || 'default';
+  console.log(`[${sourceId}] 🤖 开始分析: ${errorLog.message.slice(0, 80)}`);
+
+  const apiKey = settings.openaiApiKey;
+  const baseUrl = settings.openaiBaseUrl || 'http://localhost:11434/v1';
+  const model = settings.model;
+  const isLocalModel = baseUrl.includes('localhost') || baseUrl.includes('127.0.0.1') || baseUrl.includes('0.0.0.0');
+
+  if (!apiKey && !isLocalModel) {
+    broadcast({
+      type: 'ai_analysis',
+      status: 'skipped',
+      message: '未配置 LLM，无法自动分析。请在设置页面配置 API Key。',
+      log: errorLog,
+      sourceId
+    });
+    return;
+  }
+  if (!model) {
+    broadcast({
+      type: 'ai_analysis',
+      status: 'skipped',
+      message: '未配置 LLM 模型，无法自动分析。',
+      log: errorLog,
+      sourceId
+    });
+    return;
+  }
+
+  // 通知前端：分析开始
+  console.log(`[${sourceId}] 📡 调用 LLM: ${model}`);
+  broadcast({ type: 'ai_analysis', status: 'pending', log: errorLog, sourceId });
+
+  try {
+    const OpenAI = (await import('openai')).default;
+    const openai = new OpenAI({ apiKey: apiKey || 'ollama', baseURL: baseUrl });
+
+    const prompt = `你是一个专业的运维工程师。请分析以下错误日志，找出根因并给出简洁的修复建议。
+
+错误日志：
+[${errorLog.timestamp}] [${errorLog.level}] ${errorLog.message}
+来源: ${errorLog.source}
+
+请用以下格式回复（Markdown）：
+## 🔍 根因分析
+[一句话说明最可能的根因]
+
+## 💡 修复建议
+1. [具体可操作的修复步骤]
+2. [...]
+
+回复语言与日志一致（中文日志用中文）。`;
+
+    const response = await openai.chat.completions.create({
+      model,
+      messages: [{ role: 'user', content: prompt }],
+      temperature: 0.3,
+      timeout: 60_000
+    });
+
+    const analysis = response.choices[0].message.content;
+    console.log(`[${sourceId}] ✅ 分析完成`);
+
+    // 存入历史
+    const record = {
+      id: uuidv4(),
+      timestamp: new Date().toISOString(),
+      sourceId,
+      sourceName: source?.name || sourceId,
+      log: errorLog,
+      analysis,
+      status: 'done',
+      model
+    };
+    analysisHistory.unshift(record);
+    if (analysisHistory.length > MAX_ANALYSIS_HISTORY) analysisHistory.pop();
+
+    broadcast({
+      type: 'ai_analysis',
+      status: 'done',
+      log: errorLog,
+      sourceId,
+      analysis,
+      recordId: record.id
+    });
+  } catch (err) {
+    console.error(`[${sourceId}] 分析失败: ${err.message}`);
+
+    // 存入历史
+    const record = {
+      id: uuidv4(),
+      timestamp: new Date().toISOString(),
+      sourceId,
+      sourceName: source?.name || sourceId,
+      log: errorLog,
+      analysis: null,
+      status: 'error',
+      error: err.message,
+      model
+    };
+    analysisHistory.unshift(record);
+    if (analysisHistory.length > MAX_ANALYSIS_HISTORY) analysisHistory.pop();
+
+    broadcast({
+      type: 'ai_analysis',
+      status: 'error',
+      message: `分析失败: ${err.message}`,
+      log: errorLog,
+      sourceId,
+      recordId: record.id
+    });
   }
 }
 
@@ -421,21 +678,138 @@ app.get('/api/settings', (req, res) => {
 
 app.put('/api/settings', (req, res) => {
   const updates = req.body;
-  
+
   for (const [key, value] of Object.entries(updates)) {
     settings[key] = value;
   }
-  
-  // Restart services if needed
-  if (updates.logPath || updates.watchFiles) {
+
+  // 重启日志监控（watchSources 变化）
+  if (updates.watchSources || updates.logPath || updates.watchFiles) {
     startLogWatcher();
   }
-  
+
   if (updates.refreshInterval) {
     startMonitor();
   }
-  
+
+  res.json({ success: true, settings });
+});
+
+// ============================================================
+// 日志分析状态 API
+// ============================================================
+
+// 查询所有服务分析队列状态
+app.get('/api/analysis/status', (req, res) => {
+  const result = {};
+  analysisQueues.forEach((q, sourceId) => {
+    result[sourceId] = {
+      pending: q.pending.length,
+      running: q.running
+    };
+  });
+  res.json({ queues: result, totalPending: [...analysisQueues.values()].reduce((s, q) => s + q.pending.length, 0) });
+});
+
+// 主动触发某服务的分析（POST body: { message, sourceId }）
+app.post('/api/analysis/trigger', async (req, res) => {
+  const { message, sourceId = 'manual', sourceName = '手动触发' } = req.body;
+  if (!message) return res.status(400).json({ error: 'message required' });
+
+  const log = {
+    id: uuidv4(),
+    timestamp: new Date().toISOString(),
+    level: 'ERROR',
+    message,
+    source: sourceName,
+    sourceId,
+    metadata: JSON.stringify({ manual: true })
+  };
+
+  const source = { id: sourceId, name: sourceName, autoAnalysis: true };
+  enqueueAnalysis(log, source);
+
+  res.json({ success: true, message: '已加入分析队列', log });
+});
+
+// 获取分析历史记录
+app.get('/api/analysis/history', (req, res) => {
+  const { sourceId, status, limit = 50, offset = 0 } = req.query;
+  let result = [...analysisHistory];
+  if (sourceId) result = result.filter(r => r.sourceId === sourceId);
+  if (status) result = result.filter(r => r.status === status);
+  const total = result.length;
+  result = result.slice(parseInt(offset), parseInt(offset) + parseInt(limit));
+  res.json({ records: result, total });
+});
+
+// 删除单条分析历史
+app.delete('/api/analysis/history/:id', (req, res) => {
+  const idx = analysisHistory.findIndex(r => r.id === req.params.id);
+  if (idx !== -1) { analysisHistory.splice(idx, 1); res.json({ success: true }); }
+  else { res.status(404).json({ error: '记录不存在' }); }
+});
+
+// 清空分析历史
+app.delete('/api/analysis/history', (req, res) => {
+  analysisHistory.length = 0;
   res.json({ success: true });
+});
+
+// ============================================================
+// LLM 助手聊天 API（流式 SSE）
+// ============================================================
+app.post('/api/chat', async (req, res) => {
+  const { messages } = req.body;
+  if (!messages || !Array.isArray(messages) || messages.length === 0) {
+    return res.status(400).json({ error: 'messages required' });
+  }
+
+  const apiKey = settings.openaiApiKey;
+  const baseUrl = settings.openaiBaseUrl || 'http://localhost:11434/v1';
+  const model = settings.model;
+  const isLocalModel = baseUrl.includes('localhost') || baseUrl.includes('127.0.0.1') || baseUrl.includes('0.0.0.0');
+
+  if (!apiKey && !isLocalModel) return res.status(400).json({ error: '未配置 API Key' });
+  if (!model) return res.status(400).json({ error: '未配置模型' });
+
+  try {
+    const OpenAI = (await import('openai')).default;
+    const openai = new OpenAI({ apiKey: apiKey || 'ollama', baseURL: baseUrl });
+
+    const systemPrompt = {
+      role: 'system',
+      content: `你是一个专业的运维工程师和技术支持助手。你的职责是：
+- 帮助运维人员排查服务器、网络、数据库、中间件等问题
+- 提供清晰、可操作的解决方案
+- 支持日志分析、性能调优、故障排查、安全加固等场景
+- 回复使用与用户相同的语言（中文提问用中文回答）
+- 回复要简洁专业，必要时给出命令示例和配置片段`
+    };
+
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+
+    const stream = await openai.chat.completions.create({
+      model,
+      messages: [systemPrompt, ...messages],
+      temperature: 0.7,
+      stream: true,
+      timeout: 120_000
+    });
+
+    for await (const chunk of stream) {
+      const content = chunk.choices[0]?.delta?.content || '';
+      if (content) res.write(`data: ${JSON.stringify({ content })}\n\n`);
+    }
+    res.write('data: [DONE]\n\n');
+    res.end();
+  } catch (err) {
+    console.error('Chat API error:', err.message);
+    if (!res.headersSent) res.status(500).json({ error: err.message });
+    else { res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`); res.end(); }
+  }
 });
 
 // Get available log files

@@ -11,7 +11,11 @@ import {
   Terminal,
   Cpu,
   Cloud,
-  Server
+  Server,
+  Plus,
+  Trash2,
+  Brain,
+  X
 } from 'lucide-react';
 import type { Settings as SettingsType } from '../types';
 
@@ -40,6 +44,17 @@ export default function Settings() {
     logPath: '',
     watchFiles: '*.log',
     refreshInterval: '5000',
+    autoAnalysis: true,
+    watchSources: [
+      {
+        id: 'default',
+        name: '默认服务',
+        path: '',
+        pattern: '*.log',
+        enabled: true,
+        autoAnalysis: true
+      }
+    ],
   });
   const [provider, setProvider] = useState('ollama');
   const [customModel, setCustomModel] = useState('');
@@ -107,6 +122,8 @@ export default function Settings() {
           logPath: settings.logPath,
           watchFiles: settings.watchFiles,
           refreshInterval: settings.refreshInterval,
+          autoAnalysis: settings.autoAnalysis,
+          watchSources: settings.watchSources,
         })
       });
 
@@ -450,6 +467,167 @@ export default function Settings() {
             </select>
           </div>
         </div>
+      </div>
+
+      {/* Auto Analysis Settings */}
+      <div className="glass rounded-xl p-6">
+        {/* Header */}
+        <div className="flex items-center justify-between mb-5">
+          <div className="flex items-center gap-3">
+            <div className="p-2 rounded-lg bg-accent-500/20">
+              <Brain className="w-5 h-5 text-accent-400" />
+            </div>
+            <div>
+              <h2 className="text-base font-semibold text-dark-100">主动分析</h2>
+              <p className="text-xs text-dark-500">ERROR 日志出现时自动调用 AI 诊断</p>
+            </div>
+          </div>
+
+          {/* Master Toggle */}
+          <button
+            onClick={() => setSettings(p => ({ ...p, autoAnalysis: !p.autoAnalysis }))}
+            className="relative w-14 h-7 rounded-full transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-accent-500/50"
+            style={{ background: settings.autoAnalysis ? '#10b981' : '#374151' }}
+          >
+            <div
+              className="absolute top-1 w-5 h-5 rounded-full bg-white shadow-sm transition-all duration-200"
+              style={{ transform: settings.autoAnalysis ? 'translateX(28px)' : 'translateX(4px)' }}
+            />
+          </button>
+        </div>
+
+        {/* Multi-service sources */}
+        {settings.autoAnalysis && (
+          <div>
+            <div className="flex items-center justify-between mb-3">
+              <span className="text-xs font-medium text-dark-400 uppercase tracking-wider">日志服务</span>
+              <button
+                onClick={() => {
+                  const id = `svc-${Date.now()}`;
+                  setSettings(p => ({
+                    ...p,
+                    watchSources: [
+                      ...p.watchSources,
+                      { id, name: `服务${p.watchSources.length + 1}`, path: '', pattern: '*.log', enabled: true, autoAnalysis: true }
+                    ]
+                  }));
+                  setSaved(false);
+                }}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-accent-500/15 text-accent-400 text-xs font-medium hover:bg-accent-500/25 transition-colors"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                添加服务
+              </button>
+            </div>
+
+            <div className="space-y-2">
+              {(settings.watchSources || []).map((src, idx) => (
+                <div
+                  key={src.id}
+                  className={`relative rounded-xl border transition-all duration-200 overflow-hidden ${
+                    src.enabled
+                      ? 'border-dark-700 bg-dark-900/80'
+                      : 'border-dark-800/50 bg-dark-900/40 opacity-60'
+                  }`}
+                >
+                  {/* Card header */}
+                  <div className="flex items-center gap-3 px-4 py-3">
+                    {/* Status dot */}
+                    <div className={`w-2 h-2 rounded-full flex-shrink-0 ${src.enabled ? 'bg-green-400' : 'bg-dark-600'}`} />
+
+                    {/* Service name */}
+                    <input
+                      type="text"
+                      value={src.name}
+                      onChange={e => {
+                        const updated = [...(settings.watchSources || [])];
+                        updated[idx] = { ...src, name: e.target.value };
+                        setSettings(p => ({ ...p, watchSources: updated }));
+                        setSaved(false);
+                      }}
+                      placeholder="服务名称"
+                      className="flex-1 bg-transparent text-sm font-medium text-dark-100 placeholder-dark-600 focus:outline-none"
+                    />
+
+                    {/* Analysis badge */}
+                    <span className={`text-xs px-2 py-0.5 rounded-full border ${
+                      src.autoAnalysis && src.enabled
+                        ? 'border-accent-500/30 bg-accent-500/10 text-accent-400'
+                        : 'border-dark-700 bg-dark-800 text-dark-500'
+                    }`}>
+                      {src.autoAnalysis && src.enabled ? 'AI 分析' : '已关闭'}
+                    </span>
+
+                    {/* Toggle */}
+                    <button
+                      onClick={() => {
+                        const updated = [...(settings.watchSources || [])];
+                        updated[idx] = { ...src, enabled: !src.enabled };
+                        setSettings(p => ({ ...p, watchSources: updated }));
+                        setSaved(false);
+                      }}
+                      className="relative w-10 h-5 rounded-full transition-all duration-200 focus:outline-none"
+                      style={{ background: src.enabled ? '#10b981' : '#374151' }}
+                    >
+                      <div
+                        className="absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all duration-200"
+                        style={{ transform: src.enabled ? 'translateX(20px)' : 'translateX(2px)' }}
+                      />
+                    </button>
+
+                    {/* Delete */}
+                    {(settings.watchSources || []).length > 1 && (
+                      <button
+                        onClick={() => {
+                          const updated = (settings.watchSources || []).filter((_, i) => i !== idx);
+                          setSettings(p => ({ ...p, watchSources: updated }));
+                          setSaved(false);
+                        }}
+                        className="p-1 rounded text-dark-600 hover:text-red-400 hover:bg-red-500/10 transition-colors"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Card body */}
+                  <div className="grid grid-cols-2 gap-2 px-4 pb-3">
+                    <div>
+                      <p className="text-xs text-dark-600 mb-1">日志目录</p>
+                      <input
+                        type="text"
+                        value={src.path}
+                        onChange={e => {
+                          const updated = [...(settings.watchSources || [])];
+                          updated[idx] = { ...src, path: e.target.value };
+                          setSettings(p => ({ ...p, watchSources: updated }));
+                          setSaved(false);
+                        }}
+                        placeholder="~/logs"
+                        className="w-full px-2.5 py-1.5 bg-dark-800/60 border border-dark-700/50 rounded-lg text-xs text-dark-200 placeholder-dark-600 focus:outline-none focus:border-accent-500/50 transition-colors"
+                      />
+                    </div>
+                    <div>
+                      <p className="text-xs text-dark-600 mb-1">文件模式</p>
+                      <input
+                        type="text"
+                        value={src.pattern}
+                        onChange={e => {
+                          const updated = [...(settings.watchSources || [])];
+                          updated[idx] = { ...src, pattern: e.target.value };
+                          setSettings(p => ({ ...p, watchSources: updated }));
+                          setSaved(false);
+                        }}
+                        placeholder="*.log"
+                        className="w-full px-2.5 py-1.5 bg-dark-800/60 border border-dark-700/50 rounded-lg text-xs text-dark-200 placeholder-dark-600 focus:outline-none focus:border-accent-500/50 transition-colors"
+                      />
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Save */}

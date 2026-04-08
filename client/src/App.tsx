@@ -3,6 +3,8 @@ import Layout from './components/Layout';
 import Dashboard from './pages/Dashboard';
 import Logs from './pages/Logs';
 import Analytics from './pages/Analytics';
+import AnalysisHistory from './pages/AnalysisHistory';
+import Assistant from './pages/Assistant';
 import Monitor from './pages/Monitor';
 import Settings from './pages/Settings';
 import Remote from './pages/Remote';
@@ -16,6 +18,8 @@ function App() {
           <Route path="dashboard" element={<Dashboard />} />
           <Route path="logs" element={<Logs />} />
           <Route path="analytics" element={<Analytics />} />
+          <Route path="analysis-history" element={<AnalysisHistory />} />
+          <Route path="assistant" element={<Assistant />} />
           <Route path="monitor" element={<Monitor />} />
           <Route path="remote" element={<Remote />} />
           <Route path="settings" element={<Settings />} />

@@ -111,6 +111,15 @@ export interface MonitorHistory {
   network: number;
 }
 
+export interface WatchSource {
+  id: string;
+  name: string;
+  path: string;
+  pattern: string;
+  enabled: boolean;
+  autoAnalysis: boolean;
+}
+
 export interface Settings {
   openaiApiKey: string;
   openaiBaseUrl: string;
@@ -118,9 +127,11 @@ export interface Settings {
   logPath: string;
   watchFiles: string;
   refreshInterval: string;
+  autoAnalysis: boolean;
+  watchSources: WatchSource[];
 }
 
 export interface WebSocketMessage {
-  type: 'log' | 'monitor';
+  type: 'log' | 'monitor' | 'ai_analysis';
   data: any;
 }
