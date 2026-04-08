@@ -1,3 +1,13 @@
+# 依赖目录
+# 通过 package.json 可以重新安装，体积巨大，无需提交
 node_modules/
+
+# 环境变量文件
+# 包含数据库密码、API密钥等敏感信息，严禁提交
 .env
+.env.local
+.env.*.local
+
+# macOS 系统文件
+# 存储文件夹显示属性，与项目代码无关，会造成不必要的冲突
 .DS_Store

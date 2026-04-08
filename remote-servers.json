@@ -6,10 +6,10 @@
     "port": 22,
     "username": "smai",
     "password": "c21haTEyMw==",
-    "logPath": "/workspace/coder",
+    "logPath": "/workspace/coder/logs/",
     "watchFiles": "*.log",
-    "lastConnected": "2026-03-20T12:21:27.762Z",
-    "status": "connected"
+    "lastConnected": "2026-04-08T06:31:39.693Z",
+    "status": "disconnected"
   },
   {
     "id": "dfd3a09e-0d97-407b-9cc3-1c9130befda0",
@@ -21,7 +21,7 @@
     "logPath": "/workspace/coder",
     "watchFiles": "*.log",
     "lastConnected": "2026-03-20T06:20:13.848Z",
-    "status": "connected"
+    "status": "disconnected"
   },
   {
     "id": "6d3b5e39-a06a-42d8-bf95-2ad382920c33",

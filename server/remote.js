@@ -333,30 +333,34 @@ export async function listRemoteFiles(id, subPath = '') {
   if (!ssh) {
     throw new Error('服务器未连接');
   }
-  
+
   const server = servers.find(s => s.id === id);
   const basePath = subPath || server.logPath;
-  
+
   try {
-    // 列出文件和目录
-    const result = await ssh.execCommand(`ls -lah "${basePath}" 2>/dev/null || echo "DIR_NOT_FOUND"`);
-    
-    if (result.stdout.includes('DIR_NOT_FOUND')) {
-      return { files: [], dirs: [], error: '目录不存在' };
+    // 列出文件和目录（包括隐藏文件）
+    const result = await ssh.execCommand(`ls -lAh "${basePath}" 2>&1`);
+
+    // 检查是否是错误信息
+    if (result.stderr || result.code !== 0) {
+      return { files: [], dirs: [], error: result.stderr || result.stdout };
     }
-    
+
     const lines = result.stdout.split('\n').filter(l => l.trim());
     const files = [];
     const dirs = [];
-    
-    for (const line of lines.slice(1)) { // 跳过 total 行
+
+    for (const line of lines) {
+      // 跳过 total 行和 . 及 ..
+      if (line.includes('total') || line.endsWith('/.') || line.endsWith('/..')) continue;
+
       const match = line.match(/^([dls-][rwx-]{9})\s+\d+\s+(\S+)\s+(\S+)\s+(\d+)\s+(\S+\s+\d+|\d+)\s+(\d+:\d+|\d{4})\s+(.+)$/);
       if (!match) continue;
-      
+
       const [, perms, , , size, , , name] = match;
       const isDir = perms.startsWith('d');
       const isLog = name.endsWith('.log') || name.includes('.log.');
-      
+
       if (isDir) {
         if (name !== '.' && name !== '..') {
           dirs.push({
@@ -374,14 +378,14 @@ export async function listRemoteFiles(id, subPath = '') {
         });
       }
     }
-    
+
     // 日志文件排前面
     files.sort((a, b) => {
       if (a.isLog && !b.isLog) return -1;
       if (!a.isLog && b.isLog) return 1;
       return b.name.localeCompare(a.name);
     });
-    
+
     return { files, dirs, currentPath: basePath };
   } catch (err) {
     return { files: [], dirs: [], error: err.message };
