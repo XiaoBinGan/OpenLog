@@ -14,6 +14,9 @@
 | 🔔 异常告警 — 自动检测并告警 | 🔔 **Alerting** — Automatic anomaly detection and alerts |
 | 📈 可视化图表 — 折线图、面积图、热力图 | 📈 **Visualization** — Line charts, area charts, heatmaps |
 | ⚙️ 灵活配置 — 支持自定义监控路径和参数 | ⚙️ **Flexible Config** — Customizable monitoring paths and parameters |
+| 🏢 **多服务联合会诊** — 同时监控多个服务目录，独立分析队列 | 🏢 **Multi-service Diagnosis** — Monitor multiple services with independent analysis queues |
+| 💬 **运维助手** — 内置 LLM 聊天，支持流式对话与技术支持 | 💬 **Ops Assistant** — Built-in LLM chat with streaming for tech support |
+| 📜 **分析历史** — 查看所有 AI 分析记录，支持搜索与过滤 | 📜 **Analysis History** — View all AI analysis records with search & filter |
 
 ---
 
@@ -67,11 +70,24 @@ openlog/
 ├── client/                  # React 前端 / React frontend
 │   ├── src/
 │   │   ├── components/      # React 组件 / React components
+│   │   │   ├── AIAnalysisToast.tsx   # AI 分析实时通知 / Real-time AI analysis notifications
+│   │   │   └── ...
 │   │   ├── pages/           # 页面组件 / Page components
+│   │   │   ├── Dashboard.tsx         # 仪表盘 / Dashboard
+│   │   │   ├── Logs.tsx              # 日志流 / Log streaming
+│   │   │   ├── Analytics.tsx         # AI 分析 / AI analysis
+│   │   │   ├── AnalysisHistory.tsx   # 分析历史 / Analysis history ⭐NEW
+│   │   │   ├── Assistant.tsx         # 运维助手 / Ops assistant ⭐NEW
+│   │   │   ├── Monitor.tsx           # 系统监控 / System monitor
+│   │   │   ├── Remote.tsx            # 远程服务器 / Remote servers
+│   │   │   └── Settings.tsx          # 设置 / Settings
+│   │   ├── contexts/        # React Context
+│   │   │   └── WebSocketContext.tsx  # WebSocket 管理 / WebSocket management ⭐NEW
 │   │   └── types.ts         # TypeScript 类型 / TypeScript types
 │   └── package.json
 ├── server/                  # Node.js 后端 / Node.js backend
-│   └── index.js             # 主服务器文件 / Main server file
+│   ├── index.js             # 主服务器文件 / Main server file
+│   └── remote.js            # 远程服务器管理 / Remote server management
 ├── SPEC.md                  # 项目规格说明 / Project specification
 └── package.json
 ```
@@ -83,9 +99,10 @@ openlog/
 | 中文 | English |
 |------|---------|
 | **前端**: React + TypeScript + Vite + TailwindCSS + Recharts | **Frontend**: React + TypeScript + Vite + TailwindCSS + Recharts |
-| **后端**: Node.js + Express + SQLite | **Backend**: Node.js + Express + SQLite |
-| **实时通信**: WebSocket | **Real-time**: WebSocket |
-| **AI**: OpenAI API (兼容任意 OpenAI 兼容 API) | **AI**: OpenAI API (compatible with any OpenAI-compatible API) |
+| **后端**: Node.js + Express + WebSocket + SSE | **Backend**: Node.js + Express + WebSocket + SSE |
+| **实时通信**: WebSocket (日志推送) + SSE (AI 流式输出) | **Real-time**: WebSocket (logs) + SSE (AI streaming) |
+| **AI**: OpenAI API (兼容任意 OpenAI 兼容 API，支持本地 Ollama) | **AI**: OpenAI API (compatible with any OpenAI-compatible API, including local Ollama) |
+| **监控**: chokidar (文件监控) + systeminformation (系统信息) | **Monitoring**: chokidar (file watch) + systeminformation (system stats) |
 
 ---
 
@@ -111,7 +128,23 @@ Configure the log directory to monitor on the Settings page. Default: `.log` fil
 2. 点击"开始 AI 分析" / Click "Start AI Analysis"
 3. AI 自动分析并提供问题摘要和修复建议 / AI analyzes and provides summary + fix suggestions
 
-### 4. 系统监控 | System Monitor
+### 4. 查看分析历史 | Analysis History ⭐NEW
+
+访问 `/analysis-history` 页面：
+- 查看所有自动触发的 AI 分析记录 / View all auto-triggered AI analysis records
+- 按服务、状态过滤 / Filter by service and status
+- 搜索日志内容或分析结果 / Search log content or analysis results
+- 展开查看完整的 AI 诊断报告 / Expand to view full AI diagnosis report
+
+### 5. 运维助手聊天 | Ops Assistant ⭐NEW
+
+访问 `/assistant` 页面：
+- 与 LLM 进行实时对话 / Real-time chat with LLM
+- 支持流式输出，体验流畅 / Streaming output for smooth experience
+- 快速提问：常见运维问题一键发送 / Quick prompts for common ops questions
+- 支持 Markdown 格式（代码块、表格等）/ Markdown support (code blocks, tables, etc.)
+
+### 6. 系统监控 | System Monitor
 
 访问 `/monitor` 页面查看：
 - CPU 使用率（总览 + 各核心）/ CPU usage (overall + per core)
@@ -129,6 +162,26 @@ Configure the log directory to monitor on the Settings page. Default: `.log` fil
 - Windows: `C:\Windows\System32\LogFiles` / Windows: `C:\Windows\System32\LogFiles`
 - AI 分析需要有效的 OpenAI API Key / AI analysis requires a valid OpenAI API Key
 
+### 多服务配置 | Multi-service Configuration ⭐NEW
+
+在设置页面可以配置多个日志服务：
+
+1. 开启"自动错误分析"总开关 / Enable "Auto Error Analysis" master switch
+2. 添加多个服务目录（如 MySQL、Nginx、应用日志等）/ Add multiple service directories
+3. 每个服务可独立控制是否启用 AI 分析 / Each service can independently enable/disable AI analysis
+4. 各服务有独立的分析队列，互不阻塞 / Each service has independent analysis queue
+
+示例配置 / Example config:
+```json
+{
+  "watchSources": [
+    { "id": "app", "name": "应用日志", "path": "/var/log/app", "pattern": "*.log", "enabled": true, "autoAnalysis": true },
+    { "id": "mysql", "name": "MySQL", "path": "/var/log/mysql", "pattern": "*.log", "enabled": true, "autoAnalysis": true },
+    { "id": "nginx", "name": "Nginx", "path": "/var/log/nginx", "pattern": "*.log", "enabled": true, "autoAnalysis": false }
+  ]
+}
+```
+
 ---
 
 ## 📝 API
@@ -140,6 +193,10 @@ Configure the log directory to monitor on the Settings page. Default: `.log` fil
 | DELETE | `/api/logs` | 清空日志 | DELETE | `/api/logs` | Clear logs |
 | GET | `/api/monitor/stats` | 获取系统统计 | GET | `/api/monitor/stats` | Get system stats |
 | GET | `/api/monitor/history` | 获取历史数据 | GET | `/api/monitor/history` | Get history data |
+| GET | `/api/analysis/history` | 获取分析历史 ⭐NEW | GET | `/api/analysis/history` | Get AI analysis history |
+| DELETE | `/api/analysis/history/:id` | 删除分析记录 ⭐NEW | DELETE | `/api/analysis/history/:id` | Delete analysis record |
+| POST | `/api/analysis/trigger` | 手动触发分析 ⭐NEW | POST | `/api/analysis/trigger` | Trigger manual analysis |
+| POST | `/api/chat` | LLM 聊天（SSE 流式）⭐NEW | POST | `/api/chat` | LLM chat (SSE streaming) |
 | GET | `/api/settings` | 获取设置 | GET | `/api/settings` | Get settings |
 | PUT | `/api/settings` | 更新设置 | PUT | `/api/settings` | Update settings |
 
