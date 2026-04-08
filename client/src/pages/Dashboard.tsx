@@ -60,7 +60,16 @@ export default function Dashboard() {
             const data = JSON.parse(event.data);
             
             if (data.type === 'monitor') {
-              setStats(data.data);
+              // WS 推送的是简化格式，转换为 HTTP API 格式
+              const raw = data.data;
+              const formatted = {
+                cpu: typeof raw.cpu === 'number' ? { load: raw.cpu, cores: [] } : raw.cpu,
+                memory: typeof raw.memory === 'number' ? { used: raw.memory, total: 100, free: 0 } : raw.memory,
+                disk: typeof raw.disk === 'number' ? [{ name: '/', used: 0, total: 1, usePercent: raw.disk }] : raw.disk,
+                network: raw.network !== undefined ? [{ iface: 'en0', rx: raw.network / 2, tx: raw.network / 2 }] : [],
+                processes: stats?.processes || []
+              };
+              setStats(formatted);
               setHistory(prev => {
                 const newHistory = [...prev, data.data];
                 return newHistory.slice(-60);
