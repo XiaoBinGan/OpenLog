@@ -1,25 +1,30 @@
-import { useState, useEffect } from 'react';
-import { Outlet, NavLink } from 'react-router-dom';
-import { 
-  LayoutDashboard, 
-  FileText, 
-  Brain, 
-  Activity, 
+import { useState, useEffect, useRef } from 'react';
+import { Outlet, NavLink, useNavigate } from 'react-router-dom';
+import {
+  LayoutDashboard,
+  FileText,
+  Brain,
+  Activity,
   Settings,
   Menu,
   X,
   Terminal,
-  Server
+  Server,
+  History,
+  MessageSquare
 } from 'lucide-react';
 import clsx from 'clsx';
 import { DeviceProvider } from '../contexts/DeviceContext';
 import GlobalStatusBar from './GlobalStatusBar';
+import AIAnalysisToast from './AIAnalysisToast';
 
 const navItems = [
   { path: '/dashboard', icon: LayoutDashboard, label: '仪表盘' },
   { path: '/logs', icon: FileText, label: '日志流' },
   { path: '/remote', icon: Server, label: '远程服务器' },
   { path: '/analytics', icon: Brain, label: 'AI 分析' },
+  { path: '/analysis-history', icon: History, label: '分析历史' },
+  { path: '/assistant', icon: MessageSquare, label: '运维助手' },
   { path: '/monitor', icon: Activity, label: '系统监控' },
   { path: '/settings', icon: Settings, label: '设置' },
 ];
@@ -27,6 +32,22 @@ const navItems = [
 function LayoutContent() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [ws, setWs] = useState<WebSocket | null>(null);
+  const navigate = useNavigate();
+
+  // 统一 WebSocket 连接（供 AI 分析通知使用）
+  useEffect(() => {
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsInstance = new WebSocket(`${protocol}//${window.location.host}/ws`);
+    wsInstance.onopen = () => console.log('[WS] Connected');
+    wsInstance.onclose = () => console.log('[WS] Disconnected');
+    setWs(wsInstance);
+    return () => wsInstance.close();
+  }, []);
+
+  const handleViewLogs = () => {
+    navigate('/logs');
+  };
 
   useEffect(() => {
     const handleResize = () => {
@@ -169,6 +190,9 @@ function LayoutContent() {
           <Outlet />
         </div>
       </main>
+
+      {/* AI 错误分析通知（右下角） */}
+      <AIAnalysisToast wsRef={{ current: ws }} onViewLogs={handleViewLogs} />
     </div>
   );
 }
