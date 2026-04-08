@@ -380,6 +380,9 @@ app.delete('/api/logs', (req, res) => {
 
 // Monitor stats
 app.get('/api/monitor/stats', async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
   try {
     const [cpu, mem, disks, network, processes] = await Promise.all([
       si.currentLoad(),
@@ -403,6 +406,9 @@ app.get('/api/monitor/stats', async (req, res) => {
 
 // Monitor history
 app.get('/api/monitor/history', (req, res) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
   const { limit = 100 } = req.query;
   const result = monitorHistory.slice(0, parseInt(limit));
   res.json(result);
