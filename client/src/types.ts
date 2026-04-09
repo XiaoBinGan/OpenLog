@@ -120,6 +120,28 @@ export interface WatchSource {
   autoAnalysis: boolean;
 }
 
+export interface DockerSource {
+  id: string;
+  name: string;
+  /** TCP 模式：Docker Server 地址 */
+  host: string;
+  /** TCP 模式：端口，默认 2375 */
+  port: number;
+  /** TCP 模式：是否使用 TLS */
+  tls: boolean;
+  /** TLS 模式：CA 证书（base64） */
+  ca?: string;
+  /** TLS 模式：客户端证书（base64） */
+  cert?: string;
+  /** TLS 模式：客户端私钥（base64） */
+  key?: string;
+  /** ✅ macOS Docker Desktop 推荐：Unix Socket 路径（优先于 TCP） */
+  socketPath?: string;
+  enabled: boolean;
+  autoAnalysis: boolean;
+  projects: string[];
+}
+
 export interface Settings {
   openaiApiKey: string;
   openaiBaseUrl: string;
@@ -129,9 +151,10 @@ export interface Settings {
   refreshInterval: string;
   autoAnalysis: boolean;
   watchSources: WatchSource[];
+  dockerSources: DockerSource[];
 }
 
 export interface WebSocketMessage {
-  type: 'log' | 'monitor' | 'ai_analysis';
+  type: 'log' | 'monitor' | 'ai_analysis' | 'docker_batch_analysis';
   data: any;
 }

@@ -11,3 +11,11 @@ node_modules/
 # macOS 系统文件
 # 存储文件夹显示属性，与项目代码无关，会造成不必要的冲突
 .DS_Store
+# 本地配置文件（用户私有，不要提交）
+settings.json
+remote-servers.json
+
+# 编辑器配置
+.claude/
+.vscode/
+.idea/

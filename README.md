@@ -17,6 +17,7 @@
 | 🏢 **多服务联合会诊** — 同时监控多个服务目录，独立分析队列 | 🏢 **Multi-service Diagnosis** — Monitor multiple services with independent analysis queues |
 | 💬 **运维助手** — 内置 LLM 聊天，支持流式对话与技术支持 | 💬 **Ops Assistant** — Built-in LLM chat with streaming for tech support |
 | 📜 **分析历史** — 查看所有 AI 分析记录，支持搜索与过滤 | 📜 **Analysis History** — View all AI analysis records with search & filter |
+| 🐳 **Docker 容器管理** — 图形化管理 Docker 容器，进入容器执行命令，查看上下游链路 | 🐳 **Docker Container Management** — GUI for Docker containers, exec into containers, trace upstream/downstream |
 
 ---
 
@@ -78,6 +79,7 @@ openlog/
 │   │   │   ├── Analytics.tsx         # AI 分析 / AI analysis
 │   │   │   ├── AnalysisHistory.tsx   # 分析历史 / Analysis history ⭐NEW
 │   │   │   ├── Assistant.tsx         # 运维助手 / Ops assistant ⭐NEW
+│   │   │   ├── Docker.tsx            # Docker 容器管理 ⭐NEW
 │   │   │   ├── Monitor.tsx           # 系统监控 / System monitor
 │   │   │   ├── Remote.tsx            # 远程服务器 / Remote servers
 │   │   │   └── Settings.tsx          # 设置 / Settings
@@ -87,7 +89,8 @@ openlog/
 │   └── package.json
 ├── server/                  # Node.js 后端 / Node.js backend
 │   ├── index.js             # 主服务器文件 / Main server file
-│   └── remote.js            # 远程服务器管理 / Remote server management
+│   ├── remote.js            # 远程服务器管理 / Remote server management
+│   └── docker.js            # Docker 连接与容器管理 / Docker connection & container management
 ├── SPEC.md                  # 项目规格说明 / Project specification
 └── package.json
 ```
@@ -106,7 +109,19 @@ openlog/
 
 ---
 
-## 📖 使用指南 | User Guide
+### 7. Docker 容器管理 | Docker Container Management ⭐NEW
+
+访问 `/docker` 页面：
+
+- **查看容器** — 实时查看 Docker 容器列表，过滤运行中/已停止的容器
+- **进入容器** — 点击终端图标，展开内置终端，在容器内执行任意命令（如 `ps aux`、`ls /`、`cat /etc/hosts`）
+- **启停操作** — 启动、停止、重启容器，无需打开终端
+- **上下游链路** — 自动分析容器间的网络依赖关系，展示上游/下游服务
+- **批量分析** — 同时分析多个容器的日志，AI 联合会诊
+
+> **连接方式：** 支持 Unix Socket（macOS Docker Desktop：`/var/run/docker.sock`）和 TCP（远程 Docker Server）
+
+
 
 ### 1. 配置日志路径 | Configure Log Path
 
@@ -182,6 +197,23 @@ Configure the log directory to monitor on the Settings page. Default: `.log` fil
 }
 ```
 
+### Docker 配置 | Docker Configuration ⭐NEW
+
+在设置页面添加 Docker 连接：
+
+- **macOS Docker Desktop** — 连接方式选「Socket」，Socket 路径填 `/var/run/docker.sock`
+- **Linux 本地** — 同 macOS，或使用 TCP `http://localhost:2375`
+- **远程 Docker Server** — 连接方式选「TCP」，填入 host 和端口（2375/2376）
+
+示例配置 / Example config:
+```json
+{
+  "dockerSources": [
+    { "id": "local", "name": "本地 Docker", "socketPath": "/var/run/docker.sock", "enabled": true }
+  ]
+}
+```
+
 ---
 
 ## 📝 API
@@ -199,6 +231,12 @@ Configure the log directory to monitor on the Settings page. Default: `.log` fil
 | POST | `/api/chat` | LLM 聊天（SSE 流式）⭐NEW | POST | `/api/chat` | LLM chat (SSE streaming) |
 | GET | `/api/settings` | 获取设置 | GET | `/api/settings` | Get settings |
 | PUT | `/api/settings` | 更新设置 | PUT | `/api/settings` | Update settings |
+| GET | `/api/docker/containers` | 获取容器列表 | GET | `/api/docker/containers` | List containers |
+| POST | `/api/docker/:sourceId/:containerId/exec` | 在容器内执行命令 | POST | `/api/docker/:sourceId/:containerId/exec` | Exec command in container |
+| POST | `/api/docker/:sourceId/:containerId/start` | 启动容器 | POST | `/api/docker/:sourceId/:containerId/start` | Start container |
+| POST | `/api/docker/:sourceId/:containerId/stop` | 停止容器 | POST | `/api/docker/:sourceId/:containerId/stop` | Stop container |
+| POST | `/api/docker/:sourceId/:containerId/restart` | 重启容器 | POST | `/api/docker/:sourceId/:containerId/restart` | Restart container |
+| GET | `/api/docker/trace/:sourceId/:containerId` | 上下游链路追踪 | GET | `/api/docker/trace/:sourceId/:containerId` | Trace upstream/downstream |
 
 ---
 
