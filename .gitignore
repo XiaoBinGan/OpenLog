@@ -15,6 +15,10 @@ node_modules/
 settings.json
 remote-servers.json
 
+# 构建产物
+dist/
+client/dist/
+
 # 编辑器配置
 .claude/
 .vscode/
