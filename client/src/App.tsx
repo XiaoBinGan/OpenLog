@@ -9,6 +9,7 @@ import Monitor from './pages/Monitor';
 import Docker from './pages/Docker';
 import Settings from './pages/Settings';
 import Remote from './pages/Remote';
+import DevAssistant from './pages/DevAssistant';
 
 function App() {
   return (
@@ -19,10 +20,11 @@ function App() {
           <Route path="dashboard" element={<Dashboard />} />
           <Route path="logs" element={<Logs />} />
           <Route path="remote" element={<Remote />} />
+          <Route path="docker" element={<Docker />} />
+          <Route path="dev-assistant" element={<DevAssistant />} />
           <Route path="analytics" element={<Analytics />} />
           <Route path="analysis-history" element={<AnalysisHistory />} />
           <Route path="assistant" element={<Assistant />} />
-          <Route path="docker" element={<Docker />} />
           <Route path="monitor" element={<Monitor />} />
           <Route path="settings" element={<Settings />} />
         </Route>
