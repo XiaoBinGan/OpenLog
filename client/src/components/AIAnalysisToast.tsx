@@ -13,6 +13,7 @@ interface ToastData {
   analysis?: string;
   message?: string;
   ts: number;
+  sourceId?: string;
 }
 
 interface AssistantTip {

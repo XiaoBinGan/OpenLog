@@ -13,7 +13,8 @@ import {
   Server,
   History,
   MessageSquare,
-  Boxes
+  Boxes,
+  Code2,
 } from 'lucide-react';
 import clsx from 'clsx';
 import { DeviceProvider } from '../contexts/DeviceContext';
@@ -25,6 +26,7 @@ const navItems = [
   { path: '/logs', icon: FileText, label: '日志流' },
   { path: '/remote', icon: Server, label: '远程服务器' },
   { path: '/docker', icon: Boxes, label: 'Docker 容器' },
+  { path: '/dev-assistant', icon: Code2, label: '开发助手' },
   { path: '/analytics', icon: Brain, label: 'AI 分析' },
   { path: '/analysis-history', icon: History, label: '分析历史' },
   { path: '/assistant', icon: MessageSquare, label: '运维助手' },
