@@ -208,6 +208,7 @@ export default function Remote() {
     uploadFile, toast, clearToast,
   } = useRemote();
 
+
   // 本地 UI 状态
   const [showAddModal, setShowAddModal] = useState(false);
   const [editingServer, setEditingServer] = useState<RemoteServer | null>(null);

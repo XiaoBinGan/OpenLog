@@ -74,10 +74,13 @@ export function RemoteProvider({ children }: { children: React.ReactNode }) {
         const data = await res.json();
         setServers(data.servers || []);
       }
-    } catch {}
+    } catch (e) {
+    }
   }, []);
 
-  useEffect(() => { refreshServers(); }, [refreshServers]);
+  useEffect(() => {
+    refreshServers();
+  }, [refreshServers]);
 
   // 自动重连：切换页面回来时恢复连接
   useEffect(() => {
