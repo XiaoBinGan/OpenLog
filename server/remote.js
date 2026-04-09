@@ -393,6 +393,78 @@ export async function listRemoteFiles(id, subPath = '') {
 }
 
 /**
+ * 读取远程文件原始内容（用于编辑器）
+ */
+export async function readRemoteFileRaw(id, filePath) {
+  const ssh = sshConnections.get(id);
+  if (!ssh) return { error: '服务器未连接' };
+
+  try {
+    const sftp = await ssh.getSftp();
+    const content = await new Promise((resolve, reject) => {
+      let data = '';
+      const stream = sftp.createReadStream(filePath, { encoding: 'utf8' });
+      stream.on('data', chunk => { data += chunk; });
+      stream.on('end', () => resolve(data));
+      stream.on('error', reject);
+    });
+    return { content };
+  } catch (err) {
+    return { error: err.message };
+  }
+}
+
+/**
+ * 写入远程文件内容（通过 SFTP）
+ */
+export async function writeRemoteFile(id, filePath, content) {
+  const ssh = sshConnections.get(id);
+  if (!ssh) return { error: '服务器未连接' };
+
+  try {
+    const sftp = await ssh.getSftp();
+    // 写入临时文件再 rename，保证原子性
+    const tmpPath = filePath + `.tmp.${Date.now()}`;
+    await new Promise((resolve, reject) => {
+      const stream = sftp.createWriteStream(tmpPath, { encoding: 'utf8' });
+      stream.on('close', resolve);
+      stream.on('error', reject);
+      stream.write(content, 'utf8');
+      stream.end();
+    });
+    // rename 到目标路径
+    await new Promise((resolve, reject) => {
+      sftp.rename(tmpPath, filePath, err => err ? reject(err) : resolve());
+    });
+    return { success: true };
+  } catch (err) {
+    return { error: err.message };
+  }
+}
+
+/**
+ * 上传本地文件到远程服务器（通过 SFTP）
+ */
+export async function uploadRemoteFile(id, localFileBuffer, remotePath, originalName) {
+  const ssh = sshConnections.get(id);
+  if (!ssh) return { error: '服务器未连接' };
+
+  try {
+    const sftp = await ssh.getSftp();
+    await new Promise((resolve, reject) => {
+      const stream = sftp.createWriteStream(remotePath);
+      stream.on('close', resolve);
+      stream.on('error', reject);
+      stream.write(localFileBuffer);
+      stream.end();
+    });
+    return { success: true, remotePath };
+  } catch (err) {
+    return { error: err.message };
+  }
+}
+
+/**
  * 读取远程日志文件
  */
 export async function readRemoteFile(id, filePath, options = {}) {
@@ -617,6 +689,9 @@ export default {
   createShellSession,
   listRemoteFiles,
   readRemoteFile,
+  readRemoteFileRaw,
+  writeRemoteFile,
+  uploadRemoteFile,
   tailRemoteFile,
   execRemoteCommand,
   getRemoteSystemStats,
