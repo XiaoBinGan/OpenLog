@@ -3,20 +3,7 @@
  * 解决切换页面后连接状态丢失的问题
  */
 import { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
-import type { RemoteServer, RemoteFileList, RemoteFile, Log } from '../types';
-
-interface RemoteServerState extends RemoteServer {
-  // 连接后的实时数据
-  systemStats: Record<string, string> | null;
-  files: RemoteFileList;
-  selectedFile: string | null;
-  fileContent: string;        // 编辑器内容
-  fileModified: boolean;       // 是否已修改
-  logs: Log[];
-  logsLoading: boolean;
-  filesLoading: boolean;
-  editingFilePath: string | null;  // 当前在编辑器中打开的文件路径
-}
+import type { RemoteServer, RemoteServerState, RemoteFileList, RemoteFile, Log } from '../types';
 
 interface RemoteContextValue {
   // 服务器列表（全局）

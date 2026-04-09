@@ -20,6 +20,18 @@ export interface RemoteServer {
   status: 'connected' | 'disconnected' | 'error';
 }
 
+export interface RemoteServerState extends RemoteServer {
+  systemStats: Record<string, string> | null;
+  files: RemoteFileList;
+  selectedFile: string | null;
+  fileContent: string;
+  fileModified: boolean;
+  logs: Log[];
+  logsLoading: boolean;
+  filesLoading: boolean;
+  editingFilePath: string | null;
+}
+
 export interface RemoteServerConfig {
   name: string;
   host: string;

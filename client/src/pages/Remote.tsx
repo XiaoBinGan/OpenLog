@@ -15,7 +15,7 @@ import {
 } from 'lucide-react';
 import { useRemote } from '../contexts/RemoteContext';
 import ShellTerminal from '../components/ShellTerminal';
-import type { RemoteServer, RemoteServerConfig, RemoteFile, RemoteDir } from '../types';
+import type { RemoteServer, RemoteServerConfig, RemoteServerState, RemoteFile, RemoteDir } from '../types';
 
 const levelColors: Record<string, string> = {
   ERROR: 'text-red-400 bg-red-500/10 border border-red-500/20',
@@ -314,10 +314,28 @@ export default function Remote() {
     handleFiles(e.dataTransfer.files);
   };
 
-  // 连接
+  // 连接：先设置 activeServer，再加载文件
   const handleConnect = async (server: RemoteServer) => {
-    await connect(server);
-    await loadFiles(server.logPath || '/var/log');
+    const newServer: RemoteServerState = {
+      ...server,
+      status: 'connected' as const,
+      systemStats: null,
+      files: { files: [], dirs: [], currentPath: server.logPath || '/var/log' },
+      selectedFile: null,
+      fileContent: '',
+      fileModified: false,
+      logs: [],
+      logsLoading: false,
+      filesLoading: true,
+      editingFilePath: null,
+    };
+    setActiveServer(newServer);
+    try {
+      await connect(server);
+      await loadFiles(server.logPath || '/var/log');
+    } catch {
+      // connect 内部已经处理了 toast
+    }
   };
 
   const stats = activeServer?.systemStats;
