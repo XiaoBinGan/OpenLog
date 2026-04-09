@@ -53,7 +53,8 @@ const PORT = process.env.PORT || 3001;
 
 // Middleware
 app.use(cors());
-app.use(express.json());
+// 大文件支持（远程编辑器写入日志文件可能超过默认 100KB）
+app.use(express.json({ limit: '50mb' }));
 
 // Settings - 默认使用 Ollama 本地模型
 // 从文件加载，无则用默认值
