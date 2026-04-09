@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { Outlet, NavLink, useNavigate } from 'react-router-dom';
+import { AssistantProvider } from '../contexts/AssistantContext';
 import {
   LayoutDashboard,
   FileText,
@@ -202,7 +203,9 @@ function LayoutContent() {
 export default function Layout() {
   return (
     <DeviceProvider>
-      <LayoutContent />
+      <AssistantProvider>
+        <LayoutContent />
+      </AssistantProvider>
     </DeviceProvider>
   );
 }

@@ -811,6 +811,56 @@ app.delete('/api/analysis/history', (req, res) => {
 });
 
 // ============================================================
+// 运维助手内存文件 API
+// ============================================================
+const ASSISTANT_MEMORY_DIR = path.join(__dirname, '..', 'assistant_memory');
+if (!fs.existsSync(ASSISTANT_MEMORY_DIR)) fs.mkdirSync(ASSISTANT_MEMORY_DIR, { recursive: true });
+
+app.get('/api/assistant/memory', (req, res) => {
+  try {
+    const files = fs.readdirSync(ASSISTANT_MEMORY_DIR)
+      .filter(f => f.endsWith('.md'))
+      .map(f => {
+        const filePath = path.join(ASSISTANT_MEMORY_DIR, f);
+        const stat = fs.statSync(filePath);
+        return {
+          name: f.replace(/\.md$/, ''),
+          path: filePath,
+          content: fs.readFileSync(filePath, 'utf8'),
+          updatedAt: stat.mtimeMs,
+        };
+      })
+      .sort((a, b) => b.updatedAt - a.updatedAt);
+    res.json({ files });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/assistant/memory', (req, res) => {
+  const { name, content } = req.body;
+  if (!name || content === undefined) return res.status(400).json({ error: 'name and content required' });
+  const safeName = name.replace(/[^a-zA-Z0-9_\u4e00-\u9fa5-]/g, '-').replace(/\.md$/, '') + '.md';
+  const filePath = path.join(ASSISTANT_MEMORY_DIR, safeName);
+  try {
+    fs.writeFileSync(filePath, content, 'utf8');
+    res.json({ success: true, name: safeName });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.delete('/api/assistant/memory/:name', (req, res) => {
+  const filePath = path.join(ASSISTANT_MEMORY_DIR, req.params.name + '.md');
+  try {
+    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ============================================================
 // LLM 助手聊天 API（流式 SSE）
 // ============================================================
 app.post('/api/chat', async (req, res) => {

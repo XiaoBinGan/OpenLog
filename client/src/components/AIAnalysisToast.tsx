@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Brain, AlertTriangle, CheckCircle, XCircle, X, Loader, ChevronRight } from 'lucide-react';
+import { Brain, AlertTriangle, CheckCircle, XCircle, X, Loader, ChevronRight, MessageSquare, Send } from 'lucide-react';
 
 interface AIAnalysisToastProps {
   wsRef: React.RefObject<WebSocket | null>;
@@ -15,10 +15,30 @@ interface ToastData {
   ts: number;
 }
 
+interface AssistantTip {
+  id: string;
+  preview: string;
+  ts: number;
+}
+
 export default function AIAnalysisToast({ wsRef, onViewLogs }: AIAnalysisToastProps) {
   const [toasts, setToasts] = useState<ToastData[]>([]);
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [assistantTips, setAssistantTips] = useState<AssistantTip[]>([]);
   const prevToasts = useRef<Map<string, ToastData>>(new Map());
+
+  // 监听运维助手回答完成事件
+  useEffect(() => {
+    const handler = (e: CustomEvent<AssistantTip>) => {
+      const tip = e.detail;
+      setAssistantTips(prev => [tip, ...prev].slice(0, 5));
+      setTimeout(() => {
+        setAssistantTips(prev => prev.filter(t => t.id !== tip.id));
+      }, 8000);
+    };
+    window.addEventListener('assistant-tip', handler as EventListener);
+    return () => window.removeEventListener('assistant-tip', handler as EventListener);
+  }, []);
 
   useEffect(() => {
     const ws = wsRef.current;
@@ -69,10 +89,35 @@ export default function AIAnalysisToast({ wsRef, onViewLogs }: AIAnalysisToastPr
     return 'border-accent-500/60';
   };
 
-  if (toasts.length === 0) return null;
+  if (toasts.length === 0 && assistantTips.length === 0) return null;
 
   return (
     <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2 max-w-md">
+      {/* 运维助手回答完成通知 */}
+      {assistantTips.map((tip) => (
+        <div
+          key={tip.id}
+          className="glass rounded-xl border border-accent-500/60 shadow-2xl shadow-black/40 animate-scale-in overflow-hidden"
+        >
+          <div className="flex items-center gap-3 px-4 py-3">
+            <div className="p-1.5 rounded-lg bg-accent-500/20">
+              <Send className="w-4 h-4 text-accent-400" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="text-sm font-semibold text-dark-100">💬 运维助手回答完成</div>
+              <div className="text-xs text-dark-400 truncate mt-0.5">{tip.preview}…</div>
+            </div>
+            <button
+              onClick={() => setAssistantTips(prev => prev.filter(t => t.id !== tip.id))}
+              className="p-1.5 rounded-lg hover:bg-dark-700 text-dark-500 hover:text-dark-200 transition-colors"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+      ))}
+
+      {/* AI 分析通知 */}
       {toasts.map((toast) => (
         <div
           key={toast.id}
