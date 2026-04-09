@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react';
-import { 
-  Settings as SettingsIcon, 
-  Folder, 
-  Save, 
+import {
+  Settings as SettingsIcon,
+  Folder,
+  Save,
   RefreshCw,
   Check,
   AlertCircle,
@@ -15,7 +15,8 @@ import {
   Plus,
   Trash2,
   Brain,
-  X
+  X,
+  Boxes
 } from 'lucide-react';
 import type { Settings as SettingsType } from '../types';
 
@@ -55,6 +56,18 @@ export default function Settings() {
         autoAnalysis: true
       }
     ],
+    dockerSources: [
+      {
+        id: 'local',
+        name: '本地 Docker',
+        host: 'localhost',
+        port: 2375,
+        tls: false,
+        enabled: false,
+        autoAnalysis: true,
+        projects: []
+      }
+    ],
   });
   const [provider, setProvider] = useState('ollama');
   const [customModel, setCustomModel] = useState('');
@@ -62,6 +75,8 @@ export default function Settings() {
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
+  const [dockerTestStatus, setDockerTestStatus] = useState<Record<string, 'testing' | 'ok' | 'fail'>>({});
+  const [dockerTestMsg, setDockerTestMsg] = useState<Record<string, string>>({});
   const [showApiKey, setShowApiKey] = useState(false);
   const [logFiles, setLogFiles] = useState<{ name: string; path: string; size: number }[]>([]);
   const [ollamaModels, setOllamaModels] = useState<string[]>([]);
@@ -124,6 +139,7 @@ export default function Settings() {
           refreshInterval: settings.refreshInterval,
           autoAnalysis: settings.autoAnalysis,
           watchSources: settings.watchSources,
+          dockerSources: settings.dockerSources,
         })
       });
 
@@ -138,6 +154,33 @@ export default function Settings() {
     }
 
     setSaving(false);
+  };
+
+  const testDocker = async (ds: any) => {
+    setDockerTestStatus(prev => ({ ...prev, [ds.id]: 'testing' }));
+    try {
+      const res = await fetch('/api/docker/ping', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sourceId: ds.id, config: {
+          socketPath: ds.socketPath || undefined,
+          host: ds.socketPath ? undefined : (ds.host || 'localhost'),
+          port: ds.socketPath ? undefined : (ds.port || 2375),
+          tls: ds.tls,
+        }})
+      });
+      const data = await res.json();
+      if (data.success) {
+        setDockerTestStatus(prev => ({ ...prev, [ds.id]: 'ok' }));
+        setDockerTestMsg(prev => ({ ...prev, [ds.id]: `${data.name} ✅ ${data.containers} 容器 / ${data.running} 运行中` }));
+      } else {
+        setDockerTestStatus(prev => ({ ...prev, [ds.id]: 'fail' }));
+        setDockerTestMsg(prev => ({ ...prev, [ds.id]: data.error || '连接失败' }));
+      }
+    } catch (err: any) {
+      setDockerTestStatus(prev => ({ ...prev, [ds.id]: 'fail' }));
+      setDockerTestMsg(prev => ({ ...prev, [ds.id]: err.message }));
+    }
   };
 
   const testApiKey = async () => {
@@ -628,6 +671,292 @@ export default function Settings() {
             </div>
           </div>
         )}
+      </div>
+
+      {/* Docker 配置 */}
+      <div className="glass rounded-xl p-6">
+        <div className="flex items-center justify-between mb-5">
+          <div className="flex items-center gap-3">
+            <div className="p-2 rounded-lg bg-blue-500/20">
+              <Boxes className="w-5 h-5 text-blue-400" />
+            </div>
+            <div>
+              <h2 className="text-base font-semibold text-dark-100">Docker 连接配置</h2>
+              <p className="text-xs text-dark-500">每个配置项对应一个 Docker Server（守护进程），连接后自动发现其下所有容器</p>
+            </div>
+          </div>
+          <button
+            onClick={() => {
+              const id = `docker-${Date.now()}`;
+              setSettings(p => ({
+                ...p,
+                dockerSources: [
+                  ...(p.dockerSources || []),
+                  { id, name: `Docker ${(p.dockerSources || []).length + 1}`, host: 'localhost', port: 2375, tls: false, enabled: true, autoAnalysis: true, projects: [] }
+                ]
+              }));
+              setSaved(false);
+            }}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-500/15 text-blue-400 text-xs font-medium hover:bg-blue-500/25 transition-colors"
+          >
+            <Plus className="w-3.5 h-3.5" />
+            添加 Docker
+          </button>
+        </div>
+
+        <div className="space-y-3">
+          {(settings.dockerSources || []).map((ds, idx) => (
+            <div key={ds.id} className="rounded-xl border border-dark-800 bg-dark-900/60 overflow-hidden">
+              {/* Header */}
+              <div className="flex items-center gap-3 px-4 py-3 border-b border-dark-800">
+                <div className={`w-2 h-2 rounded-full flex-shrink-0 ${ds.enabled ? 'bg-blue-400' : 'bg-dark-600'}`} />
+                <input
+                  type="text"
+                  value={ds.name}
+                  onChange={e => {
+                    const updated = [...(settings.dockerSources || [])];
+                    updated[idx] = { ...ds, name: e.target.value };
+                    setSettings(p => ({ ...p, dockerSources: updated }));
+                    setSaved(false);
+                  }}
+                  className="flex-1 bg-transparent text-sm font-medium text-dark-100 focus:outline-none"
+                />
+                <div className="flex items-center gap-2">
+                  <span className={`text-xs px-2 py-0.5 rounded border ${
+                    ds.autoAnalysis && ds.enabled
+                      ? 'border-blue-500/30 bg-blue-500/10 text-blue-400'
+                      : 'border-dark-700 bg-dark-800 text-dark-500'
+                  }`}>
+                    {ds.autoAnalysis && ds.enabled ? 'AI 分析' : '已关闭'}
+                  </span>
+                  <button
+                    onClick={() => {
+                      const updated = [...(settings.dockerSources || [])];
+                      updated[idx] = { ...ds, enabled: !ds.enabled };
+                      setSettings(p => ({ ...p, dockerSources: updated }));
+                      setSaved(false);
+                    }}
+                    className="relative w-10 h-5 rounded-full transition-all duration-200"
+                    style={{ background: ds.enabled ? '#3b82f6' : '#374151' }}
+                  >
+                    <div className="absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all duration-200"
+                      style={{ transform: ds.enabled ? 'translateX(20px)' : 'translateX(2px)' }}
+                    />
+                  </button>
+                  {(settings.dockerSources || []).length > 1 && (
+                    <button
+                      onClick={() => {
+                        const updated = (settings.dockerSources || []).filter((_, i) => i !== idx);
+                        setSettings(p => ({ ...p, dockerSources: updated }));
+                        setSaved(false);
+                      }}
+                      className="p-1 rounded text-dark-600 hover:text-red-400 hover:bg-red-500/10 transition-colors"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                  {/* 测试 Docker 连接 */}
+                  <button
+                    onClick={() => testDocker(ds)}
+                    disabled={dockerTestStatus[ds.id] === 'testing'}
+                    className={`px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors flex items-center gap-1 ${
+                      dockerTestStatus[ds.id] === 'ok'
+                        ? 'bg-green-500/20 border-green-500/50 text-green-400'
+                        : dockerTestStatus[ds.id] === 'fail'
+                        ? 'bg-red-500/20 border-red-500/50 text-red-400'
+                        : 'bg-dark-800/40 border-dark-700/50 text-dark-400 hover:border-blue-500/50 hover:text-blue-400'
+                    }`}
+                  >
+                    {dockerTestStatus[ds.id] === 'testing' ? '⏳' : dockerTestStatus[ds.id] === 'ok' ? '✅' : dockerTestStatus[ds.id] === 'fail' ? '❌' : '🔌'}
+                    {dockerTestStatus[ds.id] === 'testing' ? '连接中...' : '测试连接'}
+                  </button>
+                </div>
+              </div>
+
+              {/* 测试结果 */}
+              {dockerTestMsg[ds.id] && (
+                <div className={`mx-4 mb-2 px-3 py-2 rounded-lg text-xs ${
+                  dockerTestStatus[ds.id] === 'ok' ? 'bg-green-500/10 text-green-400 border border-green-500/20' : 'bg-red-500/10 text-red-400 border border-red-500/20'
+                }`}>
+                  {dockerTestMsg[ds.id]}
+                </div>
+              )}
+
+              {/* 连接方式选择 */}
+              <div className="px-4 py-2 border-b border-dark-800 bg-dark-900/40">
+                <div className="flex gap-2 mb-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const updated = [...(settings.dockerSources || [])];
+                      updated[idx] = { ...ds, socketPath: '/var/run/docker.sock', host: '', port: 0 };
+                      setSettings(p => ({ ...p, dockerSources: updated }));
+                      setSaved(false);
+                    }}
+                    className={`flex-1 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
+                      ds.socketPath
+                        ? 'bg-green-500/20 border-green-500/50 text-green-400'
+                        : 'bg-dark-800/40 border-dark-700/50 text-dark-400 hover:border-dark-600'
+                    }`}
+                  >
+                    🍎 macOS Socket
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const updated = [...(settings.dockerSources || [])];
+                      updated[idx] = { ...ds, socketPath: '', host: 'localhost', port: 2375 };
+                      setSettings(p => ({ ...p, dockerSources: updated }));
+                      setSaved(false);
+                    }}
+                    className={`flex-1 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
+                      !ds.socketPath && ds.host
+                        ? 'bg-blue-500/20 border-blue-500/50 text-blue-400'
+                        : 'bg-dark-800/40 border-dark-700/50 text-dark-400 hover:border-dark-600'
+                    }`}
+                  >
+                    🖥️ TCP
+                  </button>
+                </div>
+                {ds.socketPath && (
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-dark-500">Socket:</span>
+                    <input
+                      type="text"
+                      value={ds.socketPath}
+                      onChange={e => {
+                        const updated = [...(settings.dockerSources || [])];
+                        updated[idx] = { ...ds, socketPath: e.target.value };
+                        setSettings(p => ({ ...p, dockerSources: updated }));
+                        setSaved(false);
+                      }}
+                      placeholder="/var/run/docker.sock"
+                      className="flex-1 px-2 py-1 bg-dark-800/60 border border-dark-700/50 rounded text-xs text-dark-200 placeholder-dark-600 focus:outline-none focus:border-green-500/50"
+                    />
+                  </div>
+                )}
+              </div>
+
+              {/* Fields */}
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3 p-4">
+                <div>
+                  <p className="text-xs text-dark-600 mb-1">主机地址</p>
+                  <input
+                    type="text"
+                    value={ds.host}
+                    onChange={e => {
+                      const updated = [...(settings.dockerSources || [])];
+                      updated[idx] = { ...ds, host: e.target.value };
+                      setSettings(p => ({ ...p, dockerSources: updated }));
+                      setSaved(false);
+                    }}
+                    placeholder="localhost / 192.168.1.100"
+                    className="w-full px-2.5 py-1.5 bg-dark-800/60 border border-dark-700/50 rounded-lg text-xs text-dark-200 placeholder-dark-600 focus:outline-none focus:border-blue-500/50 transition-colors"
+                  />
+                </div>
+                <div>
+                  <p className="text-xs text-dark-600 mb-1">端口</p>
+                  <input
+                    type="number"
+                    value={ds.port}
+                    onChange={e => {
+                      const updated = [...(settings.dockerSources || [])];
+                      updated[idx] = { ...ds, port: parseInt(e.target.value) || 2375 };
+                      setSettings(p => ({ ...p, dockerSources: updated }));
+                      setSaved(false);
+                    }}
+                    placeholder="2375"
+                    className="w-full px-2.5 py-1.5 bg-dark-800/60 border border-dark-700/50 rounded-lg text-xs text-dark-200 placeholder-dark-600 focus:outline-none focus:border-blue-500/50 transition-colors"
+                  />
+                </div>
+                <div>
+                  <p className="text-xs text-dark-600 mb-1">TLS 加密</p>
+                  <button
+                    onClick={() => {
+                      const updated = [...(settings.dockerSources || [])];
+                      updated[idx] = { ...ds, tls: !ds.tls };
+                      setSettings(p => ({ ...p, dockerSources: updated }));
+                      setSaved(false);
+                    }}
+                    className="w-full px-2.5 py-1.5 bg-dark-800/60 border border-dark-700/50 rounded-lg text-xs text-left transition-colors flex items-center justify-between"
+                  >
+                    <span className={ds.tls ? 'text-green-400' : 'text-dark-500'}>{ds.tls ? '已启用' : '未启用'}</span>
+                    <div className={`w-8 h-4 rounded-full transition-colors ${ds.tls ? 'bg-blue-500' : 'bg-dark-700'}`}
+                      onClick={() => {}}
+                    >
+                      <div className={`w-3 h-3 rounded-full bg-white m-0.5 transition-transform ${ds.tls ? 'translate-x-4' : ''}`} />
+                    </div>
+                  </button>
+                </div>
+                <div>
+                  <p className="text-xs text-dark-600 mb-1">AI 分析</p>
+                  <button
+                    onClick={() => {
+                      const updated = [...(settings.dockerSources || [])];
+                      updated[idx] = { ...ds, autoAnalysis: !ds.autoAnalysis };
+                      setSettings(p => ({ ...p, dockerSources: updated }));
+                      setSaved(false);
+                    }}
+                    className="w-full px-2.5 py-1.5 bg-dark-800/60 border border-dark-700/50 rounded-lg text-xs text-left"
+                  >
+                    <span className={ds.autoAnalysis ? 'text-blue-400' : 'text-dark-500'}>
+                      {ds.autoAnalysis ? '✅ 开启' : '⏸ 关闭'}
+                    </span>
+                  </button>
+                </div>
+              </div>
+              <div className="px-4 pb-3">
+                <p className="text-xs text-dark-600 mb-1">💡 连接说明</p>
+                <p className="text-xs text-dark-600 leading-relaxed mb-2">
+                  每个配置项连接的是一个 <strong className="text-dark-400">Docker Server（守护进程）</strong>，不是单个容器。
+                  连接成功后会自动列出该 Server 上的所有容器，无需手动添加。
+                </p>
+                <details className="group">
+                  <summary className="text-xs text-blue-400 cursor-pointer hover:text-blue-300 transition-colors">
+                    📖 如何查看 Docker Server 地址？
+                  </summary>
+                  <div className="mt-2 space-y-2 text-xs">
+                    <div>
+                      <p className="text-dark-400 font-medium">macOS（Docker Desktop）</p>
+                      <pre className="mt-1 px-2.5 py-1.5 bg-dark-800 rounded text-dark-300 font-mono overflow-x-auto">
+                        docker context ls{'\n'}
+                        {'#'} 默认: localhost:2375 或 unix:///var/run/docker.sock
+                      </pre>
+                    </div>
+                    <div>
+                      <p className="text-dark-400 font-medium">Linux</p>
+                      <pre className="mt-1 px-2.5 py-1.5 bg-dark-800 rounded text-dark-300 font-mono overflow-x-auto">
+                        {'#'} 查看 Docker 监听地址{'\n'}
+                        sudo systemctl show docker --property=ListenStream{'\n'}
+                        cat /etc/docker/daemon.json | grep hosts{'\n'}
+                        {'\n'}
+                        {'#'} 开启远程 TCP（需重启 Docker）{'\n'}
+                        {'#'} 在 /etc/docker/daemon.json 中添加：{'\n'}
+                        {'{'}`"hosts"`: [`"unix:///var/run/docker.sock"`, `"tcp://0.0.0.0:2375"`]{'}'}
+                      </pre>
+                    </div>
+                    <div>
+                      <p className="text-dark-400 font-medium">Windows（Docker Desktop）</p>
+                      <pre className="mt-1 px-2.5 py-1.5 bg-dark-800 rounded text-dark-300 font-mono overflow-x-auto">
+                        {'#'} PowerShell 查看配置{'\n'}
+                        docker info | Select-String "Server Version|Operating System"{'\n'}
+                        {'\n'}
+                        {'#'} 默认: npipe:////./pipe/docker_engine{'\n'}
+                        {'#'} 开启 TCP: Docker Desktop → Settings → General → Expose daemon on tcp://localhost:2375
+                      </pre>
+                    </div>
+                  </div>
+                </details>
+              </div>
+            </div>
+          ))}
+          {(settings.dockerSources || []).length === 0 && (
+            <div className="text-center py-8 text-dark-600 text-sm">
+              <Boxes className="w-10 h-10 mx-auto mb-2 opacity-30" />
+              暂未配置 Docker 连接，点击上方「添加 Docker」配置
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Save */}

@@ -11,11 +11,39 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import * as remote from './remote.js';
+import * as docker from './docker.js';
 
 dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+// Settings 持久化文件（在项目根目录）
+const SETTINGS_FILE = path.join(__dirname, '..', 'settings.json');
+
+// 从文件加载 settings（不存在则用内联默认）
+function loadSettings() {
+  try {
+    if (fs.existsSync(SETTINGS_FILE)) {
+      const raw = fs.readFileSync(SETTINGS_FILE, 'utf8');
+      return JSON.parse(raw);
+    }
+  } catch (e) {
+    console.error('[Settings] 加载失败:', e.message);
+  }
+  return null;
+}
+
+// 保存 settings 到文件
+function saveSettings(data) {
+  try {
+    fs.writeFileSync(SETTINGS_FILE, JSON.stringify(data, null, 2), 'utf8');
+    return true;
+  } catch (e) {
+    console.error('[Settings] 保存失败:', e.message);
+    return false;
+  }
+}
 
 const app = express();
 const server = createServer(app);
@@ -28,7 +56,8 @@ app.use(cors());
 app.use(express.json());
 
 // Settings - 默认使用 Ollama 本地模型
-const settings = {
+// 从文件加载，无则用默认值
+const settings = loadSettings() || {
   openaiApiKey: '',
   openaiBaseUrl: 'http://localhost:11434/v1',
   model: 'qwen3.5:9b',
@@ -46,6 +75,20 @@ const settings = {
       pattern: '*.log',
       enabled: true,
       autoAnalysis: true
+    }
+  ],
+  // Docker 容器配置
+  dockerSources: [
+    {
+      id: 'local',
+      name: '本地 Docker',
+      host: 'localhost',
+      port: 2375,
+      tls: false,
+      enabled: false,
+      autoAnalysis: true,
+      // Docker Compose 项目名过滤（空=全部）
+      projects: []
     }
   ]
 };
@@ -683,9 +726,20 @@ app.put('/api/settings', (req, res) => {
     settings[key] = value;
   }
 
+  // 持久化到文件
+  saveSettings(settings);
+
   // 重启日志监控（watchSources 变化）
   if (updates.watchSources || updates.logPath || updates.watchFiles) {
     startLogWatcher();
+  }
+
+  // 重置 Docker 连接池（dockerSources 变化）
+  if (updates.dockerSources) {
+    // docker.js 里的 dockerInstances 是导出的 Map
+    if (docker.dockerInstances) {
+      docker.dockerInstances.forEach((_, k) => docker.dockerInstances.delete(k));
+    }
   }
 
   if (updates.refreshInterval) {
@@ -875,6 +929,309 @@ app.post('/api/logs/generate-sample', (req, res) => {
   }
   
   res.json({ success: true, count });
+});
+
+// ========================================
+// Docker API Routes
+// ========================================
+
+// 获取 Docker 连接状态（测试连接）
+app.post('/api/docker/ping', async (req, res) => {
+  const { sourceId, config } = req.body;
+  console.log('[Docker ping] sourceId:', sourceId, 'config:', JSON.stringify(config));
+  const result = await docker.pingDocker(sourceId || 'local', config || {});
+  res.json(result);
+});
+
+// 获取所有 Docker 配置的容器列表
+app.get('/api/docker/containers', async (req, res) => {
+  try {
+    const allContainers = [];
+    const sources = settings.dockerSources || [];
+    const enabled = sources.filter(s => s.enabled);
+
+    for (const source of enabled) {
+      try {
+        const containers = await docker.listContainers(source.id, {
+          socketPath: source.socketPath || undefined,
+          host: source.socketPath ? undefined : (source.host || 'localhost'),
+          port: source.socketPath ? undefined : (source.port || 2375),
+          tls: source.tls,
+          ca: source.ca,
+          cert: source.cert,
+          key: source.key,
+        });
+        allContainers.push({
+          sourceId: source.id,
+          sourceName: source.name,
+          containers,
+        });
+      } catch (err) {
+        allContainers.push({
+          sourceId: source.id,
+          sourceName: source.name,
+          error: err.message,
+          containers: [],
+        });
+      }
+    }
+
+    res.json({ sources: allContainers });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 获取单个容器的详情
+app.get('/api/docker/containers/:sourceId/:containerId', async (req, res) => {
+  try {
+    const { sourceId, containerId } = req.params;
+    const source = (settings.dockerSources || []).find(s => s.id === sourceId);
+    const config = source ? {
+      socketPath: source.socketPath || undefined,
+      host: source.socketPath ? undefined : (source.host || 'localhost'),
+      port: source.socketPath ? undefined : (source.port || 2375),
+      tls: source.tls,
+      ca: source.ca, cert: source.cert, key: source.key,
+    } : {};
+
+    const container = await docker.getContainer(sourceId, containerId, config);
+    res.json(container);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 读取容器日志
+app.get('/api/docker/containers/:sourceId/:containerId/logs', async (req, res) => {
+  try {
+    const { sourceId, containerId } = req.params;
+    const { tail = 200, since, startTime, filterLevel } = req.query;
+    const source = (settings.dockerSources || []).find(s => s.id === sourceId);
+    const config = source ? {
+      socketPath: source.socketPath || undefined,
+      host: source.socketPath ? undefined : (source.host || 'localhost'),
+      port: source.socketPath ? undefined : (source.port || 2375),
+      tls: source.tls,
+      ca: source.ca, cert: source.cert, key: source.key,
+    } : {};
+
+    const logs = await docker.getContainerLogs(sourceId, containerId, config, {
+      tail: parseInt(tail),
+      since, startTime, filterLevel,
+    });
+    res.json({ logs, containerId, sourceId });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 读取多个容器的日志（联合会诊）
+app.post('/api/docker/logs/batch', async (req, res) => {
+  try {
+    const { containers, tail = 200 } = req.body; // containers: [{sourceId, containerId, name}]
+    const results = [];
+
+    for (const { sourceId, containerId, name } of containers) {
+      try {
+        const source = (settings.dockerSources || []).find(s => s.id === sourceId);
+        const config = source ? {
+          socketPath: source.socketPath || undefined,
+          host: source.socketPath ? undefined : (source.host || "localhost"),
+          port: source.socketPath ? undefined : (source.port || 2375),
+          tls: source.tls,
+          ca: source.ca, cert: source.cert, key: source.key,
+        } : {};
+        const logs = await docker.getContainerLogs(sourceId, containerId, config, { tail: parseInt(tail) });
+        results.push({ sourceId, containerId, name, logs, ok: true });
+      } catch (err) {
+        results.push({ sourceId, containerId, name, logs: [], ok: false, error: err.message });
+      }
+    }
+
+    res.json({ results });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 上下游链路追踪
+app.get('/api/docker/trace/:sourceId/:containerId', async (req, res) => {
+  try {
+    const { sourceId, containerId } = req.params;
+    const source = (settings.dockerSources || []).find(s => s.id === sourceId);
+    const config = source ? {
+      socketPath: source.socketPath || undefined,
+      host: source.socketPath ? undefined : (source.host || 'localhost'),
+      port: source.socketPath ? undefined : (source.port || 2375),
+      tls: source.tls,
+      ca: source.ca, cert: source.cert, key: source.key,
+    } : {};
+
+    const trace = await docker.traceContainerLinks(sourceId, containerId, config);
+    res.json(trace);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 批量分析多个容器日志（联合会诊）
+app.post('/api/docker/analyze/batch', async (req, res) => {
+  try {
+    const { containers, prompt: customPrompt, sourceId = 'docker-batch' } = req.body;
+    if (!containers || containers.length === 0) {
+      return res.status(400).json({ error: '缺少容器列表' });
+    }
+
+    // 先读取所有容器的日志
+    const allLogs = [];
+    for (const { sourceId: sid, containerId, name } of containers) {
+      try {
+        const source = (settings.dockerSources || []).find(s => s.id === sid);
+        const config = source ? {
+          socketPath: source.socketPath || undefined,
+          host: source.socketPath ? undefined : (source.host || "localhost"),
+          port: source.socketPath ? undefined : (source.port || 2375),
+          tls: source.tls,
+          ca: source.ca, cert: source.cert, key: source.key,
+        } : {};
+        const logs = await docker.getContainerLogs(sid, containerId, config, { tail: 200 });
+        allLogs.push({ sourceId: sid, containerId, name, logs });
+      } catch (err) {
+        allLogs.push({ sourceId: sid, containerId, name, logs: [], error: err.message });
+      }
+    }
+
+    // 构建分析 prompt
+    const logsText = allLogs.map(l =>
+      `=== ${l.name} (${l.sourceId}) ===\n${l.logs.length > 0 ? l.logs.map(r => `[${r.timestamp || '-'}] [${r.level}] ${r.content}`).join('\n') : l.error || '无日志'}`
+    ).join('\n\n');
+
+    const analysisPrompt = customPrompt || `你是专业的运维工程师。以下是多个 Docker 容器的日志，请分析并找出问题根因和上下游链路关系。
+
+${logsText}
+
+请分析：
+1. 每个服务的健康状态
+2. 哪些服务出现 ERROR/异常
+3. 上游服务是否正常（可能是根因）
+4. 下游服务是否受影响
+5. 给出修复建议，按优先级排序
+
+回复格式（Markdown）：
+## 📊 服务状态总览
+[各服务状态]
+
+## 🔍 根因分析
+[一句话说明根因]
+
+## 💡 修复建议
+1. [步骤]
+2. [步骤]`;
+
+    // 异步执行分析，HTTP 先返回日志结果
+    res.json({
+      logs: allLogs,
+      message: '日志已获取，分析中...'
+    });
+
+    // 后台执行 AI 分析
+    setImmediate(async () => {
+      try {
+        const apiKey = settings.openaiApiKey;
+        const baseUrl = settings.openaiBaseUrl || 'http://localhost:11434/v1';
+        const model = settings.model;
+        const isLocal = baseUrl.includes('localhost') || baseUrl.includes('127.0.0.1');
+
+        if (!apiKey && !isLocal) return;
+        if (!model) return;
+
+        const OpenAI = (await import('openai')).default;
+        const openai = new OpenAI({ apiKey: apiKey || 'ollama', baseURL: baseUrl });
+
+        const response = await openai.chat.completions.create({
+          model,
+          messages: [{ role: 'user', content: analysisPrompt }],
+          temperature: 0.3,
+          timeout: 90_000
+        });
+
+        const analysis = response.choices[0].message.content;
+        broadcast({
+          type: 'docker_batch_analysis',
+          status: 'done',
+          containers,
+          analysis,
+          sourceId: 'docker-batch'
+        });
+      } catch (err) {
+        broadcast({
+          type: 'docker_batch_analysis',
+          status: 'error',
+          containers,
+          message: err.message,
+          sourceId: 'docker-batch'
+        });
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ────────────────────────────────────────
+// Docker 容器操作
+// ────────────────────────────────────────
+function getDockerConfig(sourceId) {
+  const source = (settings.dockerSources || []).find(s => s.id === sourceId);
+  if (!source) return null;
+  return {
+    socketPath: source.socketPath || undefined,
+    host: source.socketPath ? undefined : (source.host || 'localhost'),
+    port: source.socketPath ? undefined : (source.port || 2375),
+    tls: source.tls,
+    ca: source.ca, cert: source.cert, key: source.key,
+  };
+}
+
+async function runDockerOp(req, res, opName, args = []) {
+  const { sourceId, containerId } = req.params;
+  const config = getDockerConfig(sourceId);
+  if (!config) return res.status(404).json({ error: 'Docker 源未找到' });
+
+  try {
+    const op = docker[opName];
+    const result = await op(sourceId, containerId, ...args, config);
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    // dockerode 错误通常是 statusCode + message 格式
+    const msg = err.message || String(err);
+    const status = err.statusCode || (msg.toLowerCase().includes('not found') ? 404 : 500);
+    res.status(status).json({ error: msg });
+  }
+}
+
+app.post('/api/docker/:sourceId/:containerId/start',  (req, res) => runDockerOp(req, res, 'startContainer'));
+app.post('/api/docker/:sourceId/:containerId/stop',   (req, res) => runDockerOp(req, res, 'stopContainer'));
+app.post('/api/docker/:sourceId/:containerId/restart', (req, res) => runDockerOp(req, res, 'restartContainer'));
+app.post('/api/docker/:sourceId/:containerId/pause',  (req, res) => runDockerOp(req, res, 'pauseContainer'));
+app.post('/api/docker/:sourceId/:containerId/unpause',(req, res) => runDockerOp(req, res, 'unpauseContainer'));
+app.delete('/api/docker/:sourceId/:containerId',      (req, res) => runDockerOp(req, res, 'removeContainer'));
+
+// 执行命令
+app.post('/api/docker/:sourceId/:containerId/exec', async (req, res) => {
+  const { sourceId, containerId } = req.params;
+  const { command } = req.body;
+  const config = getDockerConfig(sourceId);
+  if (!config) return res.status(404).json({ error: 'Docker 源未找到' });
+  if (!command) return res.status(400).json({ error: '缺少 command 参数' });
+
+  try {
+    const { output } = await docker.execInContainer(sourceId, containerId, command, config);
+    res.json({ output });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ========================================
