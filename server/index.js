@@ -1410,6 +1410,46 @@ app.get('/api/remote/servers/:id/search', async (req, res) => {
   }
 });
 
+// 读取远程文件原始内容（编辑器用）
+app.get('/api/remote/servers/:id/file/read', async (req, res) => {
+  try {
+    const { path: filePath } = req.query;
+    if (!filePath) return res.status(400).json({ error: '缺少文件路径' });
+    const result = await remote.readRemoteFileRaw(req.params.id, filePath);
+    if (result.error) return res.status(400).json(result);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 写入远程文件内容（编辑器用）
+app.post('/api/remote/servers/:id/file/write', async (req, res) => {
+  try {
+    const { path: filePath, content } = req.body;
+    if (!filePath || content === undefined) return res.status(400).json({ error: '缺少参数' });
+    const result = await remote.writeRemoteFile(req.params.id, filePath, content);
+    if (result.error) return res.status(400).json(result);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 上传文件到远程服务器
+app.post('/api/remote/servers/:id/file/upload', async (req, res) => {
+  try {
+    const { path: remotePath, content: base64Content, name } = req.body;
+    if (!remotePath || !base64Content) return res.status(400).json({ error: '缺少参数' });
+    const buffer = Buffer.from(base64Content, 'base64');
+    const result = await remote.uploadRemoteFile(req.params.id, buffer, remotePath, name);
+    if (result.error) return res.status(500).json(result);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Get remote system stats
 app.get('/api/remote/servers/:id/stats', async (req, res) => {
   try {
