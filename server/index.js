@@ -1577,8 +1577,27 @@ async function handleShellWebSocket(ws, serverId) {
 }
 
 // Start server
-server.listen(PORT, () => {
+server.listen(PORT, async () => {
   console.log(`🚀 Give Me The Log server running on http://localhost:${PORT}`);
   startLogWatcher();
   startMonitor();
+
+  // 启动时自动重连之前在线的服务器
+  try {
+    const servers = remote.getServers();
+    const toReconnect = servers.filter(s => s.status === 'connected');
+    if (toReconnect.length > 0) {
+      console.log(`🔄 正在重连 ${toReconnect.length} 台之前在线的服务器...`);
+      await Promise.allSettled(toReconnect.map(async (s) => {
+        try {
+          await remote.connectServer(s.id);
+          console.log(`  ✅ ${s.name} 重连成功`);
+        } catch (err) {
+          console.log(`  ❌ ${s.name} 重连失败: ${err.message}`);
+        }
+      }));
+    }
+  } catch (err) {
+    console.error('自动重连出错:', err.message);
+  }
 });

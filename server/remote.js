@@ -338,43 +338,37 @@ export async function listRemoteFiles(id, subPath = '') {
   const basePath = subPath || server.logPath;
 
   try {
-    // 列出文件和目录（包括隐藏文件）
-    const result = await ssh.execCommand(`ls -lAh "${basePath}" 2>&1`);
+    // 用 stat 方式列出，避免 ls -lAh 的月份/日期歧义问题
+    const result = await ssh.execCommand(
+      `find "${basePath}" -maxdepth 1 -printf "%f\\n%Y\\n%s\\n" 2>&1 | paste -d'\\n' - - -`
+    );
 
-    // 检查是否是错误信息
-    if (result.stderr || result.code !== 0) {
-      return { files: [], dirs: [], error: result.stderr || result.stdout };
+    if (result.code !== 0) {
+      return { files: [], dirs: [], currentPath: basePath, error: result.stderr || result.stdout };
     }
 
     const lines = result.stdout.split('\n').filter(l => l.trim());
     const files = [];
     const dirs = [];
 
-    for (const line of lines) {
-      // 跳过 total 行和 . 及 ..
-      if (line.includes('total') || line.endsWith('/.') || line.endsWith('/..')) continue;
+    for (let i = 0; i < lines.length; i += 3) {
+      const name = lines[i]?.trim();
+      const type = lines[i + 1]?.trim(); // 'd' = dir, 'f' = file, 'l' = link
+      const size = parseInt(lines[i + 2]?.trim() || '0');
 
-      const match = line.match(/^([dls-][rwx-]{9})\s+\d+\s+(\S+)\s+(\S+)\s+(\d+)\s+(\S+\s+\d+|\d+)\s+(\d+:\d+|\d{4})\s+(.+)$/);
-      if (!match) continue;
+      if (!name || name === '.' || name === '..') continue;
 
-      const [, perms, , , size, , , name] = match;
-      const isDir = perms.startsWith('d');
+      const isDir = type === 'd';
       const isLog = name.endsWith('.log') || name.includes('.log.');
 
       if (isDir) {
-        if (name !== '.' && name !== '..') {
-          dirs.push({
-            name,
-            path: path.join(basePath, name),
-          });
-        }
+        dirs.push({ name, path: path.posix.join(basePath, name) });
       } else {
         files.push({
           name,
-          path: path.join(basePath, name),
-          size: parseInt(size),
+          path: path.posix.join(basePath, name),
+          size,
           isLog,
-          modified: line.substring(0, 40),
         });
       }
     }
@@ -394,48 +388,42 @@ export async function listRemoteFiles(id, subPath = '') {
 
 /**
  * 读取远程文件原始内容（用于编辑器）
+ * 通过 execCommand cat 方式，避免 SFTP 兼容性问题
  */
 export async function readRemoteFileRaw(id, filePath) {
   const ssh = sshConnections.get(id);
   if (!ssh) return { error: '服务器未连接' };
 
   try {
-    const sftp = await ssh.getSftp();
-    const content = await new Promise((resolve, reject) => {
-      let data = '';
-      const stream = sftp.createReadStream(filePath, { encoding: 'utf8' });
-      stream.on('data', chunk => { data += chunk; });
-      stream.on('end', () => resolve(data));
-      stream.on('error', reject);
-    });
-    return { content };
+    const result = await ssh.execCommand(`cat "${filePath}"`, { encoding: 'utf8' });
+    if (result.code !== 0) {
+      return { error: result.stderr || '读取失败' };
+    }
+    return { content: result.stdout };
   } catch (err) {
     return { error: err.message };
   }
 }
 
 /**
- * 写入远程文件内容（通过 SFTP）
+ * 写入远程文件内容
+ * 通过 base64 编码传输，避免 shell 转义问题
  */
 export async function writeRemoteFile(id, filePath, content) {
   const ssh = sshConnections.get(id);
   if (!ssh) return { error: '服务器未连接' };
 
   try {
-    const sftp = await ssh.getSftp();
-    // 写入临时文件再 rename，保证原子性
-    const tmpPath = filePath + `.tmp.${Date.now()}`;
-    await new Promise((resolve, reject) => {
-      const stream = sftp.createWriteStream(tmpPath, { encoding: 'utf8' });
-      stream.on('close', resolve);
-      stream.on('error', reject);
-      stream.write(content, 'utf8');
-      stream.end();
-    });
-    // rename 到目标路径
-    await new Promise((resolve, reject) => {
-      sftp.rename(tmpPath, filePath, err => err ? reject(err) : resolve());
-    });
+    // base64 编码内容，避免 shell 转义
+    const b64 = Buffer.from(content, 'utf8').toString('base64');
+    // 通过 python 解码写入（支持任意内容）
+    const result = await ssh.execCommand(
+      `python3 -c "import sys,base64; open('${filePath}','w').write(base64.b64decode(sys.stdin.read()).decode('utf-8'))"`,
+      { encoding: 'utf8' }
+    );
+    if (result.code !== 0) {
+      return { error: result.stderr || '写入失败' };
+    }
     return { success: true };
   } catch (err) {
     return { error: err.message };
@@ -443,21 +431,22 @@ export async function writeRemoteFile(id, filePath, content) {
 }
 
 /**
- * 上传本地文件到远程服务器（通过 SFTP）
+ * 上传本地文件到远程服务器
+ * 通过 base64 编码传输
  */
-export async function uploadRemoteFile(id, localFileBuffer, remotePath, originalName) {
+export async function uploadRemoteFile(id, localFileBuffer, remotePath) {
   const ssh = sshConnections.get(id);
   if (!ssh) return { error: '服务器未连接' };
 
   try {
-    const sftp = await ssh.getSftp();
-    await new Promise((resolve, reject) => {
-      const stream = sftp.createWriteStream(remotePath);
-      stream.on('close', resolve);
-      stream.on('error', reject);
-      stream.write(localFileBuffer);
-      stream.end();
-    });
+    const b64 = localFileBuffer.toString('base64');
+    const result = await ssh.execCommand(
+      `python3 -c "import sys,base64; open('${remotePath}','wb').write(base64.b64decode(sys.stdin.read()))"`,
+      { encoding: 'utf8' }
+    );
+    if (result.code !== 0) {
+      return { error: result.stderr || '上传失败' };
+    }
     return { success: true, remotePath };
   } catch (err) {
     return { error: err.message };
