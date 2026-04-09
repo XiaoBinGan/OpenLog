@@ -1,13 +1,13 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import {
-  Send, Bot, User, Trash2, Square, Loader, Sparkles, FileText, Upload,
-  RefreshCw, Trash, BookOpen, Plus, X, ChevronRight, CheckCircle, Clock,
-  AlertCircle, MessageSquare, Terminal, Eye, EyeOff, Save, Code2, Zap,
+  Send, Bot, User, Square, Loader, FileText, Upload,
+  RefreshCw, Trash, BookOpen, X, CheckCircle, Clock,
+  AlertCircle, Terminal, Plus, ChevronDown, MessageSquare,
 } from 'lucide-react';
 import { useAssistantContext } from '../contexts/AssistantContext';
-import { docmind, DocDocument, DocConversation, DocMessage } from '../lib/docmind';
+import { docmind, DocDocument } from '../lib/docmind';
 
-// 文档助手：选择文档 → 对话（基于文档内容回答）
+// 文档助手快捷提示
 const DOC_QUICK_PROMPTS = [
   '这篇文档的核心内容是什么？',
   '文档中提到的关键技术方案是什么？',
@@ -42,7 +42,7 @@ function renderMarkdown(text: string): string {
 }
 
 function StatusBadge({ status }: { status: DocDocument['index_status'] }) {
-  const map = {
+  const map: Record<string, { icon: React.ReactNode; label: string; cls: string }> = {
     ready: { icon: <CheckCircle className="w-3.5 h-3.5" />, label: '就绪', cls: 'text-green-400 bg-green-500/10 border-green-500/20' },
     indexing: { icon: <Clock className="w-3.5 h-3.5 animate-spin" />, label: '索引中', cls: 'text-yellow-400 bg-yellow-500/10 border-yellow-500/20' },
     error: { icon: <AlertCircle className="w-3.5 h-3.5" />, label: '错误', cls: 'text-red-400 bg-red-500/10 border-red-500/20' },
@@ -57,35 +57,33 @@ function StatusBadge({ status }: { status: DocDocument['index_status'] }) {
 }
 
 export default function DevAssistant() {
-  // === 文档助手状态 ===
+  // === Context 状态（localStorage 持久化）===
+  const {
+    docMessages, setDocMessages,
+    activeDocId, setActiveDocId,
+    activeConvId, setActiveConvId,
+    messages: opsMessages, setMessages: setOpsMessages,
+  } = useAssistantContext();
+
+  // === 本地 UI 状态（不需持久化）===
   const [docs, setDocs] = useState<DocDocument[]>([]);
-  const [convs, setConvs] = useState<DocConversation[]>([]);
-  const [activeConv, setActiveConv] = useState<DocConversation | null>(null);
-  const [currentDocId, setCurrentDocId] = useState<string | null>(null);
-  const [docMessages, setDocMessages] = useState<DocMessage[]>([]);
   const [docInput, setDocInput] = useState('');
   const [docStreaming, setDocStreaming] = useState(false);
-  const [docLoading, setDocLoading] = useState(false);
-  const [streamContent, setStreamContent] = useState('');
+  const [opsInput, setOpsInput] = useState('');
+  const [opsLoading, setOpsLoading] = useState(false);
+  const [activeTab, setActiveTab] = useState<'docs' | 'ops'>('docs');
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [dragOver, setDragOver] = useState(false);
-  const [showDocList, setShowDocList] = useState(false);
-  const [docPanelOpen, setDocPanelOpen] = useState(true);
+  const [convMenuOpen, setConvMenuOpen] = useState(false);
 
-  // === 运维助手状态（复用 AssistantContext） ===
-  const { messages: opsMessages, setMessages: setOpsMessages } = useAssistantContext();
-  const [opsInput, setOpsInput] = useState('');
-  const [opsLoading, setOpsLoading] = useState(false);
-  const [opsStreamContent, setOpsStreamContent] = useState('');
-  const abortRef = useRef<AbortController | null>(null);
-
-  // === 通用 ===
-  const [activeTab, setActiveTab] = useState<'docs' | 'ops'>('docs');
+  const opsAbortRef = useRef<AbortController | null>(null);
   const docMsgsEndRef = useRef<HTMLDivElement>(null);
   const opsMsgsEndRef = useRef<HTMLDivElement>(null);
 
-  // 加载文档
+  const selectedDoc = docs.find(d => d.id === activeDocId);
+
+  // 加载文档列表
   const loadDocs = useCallback(async () => {
     try {
       const r = await docmind.listDocuments();
@@ -93,33 +91,15 @@ export default function DevAssistant() {
     } catch (e) { console.error('loadDocs failed', e); }
   }, []);
 
-  // 加载对话
-  const loadConvs = useCallback(async () => {
-    try {
-      const r = await docmind.listConversations(currentDocId || undefined);
-      setConvs(r.conversations);
-    } catch (e) { console.error('loadConvs failed', e); }
-  }, [currentDocId]);
+  useEffect(() => { loadDocs(); }, [loadDocs]);
 
-  useEffect(() => { loadDocs(); loadConvs(); }, [loadDocs, loadConvs]);
-
-  // 切换文档
+  // 滚动到底部
   useEffect(() => {
-    if (currentDocId) loadConvs();
-  }, [currentDocId, loadConvs]);
+    if (activeTab === 'docs') docMsgsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    else opsMsgsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [docMessages, opsMessages, activeTab]);
 
-  // 切换对话
-  useEffect(() => {
-    if (activeConv) setDocMessages(activeConv.messages);
-    else setDocMessages([]);
-  }, [activeConv]);
-
-  // 文档滚动
-  useEffect(() => { docMsgsEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [docMessages, streamContent]);
-  // 运维滚动
-  useEffect(() => { opsMsgsEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [opsMessages, opsStreamContent]);
-
-  // 上传
+  // 上传文档
   const handleUpload = async (files: FileList | null) => {
     if (!files || files.length === 0) return;
     setUploading(true);
@@ -133,76 +113,58 @@ export default function DevAssistant() {
     loadDocs();
   };
 
-  const selectedDoc = docs.find(d => d.id === currentDocId);
-
-  // 文档对话
+  // 发送文档助手消息
   const sendDocMessage = async (text?: string) => {
     const content = text || docInput.trim();
-    if (!content || docStreaming) return;
+    if (!content || docStreaming || !activeDocId) return;
 
     setDocInput('');
-    const userMsg: DocMessage = { id: `tmp-${Date.now()}`, role: 'user', content, references: null, created_at: new Date().toISOString() };
-    setDocMessages(prev => [...prev, userMsg]);
+    const userMsg = { role: 'user' as const, content, ts: Date.now(), streaming: false };
+    const assistantMsg = { role: 'assistant' as const, content: '', ts: Date.now() + 1, streaming: true };
+
+    setDocMessages(prev => [...prev, userMsg, assistantMsg]);
     setDocStreaming(true);
-    setStreamContent('');
-    setDocLoading(true);
 
     try {
-      const tmpStreamContent = '';
+      let acc = '';
       await docmind.chatStream(
-        { message: content, conversation_id: activeConv?.id, document_id: currentDocId || undefined },
+        { message: content, conversation_id: activeConvId || undefined, document_id: activeDocId },
         {
           onChunk: chunk => {
-            // 实时更新到最后一个 assistant 消息
-            setDocMessages(prev => {
-              const last = prev[prev.length - 1];
-              if (last?.role === 'assistant') {
-                return [...prev.slice(0, -1), { ...last, content: last.content + chunk }];
-              }
-              return [...prev, { id: `stream-${Date.now()}`, role: 'assistant', content: chunk, references: null, created_at: new Date().toISOString() }];
-            });
+            acc += chunk;
+            setDocMessages(prev => prev.map((m, i) =>
+              i === prev.length - 1 ? { ...m, content: acc } : m
+            ));
           },
           onDone: (_msgId, convId) => {
-            if (!activeConv && convId) {
-              setActiveConv({
-                id: convId, title: content.slice(0, 50) + '...', document_id: currentDocId || null,
-                messages: [], created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
-              });
-              loadConvs();
-            }
-            // 触发 Tip 通知
-            const last = docMessages[docMessages.length];
-            const tip = { id: `doc-tip-${Date.now()}`, preview: content.slice(0, 30), convId };
-            window.dispatchEvent(new CustomEvent('assistant-tip', { detail: tip }));
+            if (convId && convId !== activeConvId) setActiveConvId(convId);
+            setDocStreaming(false);
           },
           onStatus: s => { if (s === '完成') setDocStreaming(false); },
         }
       );
-      setDocStreaming(false);
-      loadConvs();
-    } catch (e) {
-      console.error('doc chat error', e);
-      setDocMessages(prev => [...prev.slice(0, -1), userMsg,
-        { id: `err-${Date.now()}`, role: 'assistant', content: `❌ ${e}`, references: null, created_at: new Date().toISOString() }
+    } catch (e: any) {
+      setDocMessages(prev => [
+        ...prev.slice(0, -1),
+        { ...assistantMsg, content: `❌ ${e.message || e}`, streaming: false },
       ]);
       setDocStreaming(false);
     }
-    setDocLoading(false);
   };
 
-  // 运维对话
+  // 发送运维助手消息
   const sendOpsMessage = async (text?: string) => {
     const content = text || opsInput.trim();
     if (!content || opsLoading) return;
 
     setOpsInput('');
-    const userMsg = { role: 'user' as const, content, ts: Date.now() };
+    const userMsg = { role: 'user' as const, content, ts: Date.now(), streaming: false };
     const assistantMsg = { role: 'assistant' as const, content: '', ts: Date.now() + 1, streaming: true };
+
     setOpsMessages(prev => [...prev, userMsg, assistantMsg]);
     setOpsLoading(true);
-    setOpsStreamContent('');
 
-    abortRef.current = new AbortController();
+    opsAbortRef.current = new AbortController();
     try {
       const history = [
         { role: 'system', content: '你是专业的运维助手，擅长日志分析、故障排查、性能调优、系统架构诊断。回答简洁专业，使用 Markdown 格式。' },
@@ -213,7 +175,7 @@ export default function DevAssistant() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Accept': 'text/event-stream' },
         body: JSON.stringify({ messages: history }),
-        signal: abortRef.current.signal,
+        signal: opsAbortRef.current.signal,
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const reader = res.body?.getReader();
@@ -239,9 +201,6 @@ export default function DevAssistant() {
           i === prev.length - 1 ? { ...m, content: acc } : m
         ));
       }
-      // Tip
-      const tip = { id: `ops-tip-${Date.now()}`, preview: content.slice(0, 30), convId: 'ops' };
-      window.dispatchEvent(new CustomEvent('assistant-tip', { detail: tip }));
     } catch (err: any) {
       if (err.name !== 'AbortError') {
         setOpsMessages(prev => prev.map((m, i) =>
@@ -250,18 +209,61 @@ export default function DevAssistant() {
       }
     }
     setOpsLoading(false);
-    setOpsStreamContent('');
-    abortRef.current = null;
+    opsAbortRef.current = null;
   };
 
-  const stopOps = () => { abortRef.current?.abort(); };
-
+  const stopOps = () => opsAbortRef.current?.abort();
   const clearOps = () => { if (opsMessages.length > 0) setOpsMessages([]); };
+  const clearDoc = () => { if (docMessages.length > 0) { setDocMessages([]); setActiveConvId(null); } };
+
+  const MsgBubble = ({ msg, isUser }: { msg: any; isUser: boolean }) => (
+    <div className={`flex gap-3 ${isUser ? 'justify-end' : ''}`}>
+      {!isUser && (
+        <div className="flex-shrink-0 w-8 h-8 rounded-lg bg-accent-500/20 flex items-center justify-center mt-0.5">
+          <Bot className="w-4 h-4 text-accent-400" />
+        </div>
+      )}
+      <div className={`max-w-[75%] rounded-2xl px-4 py-3 text-sm leading-relaxed ${
+        isUser
+          ? 'bg-accent-500/20 text-dark-100 rounded-br-md'
+          : 'bg-dark-900 border border-dark-800 text-dark-200 rounded-bl-md'
+      }`}>
+        {msg.content ? (
+          <div
+            className="prose-invert [&_code]:bg-dark-800 [&_code]:px-1 [&_code]:py-0.5 [&_code]:rounded [&_code]:text-xs [&_code]:font-mono
+              [&_pre]:bg-dark-800 [&_pre]:p-3 [&_pre]:rounded-lg [&_pre]:mt-2 [&_pre]:overflow-x-auto
+              [&_strong]:text-dark-100 [&_ul]:list-disc [&_ul]:pl-4 [&_ol]:list-decimal [&_ol]:pl-4
+              [&_li]:text-xs [&_h1]:text-base [&_h2]:text-sm [&_h3]:text-xs [&_h1_h2_h3]:font-bold [&_h1_h2_h3]:mt-3 [&_h1_h2_h3]:mb-1
+              [&_table]:w-full [&_table]:text-xs [&_th]:p-2 [&_td]:p-2 [&_th]:border-b [&_th]:border-dark-700 [&_p]:my-1"
+            dangerouslySetInnerHTML={{ __html: renderMarkdown(msg.content) }}
+          />
+        ) : (
+          <div className="flex items-center gap-2 text-dark-500">
+            <Loader className="w-4 h-4 animate-spin" /> 思考中...
+          </div>
+        )}
+        {msg.references && msg.references.length > 0 && (
+          <div className="mt-2 flex flex-wrap gap-1">
+            <span className="text-xs text-dark-600">引用：</span>
+            {(msg.references as any[]).map((ref: any, j: number) => (
+              <span key={j} className="px-1.5 py-0.5 rounded bg-accent-500/10 text-accent-400 text-xs">P{ref.page}</span>
+            ))}
+          </div>
+        )}
+      </div>
+      {isUser && (
+        <div className="flex-shrink-0 w-8 h-8 rounded-lg bg-dark-700 flex items-center justify-center mt-0.5">
+          <User className="w-4 h-4 text-dark-400" />
+        </div>
+      )}
+    </div>
+  );
 
   return (
     <div className="flex h-[calc(100vh-8rem)] animate-fade-in gap-4">
-      {/* 左侧文档列表 */}
+      {/* === 左侧：文档列表 === */}
       <div className="w-72 flex-shrink-0 flex flex-col bg-dark-900 border border-dark-800 rounded-xl overflow-hidden">
+
         {/* 上传区 */}
         <div
           className={`m-3 p-4 border-2 border-dashed rounded-xl text-center transition-all cursor-pointer ${
@@ -288,34 +290,37 @@ export default function DevAssistant() {
           )}
         </div>
 
-        {/* 文档列表 */}
+        {/* 文档列表标题 */}
         <div className="flex items-center justify-between px-4 py-2 border-t border-dark-800">
           <span className="text-xs text-dark-500 font-medium">文档 ({docs.length})</span>
           <button onClick={loadDocs} className="p-1 rounded hover:bg-dark-800 text-dark-600 hover:text-dark-400 transition-colors">
             <RefreshCw className="w-3.5 h-3.5" />
           </button>
         </div>
+
+        {/* 文档列表 */}
         <div className="flex-1 overflow-y-auto divide-y divide-dark-800">
           {docs.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-10 text-center px-4">
               <FileText className="w-8 h-8 text-dark-700 mb-2" />
               <p className="text-xs text-dark-600">暂无文档</p>
+              <p className="text-xs text-dark-700 mt-1">上传 PDF/DOCX/MD 开始</p>
             </div>
           ) : docs.map(doc => (
             <div key={doc.id} className="group">
               <div
                 className={`flex items-start gap-2 px-4 py-3 cursor-pointer transition-colors ${
-                  currentDocId === doc.id ? 'bg-accent-500/10' : 'hover:bg-dark-800/50'
+                  activeDocId === doc.id ? 'bg-accent-500/10' : 'hover:bg-dark-800/50'
                 }`}
                 onClick={() => {
-                  setCurrentDocId(doc.id === currentDocId ? null : doc.id);
-                  setActiveConv(null);
-                  setDocMessages([]);
+                  setActiveDocId(doc.id === activeDocId ? null : doc.id);
+                  setActiveConvId(null);
+                  if (doc.id !== activeDocId) setDocMessages([]);
                 }}
               >
                 <FileText className="w-4 h-4 text-accent-400/60 flex-shrink-0 mt-0.5" />
                 <div className="flex-1 min-w-0">
-                  <div className={`text-xs truncate ${currentDocId === doc.id ? 'text-accent-400' : 'text-dark-300'}`}>
+                  <div className={`text-xs truncate ${activeDocId === doc.id ? 'text-accent-400' : 'text-dark-300'}`}>
                     {doc.name}
                   </div>
                   <div className="flex items-center gap-2 mt-1">
@@ -335,49 +340,49 @@ export default function DevAssistant() {
         </div>
       </div>
 
-      {/* 右侧对话区 */}
+      {/* === 右侧：对话区 === */}
       <div className="flex flex-col flex-1 min-w-0">
-        {/* Tab 切换 */}
-        <div className="flex items-center gap-1 mb-4 bg-dark-900 border border-dark-800 rounded-xl p-1 w-fit">
-          <button
-            onClick={() => setActiveTab('docs')}
-            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
-              activeTab === 'docs'
-                ? 'bg-accent-500/20 text-accent-400'
-                : 'text-dark-500 hover:text-dark-300'
-            }`}
-          >
-            <BookOpen className="w-4 h-4" />
-            文档助手
-          </button>
-          <button
-            onClick={() => setActiveTab('ops')}
-            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
-              activeTab === 'ops'
-                ? 'bg-accent-500/20 text-accent-400'
-                : 'text-dark-500 hover:text-dark-300'
-            }`}
-          >
-            <Terminal className="w-4 h-4" />
-            运维助手
-          </button>
-        </div>
 
-        {/* 当前文档指示器 */}
-        {activeTab === 'docs' && selectedDoc && (
-          <div className="flex items-center gap-2 mb-3 px-3 py-2 bg-accent-500/10 border border-accent-500/20 rounded-lg w-fit">
-            <FileText className="w-4 h-4 text-accent-400" />
-            <span className="text-xs text-accent-400">{selectedDoc.name}</span>
-            <button onClick={() => { setCurrentDocId(null); setActiveConv(null); setDocMessages([]); }}
-              className="p-0.5 rounded hover:bg-dark-800 text-dark-600 hover:text-dark-400">
-              <X className="w-3 h-3" />
+        {/* Tab 切换 + 当前文档指示 */}
+        <div className="flex items-center gap-3 mb-4">
+          <div className="flex items-center gap-1 bg-dark-900 border border-dark-800 rounded-xl p-1">
+            <button
+              onClick={() => setActiveTab('docs')}
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+                activeTab === 'docs' ? 'bg-accent-500/20 text-accent-400' : 'text-dark-500 hover:text-dark-300'
+              }`}
+            >
+              <BookOpen className="w-4 h-4" />
+              文档助手
+            </button>
+            <button
+              onClick={() => setActiveTab('ops')}
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+                activeTab === 'ops' ? 'bg-accent-500/20 text-accent-400' : 'text-dark-500 hover:text-dark-300'
+              }`}
+            >
+              <Terminal className="w-4 h-4" />
+              运维助手
             </button>
           </div>
-        )}
 
-        {/* 对话区域 */}
+          {/* 当前文档指示器 */}
+          {activeTab === 'docs' && selectedDoc && (
+            <div className="flex items-center gap-2 px-3 py-1.5 bg-accent-500/10 border border-accent-500/20 rounded-lg">
+              <FileText className="w-4 h-4 text-accent-400" />
+              <span className="text-xs text-accent-400 max-w-48 truncate">{selectedDoc.name}</span>
+              <button onClick={() => { setActiveDocId(null); setActiveConvId(null); setDocMessages([]); }}
+                className="p-0.5 rounded hover:bg-dark-800 text-dark-600 hover:text-dark-400">
+                <X className="w-3 h-3" />
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* 当前 Tab 消息区 */}
         <div className="flex-1 overflow-y-auto min-h-0">
-          {/* === 文档助手 === */}
+
+          {/* ===== 文档助手 ===== */}
           {activeTab === 'docs' && (
             <>
               {docMessages.length === 0 ? (
@@ -386,63 +391,24 @@ export default function DevAssistant() {
                     <BookOpen className="w-8 h-8 text-accent-500/40" />
                   </div>
                   <p className="text-sm font-medium text-dark-400 mb-1">
-                    {currentDocId ? '文档已选定，开始提问' : '选择左侧文档开始对话'}
+                    {activeDocId ? '文档已选定，开始提问' : '选择左侧文档开始对话'}
                   </p>
                   <p className="text-xs text-dark-600 mb-6">基于文档内容，AI 精准回答</p>
-                  <div className="flex flex-wrap justify-center gap-2 max-w-md">
-                    {(currentDocId ? DOC_QUICK_PROMPTS : DOC_QUICK_PROMPTS.slice(0, 2)).map((q, i) => (
-                      <button key={i} onClick={() => sendDocMessage(q)}
-                        className="px-3 py-1.5 rounded-lg bg-dark-900 border border-dark-800 text-xs text-dark-400 hover:text-dark-200 hover:border-dark-700 transition-all">
-                        {q}
-                      </button>
-                    ))}
-                  </div>
+                  {activeDocId && (
+                    <div className="flex flex-wrap justify-center gap-2 max-w-md">
+                      {DOC_QUICK_PROMPTS.map((q, i) => (
+                        <button key={i} onClick={() => sendDocMessage(q)}
+                          className="px-3 py-1.5 rounded-lg bg-dark-900 border border-dark-800 text-xs text-dark-400 hover:text-dark-200 hover:border-dark-700 transition-all">
+                          {q}
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </div>
               ) : (
                 <div className="space-y-4 pb-4">
                   {docMessages.map((msg, i) => (
-                    <div key={msg.id || i} className={`flex gap-3 ${msg.role === 'user' ? 'justify-end' : ''}`}>
-                      {msg.role === 'assistant' && (
-                        <div className="flex-shrink-0 w-8 h-8 rounded-lg bg-accent-500/20 flex items-center justify-center mt-0.5">
-                          <Bot className="w-4 h-4 text-accent-400" />
-                        </div>
-                      )}
-                      <div className={`max-w-[75%] rounded-2xl px-4 py-3 text-sm leading-relaxed ${
-                        msg.role === 'user'
-                          ? 'bg-accent-500/20 text-dark-100 rounded-br-md'
-                          : 'bg-dark-900 border border-dark-800 text-dark-200 rounded-bl-md'
-                      }`}>
-                        {msg.content ? (
-                          <div
-                            className="prose-invert [&_code]:bg-dark-800 [&_code]:px-1 [&_code]:py-0.5 [&_code]:rounded [&_code]:text-xs [&_code]:font-mono
-                              [&_pre]:bg-dark-800 [&_pre]:p-3 [&_pre]:rounded-lg [&_pre]:mt-2 [&_pre]:overflow-x-auto
-                              [&_strong]:text-dark-100 [&_ul]:list-disc [&_ul]:pl-4 [&_ol]:list-decimal [&_ol]:pl-4
-                              [&_li]:text-xs [&_h1]:text-base [&_h2]:text-sm [&_h3]:text-xs [&_h1_h2_h3]:font-bold [&_h1_h2_h3]:mt-3 [&_h1_h2_h3]:mb-1
-                              [&_table]:w-full [&_table]:text-xs [&_th]:p-2 [&_td]:p-2 [&_th]:border-b [&_th]:border-dark-700 [&_p]:my-1"
-                            dangerouslySetInnerHTML={{ __html: renderMarkdown(msg.content) }}
-                          />
-                        ) : (
-                          <div className="flex items-center gap-2 text-dark-500">
-                            <Loader className="w-4 h-4 animate-spin" /> 思考中...
-                          </div>
-                        )}
-                        {msg.references && msg.references.length > 0 && (
-                          <div className="mt-2 flex flex-wrap gap-1">
-                            <span className="text-xs text-dark-600">引用：</span>
-                            {msg.references.map((ref, j) => (
-                              <span key={j} className="px-1.5 py-0.5 rounded bg-accent-500/10 text-accent-400 text-xs">
-                                P{ref.page}
-                              </span>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                      {msg.role === 'user' && (
-                        <div className="flex-shrink-0 w-8 h-8 rounded-lg bg-dark-700 flex items-center justify-center mt-0.5">
-                          <User className="w-4 h-4 text-dark-400" />
-                        </div>
-                      )}
-                    </div>
+                    <MsgBubble key={msg.ts || i} msg={msg} isUser={msg.role === 'user'} />
                   ))}
                   <div ref={docMsgsEndRef} />
                 </div>
@@ -450,7 +416,7 @@ export default function DevAssistant() {
             </>
           )}
 
-          {/* === 运维助手 === */}
+          {/* ===== 运维助手 ===== */}
           {activeTab === 'ops' && (
             <>
               {opsMessages.length === 0 ? (
@@ -472,38 +438,7 @@ export default function DevAssistant() {
               ) : (
                 <div className="space-y-4 pb-4">
                   {opsMessages.map((msg, i) => (
-                    <div key={msg.ts} className={`flex gap-3 ${msg.role === 'user' ? 'justify-end' : ''}`}>
-                      {msg.role === 'assistant' && (
-                        <div className="flex-shrink-0 w-8 h-8 rounded-lg bg-accent-500/20 flex items-center justify-center mt-0.5">
-                          <Bot className="w-4 h-4 text-accent-400" />
-                        </div>
-                      )}
-                      <div className={`max-w-[75%] rounded-2xl px-4 py-3 text-sm leading-relaxed ${
-                        msg.role === 'user'
-                          ? 'bg-accent-500/20 text-dark-100 rounded-br-md'
-                          : 'bg-dark-900 border border-dark-800 text-dark-200 rounded-bl-md'
-                      }`}>
-                        {msg.content ? (
-                          <div
-                            className="prose-invert [&_code]:bg-dark-800 [&_code]:px-1 [&_code]:py-0.5 [&_code]:rounded [&_code]:text-xs [&_code]:font-mono
-                              [&_pre]:bg-dark-800 [&_pre]:p-3 [&_pre]:rounded-lg [&_pre]:mt-2 [&_pre]:overflow-x-auto
-                              [&_strong]:text-dark-100 [&_ul]:list-disc [&_ul]:pl-4 [&_ol]:list-decimal [&_ol]:pl-4
-                              [&_li]:text-xs [&_h1]:text-base [&_h2]:text-sm [&_h3]:text-xs [&_h1_h2_h3]:font-bold [&_h1_h2_h3]:mt-3 [&_h1_h2_h3]:mb-1
-                              [&_p]:my-1"
-                            dangerouslySetInnerHTML={{ __html: renderMarkdown(msg.content) }}
-                          />
-                        ) : (
-                          <div className="flex items-center gap-2 text-dark-500">
-                            <Loader className="w-4 h-4 animate-spin" /> 思考中...
-                          </div>
-                        )}
-                      </div>
-                      {msg.role === 'user' && (
-                        <div className="flex-shrink-0 w-8 h-8 rounded-lg bg-dark-700 flex items-center justify-center mt-0.5">
-                          <User className="w-4 h-4 text-dark-400" />
-                        </div>
-                      )}
-                    </div>
+                    <MsgBubble key={msg.ts || i} msg={msg} isUser={msg.role === 'user'} />
                   ))}
                   <div ref={opsMsgsEndRef} />
                 </div>
@@ -512,37 +447,38 @@ export default function DevAssistant() {
           )}
         </div>
 
-        {/* 输入框 */}
+        {/* 输入区 */}
         <div className="flex-shrink-0 pt-3 border-t border-dark-800">
-          {/* 快捷提示 */}
-          {activeTab === 'docs' && !selectedDoc && (
+          {activeTab === 'docs' && !activeDocId && (
             <p className="text-xs text-dark-600 mb-2">⚠️ 请先在左侧选择一个文档</p>
           )}
           <div className="flex items-end gap-2">
-            <div className="flex-1 relative">
-              <textarea
-                value={activeTab === 'docs' ? docInput : opsInput}
-                onChange={e => activeTab === 'docs' ? setDocInput(e.target.value) : setOpsInput(e.target.value)}
-                onKeyDown={e => {
-                  if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault();
-                    activeTab === 'docs' ? sendDocMessage() : sendOpsMessage();
-                  }
-                }}
-                placeholder={activeTab === 'docs'
-                  ? selectedDoc ? '基于文档内容提问...' : '先选择文档...'
-                  : '输入运维问题...'}
-                rows={1}
-                className="w-full px-4 py-3 pr-12 bg-dark-900 border border-dark-800 rounded-xl text-sm text-dark-200 placeholder-dark-600 focus:outline-none focus:border-accent-500/50 resize-none"
-                style={{ minHeight: '48px', maxHeight: '120px' }}
-                onInput={e => {
-                  const el = e.currentTarget;
-                  el.style.height = 'auto';
-                  el.style.height = Math.min(el.scrollHeight, 120) + 'px';
-                }}
-                disabled={activeTab === 'docs' && !selectedDoc}
-              />
-            </div>
+            <textarea
+              value={activeTab === 'docs' ? docInput : opsInput}
+              onChange={e => activeTab === 'docs' ? setDocInput(e.target.value) : setOpsInput(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault();
+                  activeTab === 'docs' ? sendDocMessage() : sendOpsMessage();
+                }
+              }}
+              placeholder={
+                activeTab === 'docs'
+                  ? activeDocId ? '基于文档内容提问...' : '先选择文档...'
+                  : '输入运维问题...'
+              }
+              rows={1}
+              className="w-full px-4 py-3 bg-dark-900 border border-dark-800 rounded-xl text-sm text-dark-200 placeholder-dark-600
+                focus:outline-none focus:border-accent-500/50 resize-none"
+              style={{ minHeight: '48px', maxHeight: '120px' }}
+              onInput={e => {
+                const el = e.currentTarget as HTMLTextAreaElement;
+                el.style.height = 'auto';
+                el.style.height = Math.min(el.scrollHeight, 120) + 'px';
+              }}
+              disabled={activeTab === 'docs' && !activeDocId}
+            />
+
             {activeTab === 'ops' && opsLoading ? (
               <button onClick={stopOps}
                 className="flex-shrink-0 w-12 h-12 rounded-xl bg-red-500/20 text-red-400 hover:bg-red-500/30 transition-colors flex items-center justify-center">
@@ -551,17 +487,28 @@ export default function DevAssistant() {
             ) : (
               <button
                 onClick={activeTab === 'docs' ? () => sendDocMessage() : () => sendOpsMessage()}
-                disabled={(activeTab === 'docs' && !selectedDoc) || (activeTab === 'docs' ? !docInput.trim() : !opsInput.trim())}
+                disabled={
+                  (activeTab === 'docs' && (!activeDocId || !docInput.trim())) ||
+                  (activeTab === 'ops' && !opsInput.trim())
+                }
                 className="flex-shrink-0 w-12 h-12 rounded-xl bg-accent-500 text-white hover:bg-accent-600 transition-colors flex items-center justify-center disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 <Send className="w-4 h-4" />
               </button>
             )}
           </div>
+
+          {/* 清空按钮 */}
           {activeTab === 'ops' && opsMessages.length > 0 && (
             <button onClick={clearOps}
               className="flex items-center gap-1.5 mt-2 px-3 py-1.5 rounded-lg text-xs text-dark-500 hover:text-red-400 hover:bg-red-500/10 border border-dark-800 transition-colors">
-              <Trash2 className="w-3.5 h-3.5" /> 清空对话
+              <Trash className="w-3.5 h-3.5" /> 清空对话
+            </button>
+          )}
+          {activeTab === 'docs' && docMessages.length > 0 && (
+            <button onClick={clearDoc}
+              className="flex items-center gap-1.5 mt-2 px-3 py-1.5 rounded-lg text-xs text-dark-500 hover:text-red-400 hover:bg-red-500/10 border border-dark-800 transition-colors">
+              <Trash className="w-3.5 h-3.5" /> 清空对话
             </button>
           )}
         </div>
