@@ -1,17 +1,14 @@
 /**
- * Remote.tsx — 远程服务器管理（优化版）
- * - RemoteContext 全局状态，切换页面不丢失连接
- * - 文件编辑器（点击远程文件 → 页面内编辑 → Ctrl+S 保存）
- * - 拖拽上传文件到远程服务器
- * - Shell 终端优化（快捷键提示 + 拖拽上传区）
+ * Remote.tsx — 远程服务器管理（修复版）
+ * 修复：编辑按钮不显示、文件列表点击触发上传、状态切换竞态
  */
 import { useState, useEffect, useRef, useCallback } from 'react';
 import {
   Server, Plus, Trash2, RefreshCw, Folder, FileText, ChevronRight,
   ChevronLeft, Search, Terminal, Check, X, AlertCircle, Loader,
   Cpu, MemoryStick, HardDrive, Clock, Home, Eye, EyeOff, Upload,
-  Code2, Save, Pencil, Wifi, WifiOff, Layers, PanelLeftClose,
-  PanelLeftOpen, ArrowUp, FileCode, Download, Info,
+  Code2, Save, Pencil, Wifi, WifiOff, PanelLeftClose,
+  PanelLeftOpen, ArrowUp, FileCode,
 } from 'lucide-react';
 import { useRemote } from '../contexts/RemoteContext';
 import ShellTerminal from '../components/ShellTerminal';
@@ -34,7 +31,7 @@ function formatSize(bytes: number) {
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }
 
-// Toast 通知组件
+// Toast 组件
 function Toast({ toast, onClose }: { toast: NonNullable<ReturnType<typeof useRemote>['toast']>; onClose: () => void }) {
   const colors = {
     success: 'border-green-500/40 bg-green-500/10',
@@ -116,7 +113,6 @@ function ServerModal({
                 placeholder="*.log" className="w-full px-3 py-2 bg-dark-900 border border-dark-700 rounded-lg text-sm focus:border-accent-500 focus:outline-none" />
             </div>
           </div>
-          {/* 测试连接 */}
           <button onClick={onTest} disabled={testing || !formData.host}
             className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-dark-700 hover:bg-dark-600 text-sm disabled:opacity-50 transition-colors">
             {testing ? <><Loader className="w-4 h-4 animate-spin" /> 测试中...</> : <><Terminal className="w-4 h-4" /> 测试连接</>}
@@ -156,7 +152,6 @@ function FileEditor({
 
   return (
     <div className="flex flex-col h-full border border-dark-700 rounded-xl overflow-hidden bg-dark-950">
-      {/* 编辑器顶栏 */}
       <div className="flex items-center justify-between px-4 py-2.5 bg-dark-900 border-b border-dark-700">
         <div className="flex items-center gap-3">
           <FileCode className="w-4 h-4 text-accent-400" />
@@ -175,29 +170,73 @@ function FileEditor({
           </button>
         </div>
       </div>
-      {/* 编辑器主体 */}
       <textarea
         value={content}
         onChange={e => onChange(e.target.value)}
         onKeyDown={e => {
           if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); if (!saving && modified) handleSave(); }
-          // Tab 插入空格
           if (e.key === 'Tab') { e.preventDefault(); const el = e.currentTarget; const s = el.selectionStart; const end = el.selectionEnd; onChange(content.slice(0, s) + '  ' + content.slice(end)); setTimeout(() => { el.selectionStart = el.selectionEnd = s + 2; }, 0); }
         }}
         spellCheck={false}
         className="flex-1 w-full px-6 py-4 bg-dark-950 text-sm text-dark-200 font-mono leading-relaxed resize-none focus:outline-none min-h-0"
         style={{ tabSize: 2 }}
       />
-      {/* 底部状态栏 */}
       <div className="flex items-center gap-4 px-4 py-1.5 bg-dark-900 border-t border-dark-700 text-xs text-dark-600">
-        <span>UTF-8</span>
-        <span>LF</span>
-        <span>{filePath}</span>
-        <span className="ml-auto">Ctrl+S 保存</span>
+        <span>UTF-8</span><span>LF</span><span>{filePath}</span><span className="ml-auto">Ctrl+S 保存</span>
       </div>
     </div>
   );
 }
+
+// 单个服务器卡片组件（用 memo 优化）
+const ServerCard = ({ server, isActive, onConnect, onDisconnect, onEdit, onDelete, onShell, onOpenEditor }: {
+  server: RemoteServer;
+  isActive: boolean;
+  onConnect: () => void;
+  onDisconnect: () => void;
+  onEdit: () => void;
+  onDelete: () => void;
+  onShell: () => void;
+  onOpenEditor: () => void;
+}) => (
+  <div className={`glass rounded-xl p-3 transition-all group ${isActive ? 'ring-2 ring-accent-500/60 bg-accent-500/5' : ''}`}>
+    {/* 服务器基本信息 */}
+    <div className="flex items-start justify-between mb-2">
+      <div className="flex items-center gap-2 min-w-0">
+        <span className={`w-2 h-2 rounded-full flex-shrink-0 ${server.status === 'connected' ? 'bg-green-500' : server.status === 'error' ? 'bg-red-500' : 'bg-dark-600'}`} />
+        <span className="text-sm font-medium truncate">{server.name}</span>
+      </div>
+      {/* 编辑/删除按钮：group 类确保 hover 时显示 */}
+      <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+        <button onClick={onEdit} className="p-1 rounded hover:bg-dark-700 text-dark-500 hover:text-dark-300">
+          <Pencil className="w-3.5 h-3.5" />
+        </button>
+        <button onClick={onDelete} className="p-1 rounded hover:bg-red-500/20 text-dark-500 hover:text-red-400">
+          <Trash2 className="w-3.5 h-3.5" />
+        </button>
+      </div>
+    </div>
+
+    <div className="text-xs text-dark-500 font-mono mb-2 truncate">{server.host}:{server.port}</div>
+    <div className="text-xs text-dark-600 truncate mb-3">{server.logPath}</div>
+
+    {/* 操作按钮 */}
+    {server.status === 'connected' ? (
+      <div className="flex gap-1">
+        <button onClick={onDisconnect} className="flex-1 px-2 py-1.5 text-xs rounded bg-yellow-500/20 text-yellow-400 hover:bg-yellow-500/30 transition-colors flex items-center justify-center gap-1">
+          <WifiOff className="w-3 h-3" /> 断开
+        </button>
+        <button onClick={onShell} className="flex-1 px-2 py-1.5 text-xs rounded bg-green-500/20 text-green-400 hover:bg-green-500/30 transition-colors flex items-center justify-center gap-1">
+          <Terminal className="w-3 h-3" /> Shell
+        </button>
+      </div>
+    ) : (
+      <button onClick={onConnect} className="w-full px-2 py-1.5 text-xs rounded bg-green-500/20 text-green-400 hover:bg-green-500/30 transition-colors flex items-center justify-center gap-1">
+        <Wifi className="w-3 h-3" /> 连接
+      </button>
+    )}
+  </div>
+);
 
 // 主组件
 export default function Remote() {
@@ -208,7 +247,6 @@ export default function Remote() {
     uploadFile, toast, clearToast,
   } = useRemote();
 
-
   // 本地 UI 状态
   const [showAddModal, setShowAddModal] = useState(false);
   const [editingServer, setEditingServer] = useState<RemoteServer | null>(null);
@@ -216,7 +254,6 @@ export default function Remote() {
     name: '', host: '', port: 22, username: 'root', password: '',
     logPath: '/var/log', watchFiles: '*.log',
   });
-  const [showPw, setShowPw] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ success: boolean; info?: any; error?: string } | null>(null);
   const [showShell, setShowShell] = useState(false);
@@ -224,28 +261,15 @@ export default function Remote() {
   const [logSearch, setLogSearch] = useState('');
   const [showServerList, setShowServerList] = useState(true);
   const [dragOver, setDragOver] = useState(false);
-  const [sidebarTab, setSidebarTab] = useState<'files' | 'editor'>('files');
 
-  // 加载文件（首次连接时）
+  // 首次连接后加载文件
+  const loadedRef = useRef<string | null>(null);
   useEffect(() => {
-    if (activeServer && activeServer.status === 'connected' && activeServer.files.currentPath) {
+    if (activeServer && activeServer.status === 'connected' && activeServer.files.currentPath && loadedRef.current !== activeServer.id) {
+      loadedRef.current = activeServer.id;
       loadFiles(activeServer.logPath || '/var/log');
-      // 同时获取系统状态
-      fetchStats();
     }
-  }, [activeServer?.id]);
-
-  // 获取系统状态
-  const fetchStats = async () => {
-    if (!activeServer) return;
-    try {
-      const res = await fetch(`/api/remote/servers/${activeServer.id}/stats`);
-      if (res.ok) {
-        const data = await res.json();
-        // 更新到全局状态（暂时用日志刷新触发）
-      }
-    } catch {}
-  };
+  }, [activeServer?.id, activeServer?.status, activeServer?.logPath, loadFiles]);
 
   // 测试连接
   const testConn = async () => {
@@ -297,7 +321,6 @@ export default function Remote() {
     setFormData({ name: '', host: '', port: 22, username: 'root', password: '', logPath: '/var/log', watchFiles: '*.log' });
     setEditingServer(null);
     setTestResult(null);
-    setShowPw(false);
   };
 
   // 处理文件上传
@@ -314,42 +337,24 @@ export default function Remote() {
     handleFiles(e.dataTransfer.files);
   };
 
-  // 连接：先设置 activeServer，再加载文件
+  // 连接：直接调用 context 的 connect
   const handleConnect = async (server: RemoteServer) => {
-    const newServer: RemoteServerState = {
-      ...server,
-      status: 'connected' as const,
-      systemStats: null,
-      files: { files: [], dirs: [], currentPath: server.logPath || '/var/log' },
-      selectedFile: null,
-      fileContent: '',
-      fileModified: false,
-      logs: [],
-      logsLoading: false,
-      filesLoading: true,
-      editingFilePath: null,
-    };
-    setActiveServer(newServer);
     try {
       await connect(server);
-      await loadFiles(server.logPath || '/var/log');
+      loadedRef.current = null; // 重置，允许新服务器加载文件
     } catch {
-      // connect 内部已经处理了 toast
+      // connect 内部已处理 toast
     }
   };
 
-  const stats = activeServer?.systemStats;
-
   return (
     <div className="flex h-[calc(100vh-8rem)] animate-fade-in gap-4">
-
-      {/* Toast 通知 */}
+      {/* Toast */}
       {toast && <Toast toast={toast} onClose={clearToast} />}
 
-      {/* ===== 左侧：服务器列表 ===== */}
+      {/* 左侧：服务器列表 */}
       {showServerList && (
         <div className="w-72 flex-shrink-0 flex flex-col gap-3">
-          {/* Header */}
           <div className="flex items-center justify-between">
             <h2 className="text-sm font-semibold text-dark-400 px-1">服务器</h2>
             <div className="flex items-center gap-1">
@@ -362,7 +367,6 @@ export default function Remote() {
             </div>
           </div>
 
-          {/* 服务器列表 */}
           <div className="flex-1 overflow-y-auto flex flex-col gap-2">
             {servers.length === 0 ? (
               <div className="glass rounded-xl p-6 text-center text-dark-500 flex-1 flex flex-col items-center justify-center">
@@ -371,42 +375,17 @@ export default function Remote() {
                 <p className="text-xs mt-1 text-dark-600">点击右上角添加</p>
               </div>
             ) : servers.map(server => (
-              <div key={server.id} className={`glass rounded-xl p-3 transition-all ${activeServer?.id === server.id ? 'ring-2 ring-accent-500/60 bg-accent-500/5' : ''}`}>
-                {/* 服务器基本信息 */}
-                <div className="flex items-start justify-between mb-2">
-                  <div className="flex items-center gap-2 min-w-0">
-                    <span className={`w-2 h-2 rounded-full flex-shrink-0 ${server.status === 'connected' ? 'bg-green-500' : server.status === 'error' ? 'bg-red-500' : 'bg-dark-600'}`} />
-                    <span className="text-sm font-medium truncate">{server.name}</span>
-                  </div>
-                  <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                    <button onClick={() => openEdit(server)} className="p-1 rounded hover:bg-dark-700 text-dark-500 hover:text-dark-300">
-                      <Pencil className="w-3.5 h-3.5" />
-                    </button>
-                    <button onClick={() => deleteServer(server)} className="p-1 rounded hover:bg-red-500/20 text-dark-500 hover:text-red-400">
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                </div>
-
-                <div className="text-xs text-dark-500 font-mono mb-2 truncate">{server.host}:{server.port}</div>
-                <div className="text-xs text-dark-600 truncate mb-3">{server.logPath}</div>
-
-                {/* 操作按钮 */}
-                {server.status === 'connected' ? (
-                  <div className="flex gap-1">
-                    <button onClick={() => disconnect()} className="flex-1 px-2 py-1.5 text-xs rounded bg-yellow-500/20 text-yellow-400 hover:bg-yellow-500/30 transition-colors flex items-center justify-center gap-1">
-                      <WifiOff className="w-3 h-3" /> 断开
-                    </button>
-                    <button onClick={() => setShowShell(true)} className="flex-1 px-2 py-1.5 text-xs rounded bg-green-500/20 text-green-400 hover:bg-green-500/30 transition-colors flex items-center justify-center gap-1">
-                      <Terminal className="w-3 h-3" /> Shell
-                    </button>
-                  </div>
-                ) : (
-                  <button onClick={() => handleConnect(server)} className="w-full px-2 py-1.5 text-xs rounded bg-green-500/20 text-green-400 hover:bg-green-500/30 transition-colors flex items-center justify-center gap-1">
-                    <Wifi className="w-3 h-3" /> 连接
-                  </button>
-                )}
-              </div>
+              <ServerCard
+                key={server.id}
+                server={server}
+                isActive={activeServer?.id === server.id}
+                onConnect={() => handleConnect(server)}
+                onDisconnect={() => disconnect()}
+                onEdit={() => openEdit(server)}
+                onDelete={() => deleteServer(server)}
+                onShell={() => setShowShell(true)}
+                onOpenEditor={() => {}}
+              />
             ))}
           </div>
         </div>
@@ -419,10 +398,8 @@ export default function Remote() {
         {showServerList ? <PanelLeftClose className="w-4 h-4" /> : <PanelLeftOpen className="w-4 h-4" />}
       </button>
 
-      {/* ===== 主区：文件浏览器 / 编辑器 ===== */}
+      {/* 主区：文件浏览器 / 编辑器 */}
       <div className="flex flex-col flex-1 min-w-0 gap-3">
-
-        {/* 未连接提示 */}
         {!activeServer ? (
           <div className="flex-1 glass rounded-xl flex flex-col items-center justify-center text-dark-500">
             <Server className="w-16 h-16 opacity-20 mb-4" />
@@ -452,9 +429,8 @@ export default function Remote() {
               ))}
             </div>
 
-            {/* Tab 切换：文件 / 编辑器 */}
+            {/* 编辑器 或 文件浏览器 */}
             {activeServer.editingFilePath ? (
-              /* 文件编辑器模式 */
               <FileEditor
                 content={activeServer.fileContent}
                 onChange={updateFileContent}
@@ -464,11 +440,9 @@ export default function Remote() {
                 modified={activeServer.fileModified}
               />
             ) : (
-              /* 文件浏览器模式 */
               <>
-                {/* 顶部工具栏 */}
+                {/* 路径导航 */}
                 <div className="flex items-center gap-3">
-                  {/* 路径导航 */}
                   <div className="flex items-center gap-1 flex-1 min-w-0 bg-dark-900 border border-dark-800 rounded-lg px-3 py-2">
                     <button onClick={goUp} disabled={activeServer.files.currentPath === '/'} className="p-1 rounded hover:bg-dark-700 disabled:opacity-30 transition-colors flex-shrink-0">
                       <ChevronLeft className="w-4 h-4" />
@@ -481,27 +455,18 @@ export default function Remote() {
                       <RefreshCw className="w-4 h-4" />
                     </button>
                   </div>
-
-                  {/* 上传按钮 */}
-                  <button
-                    onClick={() => document.getElementById('remote-upload-input')?.click()}
-                    className="flex items-center gap-2 px-3 py-2 rounded-lg bg-accent-500/20 text-accent-400 text-xs hover:bg-accent-500/30 transition-colors"
-                  >
+                  <label className="flex items-center gap-2 px-3 py-2 rounded-lg bg-accent-500/20 text-accent-400 text-xs hover:bg-accent-500/30 transition-colors cursor-pointer">
                     <Upload className="w-3.5 h-3.5" /> 上传文件
-                  </button>
-                  <input id="remote-upload-input" type="file" multiple className="hidden"
-                    onChange={e => handleFiles(e.target.files)} />
+                    <input type="file" multiple className="hidden" onChange={e => handleFiles(e.target.files)} />
+                  </label>
                 </div>
 
-                {/* 文件列表（支持拖拽上传） */}
+                {/* 文件列表：移除整个区域的 onClick */}
                 <div
-                  className={`flex-1 glass rounded-xl overflow-hidden transition-colors ${
-                    dragOver ? 'border-accent-500 bg-accent-500/5' : ''
-                  }`}
+                  className={`flex-1 glass rounded-xl overflow-hidden transition-colors ${dragOver ? 'border-accent-500 bg-accent-500/5' : ''}`}
                   onDragOver={e => { e.preventDefault(); setDragOver(true); }}
                   onDragLeave={() => setDragOver(false)}
                   onDrop={handleDrop}
-                  onClick={() => document.getElementById('remote-upload-input')?.click()}
                 >
                   {dragOver ? (
                     <div className="flex flex-col items-center justify-center h-full text-accent-400">
@@ -521,7 +486,7 @@ export default function Remote() {
                       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2">
                         {/* 目录 */}
                         {activeServer.files.dirs.map((dir: RemoteDir) => (
-                          <button key={dir.path} onClick={e => { e.stopPropagation(); navigateDir(dir.name); }}
+                          <button key={dir.path} onClick={() => navigateDir(dir.name)}
                             className="flex items-center gap-2 p-3 rounded-lg bg-dark-800/60 hover:bg-dark-800 text-left transition-colors">
                             <Folder className="w-5 h-5 text-yellow-400 flex-shrink-0" />
                             <div className="min-w-0 flex-1">
@@ -535,10 +500,12 @@ export default function Remote() {
                         {activeServer.files.files.map((file: RemoteFile) => (
                           <div key={file.path} className="flex items-center gap-2 p-3 rounded-lg bg-dark-800/60 hover:bg-dark-800 transition-colors group">
                             <FileText className={`w-5 h-5 flex-shrink-0 ${file.isLog ? 'text-green-400' : 'text-dark-400'}`} />
-                            <div className="min-w-0 flex-1" onClick={() => loadLogs(file.path, logLines, logSearch)}>
+                            {/* 文件名区域：点击加载日志，阻止冒泡 */}
+                            <div className="min-w-0 flex-1 cursor-pointer" onClick={e => { e.stopPropagation(); loadLogs(file.path, logLines, logSearch); }}>
                               <div className="text-sm truncate">{file.name}</div>
                               <div className="text-xs text-dark-600">{formatSize(file.size)}</div>
                             </div>
+                            {/* 编辑按钮：阻止冒泡 */}
                             <button onClick={e => { e.stopPropagation(); openInEditor(file.path); }}
                               className="opacity-0 group-hover:opacity-100 p-1.5 rounded-lg hover:bg-accent-500/20 text-dark-500 hover:text-accent-400 transition-all flex-shrink-0"
                               title="编辑文件">
@@ -563,7 +530,7 @@ export default function Remote() {
                       <div className="flex items-center gap-2">
                         <FileText className="w-4 h-4 text-green-400" />
                         <span className="text-sm font-mono text-dark-300 truncate max-w-64">{activeServer.selectedFile.split('/').pop()}</span>
-                        <button onClick={() => { setActiveServer(s => s ? { ...s, selectedFile: null, logs: [] } : s); }}
+                        <button onClick={() => setActiveServer(s => s ? { ...s, selectedFile: null, logs: [] } : s)}
                           className="p-1 rounded hover:bg-dark-700 text-dark-500">
                           <X className="w-3.5 h-3.5" />
                         </button>
