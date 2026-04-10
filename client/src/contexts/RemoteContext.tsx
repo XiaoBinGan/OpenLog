@@ -69,30 +69,21 @@ export function RemoteProvider({ children }: { children: React.ReactNode }) {
     refreshServers();
   }, [refreshServers]);
 
-  // 自动重连：切换页面回来时恢复连接
+  // 自动刷新服务器列表（心跳）。不再覆盖 activeServer！
   useEffect(() => {
-    if (!activeServer || activeServer.status !== 'connected') return;
-    // 每 30s 刷新服务器状态（保持心跳）
     const interval = setInterval(async () => {
       try {
         const res = await fetch('/api/remote/servers');
         if (res.ok) {
           const data = await res.json();
           setServers(data.servers || []);
-          const updated = data.servers?.find((s: RemoteServer) => s.id === activeServer.id);
-          if (updated && updated.status === 'connected') {
-            setActiveServer(prev => prev ? { ...prev, ...updated } : prev);
-          } else if (updated && updated.status !== 'connected') {
-            // 连接被服务端断开，重置状态
-            setActiveServer(null);
-          }
         }
       } catch {}
     }, 30000);
     return () => clearInterval(interval);
-  }, [activeServer?.id, activeServer?.status]);
+  }, []);
 
-  // 连接服务器
+  // 连接服务器：设置状态 + 拉取 stats
   const connect = useCallback(async (server: RemoteServer) => {
     try {
       const res = await fetch(`/api/remote/servers/${server.id}/connect`, { method: 'POST' });
@@ -100,11 +91,18 @@ export function RemoteProvider({ children }: { children: React.ReactNode }) {
       const data = await res.json();
       if (!data.success) throw new Error(data.error || '连接失败');
 
+      // 拉取系统 stats（CPU/内存/磁盘）
+      let systemStats: Record<string, string> | null = null;
+      try {
+        const statsRes = await fetch(`/api/remote/servers/${server.id}/stats`);
+        if (statsRes.ok) systemStats = await statsRes.json();
+      } catch {}
+
       const connectedServer: RemoteServerState = {
         ...server,
         status: 'connected',
-        systemStats: null,
-        files: { files: [], dirs: [], currentPath: server.logPath },
+        systemStats,
+        files: { files: [], dirs: [], currentPath: server.logPath?.replace(/\/$/, '') || '/var/log' },
         selectedFile: null,
         fileContent: '',
         fileModified: false,
@@ -125,15 +123,17 @@ export function RemoteProvider({ children }: { children: React.ReactNode }) {
   // 断开连接
   const disconnect = useCallback(async () => {
     if (!activeServer) return;
+    const id = activeServer.id;
+    const name = activeServer.name;
     try {
-      await fetch(`/api/remote/servers/${activeServer.id}/disconnect`, { method: 'POST' });
-      showToast('info', `已断开 ${activeServer.name}`);
+      await fetch(`/api/remote/servers/${id}/disconnect`, { method: 'POST' });
+      showToast('info', `已断开 ${name}`);
       setActiveServer(null);
       refreshServers();
     } catch (err: any) {
       showToast('error', `断开失败: ${err.message}`);
     }
-  }, [activeServer, refreshServers, showToast]);
+  }, [refreshServers, showToast]);
 
   // 加载文件列表
   const loadFiles = useCallback(async (filePath?: string) => {
@@ -256,6 +256,23 @@ export function RemoteProvider({ children }: { children: React.ReactNode }) {
       return { success: false, error: err.message };
     }
   }, [activeServer?.id, loadFiles, showToast]);
+
+  // 活跃服务器的 stats 轮询（每 10s 刷新 CPU/内存/磁盘显示）
+  useEffect(() => {
+    if (!activeServer || activeServer.status !== 'connected') return;
+    const fetchStats = async () => {
+      try {
+        const res = await fetch(`/api/remote/servers/${activeServer.id}/stats`);
+        if (res.ok) {
+          const stats: Record<string, string> = await res.json();
+          setActiveServer(prev => prev ? { ...prev, systemStats: stats } : prev);
+        }
+      } catch {}
+    };
+    fetchStats();
+    const interval = setInterval(fetchStats, 10000);
+    return () => clearInterval(interval);
+  }, [activeServer?.id, activeServer?.status]);
 
   return (
     <RemoteContext.Provider value={{
