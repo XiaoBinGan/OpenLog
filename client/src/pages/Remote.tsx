@@ -388,7 +388,13 @@ export default function Remote() {
                 onEdit={() => openEdit(server)}
                 onDelete={() => deleteServer(server)}
                 onShell={() => setShowShell(true)}
-                onSelect={() => {}}
+                onSelect={() => {
+                  if (server.status !== 'connected') {
+                    handleConnect(server);
+                  } else if (activeServer?.id !== server.id) {
+                    handleConnect(server); // 已连接但非当前 → 切换
+                  }
+                }}
               />
             ))}
           </div>
