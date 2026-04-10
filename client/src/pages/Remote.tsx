@@ -188,8 +188,8 @@ function FileEditor({
   );
 }
 
-// 单个服务器卡片组件（用 memo 优化）
-const ServerCard = ({ server, isActive, onConnect, onDisconnect, onEdit, onDelete, onShell, onOpenEditor }: {
+// 单个服务器卡片组件
+const ServerCard = ({ server, isActive, onConnect, onDisconnect, onEdit, onDelete, onShell, onSelect }: {
   server: RemoteServer;
   isActive: boolean;
   onConnect: () => void;
@@ -197,21 +197,25 @@ const ServerCard = ({ server, isActive, onConnect, onDisconnect, onEdit, onDelet
   onEdit: () => void;
   onDelete: () => void;
   onShell: () => void;
-  onOpenEditor: () => void;
+  onSelect: () => void;
+  onOpenEditor?: () => void;
 }) => (
-  <div className={`glass rounded-xl p-3 transition-all group ${isActive ? 'ring-2 ring-accent-500/60 bg-accent-500/5' : ''}`}>
+  <div
+    className={`glass rounded-xl p-3 transition-all group cursor-pointer ${isActive ? 'ring-2 ring-accent-500/60 bg-accent-500/5' : 'hover:bg-dark-800/40'}`}
+    onClick={onSelect}
+  >
     {/* 服务器基本信息 */}
     <div className="flex items-start justify-between mb-2">
       <div className="flex items-center gap-2 min-w-0">
         <span className={`w-2 h-2 rounded-full flex-shrink-0 ${server.status === 'connected' ? 'bg-green-500' : server.status === 'error' ? 'bg-red-500' : 'bg-dark-600'}`} />
         <span className="text-sm font-medium truncate">{server.name}</span>
       </div>
-      {/* 编辑/删除按钮：group 类确保 hover 时显示 */}
+      {/* 编辑/删除按钮：阻止冒泡，避免触发 onSelect */}
       <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-        <button onClick={onEdit} className="p-1 rounded hover:bg-dark-700 text-dark-500 hover:text-dark-300">
+        <button onClick={e => { e.stopPropagation(); onEdit(); }} className="p-1 rounded hover:bg-dark-700 text-dark-500 hover:text-dark-300">
           <Pencil className="w-3.5 h-3.5" />
         </button>
-        <button onClick={onDelete} className="p-1 rounded hover:bg-red-500/20 text-dark-500 hover:text-red-400">
+        <button onClick={e => { e.stopPropagation(); onDelete(); }} className="p-1 rounded hover:bg-red-500/20 text-dark-500 hover:text-red-400">
           <Trash2 className="w-3.5 h-3.5" />
         </button>
       </div>
@@ -222,7 +226,7 @@ const ServerCard = ({ server, isActive, onConnect, onDisconnect, onEdit, onDelet
 
     {/* 操作按钮 */}
     {server.status === 'connected' ? (
-      <div className="flex gap-1">
+      <div className="flex gap-1" onClick={e => e.stopPropagation()}>
         <button onClick={onDisconnect} className="flex-1 px-2 py-1.5 text-xs rounded bg-yellow-500/20 text-yellow-400 hover:bg-yellow-500/30 transition-colors flex items-center justify-center gap-1">
           <WifiOff className="w-3 h-3" /> 断开
         </button>
@@ -380,11 +384,11 @@ export default function Remote() {
                 server={server}
                 isActive={activeServer?.id === server.id}
                 onConnect={() => handleConnect(server)}
-                onDisconnect={() => disconnect()}
+                onDisconnect={() => disconnect(server.id)}
                 onEdit={() => openEdit(server)}
                 onDelete={() => deleteServer(server)}
                 onShell={() => setShowShell(true)}
-                onOpenEditor={() => {}}
+                onSelect={() => {}}
               />
             ))}
           </div>
