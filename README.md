@@ -18,6 +18,7 @@
 | 💬 **运维助手** — 内置 LLM 聊天，支持流式对话与技术支持 | 💬 **Ops Assistant** — Built-in LLM chat with streaming for tech support |
 | 📜 **分析历史** — 查看所有 AI 分析记录，支持搜索与过滤 | 📜 **Analysis History** — View all AI analysis records with search & filter |
 | 🐳 **Docker 容器管理** — 图形化管理 Docker 容器，进入容器执行命令，查看上下游链路 | 🐳 **Docker Container Management** — GUI for Docker containers, exec into containers, trace upstream/downstream |
+| 🖥️ **远程服务器管理** — SSH 连接多台远程服务器，浏览器内终端、文件浏览与编辑 | 🖥️ **Remote Server Management** — SSH connect to remote servers, browser terminal, file browse & edit |
 
 ---
 
@@ -120,6 +121,40 @@ openlog/
 - **批量分析** — 同时分析多个容器的日志，AI 联合会诊
 
 > **连接方式：** 支持 Unix Socket（macOS Docker Desktop：`/var/run/docker.sock`）和 TCP（远程 Docker Server）
+
+### 8. 远程服务器管理 | Remote Server Management ⭐NEW
+
+访问 `/remote` 页面：
+
+- **添加服务器** — 支持密码和私钥认证，保存后持久化到 `remote-servers.json`
+- **一键连接** — 点击连接按钮发起 SSH，自动拉取系统状态与日志目录
+- **切换服务器** — 点击任意服务器卡片，右侧面板立即切换到该服务器状态
+- **文件浏览** — 树形目录展示，支持打开文件查看内容
+- **在线编辑** — 支持修改远程服务器上的文件（需确认）
+- **内置终端** — 点击 Shell 按钮展开终端面板，执行任意命令
+- **实时日志** — 点击日志图标，实时查看服务器日志文件流
+- **多服务器并发** — 支持同时连接多台服务器，独立操作互不干扰
+
+> **连接方式：** 支持密码（Password）和私钥（Private Key）两种认证方式
+
+示例配置 / Example config:
+```json
+{
+  "remoteServers": [
+    {
+      "id": "prod-web-01",
+      "name": "生产 Web 01",
+      "host": "192.168.1.10",
+      "port": 22,
+      "user": "deploy",
+      "authType": "privateKey",
+      "privateKeyPath": "/Users/supre/.ssh/id_rsa",
+      "logPath": "/var/log/app",
+      "status": "connected"
+    }
+  ]
+}
+```
 
 
 
@@ -237,6 +272,18 @@ Configure the log directory to monitor on the Settings page. Default: `.log` fil
 | POST | `/api/docker/:sourceId/:containerId/stop` | 停止容器 | POST | `/api/docker/:sourceId/:containerId/stop` | Stop container |
 | POST | `/api/docker/:sourceId/:containerId/restart` | 重启容器 | POST | `/api/docker/:sourceId/:containerId/restart` | Restart container |
 | GET | `/api/docker/trace/:sourceId/:containerId` | 上下游链路追踪 | GET | `/api/docker/trace/:sourceId/:containerId` | Trace upstream/downstream |
+| GET | `/api/remote/servers` | 获取服务器列表 ⭐NEW | GET | `/api/remote/servers` | Get remote servers list |
+| POST | `/api/remote/servers` | 添加服务器 ⭐NEW | POST | `/api/remote/servers` | Add remote server |
+| PUT | `/api/remote/servers/:id` | 更新服务器配置 ⭐NEW | PUT | `/api/remote/servers/:id` | Update server config |
+| DELETE | `/api/remote/servers/:id` | 删除服务器 ⭐NEW | DELETE | `/api/remote/servers/:id` | Delete server |
+| POST | `/api/remote/servers/:id/connect` | 连接服务器 ⭐NEW | POST | `/api/remote/servers/:id/connect` | Connect to server |
+| POST | `/api/remote/servers/:id/disconnect` | 断开连接 ⭐NEW | POST | `/api/remote/servers/:id/disconnect` | Disconnect server |
+| GET | `/api/remote/servers/:id/stats` | 获取系统状态 ⭐NEW | GET | `/api/remote/servers/:id/stats` | Get server stats |
+| GET | `/api/remote/servers/:id/files` | 获取文件列表 ⭐NEW | GET | `/api/remote/servers/:id/files` | List files |
+| GET | `/api/remote/servers/:id/file/read` | 读取文件内容 ⭐NEW | GET | `/api/remote/servers/:id/file/read` | Read file content |
+| POST | `/api/remote/servers/:id/file/write` | 写入文件 ⭐NEW | POST | `/api/remote/servers/:id/file/write` | Write file |
+| POST | `/api/remote/servers/:id/shell` | 执行 Shell 命令 ⭐NEW | POST | `/api/remote/servers/:id/shell` | Execute shell command |
+| GET | `/api/remote/servers/:id/logs` | 实时日志流 ⭐NEW | GET | `/api/remote/servers/:id/logs` | Live log stream |
 
 ---
 
