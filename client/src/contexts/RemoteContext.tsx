@@ -10,7 +10,7 @@ interface RemoteContextValue {
   activeServer: RemoteServerState | null;
   setActiveServer: React.Dispatch<React.SetStateAction<RemoteServerState | null>>;
   connect: (server: RemoteServer) => Promise<void>;
-  disconnect: () => Promise<void>;
+  disconnect: (serverId?: string) => Promise<void>;
   refreshServers: () => Promise<void>;
   loadFiles: (path?: string) => Promise<void>;
   navigateDir: (name: string) => Promise<void>;
@@ -108,20 +108,29 @@ export function RemoteProvider({ children }: { children: React.ReactNode }) {
     }
   }, [refreshServers, showToast]);
 
-  // 断开连接：用 ref 获取最新状态
-  const disconnect = useCallback(async () => {
-    const server = activeServerRef.current;
-    if (!server) return;
-    const { id, name } = server;
+  // 断开连接：支持传入指定 serverId，否则断开当前活跃服务器
+  const disconnect = useCallback(async (serverId?: string) => {
+    // 优先用传入的 id，找到对应服务器信息
+    const targetId = serverId || activeServerRef.current?.id;
+    if (!targetId) return;
+
+    // 从 servers 列表或 activeServer 里找名字
+    const name = activeServerRef.current?.id === targetId
+      ? activeServerRef.current.name
+      : (servers.find(s => s.id === targetId)?.name ?? targetId);
+
     try {
-      await fetch(`/api/remote/servers/${id}/disconnect`, { method: 'POST' });
+      await fetch(`/api/remote/servers/${targetId}/disconnect`, { method: 'POST' });
       showToast('info', `已断开 ${name}`);
-      setActiveServer(null);
+      // 只有断开的是当前活跃服务器时才清空 activeServer
+      if (activeServerRef.current?.id === targetId) {
+        setActiveServer(null);
+      }
       refreshServers();
     } catch (err: any) {
       showToast('error', `断开失败: ${err.message}`);
     }
-  }, [refreshServers, showToast]);
+  }, [servers, refreshServers, showToast]);
 
   // 加载文件列表：用 ref 获取最新 ID
   const loadFiles = useCallback(async (filePath?: string) => {
