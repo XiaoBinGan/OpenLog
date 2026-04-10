@@ -9,6 +9,7 @@ interface RemoteContextValue {
   servers: RemoteServer[];
   activeServer: RemoteServerState | null;
   setActiveServer: React.Dispatch<React.SetStateAction<RemoteServerState | null>>;
+  selectServer: (server: RemoteServer) => void;
   connect: (server: RemoteServer) => Promise<void>;
   disconnect: (serverId?: string) => Promise<void>;
   refreshServers: () => Promise<void>;
@@ -70,6 +71,31 @@ export function RemoteProvider({ children }: { children: React.ReactNode }) {
     const interval = setInterval(refreshServers, 30000);
     return () => clearInterval(interval);
   }, [refreshServers]);
+
+  // 选中服务器（纯前端状态切换，不发起连接）
+  const selectServer = useCallback((server: RemoteServer) => {
+    if (server.status !== 'connected') {
+      setActiveServer(null);
+    } else {
+      const latest = servers.find(s => s.id === server.id) ?? server;
+      setActiveServer(prev => {
+        if (prev?.id === latest.id) return prev;
+        return {
+          ...latest,
+          status: 'connected',
+          systemStats: prev?.systemStats ?? null,
+          files: prev?.files ?? { files: [], dirs: [], currentPath: latest.logPath?.replace(/\/$/, '') || '/var/log' },
+          selectedFile: null,
+          fileContent: '',
+          fileModified: false,
+          logs: [],
+          logsLoading: false,
+          filesLoading: false,
+          editingFilePath: null,
+        };
+      });
+    }
+  }, [servers]);
 
   // 连接服务器
   const connect = useCallback(async (server: RemoteServer) => {
@@ -303,6 +329,7 @@ export function RemoteProvider({ children }: { children: React.ReactNode }) {
       servers,
       activeServer,
       setActiveServer,
+      selectServer,
       connect,
       disconnect,
       refreshServers,

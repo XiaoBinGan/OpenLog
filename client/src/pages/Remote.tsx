@@ -245,7 +245,7 @@ const ServerCard = ({ server, isActive, onConnect, onDisconnect, onEdit, onDelet
 // 主组件
 export default function Remote() {
   const {
-    servers, activeServer, setActiveServer, connect, disconnect, refreshServers,
+    servers, activeServer, setActiveServer, selectServer, connect, disconnect, refreshServers,
     loadFiles, navigateDir, goUp,
     loadLogs, openInEditor, updateFileContent, saveFile, closeEditor,
     uploadFile, toast, clearToast,
@@ -390,9 +390,9 @@ export default function Remote() {
                 onShell={() => setShowShell(true)}
                 onSelect={() => {
                   if (server.status !== 'connected') {
-                    handleConnect(server);
+                    setActiveServer(null); // 未连接 → 显示默认空白状态
                   } else if (activeServer?.id !== server.id) {
-                    handleConnect(server); // 已连接但非当前 → 切换
+                    selectServer(server); // 已连接但非当前 → 切换
                   }
                 }}
               />
