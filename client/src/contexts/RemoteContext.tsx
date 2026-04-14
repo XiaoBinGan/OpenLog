@@ -310,7 +310,7 @@ export function RemoteProvider({ children }: { children: React.ReactNode }) {
       try {
         const res = await fetch(`/api/remote/servers/${server.id}/stats`);
         if (res.ok) {
-          const stats: Record<string, any> = await res.json();
+          const stats: Record<string, string> = await res.json();
           setActiveServer(prev => {
             if (!prev || prev.id !== server.id) return prev;
             return { ...prev, systemStats: stats };
@@ -320,7 +320,7 @@ export function RemoteProvider({ children }: { children: React.ReactNode }) {
     };
 
     fetchStats();
-    const interval = setInterval(fetchStats, 15000);
+    const interval = setInterval(fetchStats, 10000);
     return () => clearInterval(interval);
   }, [activeServer?.id, activeServer?.status]);
 

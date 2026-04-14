@@ -21,7 +21,7 @@ export interface RemoteServer {
 }
 
 export interface RemoteServerState extends RemoteServer {
-  systemStats: Record<string, any> | null;
+  systemStats: Record<string, string> | null;
   files: RemoteFileList;
   selectedFile: string | null;
   fileContent: string;
