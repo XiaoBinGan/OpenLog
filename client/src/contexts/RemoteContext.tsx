@@ -4,6 +4,7 @@
  */
 import { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import type { RemoteServer, RemoteServerState, RemoteFileList, Log } from '../types';
+import { useDevice } from './DeviceContext';
 
 interface RemoteContextValue {
   servers: RemoteServer[];
@@ -42,6 +43,9 @@ export function RemoteProvider({ children }: { children: React.ReactNode }) {
   // 用 ref 追踪最新 activeServer，避免闭包陈旧
   const activeServerRef = useRef(activeServer);
   useEffect(() => { activeServerRef.current = activeServer; }, [activeServer]);
+
+  // 同步 DeviceContext，断开时切回本地
+  const { resetToLocal, setSelectedDevice } = useDevice();
 
   const showToast = useCallback((type: ToastMsg['type'], message: string) => {
     const id = `${Date.now()}`;
@@ -126,6 +130,7 @@ export function RemoteProvider({ children }: { children: React.ReactNode }) {
         editingFilePath: null,
       };
       setActiveServer(connectedServer);
+      setSelectedDevice(server); // 同步 DeviceContext，让右上角显示当前设备
       showToast('success', `已连接到 ${server.name}`);
       refreshServers();
     } catch (err: any) {
@@ -151,12 +156,13 @@ export function RemoteProvider({ children }: { children: React.ReactNode }) {
       // 只有断开的是当前活跃服务器时才清空 activeServer
       if (activeServerRef.current?.id === targetId) {
         setActiveServer(null);
+        resetToLocal(); // 同步 DeviceContext 切回本地
       }
       refreshServers();
     } catch (err: any) {
       showToast('error', `断开失败: ${err.message}`);
     }
-  }, [servers, refreshServers, showToast]);
+  }, [servers, refreshServers, showToast, resetToLocal]);
 
   // 加载文件列表：用 ref 获取最新 ID
   const loadFiles = useCallback(async (filePath?: string) => {
@@ -310,19 +316,29 @@ export function RemoteProvider({ children }: { children: React.ReactNode }) {
       try {
         const res = await fetch(`/api/remote/servers/${server.id}/stats`);
         if (res.ok) {
-          const stats: Record<string, string> = await res.json();
+          const stats: Record<string, any> = await res.json();
           setActiveServer(prev => {
             if (!prev || prev.id !== server.id) return prev;
             return { ...prev, systemStats: stats };
           });
+        } else {
+          // stats API 失败（如 SSH 已断开），清理连接状态
+          setActiveServer(null);
+          resetToLocal();
+          refreshServers();
         }
-      } catch {}
+      } catch {
+        // 网络错误，同样清理状态
+        setActiveServer(null);
+        resetToLocal();
+        refreshServers();
+      }
     };
 
     fetchStats();
     const interval = setInterval(fetchStats, 10000);
     return () => clearInterval(interval);
-  }, [activeServer?.id, activeServer?.status]);
+  }, [activeServer?.id, activeServer?.status, refreshServers]);
 
   return (
     <RemoteContext.Provider value={{

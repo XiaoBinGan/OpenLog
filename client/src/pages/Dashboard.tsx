@@ -15,10 +15,13 @@ import {
 } from 'lucide-react';
 import { LineChart, Line, AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
 import { useDevice } from '../contexts/DeviceContext';
+import { useRemote } from '../contexts/RemoteContext';
 import type { MonitorStats, MonitorHistory, Log, RemoteServer } from '../types';
 
 export default function Dashboard() {
   const { selectedDevice, isRemote } = useDevice();
+  const { activeServer } = useRemote();
+  const isRemoteConnected = isRemote && !!activeServer && activeServer.status === 'connected';
   
   const [stats, setStats] = useState<MonitorStats | null>(null);
   const [history, setHistory] = useState<MonitorHistory[]>([]);
@@ -41,7 +44,7 @@ export default function Dashboard() {
     
     const fetchDeviceData = async () => {
       try {
-        if (!isRemote) {
+        if (!isRemoteConnected) {
           // 本地设备
           const [statsData, historyData, logsData] = await Promise.all([
             fetch('/api/monitor/stats').then(r => r.json()),
@@ -80,8 +83,8 @@ export default function Dashboard() {
           };
           
           setWs(wsInstance);
-        } else {
-          // 远程服务器
+        } else if (isRemote) {
+          // 远程已连接，走 stats API
           const [statsData] = await Promise.all([
             fetch(`/api/remote/servers/${selectedDevice.id}/stats`).then(r => r.json())
           ]);

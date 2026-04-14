@@ -25,22 +25,32 @@ export default function GlobalStatusBar() {
           }
           const data = await res.json();
 
-          // 解析远程统计
+          // 解析远程统计 - 新结构化格式
           let cpu = 0, memory = 0, disk = 0;
 
           if (data.cpu) {
-            const match = data.cpu.match(/([\d.]+)/);
-            if (match) cpu = parseFloat(match[1]);
+            // 新格式: {load: 0.2, cores: []} 或旧格式: "0.1"
+            cpu = typeof data.cpu === 'object' ? data.cpu.load : parseFloat(String(data.cpu).match(/([\d.]+)/)?.[1] || '0');
           }
 
-          if (data.mem) {
-            const match = data.mem.match(/\(([\d.]+)%\)/);
-            if (match) memory = parseFloat(match[1]);
+          if (data.memory) {
+            // 新格式: {used: ..., total: ...} 或旧格式: "12950.0/128568.0 MB (10.1%)"
+            if (typeof data.memory === 'object') {
+              memory = (data.memory.used / (data.memory.total || 1)) * 100;
+            } else {
+              const match = String(data.memory).match(/\(([\d.]+)%\)/);
+              if (match) memory = parseFloat(match[1]);
+            }
           }
 
           if (data.disk) {
-            const match = data.disk.match(/(\d+)%/);
-            if (match) disk = parseFloat(match[1]);
+            // 新格式: [{usePercent: 23}] 或旧格式: "388G/1.8T (23%)"
+            if (Array.isArray(data.disk)) {
+              disk = data.disk[0]?.usePercent || 0;
+            } else {
+              const match = String(data.disk).match(/(\d+)%/);
+              if (match) disk = parseFloat(match[1]);
+            }
           }
 
           setStats({ cpu, memory, disk });

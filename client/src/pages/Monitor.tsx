@@ -35,67 +35,38 @@ export default function Monitor() {
       
       try {
         if (isRemote) {
-          // 远程服务器
+          // 远程服务器：API 直接返回 MonitorStats 结构
           const res = await fetch(`/api/remote/servers/${selectedDevice.id}/stats`);
           const data = await res.json();
+          
+          console.log('[Monitor] remote stats response:', JSON.stringify(data));
           
           if (data.error) {
             throw new Error(data.error);
           }
           
-          // 解析远程统计
-          const remoteStats: MonitorStats = {
-            cpu: { load: 0, cores: [] },
-            memory: { used: 0, total: 1, free: 0 },
-            disk: [],
-            network: [],
-            processes: []
-          };
+          setStats({
+            ...data,
+            disk: Array.isArray(data.disk) ? data.disk : [],
+            network: Array.isArray(data.network) ? data.network : [],
+            processes: Array.isArray(data.processes) ? data.processes : [],
+          } as MonitorStats);
           
-          // 解析 CPU
-          if (data.cpu) {
-            const match = data.cpu.match(/([\d.]+)/);
-            if (match) remoteStats.cpu.load = parseFloat(match[1]);
-          }
-          
-          // 解析内存
-          if (data.mem) {
-            const memMatch = data.mem.match(/([\d.]+)\/([\d.]+)\s*MB\s*\(([\d.]+)%\)/);
-            if (memMatch) {
-              remoteStats.memory = {
-                used: parseFloat(memMatch[1]) * 1024 * 1024,
-                total: parseFloat(memMatch[2]) * 1024 * 1024,
-                free: (parseFloat(memMatch[2]) - parseFloat(memMatch[1])) * 1024 * 1024
-              };
-            }
-          }
-          
-          // 解析磁盘
-          if (data.disk) {
-            const diskMatch = data.disk.match(/(\d+)%/);
-            if (diskMatch) {
-              remoteStats.disk = [{
-                name: '/',
-                used: 0,
-                total: 1,
-                usePercent: parseFloat(diskMatch[1])
-              }];
-            }
-          }
-          
-          setStats(remoteStats);
-          
-          // 生成历史数据（远程没有历史记录）
+          // 追加到历史（仅 CPU/内存/磁盘，网络和进程不追踪历史）
           const now = Date.now();
-          const mockHistory: MonitorHistory[] = Array.from({ length: 60 }, (_, i) => ({
-            id: i,
-            timestamp: new Date(now - (59 - i) * 5000).toISOString(),
-            cpu: remoteStats.cpu.load * (0.8 + Math.random() * 0.4),
-            memory: (remoteStats.memory.used / (remoteStats.memory.total || 1)) * 100 * (0.9 + Math.random() * 0.2),
-            disk: remoteStats.disk[0]?.usePercent || 0,
-            network: Math.random() * 100000
-          }));
-          setHistory(mockHistory);
+          const memPct = data.memory ? (data.memory.used / (data.memory.total || 1)) * 100 : 0;
+          const last = history[history.length - 1];
+          setHistory(prev => {
+            const next = [...prev, {
+              id: Date.now(),
+              timestamp: new Date().toISOString(),
+              cpu: data.cpu?.load ?? 0,
+              memory: memPct,
+              disk: data.disk?.[0]?.usePercent ?? 0,
+              network: Array.isArray(data.network) && data.network[0] ? (data.network[0].rx + data.network[0].tx) : 0,
+            }];
+            return next.slice(-60);
+          });
           
         } else {
           // 本地设备
@@ -323,58 +294,56 @@ export default function Monitor() {
         </div>
       </div>
 
-      {/* Network - only for local */}
-      {!isRemote && (
-        <div className="glass rounded-xl p-4">
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-lg font-semibold flex items-center gap-2">
-              <Network className="w-5 h-5 text-green-500" />
-              网络流量
-            </h2>
-          </div>
-          
-          <div className="grid md:grid-cols-2 gap-6">
-            {stats?.network?.slice(0, 2).map((net, idx) => (
-              <div key={idx} className="bg-dark-900 rounded-lg p-3">
-                <div className="text-sm text-dark-400 mb-2">{net.iface}</div>
-                <div className="flex justify-between">
-                  <div>
-                    <div className="text-xs text-dark-500">下载</div>
-                    <div className="text-lg font-semibold text-green-400">
-                      {formatBytes(net.rx)}/s
-                    </div>
+      {/* Network */}
+      <div className="glass rounded-xl p-4">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-lg font-semibold flex items-center gap-2">
+            <Network className="w-5 h-5 text-green-500" />
+            网络流量
+          </h2>
+        </div>
+
+        <div className="grid md:grid-cols-2 gap-6">
+          {stats?.network?.slice(0, 2).map((net, idx) => (
+            <div key={idx} className="bg-dark-900 rounded-lg p-3">
+              <div className="text-sm text-dark-400 mb-2">{net.iface}</div>
+              <div className="flex justify-between">
+                <div>
+                  <div className="text-xs text-dark-500">下载</div>
+                  <div className="text-lg font-semibold text-green-400">
+                    {formatBytes(net.rx)}/s
                   </div>
-                  <div>
-                    <div className="text-xs text-dark-500">上传</div>
-                    <div className="text-lg font-semibold text-blue-400">
-                      {formatBytes(net.tx)}/s
-                    </div>
+                </div>
+                <div>
+                  <div className="text-xs text-dark-500">上传</div>
+                  <div className="text-lg font-semibold text-blue-400">
+                    {formatBytes(net.tx)}/s
                   </div>
                 </div>
               </div>
-            ))}
-          </div>
-          
-          {/* Network History */}
-          <div className="h-40 mt-4">
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={history}>
-                <XAxis dataKey="timestamp" hide />
-                <YAxis tickFormatter={formatNumber} stroke="#5c5c66" fontSize={12} />
-                <Tooltip 
-                  contentStyle={{ background: '#1e1e26', border: '1px solid #32323a', borderRadius: '8px' }}
-                  labelFormatter={(v) => new Date(v).toLocaleTimeString()}
-                  formatter={(v: number) => [formatBytes(v) + '/s', '流量']}
-                />
-                <Line type="monotone" dataKey="network" stroke="#22c55e" strokeWidth={2} dot={false} />
-              </LineChart>
-            </ResponsiveContainer>
-          </div>
+            </div>
+          ))}
         </div>
-      )}
 
-      {/* Top Processes - only for local */}
-      {!isRemote && stats?.processes && stats.processes.length > 0 && (
+        {/* Network History */}
+        <div className="h-40 mt-4">
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart data={history}>
+              <XAxis dataKey="timestamp" hide />
+              <YAxis tickFormatter={formatNumber} stroke="#5c5c66" fontSize={12} />
+              <Tooltip
+                contentStyle={{ background: '#1e1e26', border: '1px solid #32323a', borderRadius: '8px' }}
+                labelFormatter={(v) => new Date(v).toLocaleTimeString()}
+                formatter={(v: number) => [formatBytes(v) + '/s', '流量']}
+              />
+              <Line type="monotone" dataKey="network" stroke="#22c55e" strokeWidth={2} dot={false} />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+
+      {/* Top Processes */}
+      {stats?.processes && stats.processes.length > 0 && (
         <div className="glass rounded-xl p-4">
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-lg font-semibold flex items-center gap-2">
@@ -413,19 +382,6 @@ export default function Monitor() {
               </tbody>
             </table>
           </div>
-        </div>
-      )}
-      
-      {/* Remote info notice */}
-      {isRemote && (
-        <div className="glass rounded-xl p-4 bg-blue-500/10 border border-blue-500/20">
-          <h3 className="font-semibold mb-2 text-blue-400 flex items-center gap-2">
-            <Server className="w-5 h-5" />
-            远程服务器监控
-          </h3>
-          <p className="text-sm text-dark-400">
-            远程服务器监控显示基础系统资源（CPU、内存、磁盘）。网络流量和进程列表仅在本地设备可用。
-          </p>
         </div>
       )}
     </div>
