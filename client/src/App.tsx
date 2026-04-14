@@ -11,27 +11,30 @@ import Settings from './pages/Settings';
 import Remote from './pages/Remote';
 import DevAssistant from './pages/DevAssistant';
 import { RemoteProvider } from './contexts/RemoteContext';
+import { DeviceProvider } from './contexts/DeviceContext';
 
 function App() {
   return (
     <BrowserRouter>
-      <RemoteProvider>
-        <Routes>
-          <Route path="/" element={<Layout />}>
-            <Route index element={<Navigate to="/dashboard" replace />} />
-            <Route path="dashboard" element={<Dashboard />} />
-            <Route path="logs" element={<Logs />} />
-            <Route path="remote" element={<Remote />} />
-            <Route path="docker" element={<Docker />} />
-            <Route path="dev-assistant" element={<DevAssistant />} />
-            <Route path="analytics" element={<Analytics />} />
-            <Route path="analysis-history" element={<AnalysisHistory />} />
-            <Route path="assistant" element={<Assistant />} />
-            <Route path="monitor" element={<Monitor />} />
-            <Route path="settings" element={<Settings />} />
-          </Route>
-        </Routes>
-      </RemoteProvider>
+      <DeviceProvider>
+        <RemoteProvider>
+          <Routes>
+            <Route path="/" element={<Layout />}>
+              <Route index element={<Navigate to="/dashboard" replace />} />
+              <Route path="dashboard" element={<Dashboard />} />
+              <Route path="logs" element={<Logs />} />
+              <Route path="remote" element={<Remote />} />
+              <Route path="docker" element={<Docker />} />
+              <Route path="dev-assistant" element={<DevAssistant />} />
+              <Route path="analytics" element={<Analytics />} />
+              <Route path="analysis-history" element={<AnalysisHistory />} />
+              <Route path="assistant" element={<Assistant />} />
+              <Route path="monitor" element={<Monitor />} />
+              <Route path="settings" element={<Settings />} />
+            </Route>
+          </Routes>
+        </RemoteProvider>
+      </DeviceProvider>
     </BrowserRouter>
   );
 }

@@ -424,9 +424,43 @@ export default function Remote() {
             {/* 系统状态栏 */}
             <div className="grid grid-cols-4 gap-2">
               {[
-                { icon: <Cpu className="w-4 h-4" />, label: 'CPU', value: activeServer.systemStats?.cpu || '–' },
-                { icon: <MemoryStick className="w-4 h-4" />, label: '内存', value: activeServer.systemStats?.mem || '–' },
-                { icon: <HardDrive className="w-4 h-4" />, label: '磁盘', value: activeServer.systemStats?.disk || '–' },
+                { 
+                  icon: <Cpu className="w-4 h-4" />, 
+                  label: 'CPU', 
+                  value: (() => {
+                    const cpu = activeServer.systemStats?.cpu as any;
+                    if (!cpu) return '–';
+                    if (typeof cpu === 'object' && 'load' in cpu) return `${(cpu as {load: number}).load?.toFixed(1) || 0}%`;
+                    return String(cpu);
+                  })()
+                },
+                { 
+                  icon: <MemoryStick className="w-4 h-4" />, 
+                  label: '内存', 
+                  value: (() => {
+                    const mem = activeServer.systemStats?.memory as any;
+                    if (!mem) return '–';
+                    if (typeof mem === 'object' && 'used' in mem && 'total' in mem) {
+                      const usedGB = (mem.used / 1e9).toFixed(1);
+                      const totalGB = (mem.total / 1e9).toFixed(1);
+                      const percent = ((mem.used / mem.total) * 100).toFixed(1);
+                      return `${usedGB}/${totalGB} GB (${percent}%)`;
+                    }
+                    return String(mem);
+                  })()
+                },
+                { 
+                  icon: <HardDrive className="w-4 h-4" />, 
+                  label: '磁盘', 
+                  value: (() => {
+                    const disk = activeServer.systemStats?.disk as any;
+                    if (!disk) return '–';
+                    if (Array.isArray(disk) && disk.length > 0 && 'usePercent' in disk[0]) {
+                      return `${disk[0].usePercent || 0}%`;
+                    }
+                    return String(disk);
+                  })()
+                },
                 { icon: <Clock className="w-4 h-4" />, label: '运行时间', value: activeServer.systemStats?.uptime || '–' },
               ].map((stat, i) => (
                 <div key={i} className="glass rounded-lg p-3 flex items-center gap-3">

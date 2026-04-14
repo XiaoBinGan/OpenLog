@@ -22,6 +22,9 @@ interface DeviceContextType {
   
   // 刷新设备列表
   refreshDevices: () => Promise<void>;
+
+  // 立即切换到本地设备（用于远程断开时同步状态）
+  resetToLocal: () => void;
   
   // 是否是远程设备
   isRemote: boolean;
@@ -52,6 +55,12 @@ export function DeviceProvider({ children }: { children: React.ReactNode }) {
   const setSelectedDevice = useCallback((device: Device) => {
     setSelectedDeviceState(device);
     localStorage.setItem('openlog-selected-device', JSON.stringify(device));
+  }, []);
+
+  // 立即切换到本地设备
+  const resetToLocal = useCallback(() => {
+    setSelectedDeviceState(LOCAL_DEVICE);
+    localStorage.setItem('openlog-selected-device', JSON.stringify(LOCAL_DEVICE));
   }, []);
   
   // 刷新设备列表
@@ -105,6 +114,7 @@ export function DeviceProvider({ children }: { children: React.ReactNode }) {
       refreshDevices,
       isRemote,
       getDeviceStatusColor,
+      resetToLocal,
     }}>
       {children}
     </DeviceContext.Provider>

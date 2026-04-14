@@ -17,7 +17,6 @@ import {
   Code2,
 } from 'lucide-react';
 import clsx from 'clsx';
-import { DeviceProvider } from '../contexts/DeviceContext';
 import GlobalStatusBar from './GlobalStatusBar';
 import AIAnalysisToast from './AIAnalysisToast';
 
@@ -204,10 +203,8 @@ function LayoutContent() {
 
 export default function Layout() {
   return (
-    <DeviceProvider>
-      <AssistantProvider>
-        <LayoutContent />
-      </AssistantProvider>
-    </DeviceProvider>
+    <AssistantProvider>
+      <LayoutContent />
+    </AssistantProvider>
   );
 }

@@ -580,7 +580,8 @@ function parseRemoteLogLine(line, source, index = 0) {
 }
 
 /**
- * 获取远程服务器系统状态
+ * 获取远程服务器系统状态（完整版，含网络流量和进程）
+ * 返回与 MonitorStats 接口兼容的结构
  */
 export async function getRemoteSystemStats(id) {
   const ssh = sshConnections.get(id);
@@ -589,24 +590,92 @@ export async function getRemoteSystemStats(id) {
   }
   
   try {
-    // 获取 CPU、内存、磁盘信息
+    // 一次性获取所有指标
     const result = await ssh.execCommand(`
-      echo "CPU:$(top -bn1 | grep 'Cpu(s)' | awk '{print $2}' || echo 'N/A')"
+      # CPU + 内存
+      echo "CPU:$(top -bn1 | grep 'Cpu(s)' | awk '{print $2}' || echo '0')"
       echo "MEM:$(free -m | awk '/Mem:/ {printf "%.1f/%.1f MB (%.1f%%)", $3, $2, ($3/$2)*100}')"
+      
+      # 磁盘
       echo "DISK:$(df -h / | awk 'NR==2 {printf "%s/%s (%s)", $3, $2, $5}')"
-      echo "UPTIME:$(uptime -p || uptime)"
-      echo "LOAD:$(cat /proc/loadavg | awk '{print $1,$2,$3}' || echo 'N/A')"
+      
+      # 网络流量（取第一个活跃网卡）
+      cat /proc/net/dev | awk 'NR>2 {
+        split($2,s,":"); rx=$2; ry=$10;
+        # 只取内网/公网常见网卡，排除 loopback
+        if (s[1] !~ /lo|dummy|docker|br|veth|tun|tap|virbr/) {
+          print "NET:" s[1] ":" rx ":" ry
+          exit
+        }
+      }'
+      
+      # Top 10 进程（按 CPU 排序）
+      ps aux --no-headers | sort -rn -k 3 | head -10 | \
+        awk '{print "PROC:" $2 ":" $11 ":" $3 ":" $4}'
     `);
     
-    const stats = {};
-    result.stdout.split('\n').forEach(line => {
-      const [key, value] = line.split(':');
-      if (key && value) {
-        stats[key.toLowerCase()] = value.trim();
+    if (result.stderr && result.stderr.includes('Permission denied')) {
+      // 部分系统 /proc/net/dev 需要权限，降级不返回网络数据
+    }
+    
+    const lines = result.stdout.split('\n').filter(l => l.trim());
+    
+    // 解析 CPU
+    const cpuMatch = lines.find(l => l.startsWith('CPU:'));
+    const cpuLoad = cpuMatch ? parseFloat(cpuMatch.replace('CPU:', '')) || 0 : 0;
+    
+    // 解析内存
+    const memMatch = lines.find(l => l.startsWith('MEM:'));
+    let memUsed = 0, memTotal = 1, memFree = 0;
+    if (memMatch) {
+      const m = memMatch.replace('MEM:', '').match(/([\d.]+)\/([\d.]+)\s*MB\s*\(([\d.]+)%\)/);
+      if (m) {
+        memUsed = parseFloat(m[1]) * 1024 * 1024;
+        memTotal = parseFloat(m[2]) * 1024 * 1024;
+        memFree  = (parseFloat(m[2]) - parseFloat(m[1])) * 1024 * 1024;
       }
+    }
+    
+    // 解析磁盘
+    const diskMatch = lines.find(l => l.startsWith('DISK:'));
+    const disks = [];
+    if (diskMatch) {
+      const d = diskMatch.replace('DISK:', '').match(/([\d.]+[BKMGT]?)\/([\d.]+[BKMGT]?)\s*\((\d+)%\)/);
+      if (d) {
+        disks.push({ name: '/', used: 0, total: 1, usePercent: parseFloat(d[3]) });
+      }
+    }
+    
+    // 解析网络流量
+    const netLines = lines.filter(l => l.startsWith('NET:'));
+    const network = netLines.map(l => {
+      const parts = l.replace('NET:', '').split(':');
+      return {
+        iface: parts[0] || 'eth0',
+        rx: parseInt(parts[1]) || 0,
+        tx: parseInt(parts[2]) || 0,
+      };
     });
     
-    return stats;
+    // 解析进程列表
+    const procLines = lines.filter(l => l.startsWith('PROC:'));
+    const processes = procLines.map(l => {
+      const parts = l.replace('PROC:', '').split(':');
+      return {
+        pid: parseInt(parts[0]) || 0,
+        name: (parts[1] || '').split(' ')[0],
+        cpu: parseFloat(parts[2]) || 0,
+        mem: parseFloat(parts[3]) || 0,
+      };
+    });
+    
+    return {
+      cpu: { load: cpuLoad, cores: [] },
+      memory: { used: memUsed, total: memTotal, free: memFree },
+      disk: disks,
+      network,
+      processes,
+    };
   } catch (err) {
     return { error: err.message };
   }
