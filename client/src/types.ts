@@ -162,6 +162,7 @@ export interface Settings {
   watchFiles: string;
   refreshInterval: string;
   autoAnalysis: boolean;
+  thinkingEnabled: boolean;
   watchSources: WatchSource[];
   dockerSources: DockerSource[];
 }

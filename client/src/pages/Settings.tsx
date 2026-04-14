@@ -46,6 +46,7 @@ export default function Settings() {
     watchFiles: '*.log',
     refreshInterval: '5000',
     autoAnalysis: true,
+    thinkingEnabled: false,
     watchSources: [
       {
         id: 'default',
@@ -81,6 +82,8 @@ export default function Settings() {
   const [logFiles, setLogFiles] = useState<{ name: string; path: string; size: number }[]>([]);
   const [ollamaModels, setOllamaModels] = useState<string[]>([]);
   const [loadingModels, setLoadingModels] = useState(false);
+  const [thinkingTestStatus, setThinkingTestStatus] = useState<'idle' | 'testing' | 'ok' | 'fail'>('idle');
+  const [thinkingTestMsg, setThinkingTestMsg] = useState('');
 
   useEffect(() => {
     // Load settings
@@ -121,6 +124,72 @@ export default function Settings() {
       .catch(() => setLoadingModels(false));
   };
 
+  const testThinkingFilter = async () => {
+    setThinkingTestStatus('testing');
+    setThinkingTestMsg('');
+    try {
+      const res = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          messages: [{ role: 'user', content: '请用一句话回答：1+1等于几？' }],
+        })
+      });
+
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+      // 读取 SSE 流
+      const reader = res.body?.getReader();
+      if (!reader) throw new Error('无法读取流');
+
+      let fullText = '';
+      let hasThink = false;
+      const decoder = new TextDecoder();
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const chunk = decoder.decode(value, { stream: true });
+        const lines = chunk.split('\n');
+        for (const line of lines) {
+          if (line.startsWith('data: ') && line !== 'data: [DONE]') {
+            try {
+              const data = JSON.parse(line.slice(6));
+              if (data.content) fullText += data.content;
+              if (data.error) throw new Error(data.error);
+            } catch (e: any) {
+              if (e.message && !e.message.includes('JSON')) throw e;
+            }
+          }
+        }
+      }
+
+      // 检查原始模型是否输出 <think/> 标签
+      hasThink = fullText.includes('<think') || fullText.includes('&lt;think');
+
+      if (settings.thinkingEnabled) {
+        // 开启思维 → 应该能看到 <think/> 内容
+        setThinkingTestStatus('ok');
+        setThinkingTestMsg(hasThink
+          ? `✅ 思维过程可见（模型输出了推理标签）`
+          : `✅ 模型未输出推理标签，或当前模型不支持推理模式`
+        );
+      } else {
+        // 关闭思维 → 不应该看到 <think/> 标签
+        if (hasThink) {
+          setThinkingTestStatus('fail');
+          setThinkingTestMsg(`❌ 过滤失败：仍然包含推理标签`);
+        } else {
+          setThinkingTestStatus('ok');
+          setThinkingTestMsg(`✅ 过滤正常（无推理标签输出）`);
+        }
+      }
+    } catch (err: any) {
+      setThinkingTestStatus('fail');
+      setThinkingTestMsg(`❌ 测试失败: ${err.message}`);
+    }
+  };
+
   const handleSave = async () => {
     setSaving(true);
     setSaved(false);
@@ -138,6 +207,7 @@ export default function Settings() {
           watchFiles: settings.watchFiles,
           refreshInterval: settings.refreshInterval,
           autoAnalysis: settings.autoAnalysis,
+          thinkingEnabled: settings.thinkingEnabled,
           watchSources: settings.watchSources,
           dockerSources: settings.dockerSources,
         })
@@ -402,6 +472,49 @@ export default function Settings() {
                 className="w-full px-4 py-2.5 bg-dark-900 border border-dark-800 rounded-lg text-dark-200 placeholder-dark-500 focus:outline-none focus:border-accent-500"
               />
             )}
+          </div>
+
+          {/* Thinking Toggle */}
+          <div className="p-4 rounded-lg bg-dark-900/60 border border-dark-800 space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <Brain className="w-4 h-4 text-purple-400" />
+                <div>
+                  <p className="text-sm text-dark-200">显示思维过程</p>
+                  <p className="text-xs text-dark-500">
+                    {settings.thinkingEnabled
+                      ? '输出 <think/> 标签内的推理过程（适用于 deepseek-r1、qwen3 等推理模型）'
+                      : '自动过滤模型的内部推理过程，只输出最终结果'}
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => { setSettings(p => ({ ...p, thinkingEnabled: !p.thinkingEnabled })); setSaved(false); }}
+                className="relative w-11 h-6 rounded-full transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-purple-500/50"
+                style={{ background: settings.thinkingEnabled ? '#a855f7' : '#374151' }}
+              >
+                <div
+                  className="absolute top-0.5 w-5 h-5 rounded-full bg-white shadow-sm transition-all duration-200"
+                  style={{ transform: settings.thinkingEnabled ? 'translateX(22px)' : 'translateX(2px)' }}
+                />
+              </button>
+            </div>
+            {/* Thinking Test */}
+            <div className="flex items-center gap-3">
+              <button
+                onClick={testThinkingFilter}
+                disabled={thinkingTestStatus === 'testing'}
+                className="px-3 py-1.5 rounded-lg bg-purple-500/15 text-purple-400 text-xs font-medium hover:bg-purple-500/25 transition-colors flex items-center gap-1.5 disabled:opacity-50"
+              >
+                <Terminal className="w-3.5 h-3.5" />
+                {thinkingTestStatus === 'testing' ? '测试中...' : '测试思维过滤'}
+              </button>
+              {thinkingTestMsg && (
+                <span className={`text-xs ${thinkingTestStatus === 'ok' ? 'text-green-400' : thinkingTestStatus === 'fail' ? 'text-red-400' : 'text-dark-400'}`}>
+                  {thinkingTestMsg}
+                </span>
+              )}
+            </div>
           </div>
 
           {/* Test Connection */}

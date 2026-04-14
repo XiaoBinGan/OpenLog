@@ -67,6 +67,8 @@ const settings = loadSettings() || {
   refreshInterval: '5000',
   // 🚀 主动分析开关（默认开启）
   autoAnalysis: true,
+  // 🧠 思维过程开关（默认关闭，过滤 <think/> 标签）
+  thinkingEnabled: false,
   // 多服务日志目录配置
   watchSources: [
     {
@@ -96,6 +98,86 @@ const settings = loadSettings() || {
 
 // Default settings
 const defaultSettings = { ...settings };
+
+// 🧠 过滤 <think/> 标签：非流式响应直接替换
+function stripThinking(text) {
+  if (settings.thinkingEnabled) return text;
+  // 匹配 <think&gt;...</think&gt;（支持多行、贪婪匹配最外层）
+  return text.replace(/<think\b[^>]*>[\s\S]*?<\/think>/g, '').trim();
+}
+
+// 🧠 流式思维过滤器：状态机，逐 token 过滤 <think/> 块
+class ThinkingStreamFilter {
+  constructor() {
+    this.inThink = false;       // 当前是否在 <think/> 块内
+    this.buffer = '';           // 待判断的 buffer（可能跨 chunk）
+  }
+
+  /** 输入一个 chunk 的 content，返回应该输出给客户端的部分 */
+  feed(content) {
+    if (settings.thinkingEnabled) return content; // 开启思维 → 全部输出
+
+    let output = '';
+    let i = 0;
+
+    // 先处理 buffer 中残留的内容
+    if (this.buffer) {
+      content = this.buffer + content;
+      this.buffer = '';
+    }
+
+    while (i < content.length) {
+      if (this.inThink) {
+        // 在 think 块内，寻找 </think&gt;
+        const closeIdx = content.indexOf('</think&gt;', i);
+        if (closeIdx !== -1) {
+          this.inThink = false;
+          i = closeIdx + 8; // 跳过 </think&gt;
+          continue;
+        }
+        // 没找到闭合标签，继续等待
+        i = content.length;
+        break;
+      } else {
+        // 不在 think 块内，寻找 <think
+        const openIdx = content.indexOf('<think', i);
+        if (openIdx === -1) {
+          // 没有 <think，安全输出剩余内容
+          output += content.slice(i);
+          break;
+        }
+        // 输出 <think 之前的内容
+        output += content.slice(i, openIdx);
+
+        // 检查 <think&gt; 是否在当前 content 内完整
+        const tagEnd = content.indexOf('>', openIdx);
+        if (tagEnd !== -1) {
+          this.inThink = true;
+          i = tagEnd + 1;
+          continue;
+        }
+        // <think 不完整（跨 chunk），存入 buffer
+        this.buffer = content.slice(openIdx);
+        break;
+      }
+    }
+
+    return output;
+  }
+
+  /** 流结束，返回 buffer 中残留的可输出内容 */
+  flush() {
+    if (settings.thinkingEnabled) return this.buffer;
+    // 流结束时如果还在 <think/> 内，丢弃
+    if (this.inThink) {
+      this.buffer = '';
+      return '';
+    }
+    const remaining = this.buffer;
+    this.buffer = '';
+    return remaining;
+  }
+}
 
 // WebSocket connections
 const wsClients = new Set();
@@ -383,7 +465,7 @@ async function runAnalysis(errorLog, source) {
       timeout: 60_000
     });
 
-    const analysis = response.choices[0].message.content;
+    const analysis = stripThinking(response.choices[0].message.content);
     console.log(`[${sourceId}] ✅ 分析完成`);
 
     // 存入历史
@@ -904,10 +986,16 @@ app.post('/api/chat', async (req, res) => {
       timeout: 120_000
     });
 
+    const thinkingFilter = new ThinkingStreamFilter();
     for await (const chunk of stream) {
-      const content = chunk.choices[0]?.delta?.content || '';
-      if (content) res.write(`data: ${JSON.stringify({ content })}\n\n`);
+      const raw = chunk.choices[0]?.delta?.content || '';
+      if (raw) {
+        const content = thinkingFilter.feed(raw);
+        if (content) res.write(`data: ${JSON.stringify({ content })}\n\n`);
+      }
     }
+    const remaining = thinkingFilter.flush();
+    if (remaining) res.write(`data: ${JSON.stringify({ content: remaining })}\n\n`);
     res.write('data: [DONE]\n\n');
     res.end();
   } catch (err) {
@@ -1207,7 +1295,7 @@ ${logsText}
           timeout: 90_000
         });
 
-        const analysis = response.choices[0].message.content;
+        const analysis = stripThinking(response.choices[0].message.content);
         broadcast({
           type: 'docker_batch_analysis',
           status: 'done',
