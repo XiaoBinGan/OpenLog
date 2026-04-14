@@ -589,22 +589,59 @@ export async function getRemoteSystemStats(id) {
   }
   
   try {
-    // 获取 CPU、内存、磁盘信息
+    // 获取 CPU、内存、磁盘、网络、进程信息
     const result = await ssh.execCommand(`
       echo "CPU:$(top -bn1 | grep 'Cpu(s)' | awk '{print $2}' || echo 'N/A')"
       echo "MEM:$(free -m | awk '/Mem:/ {printf "%.1f/%.1f MB (%.1f%%)", $3, $2, ($3/$2)*100}')"
+      echo "MEM_PCT:$(free -m | awk '/Mem:/ {printf "%.1f", ($3/$2)*100}' || echo '0')"
       echo "DISK:$(df -h / | awk 'NR==2 {printf "%s/%s (%s)", $3, $2, $5}')"
       echo "UPTIME:$(uptime -p || uptime)"
-      echo "LOAD:$(cat /proc/loadavg | awk '{print $1,$2,$3}' || echo 'N/A')"
+      echo "LOAD:$(cat /proc/loadavg 2>/dev/null | awk '{print $1,$2,$3}' || sysctl -n vm.loadavg 2>/dev/null | awk '{print $1,$2,$3}' || echo 'N/A')"
+
+      # --- 网络流量（采样间隔 1 秒）---
+      RX1=$(cat /sys/class/net/eth0/statistics/rx_bytes 2>/dev/null || cat /sys/class/net/ens33/statistics/rx_bytes 2>/dev/null || cat /sys/class/net/en0/statistics/rx_bytes 2>/dev/null || echo 0)
+      TX1=$(cat /sys/class/net/eth0/statistics/tx_bytes 2>/dev/null || cat /sys/class/net/ens33/statistics/tx_bytes 2>/dev/null || cat /sys/class/net/en0/statistics/tx_bytes 2>/dev/null || echo 0)
+      sleep 1
+      RX2=$(cat /sys/class/net/eth0/statistics/rx_bytes 2>/dev/null || cat /sys/class/net/ens33/statistics/rx_bytes 2>/dev/null || cat /sys/class/net/en0/statistics/rx_bytes 2>/dev/null || echo 0)
+      TX2=$(cat /sys/class/net/eth0/statistics/tx_bytes 2>/dev/null || cat /sys/class/net/ens33/statistics/tx_bytes 2>/dev/null || cat /sys/class/net/en0/statistics/tx_bytes 2>/dev/null || echo 0)
+      IFACE=$(ls /sys/class/net/ 2>/dev/null | grep -v lo | head -1 || echo 'eth0')
+      echo "NET_RX_SEC:$(( ($RX2 - $RX1) / 1 ))"
+      echo "NET_TX_SEC:$(( ($TX2 - $TX1) / 1 ))"
+      echo "NET_IFACE:$IFACE"
+
+      # --- 进程列表 TOP 10（按 CPU 排序）---
+      echo "PROCS_START"
+      ps aux --sort=-%cpu 2>/dev/null | head -11 | tail -10 | awk '{printf "%s|%s|%.1f|%.1f\\n", $2, $11, $3, $4}' || \
+      ps -eo pid,comm,%cpu,%mem -r 2>/dev/null | head -11 | tail -10 | awk '{printf "%s|%s|%.1f|%.1f\\n", $1, $2, $3, $4}'
+      echo "PROCS_END"
     `);
     
     const stats = {};
+    let inProcs = false;
+    const processes = [];
+
     result.stdout.split('\n').forEach(line => {
+      if (line.trim() === 'PROCS_START') { inProcs = true; return; }
+      if (line.trim() === 'PROCS_END') { inProcs = false; return; }
+      if (inProcs) {
+        const parts = line.split('|');
+        if (parts.length === 4) {
+          processes.push({
+            pid: parseInt(parts[0]) || 0,
+            name: parts[1].split('/').pop() || parts[1],
+            cpu: parseFloat(parts[2]) || 0,
+            mem: parseFloat(parts[3]) || 0,
+          });
+        }
+        return;
+      }
       const [key, value] = line.split(':');
       if (key && value) {
-        stats[key.toLowerCase()] = value.trim();
+        stats[key.trim().toLowerCase()] = value.trim();
       }
     });
+
+    stats.processes = processes;
     
     return stats;
   } catch (err) {

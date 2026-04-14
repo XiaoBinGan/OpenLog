@@ -8,7 +8,7 @@ import {
   ChevronLeft, Search, Terminal, Check, X, AlertCircle, Loader,
   Cpu, MemoryStick, HardDrive, Clock, Home, Eye, EyeOff, Upload,
   Code2, Save, Pencil, Wifi, WifiOff, PanelLeftClose,
-  PanelLeftOpen, ArrowUp, FileCode,
+  PanelLeftOpen, ArrowUp, FileCode, Network, Activity,
 } from 'lucide-react';
 import { useRemote } from '../contexts/RemoteContext';
 import ShellTerminal from '../components/ShellTerminal';
@@ -29,6 +29,14 @@ function formatSize(bytes: number) {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}
+
+function formatBytes(bytes: number) {
+  if (bytes <= 0) return '0 B/s';
+  if (bytes < 1024) return `${bytes.toFixed(0)} B/s`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB/s`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB/s`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB/s`;
 }
 
 // Toast 组件
@@ -422,21 +430,87 @@ export default function Remote() {
         ) : (
           <>
             {/* 系统状态栏 */}
-            <div className="grid grid-cols-4 gap-2">
+            <div className="grid grid-cols-3 gap-2">
               {[
-                { icon: <Cpu className="w-4 h-4" />, label: 'CPU', value: activeServer.systemStats?.cpu || '–' },
-                { icon: <MemoryStick className="w-4 h-4" />, label: '内存', value: activeServer.systemStats?.mem || '–' },
-                { icon: <HardDrive className="w-4 h-4" />, label: '磁盘', value: activeServer.systemStats?.disk || '–' },
-                { icon: <Clock className="w-4 h-4" />, label: '运行时间', value: activeServer.systemStats?.uptime || '–' },
+                { icon: <Cpu className="w-4 h-4" />, label: 'CPU', value: activeServer.systemStats?.cpu || '–', color: 'text-sky-400' },
+                { icon: <MemoryStick className="w-4 h-4" />, label: '内存', value: activeServer.systemStats?.mem || '–', color: 'text-purple-400' },
+                { icon: <HardDrive className="w-4 h-4" />, label: '磁盘', value: activeServer.systemStats?.disk || '–', color: 'text-amber-400' },
               ].map((stat, i) => (
                 <div key={i} className="glass rounded-lg p-3 flex items-center gap-3">
-                  <div className="p-2 rounded-lg bg-accent-500/10 text-accent-400">{stat.icon}</div>
-                  <div>
+                  <div className={`p-2 rounded-lg bg-dark-800 ${stat.color}`}>{stat.icon}</div>
+                  <div className="min-w-0 flex-1">
                     <div className="text-xs text-dark-500">{stat.label}</div>
                     <div className="text-sm font-medium text-dark-200 truncate">{stat.value}</div>
                   </div>
                 </div>
               ))}
+            </div>
+
+            {/* 网络流量 + 进程列表 */}
+            <div className="grid grid-cols-2 gap-2">
+              {/* 网络流量 */}
+              <div className="glass rounded-lg p-3">
+                <div className="flex items-center gap-2 mb-2">
+                  <Network className="w-4 h-4 text-green-400" />
+                  <span className="text-xs text-dark-500">网络流量</span>
+                </div>
+                {(activeServer.systemStats?.net_rx_sec && activeServer.systemStats?.net_rx_sec !== '0')
+                  ? (
+                    <div className="space-y-1">
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="text-green-400">↓ 接收</span>
+                        <span className="text-dark-200 font-mono">{formatBytes(parseInt(activeServer.systemStats.net_rx_sec))}/s</span>
+                      </div>
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="text-sky-400">↑ 发送</span>
+                        <span className="text-dark-200 font-mono">{formatBytes(parseInt(activeServer.systemStats.net_tx_sec))}/s</span>
+                      </div>
+                      {activeServer.systemStats.net_iface && (
+                        <div className="text-[10px] text-dark-600 mt-1">{activeServer.systemStats.net_iface}</div>
+                      )}
+                    </div>
+                  )
+                  : <span className="text-xs text-dark-600">{activeServer.systemStats?.net_rx_sec !== undefined ? '无流量' : '–'}</span>
+                }
+              </div>
+
+              {/* 进程列表 TOP 5 */}
+              <div className="glass rounded-lg p-3">
+                <div className="flex items-center gap-2 mb-2">
+                  <Activity className="w-4 h-4 text-orange-400" />
+                  <span className="text-xs text-dark-500">TOP 进程</span>
+                </div>
+                {(activeServer.systemStats?.processes && activeServer.systemStats.processes.length > 0)
+                  ? (
+                    <div className="space-y-1">
+                      {activeServer.systemStats.processes.slice(0, 5).map((p: any, i: number) => (
+                        <div key={p.pid || i} className="flex items-center justify-between text-xs">
+                          <span className="text-dark-300 truncate mr-2 font-mono" title={p.name}>{p.name}</span>
+                          <div className="flex items-center gap-2 text-dark-500 flex-shrink-0">
+                            <span className="text-sky-400">{p.cpu.toFixed(1)}%</span>
+                            <span className="text-purple-400">{p.mem.toFixed(1)}%</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )
+                  : <span className="text-xs text-dark-600">–</span>
+                }
+              </div>
+            </div>
+
+            {/* 运行时间 */}
+            <div className="flex items-center gap-2 px-1">
+              <Clock className="w-3.5 h-3.5 text-dark-500" />
+              <span className="text-xs text-dark-500">运行时间</span>
+              <span className="text-xs text-dark-300">{activeServer.systemStats?.uptime || '–'}</span>
+              {activeServer.systemStats?.load && (
+                <>
+                  <span className="text-dark-700 mx-1">|</span>
+                  <span className="text-xs text-dark-500">负载</span>
+                  <span className="text-xs text-dark-300 font-mono">{activeServer.systemStats.load}</span>
+                </>
+              )}
             </div>
 
             {/* 编辑器 或 文件浏览器 */}
