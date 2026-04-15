@@ -616,6 +616,20 @@ function parseRemoteLogLine(line, source, index = 0) {
 }
 
 /**
+ * 解析 df -h 输出的尺寸字符串为字节数
+ * 支持: 1K, 500M, 2G, 1T, 1.5G 等
+ */
+function parseDfSize(str) {
+  str = String(str).trim();
+  const match = str.match(/^([\d.]+)\s*([KMGTPE]?)(B?)/i);
+  if (!match) return 0;
+  const num = parseFloat(match[1]);
+  const unit = (match[2] || '').toUpperCase();
+  const multipliers = { '': 1, 'K': 1024, 'M': 1048576, 'G': 1073741824, 'T': 1099511627776, 'P': 1125899906842624, 'E': 1152921504606847000 };
+  return num * (multipliers[unit] || 1);
+}
+
+/**
  * 获取远程服务器系统状态（完整版，含网络流量和进程）
  * 返回与 MonitorStats 接口兼容的结构
  */
@@ -632,8 +646,8 @@ export async function getRemoteSystemStats(id) {
       echo "CPU:$(top -bn1 | grep 'Cpu(s)' | awk '{print $2}' || echo '0')"
       echo "MEM:$(free -m | awk '/Mem:/ {printf "%.1f/%.1f MB (%.1f%%)", $3, $2, ($3/$2)*100}')"
 
-      # 磁盘
-      echo "DISK:$(df -h / | awk 'NR==2 {printf "%s/%s (%s)", $3, $2, $5}')"
+      # 磁盘（所有真实分区，排除 tmpfs/devtmpfs 等虚拟文件系统）
+      df -h --output=source,target,size,used,pcent -x tmpfs -x devtmpfs -x overlay -x squashfs 2>/dev/null | awk 'NR>1 {gsub(/%/,"",$5); printf "DISK:%s:%s:%s:%s:%s\\n",$1,$2,$3,$4,$5}'
 
       # 网络流量（取第一个活跃网卡）
       cat /proc/net/dev | awk 'NR>2 {
@@ -657,7 +671,7 @@ export async function getRemoteSystemStats(id) {
     if (result.stderr && result.stderr.includes('Permission denied')) {
       // 部分系统 /proc/net/dev 需要权限，降级不返回网络数据
     }
-    
+
     const lines = result.stdout.split('\n').filter(l => l.trim());
     
     // 解析 CPU
@@ -676,15 +690,18 @@ export async function getRemoteSystemStats(id) {
       }
     }
     
-    // 解析磁盘
-    const diskMatch = lines.find(l => l.startsWith('DISK:'));
-    const disks = [];
-    if (diskMatch) {
-      const d = diskMatch.replace('DISK:', '').match(/([\d.]+[BKMGT]?)\/([\d.]+[BKMGT]?)\s*\((\d+)%\)/);
-      if (d) {
-        disks.push({ name: '/', used: 0, total: 1, usePercent: parseFloat(d[3]) });
-      }
-    }
+    // 解析磁盘（多行 DISK:device:mount:total:used:usePercent）
+    const diskLines = lines.filter(l => l.startsWith('DISK:'));
+    const disks = diskLines.map(l => {
+      const parts = l.replace('DISK:', '').split(':');
+      const usePercent = parseFloat(parts[4]?.replace('%', '')) || 0;
+      return {
+        name: parts[1] || '/',
+        used: parseDfSize(parts[3] || '0'),
+        total: parseDfSize(parts[2] || '1'),
+        usePercent,
+      };
+    });
     
     // 解析网络流量
     const netLines = lines.filter(l => l.startsWith('NET:'));

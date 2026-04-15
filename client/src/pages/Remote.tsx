@@ -456,7 +456,10 @@ export default function Remote() {
                     const disk = activeServer.systemStats?.disk as any;
                     if (!disk) return '–';
                     if (Array.isArray(disk) && disk.length > 0 && 'usePercent' in disk[0]) {
-                      return `${disk[0].usePercent || 0}%`;
+                      const maxPct = Math.max(...disk.map((d: any) => d.usePercent || 0));
+                      return disk.length > 1
+                        ? `${maxPct}% (${disk.length}盘)`
+                        : `${maxPct}%`;
                     }
                     return String(disk);
                   })()

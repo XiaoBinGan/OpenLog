@@ -63,7 +63,7 @@ export default function Monitor() {
               timestamp: new Date().toISOString(),
               cpu: data.cpu?.load ?? 0,
               memory: memPct,
-              disk: data.disk?.[0]?.usePercent ?? 0,
+              disk: data.disk?.length > 0 ? Math.max(...data.disk.map(d => d.usePercent)) : 0,
               network: Array.isArray(data.network) && data.network[0] ? (data.network[0].rx + data.network[0].tx) : 0,
               gpuUtil,
             }];

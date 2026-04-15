@@ -144,7 +144,7 @@ export default function Dashboard() {
             timestamp: new Date(now - (29 - i) * 5000).toISOString(),
             cpu: remoteStats.cpu.load * (0.8 + Math.random() * 0.4),
             memory: (remoteStats.memory.used / remoteStats.memory.total) * 100 * (0.9 + Math.random() * 0.2),
-            disk: remoteStats.disk[0]?.usePercent || 0,
+            disk: remoteStats.disk.length > 0 ? Math.max(...remoteStats.disk.map((d: any) => d.usePercent)) : 0,
             network: remoteNetworkBps
           }));
           setHistory(mockHistory);
@@ -273,21 +273,35 @@ export default function Dashboard() {
         <div className="glass rounded-xl p-4">
           <div className="flex items-center justify-between mb-2">
             <HardDrive className="w-5 h-5 text-orange-500" />
-            <span className="text-xs text-dark-400">磁盘</span>
+            <span className="text-xs text-dark-400">
+              磁盘{stats?.disk?.length > 1 ? ` ×${stats.disk.length}` : ''}
+            </span>
           </div>
-          <div className="text-2xl font-bold">
-            {stats?.disk?.[0]?.usePercent?.toFixed(1) || 0}%
-          </div>
-          <div className="mt-2 h-1 bg-dark-800 rounded-full overflow-hidden">
-            <div 
-              className={`h-full transition-all duration-500 ${
-                (stats?.disk?.[0]?.usePercent || 0) > 90 ? 'bg-red-500' : 
-                (stats?.disk?.[0]?.usePercent || 0) > 70 ? 'bg-yellow-500' : 
-                'bg-gradient-to-r from-orange-500 to-orange-400'
-              }`}
-              style={{ width: `${stats?.disk?.[0]?.usePercent || 0}%` }}
-            />
-          </div>
+          {stats?.disk && stats.disk.length > 0 ? (() => {
+            const totalUsed = stats.disk.reduce((s, d) => s + (d.used || 0), 0);
+            const totalAll = stats.disk.reduce((s, d) => s + (d.total || 0), 0);
+            const totalPct = totalAll > 0 ? (totalUsed / totalAll) * 100 : 0;
+            return (
+              <>
+                <div className="text-2xl font-bold">{formatBytes(totalAll)}</div>
+                <div className="text-xs text-dark-400 mt-1">
+                  已用 {formatBytes(totalUsed)} ({totalPct.toFixed(1)}%) · {stats.disk.length} 个分区
+                </div>
+                <div className="mt-2 h-1.5 bg-dark-800 rounded-full overflow-hidden">
+                  <div
+                    className={`h-full transition-all duration-500 ${
+                      totalPct > 90 ? 'bg-red-500' :
+                      totalPct > 70 ? 'bg-yellow-500' :
+                      'bg-gradient-to-r from-orange-500 to-orange-400'
+                    }`}
+                    style={{ width: `${Math.min(totalPct, 100)}%` }}
+                  />
+                </div>
+              </>
+            );
+          })() : (
+            <div className="text-2xl font-bold">-</div>
+          )}
         </div>
 
         {/* Network */}
