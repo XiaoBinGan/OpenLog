@@ -12,6 +12,7 @@ import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import * as remote from './remote.js';
 import * as docker from './docker.js';
+import { initDb, getDb, getKv, setKv } from './db/index.js';
 
 dotenv.config();
 
@@ -21,27 +22,72 @@ const __dirname = path.dirname(__filename);
 // Settings 持久化文件（在项目根目录）
 const SETTINGS_FILE = path.join(__dirname, '..', 'settings.json');
 
-// 从文件加载 settings（不存在则用内联默认）
+// 从 SQLite 加载 settings（数据库未初始化时回退到文件）
 function loadSettings() {
+  let db;
+  try { db = getDb(); } catch {}
+
+  // 优先从 DB 加载
+  if (db) {
+    try {
+      const stored = getKv('app_settings');
+      if (stored) return stored;
+    } catch (e) {
+      console.warn('[Settings] 从 DB 加载失败:', e.message);
+    }
+  }
+
+  // 回退到文件
   try {
     if (fs.existsSync(SETTINGS_FILE)) {
       const raw = fs.readFileSync(SETTINGS_FILE, 'utf8');
-      return JSON.parse(raw);
+      const fileSettings = JSON.parse(raw);
+      // 自动迁移到 DB
+      if (db) {
+        try {
+          setKv('app_settings', fileSettings);
+          console.log('[Settings] 已迁移到 SQLite');
+        } catch (e) {}
+      }
+      return fileSettings;
     }
-  } catch (e) {
-    console.error('[Settings] 加载失败:', e.message);
-  }
+  } catch (e2) {}
   return null;
 }
 
-// 保存 settings 到文件
+// 保存 settings 到 SQLite
 function saveSettings(data) {
+  let db;
+  try { db = getDb(); } catch {}
+
+  if (db) {
+    try {
+      setKv('app_settings', data);
+      return true;
+    } catch (e) {
+      console.warn('[Settings] 保存到 DB 失败:', e.message);
+    }
+  }
+
+  // 回退到文件
   try {
     fs.writeFileSync(SETTINGS_FILE, JSON.stringify(data, null, 2), 'utf8');
     return true;
-  } catch (e) {
-    console.error('[Settings] 保存失败:', e.message);
+  } catch (e2) {
+    console.error('[Settings] 保存到文件失败:', e2.message);
     return false;
+  }
+}
+
+// 初始化数据库（启动时调用）
+async function initDatabase() {
+  try {
+    await initDb();
+    console.log('[DB] 数据库初始化完成');
+    ensureSettings();
+    remote.loadServers();
+  } catch (err) {
+    console.error('[DB] 初始化失败:', err.message);
   }
 }
 
@@ -53,23 +99,18 @@ const PORT = process.env.PORT || 3001;
 
 // Middleware
 app.use(cors());
-// 大文件支持（远程编辑器写入日志文件可能超过默认 100KB）
 app.use(express.json({ limit: '50mb' }));
 
-// Settings - 默认使用 Ollama 本地模型
-// 从文件加载，无则用默认值
-const settings = loadSettings() || {
+// 默认 settings
+const defaultSettings = {
   openaiApiKey: '',
   openaiBaseUrl: 'http://localhost:11434/v1',
   model: 'qwen3.5:9b',
   logPath: path.join(os.homedir(), 'logs'),
   watchFiles: '*.log',
   refreshInterval: '5000',
-  // 🚀 主动分析开关（默认开启）
   autoAnalysis: true,
-  // 🧠 思维过程开关（默认关闭，过滤 <think/> 标签）
   thinkingEnabled: false,
-  // 多服务日志目录配置
   watchSources: [
     {
       id: 'default',
@@ -80,7 +121,6 @@ const settings = loadSettings() || {
       autoAnalysis: true
     }
   ],
-  // Docker 容器配置
   dockerSources: [
     {
       id: 'local',
@@ -90,18 +130,24 @@ const settings = loadSettings() || {
       tls: false,
       enabled: false,
       autoAnalysis: true,
-      // Docker Compose 项目名过滤（空=全部）
       projects: []
     }
   ]
 };
 
-// Default settings
-const defaultSettings = { ...settings };
+// Settings - 懒加载，数据库初始化完成后加载
+let settings = null;
+
+function ensureSettings() {
+  if (!settings) {
+    settings = loadSettings() || defaultSettings;
+  }
+  return settings;
+}
 
 // 🧠 过滤 <think/> 标签：非流式响应直接替换
 function stripThinking(text) {
-  if (settings.thinkingEnabled) return text;
+  if (ensureSettings().thinkingEnabled) return text;
   // 匹配 <think&gt;...</think&gt;（支持多行、贪婪匹配最外层）
   return text.replace(/<think\b[^>]*>[\s\S]*?<\/think>/g, '').trim();
 }
@@ -115,7 +161,7 @@ class ThinkingStreamFilter {
 
   /** 输入一个 chunk 的 content，返回应该输出给客户端的部分 */
   feed(content) {
-    if (settings.thinkingEnabled) return content; // 开启思维 → 全部输出
+    if (ensureSettings().thinkingEnabled) return content; // 开启思维 → 全部输出
 
     let output = '';
     let i = 0;
@@ -167,7 +213,7 @@ class ThinkingStreamFilter {
 
   /** 流结束，返回 buffer 中残留的可输出内容 */
   flush() {
-    if (settings.thinkingEnabled) return this.buffer;
+    if (ensureSettings().thinkingEnabled) return this.buffer;
     // 流结束时如果还在 <think/> 内，丢弃
     if (this.inThink) {
       this.buffer = '';
@@ -245,17 +291,17 @@ function startLogWatcher() {
   watchers.clear();
   fileOffsets.clear();
 
-  const sources = settings.watchSources || [];
+  const sources = ensureSettings().watchSources || [];
 
   if (sources.length === 0) {
     // 兼容旧配置
     const single = {
       id: 'default',
       name: '默认服务',
-      path: settings.logPath || path.join(os.homedir(), 'logs'),
-      pattern: settings.watchFiles || '*.log',
+      path: ensureSettings().logPath || path.join(os.homedir(), 'logs'),
+      pattern: ensureSettings().watchFiles || '*.log',
       enabled: true,
-      autoAnalysis: settings.autoAnalysis ?? true
+      autoAnalysis: ensureSettings().autoAnalysis ?? true
     };
     startSourceWatcher(single);
     return;
@@ -377,7 +423,7 @@ function saveLog(log, source = null) {
   }
 
   // 🚀 主动分析：ERROR/FATAL 日志出现时加入分析队列
-  const autoAnalysisEnabled = settings.autoAnalysis && (source?.autoAnalysis ?? true);
+  const autoAnalysisEnabled = ensureSettings().autoAnalysis && (source?.autoAnalysis ?? true);
   if ((log.level === 'ERROR' || log.level === 'FATAL') && autoAnalysisEnabled) {
     enqueueAnalysis(log, source);
   }
@@ -408,9 +454,9 @@ async function runAnalysis(errorLog, source) {
   const sourceId = source?.id || 'default';
   console.log(`[${sourceId}] 🤖 开始分析: ${errorLog.message.slice(0, 80)}`);
 
-  const apiKey = settings.openaiApiKey;
-  const baseUrl = settings.openaiBaseUrl || 'http://localhost:11434/v1';
-  const model = settings.model;
+  const apiKey = ensureSettings().openaiApiKey;
+  const baseUrl = ensureSettings().openaiBaseUrl || 'http://localhost:11434/v1';
+  const model = ensureSettings().model;
   const isLocalModel = baseUrl.includes('localhost') || baseUrl.includes('127.0.0.1') || baseUrl.includes('0.0.0.0');
 
   if (!apiKey && !isLocalModel) {
@@ -524,7 +570,7 @@ let monitorInterval = null;
 const monitorHistory = [];
 
 function startMonitor() {
-  const interval = parseInt(settings.refreshInterval || '5000');
+  const interval = parseInt(ensureSettings().refreshInterval || '5000');
   
   if (monitorInterval) {
     clearInterval(monitorInterval);
@@ -592,7 +638,7 @@ app.get('/api/logs', (req, res) => {
 // Get available Ollama models
 app.get('/api/models/ollama', async (req, res) => {
   try {
-    const baseUrl = settings.openaiBaseUrl || 'http://localhost:11434/v1';
+    const baseUrl = ensureSettings().openaiBaseUrl || 'http://localhost:11434/v1';
     
     // Only work with Ollama local endpoint
     if (!baseUrl.includes('localhost') && !baseUrl.includes('127.0.0.1')) {
@@ -620,9 +666,9 @@ app.get('/api/models/ollama', async (req, res) => {
 app.post('/api/logs/analyze', async (req, res) => {
   const { logs: analyzeLogs, prompt } = req.body;
   
-  const apiKey = settings.openaiApiKey;
-  const baseUrl = settings.openaiBaseUrl || 'http://localhost:11434/v1';
-  const model = settings.model || 'qwen3.5:9b';
+  const apiKey = ensureSettings().openaiApiKey;
+  const baseUrl = ensureSettings().openaiBaseUrl || 'http://localhost:11434/v1';
+  const model = ensureSettings().model || 'qwen3.5:9b';
   
   // 本地模型（Ollama/LM Studio）可能不需要 API Key
   const isLocalModel = baseUrl.includes('localhost') || baseUrl.includes('127.0.0.1') || baseUrl.includes('0.0.0.0');
@@ -697,9 +743,9 @@ ${analyzeLogs.map(l => `[${l.timestamp}] [${l.level}] ${l.message}`).join('\n')}
 app.post('/api/logs/fix', async (req, res) => {
   const { errorLog, codeContext, filePath } = req.body;
   
-  const apiKey = settings.openaiApiKey;
-  const baseUrl = settings.openaiBaseUrl || 'http://localhost:11434/v1';
-  const model = settings.model || 'qwen3.5:9b';
+  const apiKey = ensureSettings().openaiApiKey;
+  const baseUrl = ensureSettings().openaiBaseUrl || 'http://localhost:11434/v1';
+  const model = ensureSettings().model || 'qwen3.5:9b';
   
   const isLocalModel = baseUrl.includes('localhost') || baseUrl.includes('127.0.0.1');
   
@@ -822,18 +868,19 @@ app.get('/api/monitor/history', (req, res) => {
 
 // Settings
 app.get('/api/settings', (req, res) => {
-  res.json(settings);
+  res.json(ensureSettings());
 });
 
 app.put('/api/settings', (req, res) => {
   const updates = req.body;
 
+  const currentSettings = ensureSettings();
   for (const [key, value] of Object.entries(updates)) {
-    settings[key] = value;
+    currentSettings[key] = value;
   }
 
   // 持久化到文件
-  saveSettings(settings);
+  saveSettings(ensureSettings());
 
   // 重启日志监控（watchSources 变化）
   if (updates.watchSources || updates.logPath || updates.watchFiles) {
@@ -975,9 +1022,9 @@ app.post('/api/chat', async (req, res) => {
     return res.status(400).json({ error: 'messages required' });
   }
 
-  const apiKey = settings.openaiApiKey;
-  const baseUrl = settings.openaiBaseUrl || 'http://localhost:11434/v1';
-  const model = settings.model;
+  const apiKey = ensureSettings().openaiApiKey;
+  const baseUrl = ensureSettings().openaiBaseUrl || 'http://localhost:11434/v1';
+  const model = ensureSettings().model;
   const isLocalModel = baseUrl.includes('localhost') || baseUrl.includes('127.0.0.1') || baseUrl.includes('0.0.0.0');
 
   if (!apiKey && !isLocalModel) return res.status(400).json({ error: '未配置 API Key' });
@@ -1030,7 +1077,7 @@ app.post('/api/chat', async (req, res) => {
 
 // Get available log files
 app.get('/api/logs/files', (req, res) => {
-  const logPath = settings.logPath || path.join(os.homedir(), 'logs');
+  const logPath = ensureSettings().logPath || path.join(os.homedir(), 'logs');
   
   try {
     if (!fs.existsSync(logPath)) {
@@ -1109,7 +1156,7 @@ app.post('/api/docker/ping', async (req, res) => {
 app.get('/api/docker/containers', async (req, res) => {
   try {
     const allContainers = [];
-    const sources = settings.dockerSources || [];
+    const sources = ensureSettings().dockerSources || [];
     const enabled = sources.filter(s => s.enabled);
 
     for (const source of enabled) {
@@ -1148,7 +1195,7 @@ app.get('/api/docker/containers', async (req, res) => {
 app.get('/api/docker/containers/:sourceId/:containerId', async (req, res) => {
   try {
     const { sourceId, containerId } = req.params;
-    const source = (settings.dockerSources || []).find(s => s.id === sourceId);
+    const source = (ensureSettings().dockerSources || []).find(s => s.id === sourceId);
     const config = source ? {
       socketPath: source.socketPath || undefined,
       host: source.socketPath ? undefined : (source.host || 'localhost'),
@@ -1169,7 +1216,7 @@ app.get('/api/docker/containers/:sourceId/:containerId/logs', async (req, res) =
   try {
     const { sourceId, containerId } = req.params;
     const { tail = 200, since, startTime, filterLevel } = req.query;
-    const source = (settings.dockerSources || []).find(s => s.id === sourceId);
+    const source = (ensureSettings().dockerSources || []).find(s => s.id === sourceId);
     const config = source ? {
       socketPath: source.socketPath || undefined,
       host: source.socketPath ? undefined : (source.host || 'localhost'),
@@ -1196,7 +1243,7 @@ app.post('/api/docker/logs/batch', async (req, res) => {
 
     for (const { sourceId, containerId, name } of containers) {
       try {
-        const source = (settings.dockerSources || []).find(s => s.id === sourceId);
+        const source = (ensureSettings().dockerSources || []).find(s => s.id === sourceId);
         const config = source ? {
           socketPath: source.socketPath || undefined,
           host: source.socketPath ? undefined : (source.host || "localhost"),
@@ -1221,7 +1268,7 @@ app.post('/api/docker/logs/batch', async (req, res) => {
 app.get('/api/docker/trace/:sourceId/:containerId', async (req, res) => {
   try {
     const { sourceId, containerId } = req.params;
-    const source = (settings.dockerSources || []).find(s => s.id === sourceId);
+    const source = (ensureSettings().dockerSources || []).find(s => s.id === sourceId);
     const config = source ? {
       socketPath: source.socketPath || undefined,
       host: source.socketPath ? undefined : (source.host || 'localhost'),
@@ -1249,7 +1296,7 @@ app.post('/api/docker/analyze/batch', async (req, res) => {
     const allLogs = [];
     for (const { sourceId: sid, containerId, name } of containers) {
       try {
-        const source = (settings.dockerSources || []).find(s => s.id === sid);
+        const source = (ensureSettings().dockerSources || []).find(s => s.id === sid);
         const config = source ? {
           socketPath: source.socketPath || undefined,
           host: source.socketPath ? undefined : (source.host || "localhost"),
@@ -1300,9 +1347,9 @@ ${logsText}
     // 后台执行 AI 分析
     setImmediate(async () => {
       try {
-        const apiKey = settings.openaiApiKey;
-        const baseUrl = settings.openaiBaseUrl || 'http://localhost:11434/v1';
-        const model = settings.model;
+        const apiKey = ensureSettings().openaiApiKey;
+        const baseUrl = ensureSettings().openaiBaseUrl || 'http://localhost:11434/v1';
+        const model = ensureSettings().model;
         const isLocal = baseUrl.includes('localhost') || baseUrl.includes('127.0.0.1');
 
         if (!apiKey && !isLocal) return;
@@ -1345,7 +1392,7 @@ ${logsText}
 // Docker 容器操作
 // ────────────────────────────────────────
 function getDockerConfig(sourceId) {
-  const source = (settings.dockerSources || []).find(s => s.id === sourceId);
+  const source = (ensureSettings().dockerSources || []).find(s => s.id === sourceId);
   if (!source) return null;
   return {
     socketPath: source.socketPath || undefined,
@@ -1689,6 +1736,9 @@ async function handleShellWebSocket(ws, serverId) {
 }
 
 // Start server
+// 先初始化数据库
+await initDatabase();
+
 server.listen(PORT, async () => {
   console.log(`🚀 Give Me The Log server running on http://localhost:${PORT}`);
   startLogWatcher();
