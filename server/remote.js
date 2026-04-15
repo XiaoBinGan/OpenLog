@@ -595,10 +595,10 @@ export async function getRemoteSystemStats(id) {
       # CPU + 内存
       echo "CPU:$(top -bn1 | grep 'Cpu(s)' | awk '{print $2}' || echo '0')"
       echo "MEM:$(free -m | awk '/Mem:/ {printf "%.1f/%.1f MB (%.1f%%)", $3, $2, ($3/$2)*100}')"
-      
+
       # 磁盘
       echo "DISK:$(df -h / | awk 'NR==2 {printf "%s/%s (%s)", $3, $2, $5}')"
-      
+
       # 网络流量（取第一个活跃网卡）
       cat /proc/net/dev | awk 'NR>2 {
         split($2,s,":"); rx=$2; ry=$10;
@@ -608,10 +608,14 @@ export async function getRemoteSystemStats(id) {
           exit
         }
       }'
-      
+
       # Top 10 进程（按 CPU 排序）
       ps aux --no-headers | sort -rn -k 3 | head -10 | \
         awk '{print "PROC:" $2 ":" $11 ":" $3 ":" $4}'
+
+      # GPU 信息
+      nvidia-smi --query-gpu=index,name,utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader,nounits 2>/dev/null | \
+        awk -F', ' '{gsub(/%/,"",$3); gsub(/MiB|MB/,"",$4); gsub(/MiB|MB/,"",$5); gsub(/°C/,"",$6); print "GPU:" $1 ":" $2 ":" $3 ":" $4 ":" $5 ":" $6}'
     `);
     
     if (result.stderr && result.stderr.includes('Permission denied')) {
@@ -668,13 +672,28 @@ export async function getRemoteSystemStats(id) {
         mem: parseFloat(parts[3]) || 0,
       };
     });
-    
+
+    // 解析 GPU 信息
+    const gpuLines = lines.filter(l => l.startsWith('GPU:'));
+    const gpus = gpuLines.map(l => {
+      const parts = l.replace('GPU:', '').split(':');
+      return {
+        index: parseInt(parts[0]) || 0,
+        name: parts[1] || '',
+        util: parseFloat(parts[2]) || 0,
+        memUsed: parseFloat(parts[3]) || 0,
+        memTotal: parseFloat(parts[4]) || 1,
+        temp: parseFloat(parts[5]) || 0,
+      };
+    });
+
     return {
       cpu: { load: cpuLoad, cores: [] },
       memory: { used: memUsed, total: memTotal, free: memFree },
       disk: disks,
       network,
       processes,
+      gpus,
     };
   } catch (err) {
     return { error: err.message };

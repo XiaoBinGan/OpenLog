@@ -129,6 +129,7 @@ export interface MonitorHistory {
   memory: number;
   disk: number;
   network: number;
+  gpuUtil?: number;
 }
 
 export interface WatchSource {

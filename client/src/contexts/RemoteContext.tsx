@@ -45,7 +45,7 @@ export function RemoteProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => { activeServerRef.current = activeServer; }, [activeServer]);
 
   // 同步 DeviceContext，断开时切回本地
-  const { resetToLocal, setSelectedDevice } = useDevice();
+  const { resetToLocal, setSelectedDevice, refreshDevices } = useDevice();
 
   const showToast = useCallback((type: ToastMsg['type'], message: string) => {
     const id = `${Date.now()}`;
@@ -133,6 +133,7 @@ export function RemoteProvider({ children }: { children: React.ReactNode }) {
       setSelectedDevice(server); // 同步 DeviceContext，让右上角显示当前设备
       showToast('success', `已连接到 ${server.name}`);
       refreshServers();
+      refreshDevices(); // 立即更新右上角设备列表
     } catch (err: any) {
       showToast('error', `连接失败: ${err.message}`);
       throw err;
@@ -159,10 +160,11 @@ export function RemoteProvider({ children }: { children: React.ReactNode }) {
         resetToLocal(); // 同步 DeviceContext 切回本地
       }
       refreshServers();
+      refreshDevices(); // 立即更新右上角设备列表
     } catch (err: any) {
       showToast('error', `断开失败: ${err.message}`);
     }
-  }, [servers, refreshServers, showToast, resetToLocal]);
+  }, [servers, refreshServers, refreshDevices, showToast, resetToLocal]);
 
   // 加载文件列表：用 ref 获取最新 ID
   const loadFiles = useCallback(async (filePath?: string) => {

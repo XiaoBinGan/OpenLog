@@ -122,6 +122,11 @@ export default function Dashboard() {
             }));
           }
 
+          // 网络
+          if (Array.isArray(statsData.network)) {
+            remoteStats.network = statsData.network;
+          }
+
           // GPU（API 扩展字段）
           if (Array.isArray(statsData.gpus)) {
             remoteStats.gpus = statsData.gpus;
@@ -131,13 +136,16 @@ export default function Dashboard() {
           
           // 远程设备没有实时 WebSocket，创建模拟历史数据
           const now = Date.now();
+          const remoteNetworkBps = Array.isArray(statsData.network) && statsData.network[0]
+            ? statsData.network[0].rx + statsData.network[0].tx
+            : 0;
           const mockHistory: MonitorHistory[] = Array.from({ length: 30 }, (_, i) => ({
             id: i,
             timestamp: new Date(now - (29 - i) * 5000).toISOString(),
             cpu: remoteStats.cpu.load * (0.8 + Math.random() * 0.4),
             memory: (remoteStats.memory.used / remoteStats.memory.total) * 100 * (0.9 + Math.random() * 0.2),
             disk: remoteStats.disk[0]?.usePercent || 0,
-            network: Math.random() * 100000
+            network: remoteNetworkBps
           }));
           setHistory(mockHistory);
           
@@ -300,6 +308,60 @@ export default function Dashboard() {
           )}
         </div>
       </div>
+
+      {/* GPU Cards */}
+      {stats?.gpus && stats.gpus.length > 0 && (
+        <div className="glass rounded-xl p-4">
+          <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
+            <Cpu className="w-5 h-5 text-emerald-500" />
+            GPU 监控
+          </h3>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {stats.gpus.map((gpu) => (
+              <div key={gpu.index} className="bg-dark-900/50 rounded-lg p-4 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="font-medium text-sm truncate flex-1">{gpu.name}</div>
+                  <span className={`text-xs font-medium ml-2 ${
+                    gpu.temp > 80 ? 'text-red-400' : gpu.temp > 60 ? 'text-yellow-400' : 'text-emerald-400'
+                  }`}>
+                    {gpu.temp}°C
+                  </span>
+                </div>
+
+                {/* GPU Util */}
+                <div>
+                  <div className="flex justify-between text-xs text-dark-400 mb-1">
+                    <span>GPU 利用率</span>
+                    <span>{gpu.util}%</span>
+                  </div>
+                  <div className="h-2 bg-dark-800 rounded-full overflow-hidden">
+                    <div
+                      className={`h-full transition-all duration-500 ${
+                        gpu.util > 90 ? 'bg-red-500' : gpu.util > 70 ? 'bg-yellow-500' : 'bg-emerald-500'
+                      }`}
+                      style={{ width: `${gpu.util}%` }}
+                    />
+                  </div>
+                </div>
+
+                {/* GPU Memory */}
+                <div>
+                  <div className="flex justify-between text-xs text-dark-400 mb-1">
+                    <span>显存</span>
+                    <span>{gpu.memUsed} / {gpu.memTotal} MB</span>
+                  </div>
+                  <div className="h-2 bg-dark-800 rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-gradient-to-r from-cyan-500 to-cyan-400 transition-all duration-500"
+                      style={{ width: `${Math.min((gpu.memUsed / gpu.memTotal) * 100, 100)}%` }}
+                    />
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Charts */}
       <div className="grid md:grid-cols-2 gap-6">

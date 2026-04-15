@@ -544,7 +544,8 @@ function startMonitor() {
         cpu: cpu.currentLoad || 0,
         memory: mem.total > 0 ? (mem.used / mem.total) * 100 : 0,
         disk: disks[0] && disks[0].size > 0 ? (disks[0].used / disks[0].size) * 100 : 0,
-        network: network[0] ? network[0].rx_sec + network[0].tx_sec : 0
+        network: network[0] ? network[0].rx_sec + network[0].tx_sec : 0,
+        gpuUtil: 0, // populated separately if nvidia-smi available
       };
       
       monitorHistory.unshift(stats);
@@ -774,13 +775,35 @@ app.get('/api/monitor/stats', async (req, res) => {
       si.networkStats(),
       si.processes()
     ]);
-    
+
+    // GPU via nvidia-smi
+    let gpus = [];
+    try {
+      const { execSync } = require('child_process');
+      const out = execSync(
+        'nvidia-smi --query-gpu=index,name,utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader,nounits 2>/dev/null',
+        { timeout: 3000 }
+      );
+      gpus = out.toString().trim().split('\n').filter(Boolean).map(line => {
+        const [idx, name, util, memUsed, memTotal, temp] = line.split(',').map(s => s.trim());
+        return {
+          index: parseInt(idx) || 0,
+          name: name || '',
+          util: parseFloat(util) || 0,
+          memUsed: parseFloat(memUsed) || 0,
+          memTotal: parseFloat(memTotal) || 1,
+          temp: parseFloat(temp) || 0,
+        };
+      });
+    } catch {}
+
     res.json({
       cpu: { load: cpu.currentLoad || 0, cores: cpu.cpus.map(c => c.load) },
       memory: { used: mem.used || 0, total: mem.total || 1, free: mem.free || 0 },
       disk: disks.map(d => ({ name: d.fs, used: d.used, total: d.size, usePercent: d.use })),
       network: network.map(n => ({ iface: n.iface, rx: n.rx_sec, tx: n.tx_sec })),
-      processes: processes.list.slice(0, 10).map(p => ({ pid: p.pid, name: p.name, cpu: p.cpu, mem: p.mem }))
+      processes: processes.list.slice(0, 10).map(p => ({ pid: p.pid, name: p.name, cpu: p.cpu, mem: p.mem })),
+      gpus,
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
