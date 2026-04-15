@@ -2,13 +2,14 @@ import { NodeSSH } from 'node-ssh';
 import { v4 as uuidv4 } from 'uuid';
 import fs from 'fs';
 import path from 'path';
+import { getKv, setKv, getDb } from './db/index.js';
 
 /**
  * 远程服务器日志管理模块
  * 支持通过 SSH 连接远程服务器，获取日志内容
  */
 
-// 远程服务器配置存储路径
+// 远程服务器配置存储路径（保留作回退）
 const CONFIG_PATH = process.env.REMOTE_CONFIG_PATH || path.join(process.cwd(), 'remote-servers.json');
 
 // 内存中的服务器配置
@@ -18,14 +19,34 @@ let servers = [];
 const sshConnections = new Map();
 
 /**
- * 加载服务器配置
+ * 加载服务器配置（优先从 SQLite，失败则回退到文件）
  */
 export function loadServers() {
+  // 检查数据库是否已初始化
+  let db;
+  try { db = getDb(); } catch {}
+
+  if (db) {
+    try {
+      const stored = getKv('remote_servers');
+      if (stored && Array.isArray(stored)) {
+        servers = stored.map(s => ({
+          ...s,
+          password: s.password ? decryptPassword(s.password) : undefined,
+        }));
+        console.log('[Remote] 从 SQLite 加载了', servers.length, '台服务器');
+        return servers;
+      }
+    } catch (err) {
+      console.warn('[Remote] 从 DB 加载失败，回退到文件:', err.message);
+    }
+  }
+
+  // 回退到文件
   try {
     if (fs.existsSync(CONFIG_PATH)) {
       const data = fs.readFileSync(CONFIG_PATH, 'utf-8');
       servers = JSON.parse(data);
-      // 解密密码
       servers = servers.map(s => ({
         ...s,
         password: s.password ? decryptPassword(s.password) : undefined,
@@ -39,15 +60,30 @@ export function loadServers() {
 }
 
 /**
- * 保存服务器配置
+ * 保存服务器配置（优先 SQLite，失败则回退到文件）
  */
 function saveServers() {
+  // 加密密码后保存
+  const dataToSave = servers.map(s => ({
+    ...s,
+    password: s.password ? encryptPassword(s.password) : undefined,
+  }));
+
+  // 检查数据库是否已初始化
+  let db;
+  try { db = getDb(); } catch {}
+
+  if (db) {
+    try {
+      setKv('remote_servers', dataToSave);
+      return;
+    } catch (err) {
+      console.warn('[Remote] 保存到 DB 失败，回退到文件:', err.message);
+    }
+  }
+
+  // 回退到文件
   try {
-    // 加密密码后保存
-    const dataToSave = servers.map(s => ({
-      ...s,
-      password: s.password ? encryptPassword(s.password) : undefined,
-    }));
     fs.writeFileSync(CONFIG_PATH, JSON.stringify(dataToSave, null, 2));
   } catch (err) {
     console.error('Failed to save remote servers config:', err.message);
@@ -751,8 +787,8 @@ export async function searchRemoteLogs(id, search, options = {}) {
   }
 }
 
-// 初始化时加载配置
-loadServers();
+// 懒加载：不在模块导入时加载，等数据库初始化完成后再加载
+// export function initRemoteServers() { loadServers(); }
 
 export default {
   loadServers,
