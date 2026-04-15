@@ -15,14 +15,12 @@ import {
 } from 'lucide-react';
 import { LineChart, Line, AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
 import { useDevice } from '../contexts/DeviceContext';
-import { useRemote } from '../contexts/RemoteContext';
+
 import type { MonitorStats, MonitorHistory, Log, RemoteServer } from '../types';
 
 export default function Dashboard() {
   const { selectedDevice, isRemote } = useDevice();
-  const { activeServer } = useRemote();
-  const isRemoteConnected = isRemote && !!activeServer && activeServer.status === 'connected';
-  
+
   const [stats, setStats] = useState<MonitorStats | null>(null);
   const [history, setHistory] = useState<MonitorHistory[]>([]);
   const [recentLogs, setRecentLogs] = useState<Log[]>([]);
@@ -44,7 +42,7 @@ export default function Dashboard() {
     
     const fetchDeviceData = async () => {
       try {
-        if (!isRemoteConnected) {
+        if (!isRemote) {
           // 本地设备
           const [statsData, historyData, logsData] = await Promise.all([
             fetch('/api/monitor/stats').then(r => r.json()),
@@ -83,52 +81,50 @@ export default function Dashboard() {
           };
           
           setWs(wsInstance);
-        } else if (isRemote) {
+        } else {
           // 远程已连接，走 stats API
           const [statsData] = await Promise.all([
             fetch(`/api/remote/servers/${selectedDevice.id}/stats`).then(r => r.json())
           ]);
           
           // 解析远程统计数据为统一格式
-          const remoteStats: MonitorStats = {
+          // statsData 已经是结构化对象：{ cpu: {load, cores}, memory: {used,total,free}, disk: [{name,used,total,usePercent}], gpus: [{index,name,util,memUsed,memTotal,temp}] }
+          const remoteStats: MonitorStats & { gpus?: { index: number; name: string; util: number; memUsed: number; memTotal: number; temp: number }[] } = {
             cpu: { load: 0, cores: [] },
             memory: { used: 0, total: 1, free: 0 },
             disk: [],
             network: [],
             processes: []
           };
-          
-          // 解析 CPU 信息
-          if (statsData.cpu) {
-            const match = statsData.cpu.match(/([\d.]+)/);
-            if (match) {
-              remoteStats.cpu.load = parseFloat(match[1]);
-            }
+
+          // CPU
+          if (typeof statsData.cpu === 'object' && statsData.cpu) {
+            remoteStats.cpu.load = statsData.cpu.load ?? 0;
+            remoteStats.cpu.cores = Array.isArray(statsData.cpu.cores) ? statsData.cpu.cores : [];
           }
-          
-          // 解析内存信息 "1234/8192 MB (15.1%)"
-          if (statsData.mem) {
-            const memMatch = statsData.mem.match(/([\d.]+)\/([\d.]+)\s*MB\s*\(([\d.]+)%\)/);
-            if (memMatch) {
-              remoteStats.memory = {
-                used: parseFloat(memMatch[1]) * 1024 * 1024,
-                total: parseFloat(memMatch[2]) * 1024 * 1024,
-                free: (parseFloat(memMatch[2]) - parseFloat(memMatch[1])) * 1024 * 1024
-              };
-            }
+
+          // 内存
+          if (typeof statsData.memory === 'object' && statsData.memory) {
+            remoteStats.memory = {
+              used: statsData.memory.used ?? 0,
+              total: statsData.memory.total ?? 1,
+              free: statsData.memory.free ?? 0
+            };
           }
-          
-          // 解析磁盘信息
-          if (statsData.disk) {
-            const diskMatch = statsData.disk.match(/(\d+)%/);
-            if (diskMatch) {
-              remoteStats.disk = [{
-                name: '/',
-                used: 0,
-                total: 1,
-                usePercent: parseFloat(diskMatch[1])
-              }];
-            }
+
+          // 磁盘
+          if (Array.isArray(statsData.disk)) {
+            remoteStats.disk = statsData.disk.map((d: any) => ({
+              name: d.name ?? '/',
+              used: d.used ?? 0,
+              total: d.total ?? 1,
+              usePercent: d.usePercent ?? 0
+            }));
+          }
+
+          // GPU（API 扩展字段）
+          if (Array.isArray(statsData.gpus)) {
+            remoteStats.gpus = statsData.gpus;
           }
           
           setStats(remoteStats);

@@ -112,6 +112,14 @@ export interface MonitorStats {
     cpu: number;
     mem: number;
   }[];
+  gpus?: {
+    index: number;
+    name: string;
+    util: number;
+    memUsed: number;
+    memTotal: number;
+    temp: number;
+  }[];
 }
 
 export interface MonitorHistory {
