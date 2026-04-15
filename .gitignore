@@ -19,6 +19,15 @@ remote-servers.json
 dist/
 client/dist/
 
+# SQLite 数据库（本地运行时生成，不可提交）
+data/
+*.db
+*.db-shm
+*.db-wal
+
+# 服务端日志
+server.log
+
 # 编辑器配置
 .claude/
 .vscode/
