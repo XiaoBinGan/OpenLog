@@ -36,3 +36,14 @@ server.log
 # Python 虚拟环境
 server_python/.venv/
 server_python/__pycache__/
+
+# Python 运行时
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg-info/
+dist/
+build/
