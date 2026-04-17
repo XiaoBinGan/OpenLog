@@ -144,7 +144,9 @@ export default function Dashboard() {
             timestamp: new Date(now - (29 - i) * 5000).toISOString(),
             cpu: remoteStats.cpu.load * (0.8 + Math.random() * 0.4),
             memory: (remoteStats.memory.used / remoteStats.memory.total) * 100 * (0.9 + Math.random() * 0.2),
-            disk: remoteStats.disk[0]?.usePercent || 0,
+            disk: remoteStats.disk.length > 0
+              ? remoteStats.disk.reduce((s, d) => s + (d.usePercent || 0), 0) / remoteStats.disk.length
+              : 0,
             network: remoteNetworkBps
           }));
           setHistory(mockHistory);
@@ -276,16 +278,26 @@ export default function Dashboard() {
             <span className="text-xs text-dark-400">磁盘</span>
           </div>
           <div className="text-2xl font-bold">
-            {stats?.disk?.[0]?.usePercent?.toFixed(1) || 0}%
+            {(() => {
+              const pcts = stats?.disk?.map(d => d.usePercent) || [];
+              return pcts.length > 0
+                ? (pcts.reduce((a, b) => a + b, 0) / pcts.length).toFixed(1)
+                : 0;
+            })()}%
+          </div>
+          <div className="text-xs text-dark-500 mt-0.5">
+            {stats?.disk?.length > 0
+              ? stats.disk.map(d => `${d.name} ${d.usePercent}%`).join(' / ')
+              : '无数据'}
           </div>
           <div className="mt-2 h-1 bg-dark-800 rounded-full overflow-hidden">
-            <div 
+            <div
               className={`h-full transition-all duration-500 ${
-                (stats?.disk?.[0]?.usePercent || 0) > 90 ? 'bg-red-500' : 
-                (stats?.disk?.[0]?.usePercent || 0) > 70 ? 'bg-yellow-500' : 
+                (() => { const p=stats?.disk?.map(d=>d.usePercent)||[]; return p.length>0?p.reduce((a,b)=>a+b,0)/p.length:0; })() > 90 ? 'bg-red-500' :
+                (() => { const p=stats?.disk?.map(d=>d.usePercent)||[]; return p.length>0?p.reduce((a,b)=>a+b,0)/p.length:0; })() > 70 ? 'bg-yellow-500' :
                 'bg-gradient-to-r from-orange-500 to-orange-400'
               }`}
-              style={{ width: `${stats?.disk?.[0]?.usePercent || 0}%` }}
+              style={{ width: `${(() => { const p=stats?.disk?.map(d=>d.usePercent)||[]; return p.length>0?p.reduce((a,b)=>a+b,0)/p.length:0; })()}%` }}
             />
           </div>
         </div>
