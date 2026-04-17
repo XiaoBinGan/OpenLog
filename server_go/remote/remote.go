@@ -97,6 +97,34 @@ func (srv *Server) Exec(cmd string) (string, error) {
 	return srv.run(cmd)
 }
 
+// Upload uploads a file to the remote server
+func (srv *Server) Upload(remotePath string, content []byte) error {
+	srv.mu.RLock()
+	defer srv.mu.RUnlock()
+	if srv.client == nil {
+		return fmt.Errorf("未连接")
+	}
+	
+	// Use base64 encoding to avoid shell escaping issues
+	encoded := base64.StdEncoding.EncodeToString(content)
+	cmd := fmt.Sprintf("echo '%s' | base64 -d > '%s'", encoded, remotePath)
+	session, err := srv.client.NewSession()
+	if err != nil {
+		return err
+	}
+	defer session.Close()
+	return session.Run(cmd)
+}
+
+// ResizeShell resizes the PTY for the given session
+func (srv *Server) ResizeShell(sessionID string, cols, rows int) error {
+	srv.mu.RLock()
+	defer srv.mu.RUnlock()
+	// Session management would need to be implemented
+	// For now, this is a placeholder
+	return nil
+}
+
 type RemoteStats struct {
 	CPU       RemoteCPU    `json:"cpu"`
 	Memory    RemoteMemory `json:"memory"`
