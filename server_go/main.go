@@ -1,12 +1,12 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
-	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -21,25 +21,24 @@ import (
 	"openlog/config"
 	"openlog/db"
 	"openlog/remote"
+	"openlog/services"
 )
 
-// ============ Models ============
-
 type MonitorStats struct {
-	CPU        float64     `json:"cpu"`
-	MemUsed    uint64      `json:"memUsed"`
-	MemTotal   uint64      `json:"memTotal"`
-	DiskUsed   uint64      `json:"diskUsed"`
-	DiskTotal  uint64      `json:"diskTotal"`
-	NetworkIn  uint64      `json:"networkIn"`
-	NetworkOut uint64      `json:"networkOut"`
-	Procs      []ProcInfo  `json:"procs"`
-	GPUs       []GPUInfo    `json:"gpus"`
-	Uptime     uint64      `json:"uptime"`
-	Hostname   string      `json:"hostname"`
-	OS         string      `json:"os"`
-	Platform   string      `json:"platform"`
-	BootTime   uint64      `json:"bootTime"`
+	CPU        float64    `json:"cpu"`
+	MemUsed    uint64     `json:"memUsed"`
+	MemTotal   uint64     `json:"memTotal"`
+	DiskUsed   uint64     `json:"diskUsed"`
+	DiskTotal  uint64     `json:"diskTotal"`
+	NetworkIn  uint64     `json:"networkIn"`
+	NetworkOut uint64     `json:"networkOut"`
+	Procs      []ProcInfo `json:"procs"`
+	GPUs       []GPUInfo  `json:"gpus"`
+	Uptime     uint64     `json:"uptime"`
+	Hostname   string     `json:"hostname"`
+	OS         string     `json:"os"`
+	Platform   string     `json:"platform"`
+	BootTime   uint64     `json:"bootTime"`
 }
 
 type ProcInfo struct {
@@ -57,28 +56,6 @@ type GPUInfo struct {
 	MemTotal int    `json:"memTotal"`
 	Temp     int    `json:"temp"`
 }
-
-type LogEntry struct {
-	Time    string `json:"time"`
-	Level   string `json:"level"`
-	Message string `json:"message"`
-	Raw     string `json:"raw"`
-}
-
-type LogSource struct {
-	ID      string     `json:"id"`
-	Name    string     `json:"name"`
-	Path    string     `json:"path"`
-	Entries []LogEntry `json:"entries"`
-	Offsets map[string]int64
-	mu      sync.RWMutex
-}
-
-var logSources = make(map[string]*LogSource)
-var logSourcesMu sync.RWMutex
-const MaxLogEntries = 10000
-
-// ============ WebSocket Hub ============
 
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
@@ -147,19 +124,14 @@ func (h *WSHub) Broadcast(msg []byte) {
 
 var wsHub = NewWSHub()
 
-// ============ Monitor Service ============
-
 var monitorHistory []MonitorStats
 var monitorHistoryMu sync.RWMutex
 const MaxHistoryLen = 1000
 
 func collectLocalStats() MonitorStats {
 	var s MonitorStats
-	if ci, err := cpu.Info(); err == nil && len(ci) > 0 {
-		if pct, err := cpu.Percent(time.Second, false); err == nil && len(pct) > 0 {
-			s.CPU = pct[0]
-		}
-		_ = ci
+	if pct, err := cpu.Percent(time.Second, false); err == nil && len(pct) > 0 {
+		s.CPU = pct[0]
 	}
 	if mi, err := mem.VirtualMemory(); err == nil {
 		s.MemUsed = mi.Used
@@ -224,111 +196,11 @@ func startMonitor() {
 				monitorHistory = monitorHistory[len(monitorHistory)-MaxHistoryLen:]
 			}
 			monitorHistoryMu.Unlock()
-
-			// Broadcast to WS clients
 			data, _ := json.Marshal(map[string]interface{}{"type": "stats", "stats": s})
 			wsHub.Broadcast(data)
 		}
 	}()
 }
-
-// ============ Log Service ============
-
-func watchLog(source *LogSource) {
-	go func() {
-		for {
-			file, err := os.Open(source.Path)
-			if err != nil {
-				time.Sleep(5 * time.Second)
-				continue
-			}
-
-			if off, ok := source.Offsets[source.Path]; ok {
-				file.Seek(off, 0)
-			}
-
-			reader := io.Reader(file)
-			buf := make([]byte, 4096)
-			for {
-				n, err := reader.Read(buf)
-				if n > 0 {
-					text := string(buf[:n])
-					lines := strings.Split(text, "\n")
-					source.mu.Lock()
-					for _, line := range lines {
-						if line == "" {
-							continue
-						}
-						entry := parseLogLine(line)
-						source.Entries = append(source.Entries, entry)
-						if len(source.Entries) > MaxLogEntries {
-							source.Entries = source.Entries[len(source.Entries)-MaxLogEntries:]
-						}
-					}
-					source.mu.Unlock()
-
-					// Broadcast
-					broadcast := map[string]interface{}{
-						"type":   "log",
-						"source": source.ID,
-						"raw":    text,
-					}
-					data, _ := json.Marshal(broadcast)
-					wsHub.Broadcast(data)
-				}
-				if err != nil {
-					file.Close()
-					time.Sleep(2 * time.Second)
-					break
-				}
-			}
-		}
-	}()
-}
-
-func parseLogLine(line string) LogEntry {
-	entry := LogEntry{Raw: line}
-	parts := strings.SplitN(line, " ", 3)
-	if len(parts) >= 3 {
-		entry.Time = parts[0]
-		entry.Level = parts[1]
-		entry.Message = parts[2]
-	} else if len(parts) == 2 {
-		entry.Time = parts[0]
-		entry.Message = parts[1]
-	} else {
-		entry.Message = line
-	}
-	return entry
-}
-
-// ============ Remote Auto Reconnect ============
-
-func startRemoteReconnect() {
-	ticker := time.NewTicker(30 * time.Second)
-	go func() {
-		var servers []remote.Server
-		db.GetJSON("remote_servers", &servers)
-		for range ticker.C {
-			for _, srv := range servers {
-				if srv.Connected && remote.Mgr.GetServer(srv.ID) == nil {
-					// Lost connection, try reconnect
-					srv.Connected = false
-					if err := remote.Mgr.Connect(&srv); err == nil {
-						broadcastRemoteStatus(srv.ID, true)
-					}
-				}
-			}
-		}
-	}()
-}
-
-func broadcastRemoteStatus(id string, connected bool) {
-	data, _ := json.Marshal(map[string]interface{}{"type": "remote_status", "serverId": id, "connected": connected})
-	wsHub.Broadcast(data)
-}
-
-// ============ HTTP Handlers ============
 
 func jsonWrite(w http.ResponseWriter, v interface{}) {
 	w.Header().Set("Content-Type", "application/json")
@@ -359,7 +231,6 @@ func handleWS(w http.ResponseWriter, r *http.Request) {
 	}
 	c := &WSClient{conn: conn, send: make(chan []byte, 256), typ: typ}
 	wsHub.register <- c
-
 	go func() {
 		defer func() { wsHub.unregister <- c }()
 		for {
@@ -384,7 +255,9 @@ func handleAPI(w http.ResponseWriter, r *http.Request) {
 	method := r.Method
 
 	switch {
-	// --- Settings ---
+	case path == "/health" && method == "GET":
+		jsonWrite(w, map[string]interface{}{"status": "ok", "uptime": time.Now().Unix()})
+
 	case path == "/settings" && method == "GET":
 		if val, _ := db.Get("settings"); val != "" {
 			w.Write([]byte(val))
@@ -396,19 +269,16 @@ func handleAPI(w http.ResponseWriter, r *http.Request) {
 		db.Set("settings", string(body))
 		jsonWrite(w, map[string]string{"status": "ok"})
 
-	// --- Servers ---
 	case path == "/servers" && method == "GET":
 		var servers []remote.Server
 		db.GetJSON("remote_servers", &servers)
 		if servers == nil {
 			servers = []remote.Server{}
 		}
-		// Mark connection status
 		for i := range servers {
 			servers[i].Connected = remote.Mgr.IsConnected(servers[i].ID)
 		}
 		jsonWrite(w, servers)
-
 	case path == "/servers" && (method == "POST" || method == "PUT"):
 		var srv remote.Server
 		if err := jsonRead(r, &srv); err != nil {
@@ -430,7 +300,6 @@ func handleAPI(w http.ResponseWriter, r *http.Request) {
 		}
 		db.SetJSON("remote_servers", servers)
 		jsonWrite(w, srv)
-
 	case path == "/servers" && method == "DELETE":
 		id := r.URL.Query().Get("id")
 		var servers []remote.Server
@@ -453,58 +322,29 @@ func handleAPI(w http.ResponseWriter, r *http.Request) {
 		}
 		handleServerAction(w, r, srv, action)
 
-	// --- Monitor ---
 	case path == "/monitor/stats" && method == "GET":
 		jsonWrite(w, collectLocalStats())
-
 	case path == "/monitor/history" && method == "GET":
 		monitorHistoryMu.RLock()
 		defer monitorHistoryMu.RUnlock()
 		jsonWrite(w, monitorHistory)
 
-	// --- Logs ---
 	case path == "/logs/sources" && method == "GET":
-		logSourcesMu.RLock()
-		defer logSourcesMu.RUnlock()
-		var result []LogSource
-		for _, s := range logSources {
-			result = append(result, *s)
-		}
-		jsonWrite(w, result)
-
+		sources := services.LogServiceInstance.GetAllSources()
+		jsonWrite(w, sources)
 	case path == "/logs/sources" && (method == "POST" || method == "PUT"):
-		var src LogSource
+		var src services.LogSource
 		if err := jsonRead(r, &src); err != nil {
 			http.Error(w, err.Error(), 400)
 			return
 		}
-		src.Offsets = make(map[string]int64)
-		logSourcesMu.Lock()
-		logSources[src.ID] = &src
-		logSourcesMu.Unlock()
-		watchLog(&src)
+		services.LogServiceInstance.AddSource(&src)
 		jsonWrite(w, src)
-
 	case path == "/logs/sources" && method == "DELETE":
 		id := r.URL.Query().Get("id")
-		logSourcesMu.Lock()
-		delete(logSources, id)
-		logSourcesMu.Unlock()
+		services.LogServiceInstance.RemoveSource(id)
 		jsonWrite(w, map[string]string{"status": "ok"})
 
-	case strings.HasPrefix(path, "/logs/"):
-		parts := strings.SplitN(strings.TrimPrefix(path, "/logs/"), "/", 2)
-		logSourcesMu.RLock()
-		src := logSources[parts[0]]
-		logSourcesMu.RUnlock()
-		if src == nil {
-			http.Error(w, "source not found", 404)
-			return
-		}
-		action := parts[1]
-		handleLogAction(w, r, src, action)
-
-	// --- AI ---
 	case path == "/ai/chat" && method == "POST":
 		handleAIChat(w, r)
 	case path == "/ai/chat/stream" && method == "POST":
@@ -516,7 +356,6 @@ func handleAPI(w http.ResponseWriter, r *http.Request) {
 	case path == "/ai/fix" && method == "POST":
 		handleAIFix(w, r)
 
-	// --- Docker ---
 	case path == "/docker/containers" && method == "GET":
 		handleDockerList(w, r)
 	case path == "/docker/containers" && method == "POST":
@@ -529,7 +368,6 @@ func handleAPI(w http.ResponseWriter, r *http.Request) {
 		}
 		handleDockerAction(w, r, parts[0], parts[1])
 
-	// --- Memory ---
 	case path == "/memory" && method == "GET":
 		var mems []map[string]string
 		db.GetJSON("assistant_memory", &mems)
@@ -564,37 +402,30 @@ func handleAPI(w http.ResponseWriter, r *http.Request) {
 		db.SetJSON("assistant_memory", filtered)
 		jsonWrite(w, map[string]string{"status": "ok"})
 
-	// --- Health ---
-	case path == "/health" && method == "GET":
-		jsonWrite(w, map[string]interface{}{"status": "ok", "uptime": time.Now().Unix()})
-
 	default:
 		http.NotFound(w, r)
 	}
 }
-
-// ============ Server Action Handlers ============
 
 func handleServerAction(w http.ResponseWriter, r *http.Request, srv *remote.Server, action string) {
 	if srv == nil {
 		http.Error(w, "server not found", 404)
 		return
 	}
-
 	switch action {
 	case "connect":
 		if err := remote.Mgr.Connect(srv); err != nil {
 			http.Error(w, err.Error(), 500)
 			return
 		}
-		broadcastRemoteStatus(srv.ID, true)
+		data, _ := json.Marshal(map[string]interface{}{"type": "remote_status", "serverId": srv.ID, "connected": true})
+		wsHub.Broadcast(data)
 		jsonWrite(w, srv)
-
 	case "disconnect":
 		remote.Mgr.Disconnect(srv)
-		broadcastRemoteStatus(srv.ID, false)
+		data, _ := json.Marshal(map[string]interface{}{"type": "remote_status", "serverId": srv.ID, "connected": false})
+		wsHub.Broadcast(data)
 		jsonWrite(w, map[string]string{"status": "ok"})
-
 	case "test":
 		err := remote.TestConnection(srv.Host, srv.Port, srv.User, srv.Password)
 		if err != nil {
@@ -602,11 +433,9 @@ func handleServerAction(w http.ResponseWriter, r *http.Request, srv *remote.Serv
 			return
 		}
 		jsonWrite(w, map[string]string{"status": "ok"})
-
 	case "stats":
 		stats := srv.GetStats()
 		jsonWrite(w, stats)
-
 	case "files":
 		path := r.URL.Query().Get("path")
 		if path == "" {
@@ -630,7 +459,6 @@ func handleServerAction(w http.ResponseWriter, r *http.Request, srv *remote.Serv
 			}
 		}
 		jsonWrite(w, files)
-
 	case "logs":
 		path := r.URL.Query().Get("path")
 		if path == "" {
@@ -644,7 +472,6 @@ func handleServerAction(w http.ResponseWriter, r *http.Request, srv *remote.Serv
 			return
 		}
 		jsonWrite(w, map[string]string{"content": out})
-
 	case "read":
 		path := r.URL.Query().Get("path")
 		if path == "" {
@@ -660,7 +487,6 @@ func handleServerAction(w http.ResponseWriter, r *http.Request, srv *remote.Serv
 			return
 		}
 		jsonWrite(w, map[string]string{"content": content})
-
 	case "write":
 		path := r.URL.Query().Get("path")
 		content := r.URL.Query().Get("content")
@@ -673,10 +499,8 @@ func handleServerAction(w http.ResponseWriter, r *http.Request, srv *remote.Serv
 			return
 		}
 		jsonWrite(w, map[string]string{"status": "ok"})
-
 	case "shell":
 		srv.HandleShell(w, r)
-
 	case "exec":
 		cmd := r.URL.Query().Get("cmd")
 		if cmd == "" {
@@ -689,33 +513,15 @@ func handleServerAction(w http.ResponseWriter, r *http.Request, srv *remote.Serv
 			return
 		}
 		jsonWrite(w, map[string]string{"output": out})
-
 	default:
 		http.Error(w, "unknown action: "+action, 400)
 	}
 }
 
-// ============ Log Action Handlers ============
-
-func handleLogAction(w http.ResponseWriter, r *http.Request, src *LogSource, action string) {
-	switch action {
-	case "entries":
-		src.mu.RLock()
-		defer src.mu.RUnlock()
-		jsonWrite(w, src.Entries)
-
-	default:
-		http.NotFound(w, r)
-	}
-}
-
-// ============ AI Handlers ============
-
 func handleAIChat(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Messages []map[string]string `json:"messages"`
 		Model    string               `json:"model"`
-		Stream   bool                 `json:"stream"`
 	}
 	if err := jsonRead(r, &req); err != nil {
 		http.Error(w, err.Error(), 400)
@@ -724,7 +530,6 @@ func handleAIChat(w http.ResponseWriter, r *http.Request) {
 	if req.Model == "" {
 		req.Model = "qwen2.5:7b"
 	}
-
 	cfg := config.Load()
 	payload := map[string]interface{}{
 		"model":    req.Model,
@@ -732,7 +537,6 @@ func handleAIChat(w http.ResponseWriter, r *http.Request) {
 		"stream":   false,
 	}
 	body, _ := json.Marshal(payload)
-
 	resp, err := http.Post(cfg.AIEndpoint+"/chat/completions", "application/json", strings.NewReader(string(body)))
 	if err != nil {
 		http.Error(w, err.Error(), 500)
@@ -756,7 +560,6 @@ func handleAIStream(w http.ResponseWriter, r *http.Request) {
 	if req.Model == "" {
 		req.Model = "qwen2.5:7b"
 	}
-
 	cfg := config.Load()
 	payload := map[string]interface{}{
 		"model":    req.Model,
@@ -780,8 +583,58 @@ func handleAIStream(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	io.Copy(w, resp.Body)
-	flusher.Flush()
+
+	// Thinking filter
+	thinkingEnabled := getThinkingEnabled()
+	filter := services.NewThinkingStreamFilter(thinkingEnabled)
+
+	reader := bufio.NewReader(resp.Body)
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			break
+		}
+		if strings.HasPrefix(line, "data: ") {
+			data := strings.TrimPrefix(line, "data: ")
+			if data == "[DONE]\n" || data == "[DONE]" {
+				// Flush remaining
+				if remaining := filter.Flush(); remaining != "" {
+					fmt.Fprintf(w, "data: %s\n\n", remaining)
+					flusher.Flush()
+				}
+				fmt.Fprintf(w, "data: [DONE]\n\n")
+				flusher.Flush()
+				break
+			}
+			var sse struct {
+				Choices []struct {
+					Delta struct {
+						Content string `json:"content"`
+					} `json:"delta"`
+				} `json:"choices"`
+			}
+			if json.Unmarshal([]byte(data), &sse) == nil && len(sse.Choices) > 0 {
+				content := sse.Choices[0].Delta.Content
+				filtered := filter.Process(content)
+				if filtered != "" {
+					sse.Choices[0].Delta.Content = filtered
+					newData, _ := json.Marshal(sse)
+					fmt.Fprintf(w, "data: %s\n\n", string(newData))
+					flusher.Flush()
+				}
+			}
+		}
+	}
+}
+
+func getThinkingEnabled() bool {
+	var settings struct {
+		ThinkingEnabled bool `json:"thinkingEnabled"`
+	}
+	if val, _ := db.Get("settings"); val != "" {
+		json.Unmarshal([]byte(val), &settings)
+	}
+	return settings.ThinkingEnabled
 }
 
 func handleOllamaModels(w http.ResponseWriter, r *http.Request) {
@@ -828,7 +681,7 @@ func handleAIAnalyze(w http.ResponseWriter, r *http.Request) {
 
 func handleAIFix(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Code string `json:"code"`
+		Code  string `json:"code"`
 		Error string `json:"error"`
 	}
 	if err := jsonRead(r, &req); err != nil {
@@ -854,8 +707,6 @@ func handleAIFix(w http.ResponseWriter, r *http.Request) {
 	w.Write(result)
 }
 
-// ============ Docker Handlers ============
-
 func handleDockerList(w http.ResponseWriter, r *http.Request) {
 	out, err := exec.Command("docker", "ps", "-a", "--format", "{{.ID}}|{{.Names}}|{{.Image}}|{{.Status}}|{{.Ports}}").Output()
 	if err != nil {
@@ -870,11 +721,11 @@ func handleDockerList(w http.ResponseWriter, r *http.Request) {
 		parts := strings.SplitN(line, "|", 5)
 		if len(parts) >= 4 {
 			containers = append(containers, map[string]string{
-				"id":    parts[0],
-				"name":  parts[1],
-				"image": parts[2],
+				"id":     parts[0],
+				"name":   parts[1],
+				"image":  parts[2],
 				"status": parts[3],
-				"ports": parts[4],
+				"ports":  parts[4],
 			})
 		}
 	}
@@ -921,22 +772,38 @@ func handleDockerAction(w http.ResponseWriter, r *http.Request, id, action strin
 	}
 }
 
-// ============ Main ============
+func startRemoteReconnect() {
+	ticker := time.NewTicker(30 * time.Second)
+	go func() {
+		for range ticker.C {
+			var servers []remote.Server
+			db.GetJSON("remote_servers", &servers)
+			for _, srv := range servers {
+				if srv.Connected && !remote.Mgr.IsConnected(srv.ID) {
+					if err := remote.Mgr.Connect(&srv); err == nil {
+						data, _ := json.Marshal(map[string]interface{}{"type": "remote_status", "serverId": srv.ID, "connected": true})
+						wsHub.Broadcast(data)
+					}
+				}
+			}
+		}
+	}()
+}
 
 func main() {
 	cfg := config.Load()
 
-	// Init DB
 	if err := db.Init(cfg); err != nil {
 		log.Fatalf("[DB] Init failed: %v", err)
 	}
 
-	// Start services
 	go wsHub.Run()
 	startMonitor()
 	startRemoteReconnect()
 
-	// Routes
+	// Init log service with broadcast
+	services.InitLogService(func(data []byte) { wsHub.Broadcast(data) })
+
 	http.HandleFunc("/ws", handleWS)
 	http.HandleFunc("/api/", handleAPI)
 
