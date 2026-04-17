@@ -1,38 +1,34 @@
-# 依赖目录
-# 通过 package.json 可以重新安装，体积巨大，无需提交
-node_modules/
+# Binaries
+openlog_go
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
 
-# 环境变量文件
-# 包含数据库密码、API密钥等敏感信息，严禁提交
-.env
-.env.local
-.env.*.local
+# Test binary
+*.test
 
-# macOS 系统文件
-# 存储文件夹显示属性，与项目代码无关，会造成不必要的冲突
-.DS_Store
-# 本地配置文件（用户私有，不要提交）
-settings.json
-remote-servers.json
+# Output
+*.out
 
-# 构建产物
-dist/
-client/dist/
+# Go workspace
+go.work
 
-# SQLite 数据库（本地运行时生成，不可提交）
+# Data
 data/
 *.db
-*.db-shm
-*.db-wal
+*.db-journal
 
-# 服务端日志
-server.log
-
-# 编辑器配置
-.claude/
+# IDE
 .vscode/
 .idea/
+*.swp
+*.swo
 
-# Python 虚拟环境
-server_python/.venv/
-server_python/__pycache__/
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
