@@ -633,7 +633,7 @@ export async function getRemoteSystemStats(id) {
       echo "MEM:$(free -m | awk '/Mem:/ {printf "%.1f/%.1f MB (%.1f%%)", $3, $2, ($3/$2)*100}')"
 
       # 磁盘
-      echo "DISK:$(df -h / | awk 'NR==2 {printf "%s/%s (%s)", $3, $2, $5}')"
+      df -h | tail -n +2 | grep "^/" | while read line; do echo "DISK:$line"; done
 
       # 网络流量（取第一个活跃网卡）
       cat /proc/net/dev | awk 'NR>2 {
@@ -677,13 +677,31 @@ export async function getRemoteSystemStats(id) {
     }
     
     // 解析磁盘
-    const diskMatch = lines.find(l => l.startsWith('DISK:'));
+    // 解析磁盘：df -h 输出可能是 6 列（无 inodes）或 7 列（有 inodes）
+    // 6列: Filesystem Size Used Avail Use% Mounted-on
+    // 7列: Filesystem Size Used Avail Use% Inodes Mounted-on
+    const diskLines = lines.filter(l => l.startsWith('DISK:'));
+    const SKIP_NAMES = ['/dev', '/dev/shm', '/dev/run', '/sys', '/proc', '/run'];
     const disks = [];
-    if (diskMatch) {
-      const d = diskMatch.replace('DISK:', '').match(/([\d.]+[BKMGT]?)\/([\d.]+[BKMGT]?)\s*\((\d+)%\)/);
-      if (d) {
-        disks.push({ name: '/', used: 0, total: 1, usePercent: parseFloat(d[3]) });
-      }
+    for (const rawLine of diskLines) {
+      const line = rawLine.replace('DISK:', '').trim();
+      const parts = line.split(/\s+/);
+      if (parts.length < 6) continue;
+      // 最后一列是挂载点，倒数第二列是 Use%（带%），倒数第三是 Avail，倒数第四是 Used，倒数第五是 Size
+      const n = parts.length;
+      const mount = parts[n - 1];
+      const pctStr = parts[n - 2]; // e.g. "23%"
+      const pct = parseFloat(pctStr.replace('%', '')) || 0;
+      const total = parts[n - 5]; // Size
+      const used = parts[n - 4];  // Used
+      if (SKIP_NAMES.includes(mount)) continue;
+      const parseSize = (s) => {
+        const m = s.match(/^([\d.]+)([BKMGT])?$/);
+        if (!m) return 0;
+        const scale = { B: 1, K: 1024, M: 1024**2, G: 1024**3, T: 1024**4 };
+        return parseFloat(m[1]) * (scale[m[2]] || 1);
+      };
+      disks.push({ name: mount, used: parseSize(used), total: parseSize(total), usePercent: pct });
     }
     
     // 解析网络流量
