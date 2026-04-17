@@ -513,6 +513,22 @@ func handleServerAction(w http.ResponseWriter, r *http.Request, srv *remote.Serv
 			return
 		}
 		jsonWrite(w, map[string]string{"output": out})
+	case "upload":
+		path := r.URL.Query().Get("path")
+		if path == "" {
+			http.Error(w, "path required", 400)
+			return
+		}
+		content, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		if err := srv.Upload(path, content); err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		jsonWrite(w, map[string]string{"status": "ok"})
 	default:
 		http.Error(w, "unknown action: "+action, 400)
 	}
