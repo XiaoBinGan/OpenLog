@@ -18,14 +18,14 @@ export default defineConfig({
         changeOrigin: true,
         rewrite: (p) => p.replace(/^\/api\/docmind/, '/api'),
       },
-      // OpenLog 后端
+      // OpenLog 后端（Go）
       '/api': {
-        target: 'http://localhost:3001',
+        target: 'http://localhost:3002',
         changeOrigin: true,
       },
       // WebSocket
       '/ws': {
-        target: 'ws://localhost:3001',
+        target: 'ws://localhost:3002',
         ws: true,
         changeOrigin: true,
       },
