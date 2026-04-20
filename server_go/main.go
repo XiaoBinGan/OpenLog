@@ -1281,10 +1281,12 @@ func handleRemoteServer(w http.ResponseWriter, r *http.Request, path string) {
 
 	case "files":
 		path := r.URL.Query().Get("path")
-		if path == "" { path = "/"
-		}
-		if path == "" { path = "/"
+		if path == "" {
 			path = "/"
+		}
+		if !srv.Connected {
+			jsonWrite(w, map[string]string{"error": "未连接"})
+			return
 		}
 		out, err := srv.ListFiles(path)
 		if err != nil {
@@ -1297,6 +1299,10 @@ func handleRemoteServer(w http.ResponseWriter, r *http.Request, path string) {
 		file := r.URL.Query().Get("file")
 		if file == "" {
 			http.Error(w, "file required", 400)
+			return
+		}
+		if !srv.Connected {
+			jsonWrite(w, map[string]string{"error": "未连接"})
 			return
 		}
 		lines := 200
