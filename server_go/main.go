@@ -31,8 +31,13 @@ import (
 
 // ============ Models ============
 
+type CPUInfo struct {
+	Load  float64  `json:"load"`
+	Cores []float64 `json:"cores"`
+}
+
 type MonitorStats struct {
-	CPU       float64          `json:"cpu"`
+	CPU       CPUInfo          `json:"cpu"`
 	Memory    MemoryInfo       `json:"memory"`
 	Disk      []DiskInfo       `json:"disk"`
 	Network   []NetworkInfo    `json:"network"`
@@ -177,7 +182,10 @@ func collectLocalStats() MonitorStats {
 
 	// CPU
 	if pct, err := cpu.Percent(0, false); err == nil && len(pct) > 0 {
-		s.CPU = pct[0]
+		s.CPU.Load = pct[0]
+	}
+	if cores, err := cpu.Percent(0, true); err == nil {
+		s.CPU.Cores = cores
 	}
 
 	// Memory
@@ -448,6 +456,9 @@ func handleAPI(w http.ResponseWriter, r *http.Request) {
 		handleAnalysisTrigger(w, r)
 	case path == "/analysis/history" && method == "GET":
 		handleAnalysisHistory(w, r)
+	case path == "/analysis/history" && method == "DELETE":
+		services.AnalysisMgr.ClearHistory()
+		jsonWrite(w, map[string]bool{"success": true})
 	case strings.HasPrefix(path, "/analysis/history/"):
 		handleAnalysisHistoryDelete(w, r, strings.TrimPrefix(path, "/analysis/history/"))
 
@@ -550,7 +561,7 @@ func handleGetLogFiles(w http.ResponseWriter, r *http.Request) {
 	settings := getSettings()
 	sources, _ := settings["watchSources"].([]interface{})
 
-	var files []map[string]interface{}
+	var files = make([]map[string]interface{}, 0)
 	for _, s := range sources {
 		src, ok := s.(map[string]interface{})
 		if !ok {
