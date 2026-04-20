@@ -26,38 +26,52 @@ export default function GlobalStatusBar() {
           }
           const data = await res.json();
 
-          // 解析远程统计 - 新结构化格式
+          // 解析远程统计 - Go 后端结构化格式
+          // Go 返回: {cpu:{load:[],cores:N,percent:F}, memory:{used:N,total:N,usedPct:F}, disk:[{usedPct:N}]}
+          // 未连接时: {cpu:{load:null,cores:0,percent:0}, memory:{used:0,total:0,usedPct:0}, disk:null, connected:false}
           let cpu = 0, memory = 0, disk = 0;
 
-          if (data.cpu) {
-            // 新格式: {load: 0.2, cores: []} 或旧格式: "0.1"
-            // data.cpu.load 可能是 null（如服务器未连接时），用 ?? 0 保底
-            cpu = typeof data.cpu === 'object' ? (data.cpu.load ?? 0) : parseFloat(String(data.cpu).match(/([\d.]+)/)?.[1] || '0');
+          if (data.cpu && typeof data.cpu === 'object') {
+            // percent 是 0-100 的百分比值，load 是 null 或 load average 数组
+            cpu = Number(data.cpu.percent ?? data.cpu.usedPct ?? 0) || 0;
+          } else if (typeof data.cpu === 'string') {
+            const match = data.cpu.match(/([\d.]+)/);
+            if (match) cpu = parseFloat(match[1]) || 0;
           }
 
-          if (data.memory) {
-            // 新格式: {used: ..., total: ...} 或旧格式: "12950.0/128568.0 MB (10.1%)"
-            if (typeof data.memory === 'object') {
-              memory = (data.memory.used / (data.memory.total || 1)) * 100;
-            } else {
-              const match = String(data.memory).match(/\(([\d.]+)%\)/);
-              if (match) memory = parseFloat(match[1]);
+          if (data.memory && typeof data.memory === 'object') {
+            // usedPct 是 0-100 的百分比值，或者从 used/total 计算
+            memory = Number(data.memory.usedPct ?? 0) || 0;
+            if (memory === 0 && data.memory.total > 0) {
+              memory = (data.memory.used / data.memory.total) * 100;
             }
+          } else if (typeof data.memory === 'string') {
+            const match = data.memory.match(/\(([\d.]+)%\)/);
+            if (match) memory = parseFloat(match[1]) || 0;
           }
 
           if (data.disk) {
-            // 新格式: [{usePercent: 23}] 或旧格式: "388G/1.8T (23%)"
             if (Array.isArray(data.disk)) {
-              const totalUsed = data.disk.reduce((s: number, d: any) => s + (d.used || 0), 0);
               const totalAll = data.disk.reduce((s: number, d: any) => s + (d.total || 0), 0);
-              disk = totalAll > 0 ? (totalUsed / totalAll) * 100 : 0;
-            } else {
-              const match = String(data.disk).match(/(\d+)%/);
-              if (match) disk = parseFloat(match[1]);
+              if (totalAll > 0) {
+                const totalUsed = data.disk.reduce((s: number, d: any) => s + (d.used || 0), 0);
+                disk = (totalUsed / totalAll) * 100;
+              } else {
+                // 用 usedPct 平均值
+                const pcts = data.disk.filter((d: any) => d.usedPct != null).map((d: any) => d.usedPct);
+                disk = pcts.length > 0 ? pcts.reduce((a: number, b: number) => a + b, 0) / pcts.length : 0;
+              }
+            } else if (typeof data.disk === 'string') {
+              const match = data.disk.match(/(\d+)%/);
+              if (match) disk = parseFloat(match[1]) || 0;
             }
           }
 
-          setStats({ cpu, memory, disk });
+          setStats({
+            cpu: Number(cpu) || 0,
+            memory: Number(memory) || 0,
+            disk: Number(disk) || 0,
+          });
         } else {
           const res = await fetch('/api/monitor/stats');
           if (!res.ok) {
@@ -106,7 +120,7 @@ export default function GlobalStatusBar() {
           <Cpu className={`w-4 h-4 ${stats.cpu > 80 ? 'text-red-400' : stats.cpu > 50 ? 'text-yellow-400' : 'text-accent-400'}`} />
           <span className="text-dark-400">CPU:</span>
           <span className={`font-mono font-semibold ${stats.cpu > 80 ? 'text-red-400' : stats.cpu > 50 ? 'text-yellow-400' : 'text-dark-200'}`}>
-            {stats.cpu.toFixed(1)}%
+            {(stats.cpu ?? 0).toFixed(1)}%
           </span>
         </div>
 
@@ -114,7 +128,7 @@ export default function GlobalStatusBar() {
           <Activity className={`w-4 h-4 ${stats.memory > 80 ? 'text-red-400' : stats.memory > 50 ? 'text-yellow-400' : 'text-purple-400'}`} />
           <span className="text-dark-400">内存:</span>
           <span className={`font-mono font-semibold ${stats.memory > 80 ? 'text-red-400' : stats.memory > 50 ? 'text-yellow-400' : 'text-dark-200'}`}>
-            {stats.memory.toFixed(1)}%
+            {(stats.memory ?? 0).toFixed(1)}%
           </span>
         </div>
 
@@ -122,7 +136,7 @@ export default function GlobalStatusBar() {
           <HardDrive className={`w-4 h-4 ${stats.disk > 90 ? 'text-red-400' : stats.disk > 70 ? 'text-yellow-400' : 'text-orange-400'}`} />
           <span className="text-dark-400">磁盘:</span>
           <span className={`font-mono font-semibold ${stats.disk > 90 ? 'text-red-400' : stats.disk > 70 ? 'text-yellow-400' : 'text-dark-200'}`}>
-            {stats.disk.toFixed(1)}%
+            {(stats.disk ?? 0).toFixed(1)}%
           </span>
         </div>
       </div>

@@ -153,12 +153,24 @@ export default function Dashboard() {
           try {
             const remoteServer = selectedDevice as RemoteServer;
             const res = await fetch(`/api/remote/servers/${selectedDevice.id}/files?path=${encodeURIComponent(remoteServer.logPath || '/var/log')}`);
-            const filesData = await res.json();
-            const logFile = filesData.files?.find((f: any) => f.isLog);
-            if (logFile) {
-              const logsRes = await fetch(`/api/remote/servers/${selectedDevice.id}/logs?file=${encodeURIComponent(logFile.path)}&lines=10`);
-              const logsData = await logsRes.json();
-              setRecentLogs(logsData.logs || []);
+            if (!res.ok) {
+              console.warn('Remote files API returned', res.status, '- skipping remote logs');
+            } else {
+              const filesData = await res.json();
+              if (filesData.error) {
+                console.warn('Remote files error:', filesData.error);
+              } else {
+                const logFile = filesData.files?.find((f: any) => f.isLog);
+                if (logFile) {
+                  const logsRes = await fetch(`/api/remote/servers/${selectedDevice.id}/logs?file=${encodeURIComponent(logFile.path)}&lines=10`);
+                  if (logsRes.ok) {
+                    const logsData = await logsRes.json();
+                    if (!logsData.error) {
+                      setRecentLogs(logsData.logs || []);
+                    }
+                  }
+                }
+              }
             }
           } catch (err) {
             console.error('Failed to load remote logs:', err);

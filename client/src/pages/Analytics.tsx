@@ -49,15 +49,18 @@ export default function Analytics() {
         // 远程服务器日志
         const remoteServer = selectedDevice as RemoteServer;
         const filesRes = await fetch(`/api/remote/servers/${selectedDevice.id}/files?path=${encodeURIComponent(remoteServer.logPath || '/var/log')}`);
+        if (!filesRes.ok) { setLogs([]); setLoading(false); return; }
         const filesData = await filesRes.json();
         
+        if (filesData.error) { setLogs([]); setLoading(false); return; }
         if (filesData.files && filesData.files.length > 0) {
           // 找第一个日志文件
           const logFile = filesData.files.find((f: any) => f.isLog) || filesData.files[0];
           
           const logsRes = await fetch(`/api/remote/servers/${selectedDevice.id}/logs?file=${encodeURIComponent(logFile.path)}&lines=100${errorLogsOnly ? '&level=ERROR' : ''}`);
+          if (!logsRes.ok) { setLogs([]); setLoading(false); return; }
           const logsData = await logsRes.json();
-          setLogs(logsData.logs || []);
+          if (logsData.error) { setLogs([]); } else { setLogs(logsData.logs || []); }
         } else {
           setLogs([]);
         }
