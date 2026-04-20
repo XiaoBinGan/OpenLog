@@ -1150,6 +1150,13 @@ func handleRemoteList(w http.ResponseWriter, r *http.Request) {
 	// Mark connection status
 	for i := range servers {
 		servers[i].Connected = remote.Mgr.IsConnected(servers[i].ID)
+		if servers[i].Status == "" {
+			if servers[i].Connected {
+				servers[i].Status = "connected"
+			} else {
+				servers[i].Status = "disconnected"
+			}
+		}
 	}
 	jsonWrite(w, map[string]interface{}{"servers": servers})
 }
