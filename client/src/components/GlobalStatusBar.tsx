@@ -15,6 +15,7 @@ export default function GlobalStatusBar() {
 
   // 获取快速统计
   useEffect(() => {
+    if (!selectedDevice) return;
     const fetchStats = async () => {
       try {
         if (isRemote) {
@@ -30,7 +31,8 @@ export default function GlobalStatusBar() {
 
           if (data.cpu) {
             // 新格式: {load: 0.2, cores: []} 或旧格式: "0.1"
-            cpu = typeof data.cpu === 'object' ? data.cpu.load : parseFloat(String(data.cpu).match(/([\d.]+)/)?.[1] || '0');
+            // data.cpu.load 可能是 null（如服务器未连接时），用 ?? 0 保底
+            cpu = typeof data.cpu === 'object' ? (data.cpu.load ?? 0) : parseFloat(String(data.cpu).match(/([\d.]+)/)?.[1] || '0');
           }
 
           if (data.memory) {
@@ -81,7 +83,7 @@ export default function GlobalStatusBar() {
     fetchStats();
     const interval = setInterval(fetchStats, 5000);
     return () => clearInterval(interval);
-  }, [selectedDevice.id, isRemote]);
+  }, [selectedDevice?.id, isRemote]);
 
   // 刷新设备列表
   useEffect(() => {
