@@ -1170,6 +1170,11 @@ func handleRemoteList(w http.ResponseWriter, r *http.Request) {
 			servers[i].Status = "disconnected"
 		}
 	}
+	// Hide sensitive fields from API response
+	for i := range servers {
+		servers[i].Password = ""
+		servers[i].PrivateKey = ""
+	}
 	jsonWrite(w, map[string]interface{}{"servers": servers})
 }
 
@@ -1255,6 +1260,16 @@ func handleRemoteServer(w http.ResponseWriter, r *http.Request, path string) {
 			updated.ID = serverID
 			for i := range servers {
 				if servers[i].ID == serverID {
+					// Preserve password/privateKey if not provided (frontend doesn't echo them back)
+					if updated.Password == "" {
+						updated.Password = servers[i].Password
+					}
+					if updated.PrivateKey == "" {
+						updated.PrivateKey = servers[i].PrivateKey
+					}
+					if updated.PrivateKeyPath == "" {
+						updated.PrivateKeyPath = servers[i].PrivateKeyPath
+					}
 					servers[i] = updated
 					break
 				}

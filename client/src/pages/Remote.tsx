@@ -283,7 +283,7 @@ export default function Remote() {
       const res = await fetch('/api/remote/test', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(formData),
+        body: JSON.stringify({ ...formData, user: formData.username }),
       });
       setTestResult(await res.json());
     } catch (e: any) { setTestResult({ success: false, error: e.message }); }
@@ -295,7 +295,7 @@ export default function Remote() {
     try {
       const url = editingServer ? `/api/remote/servers/${editingServer.id}` : '/api/remote/servers';
       const method = editingServer ? 'PUT' : 'POST';
-      const res = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(formData) });
+      const res = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...formData, user: formData.username }) });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       if (data.success) {
@@ -317,7 +317,7 @@ export default function Remote() {
   // 打开编辑弹窗
   const openEdit = (server: RemoteServer) => {
     setEditingServer(server);
-    setFormData({ name: server.name, host: server.host, port: server.port, username: server.username, password: '', logPath: server.logPath, watchFiles: server.watchFiles });
+    setFormData({ name: server.name, host: server.host, port: server.port, username: (server as any).username || (server as any).user || 'root', password: '', logPath: server.logPath, watchFiles: server.watchFiles });
     setShowAddModal(true);
   };
 
