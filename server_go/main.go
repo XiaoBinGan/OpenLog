@@ -2,12 +2,16 @@ package main
 
 import (
 	"bufio"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -15,33 +19,47 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/shirou/gopsutil/v3/cpu"
 	"github.com/shirou/gopsutil/v3/disk"
-	"github.com/shirou/gopsutil/v3/host"
 	"github.com/shirou/gopsutil/v3/mem"
 	"github.com/shirou/gopsutil/v3/net"
+	"github.com/shirou/gopsutil/v3/process"
 	"openlog/config"
 	"openlog/db"
+	"openlog/docker"
 	"openlog/remote"
 	"openlog/services"
 )
 
+// ============ Models ============
+
 type MonitorStats struct {
-	CPU        float64    `json:"cpu"`
-	MemUsed    uint64     `json:"memUsed"`
-	MemTotal   uint64     `json:"memTotal"`
-	DiskUsed   uint64     `json:"diskUsed"`
-	DiskTotal  uint64     `json:"diskTotal"`
-	NetworkIn  uint64     `json:"networkIn"`
-	NetworkOut uint64     `json:"networkOut"`
-	Procs      []ProcInfo `json:"procs"`
-	GPUs       []GPUInfo  `json:"gpus"`
-	Uptime     uint64     `json:"uptime"`
-	Hostname   string     `json:"hostname"`
-	OS         string     `json:"os"`
-	Platform   string     `json:"platform"`
-	BootTime   uint64     `json:"bootTime"`
+	CPU       float64          `json:"cpu"`
+	Memory    MemoryInfo       `json:"memory"`
+	Disk      []DiskInfo       `json:"disk"`
+	Network   []NetworkInfo    `json:"network"`
+	Processes []ProcessInfo    `json:"processes"`
+	GPUs      []GPUInfo        `json:"gpus"`
 }
 
-type ProcInfo struct {
+type MemoryInfo struct {
+	Used  uint64  `json:"used"`
+	Total uint64  `json:"total"`
+	Free  uint64  `json:"free"`
+}
+
+type DiskInfo struct {
+	Name       string  `json:"name"`
+	Used       uint64  `json:"used"`
+	Total      uint64  `json:"total"`
+	UsePercent float64 `json:"usePercent"`
+}
+
+type NetworkInfo struct {
+	Iface string `json:"iface"`
+	Rx    uint64 `json:"rx"`
+	Tx    uint64 `json:"tx"`
+}
+
+type ProcessInfo struct {
 	PID  int32   `json:"pid"`
 	Name string  `json:"name"`
 	CPU  float64 `json:"cpu"`
@@ -56,6 +74,17 @@ type GPUInfo struct {
 	MemTotal int    `json:"memTotal"`
 	Temp     int    `json:"temp"`
 }
+
+type LogEntry struct {
+	ID        string `json:"id"`
+	Timestamp string `json:"timestamp"`
+	Level     string `json:"level"`
+	Message   string `json:"message"`
+	Source    string `json:"source"`
+	Metadata  string `json:"metadata"`
+}
+
+// ============ WebSocket Hub ============
 
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
@@ -101,13 +130,11 @@ func (h *WSHub) Run() {
 		case msg := <-h.broadcast:
 			h.mu.RLock()
 			for c := range h.clients {
-				if c.typ == "main" {
-					select {
-					case c.send <- msg:
-					default:
-						close(c.send)
-						delete(h.clients, c)
-					}
+				select {
+				case c.send <- msg:
+				default:
+					close(c.send)
+					delete(h.clients, c)
 				}
 			}
 			h.mu.RUnlock()
@@ -124,34 +151,94 @@ func (h *WSHub) Broadcast(msg []byte) {
 
 var wsHub = NewWSHub()
 
+// ============ Logs Storage ============
+
+var logs []LogEntry
+var logsMu sync.RWMutex
+const MaxLogs = 10000
+
+func saveLog(log LogEntry) {
+	logsMu.Lock()
+	defer logsMu.Unlock()
+	logs = append([]LogEntry{log}, logs...)
+	if len(logs) > MaxLogs {
+		logs = logs[:MaxLogs]
+	}
+}
+
+// ============ Monitor ============
+
 var monitorHistory []MonitorStats
 var monitorHistoryMu sync.RWMutex
 const MaxHistoryLen = 1000
 
 func collectLocalStats() MonitorStats {
 	var s MonitorStats
-	if pct, err := cpu.Percent(time.Second, false); err == nil && len(pct) > 0 {
+
+	// CPU
+	if pct, err := cpu.Percent(0, false); err == nil && len(pct) > 0 {
 		s.CPU = pct[0]
 	}
+
+	// Memory
 	if mi, err := mem.VirtualMemory(); err == nil {
-		s.MemUsed = mi.Used
-		s.MemTotal = mi.Total
+		s.Memory = MemoryInfo{Used: mi.Used, Total: mi.Total, Free: mi.Free}
 	}
-	if du, err := disk.Usage("/"); err == nil {
-		s.DiskUsed = du.Used
-		s.DiskTotal = du.Total
+
+	// Disk
+	if di, err := disk.Partitions(false); err == nil {
+		for _, p := range di {
+			if du, err := disk.Usage(p.Mountpoint); err == nil {
+				s.Disk = append(s.Disk, DiskInfo{
+					Name:       p.Mountpoint,
+					Used:       du.Used,
+					Total:      du.Total,
+					UsePercent: du.UsedPercent,
+				})
+			}
+		}
 	}
-	if ni, err := net.IOCounters(false); err == nil && len(ni) > 0 {
-		s.NetworkIn = ni[0].BytesRecv
-		s.NetworkOut = ni[0].BytesSent
+
+	// Network
+	if ni, err := net.IOCounters(true); err == nil {
+		for _, n := range ni {
+			s.Network = append(s.Network, NetworkInfo{
+				Iface: n.Name,
+				Rx:    n.BytesRecv,
+				Tx:    n.BytesSent,
+			})
+		}
 	}
-	if hi, err := host.Info(); err == nil {
-		s.Hostname = hi.Hostname
-		s.OS = hi.OS
-		s.Platform = hi.Platform
-		s.Uptime = hi.Uptime
-		s.BootTime = hi.BootTime
+
+	// Processes (top 10 by CPU)
+	if procs, err := process.Processes(); err == nil {
+		var procList []ProcessInfo
+		for _, p := range procs {
+			name, _ := p.Name()
+			cpuPct, _ := p.CPUPercent()
+			memPct, _ := p.MemoryPercent()
+			procList = append(procList, ProcessInfo{
+				PID:  p.Pid,
+				Name: name,
+				CPU:  cpuPct,
+				Mem:  float64(memPct),
+			})
+		}
+		// Sort by CPU
+		for i := 0; i < len(procList); i++ {
+			for j := i + 1; j < len(procList); j++ {
+				if procList[j].CPU > procList[i].CPU {
+					procList[i], procList[j] = procList[j], procList[i]
+				}
+			}
+		}
+		if len(procList) > 10 {
+			procList = procList[:10]
+		}
+		s.Processes = procList
 	}
+
+	// GPU
 	s.GPUs = collectLocalGPU()
 	return s
 }
@@ -196,10 +283,18 @@ func startMonitor() {
 				monitorHistory = monitorHistory[len(monitorHistory)-MaxHistoryLen:]
 			}
 			monitorHistoryMu.Unlock()
-			data, _ := json.Marshal(map[string]interface{}{"type": "stats", "stats": s})
+			data, _ := json.Marshal(map[string]interface{}{"type": "monitor", "data": s})
 			wsHub.Broadcast(data)
 		}
 	}()
+}
+
+// ============ Helpers ============
+
+func uuid() string {
+	b := make([]byte, 16)
+	rand.Read(b)
+	return hex.EncodeToString(b)
 }
 
 func jsonWrite(w http.ResponseWriter, v interface{}) {
@@ -219,6 +314,58 @@ func jsonRead(r *http.Request, v interface{}) error {
 	}
 	return json.Unmarshal(body, v)
 }
+
+func getSettings() map[string]interface{} {
+	var settings map[string]interface{}
+	if val, _ := db.Get("settings"); val != "" {
+		json.Unmarshal([]byte(val), &settings)
+	}
+	if settings == nil {
+		settings = map[string]interface{}{
+			"openaiBaseUrl":  "http://localhost:11434/v1",
+			"model":          "qwen2.5:7b",
+			"refreshInterval": "5000",
+			"autoAnalysis":   true,
+			"thinkingEnabled": false,
+			"watchSources":   []interface{}{},
+			"dockerSources":  []interface{}{},
+		}
+	}
+	return settings
+}
+
+func saveSettings(settings map[string]interface{}) {
+	data, _ := json.Marshal(settings)
+	db.Set("settings", string(data))
+}
+
+func getAIConfig() (baseUrl, model, apiKey string) {
+	settings := getSettings()
+	if v, ok := settings["openaiBaseUrl"].(string); ok {
+		baseUrl = v
+	} else {
+		baseUrl = "http://localhost:11434/v1"
+	}
+	if v, ok := settings["model"].(string); ok {
+		model = v
+	} else {
+		model = "qwen2.5:7b"
+	}
+	if v, ok := settings["openaiApiKey"].(string); ok {
+		apiKey = v
+	}
+	return
+}
+
+func getThinkingEnabled() bool {
+	settings := getSettings()
+	if v, ok := settings["thinkingEnabled"].(bool); ok {
+		return v
+	}
+	return false
+}
+
+// ============ WebSocket Handler ============
 
 func handleWS(w http.ResponseWriter, r *http.Request) {
 	conn, err := upgrader.Upgrade(w, r, nil)
@@ -242,6 +389,8 @@ func handleWS(w http.ResponseWriter, r *http.Request) {
 	}()
 }
 
+// ============ API Handler ============
+
 func handleAPI(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "OPTIONS" {
 		w.WriteHeader(200)
@@ -255,354 +404,364 @@ func handleAPI(w http.ResponseWriter, r *http.Request) {
 	method := r.Method
 
 	switch {
-	case path == "/health" && method == "GET":
+	// --- Health ---
+	case path == "/health":
 		jsonWrite(w, map[string]interface{}{"status": "ok", "uptime": time.Now().Unix()})
 
+	// --- Settings ---
 	case path == "/settings" && method == "GET":
-		if val, _ := db.Get("settings"); val != "" {
-			w.Write([]byte(val))
-		} else {
-			jsonWrite(w, config.Load())
-		}
-	case path == "/settings" && (method == "PUT" || method == "POST"):
-		body, _ := io.ReadAll(io.LimitReader(r.Body, 50<<20))
-		db.Set("settings", string(body))
-		jsonWrite(w, map[string]string{"status": "ok"})
-
-	case path == "/servers" && method == "GET":
-		var servers []remote.Server
-		db.GetJSON("remote_servers", &servers)
-		if servers == nil {
-			servers = []remote.Server{}
-		}
-		for i := range servers {
-			servers[i].Connected = remote.Mgr.IsConnected(servers[i].ID)
-		}
-		jsonWrite(w, servers)
-	case path == "/servers" && (method == "POST" || method == "PUT"):
-		var srv remote.Server
-		if err := jsonRead(r, &srv); err != nil {
+		jsonWrite(w, getSettings())
+	case path == "/settings" && method == "PUT":
+		var settings map[string]interface{}
+		if err := jsonRead(r, &settings); err != nil {
 			http.Error(w, err.Error(), 400)
 			return
 		}
-		var servers []remote.Server
-		db.GetJSON("remote_servers", &servers)
-		found := false
-		for i := range servers {
-			if servers[i].ID == srv.ID {
-				servers[i] = srv
-				found = true
-				break
-			}
-		}
-		if !found {
-			servers = append(servers, srv)
-		}
-		db.SetJSON("remote_servers", servers)
-		jsonWrite(w, srv)
-	case path == "/servers" && method == "DELETE":
-		id := r.URL.Query().Get("id")
-		var servers []remote.Server
-		db.GetJSON("remote_servers", &servers)
-		var filtered []remote.Server
-		for _, s := range servers {
-			if s.ID != id {
-				filtered = append(filtered, s)
-			}
-		}
-		db.SetJSON("remote_servers", filtered)
-		jsonWrite(w, map[string]string{"status": "ok"})
+		saveSettings(settings)
+		jsonWrite(w, map[string]string{"success": "true"})
 
-	case strings.HasPrefix(path, "/servers/"):
-		parts := strings.SplitN(strings.TrimPrefix(path, "/servers/"), "/", 2)
-		srv := remote.Mgr.GetServer(parts[0])
-		action := ""
-		if len(parts) > 1 {
-			action = parts[1]
-		}
-		handleServerAction(w, r, srv, action)
+	// --- Logs ---
+	case path == "/logs" && method == "GET":
+		handleGetLogs(w, r)
+	case path == "/logs" && method == "DELETE":
+		logsMu.Lock()
+		logs = nil
+		logsMu.Unlock()
+		jsonWrite(w, map[string]bool{"success": true})
+	case path == "/logs/files" && method == "GET":
+		handleGetLogFiles(w, r)
+	case path == "/logs/analyze" && method == "POST":
+		handleAIAnalyze(w, r)
+	case path == "/logs/fix" && method == "POST":
+		handleAIFix(w, r)
+	case path == "/logs/generate-sample" && method == "POST":
+		handleGenerateSample(w, r)
 
+	// --- Models ---
+	case path == "/models/ollama" && method == "GET":
+		handleOllamaModels(w, r)
+
+	// --- Analysis ---
+	case path == "/analysis/status" && method == "GET":
+		jsonWrite(w, services.AnalysisMgr.GetQueueStatus())
+	case path == "/analysis/trigger" && method == "POST":
+		handleAnalysisTrigger(w, r)
+	case path == "/analysis/history" && method == "GET":
+		handleAnalysisHistory(w, r)
+	case strings.HasPrefix(path, "/analysis/history/"):
+		handleAnalysisHistoryDelete(w, r, strings.TrimPrefix(path, "/analysis/history/"))
+
+	// --- Chat ---
+	case path == "/chat" && method == "POST":
+		handleChat(w, r)
+
+	// --- Monitor ---
 	case path == "/monitor/stats" && method == "GET":
 		jsonWrite(w, collectLocalStats())
 	case path == "/monitor/history" && method == "GET":
+		limit := 100
+		fmt.Sscanf(r.URL.Query().Get("limit"), "%d", &limit)
 		monitorHistoryMu.RLock()
-		defer monitorHistoryMu.RUnlock()
-		jsonWrite(w, monitorHistory)
-
-	case path == "/logs/sources" && method == "GET":
-		sources := services.LogServiceInstance.GetAllSources()
-		jsonWrite(w, sources)
-	case path == "/logs/sources" && (method == "POST" || method == "PUT"):
-		var src services.LogSource
-		if err := jsonRead(r, &src); err != nil {
-			http.Error(w, err.Error(), 400)
-			return
+		result := monitorHistory
+		if len(result) > limit {
+			result = result[:limit]
 		}
-		services.LogServiceInstance.AddSource(&src)
-		jsonWrite(w, src)
-	case path == "/logs/sources" && method == "DELETE":
-		id := r.URL.Query().Get("id")
-		services.LogServiceInstance.RemoveSource(id)
-		jsonWrite(w, map[string]string{"status": "ok"})
+		monitorHistoryMu.RUnlock()
+		jsonWrite(w, result)
 
-	case path == "/ai/chat" && method == "POST":
-		handleAIChat(w, r)
-	case path == "/ai/chat/stream" && method == "POST":
-		handleAIStream(w, r)
-	case path == "/ai/models" && method == "GET":
-		handleOllamaModels(w, r)
-	case path == "/ai/analyze" && method == "POST":
-		handleAIAnalyze(w, r)
-	case path == "/ai/fix" && method == "POST":
-		handleAIFix(w, r)
-
+	// --- Docker ---
+	case path == "/docker/ping" && method == "POST":
+		handleDockerPing(w, r)
 	case path == "/docker/containers" && method == "GET":
 		handleDockerList(w, r)
-	case path == "/docker/containers" && method == "POST":
-		handleDockerCreate(w, r)
-	case strings.HasPrefix(path, "/docker/") && len(strings.Split(strings.TrimPrefix(path, "/docker/"), "/")) >= 1:
-		parts := strings.SplitN(strings.TrimPrefix(path, "/docker/"), "/", 2)
-		if len(parts) < 2 {
-			http.NotFound(w, r)
-			return
-		}
-		handleDockerAction(w, r, parts[0], parts[1])
+	case strings.HasPrefix(path, "/docker/containers/"):
+		handleDockerContainer(w, r, path)
+	case path == "/docker/logs/batch" && method == "POST":
+		handleDockerLogsBatch(w, r)
+	case path == "/docker/analyze/batch" && method == "POST":
+		handleDockerAnalyzeBatch(w, r)
+	case strings.HasPrefix(path, "/docker/trace/"):
+		handleDockerTrace(w, r, path)
+	case strings.HasPrefix(path, "/docker/"):
+		handleDockerAction(w, r, path)
 
-	case path == "/memory" && method == "GET":
-		var mems []map[string]string
-		db.GetJSON("assistant_memory", &mems)
-		if mems == nil {
-			mems = []map[string]string{}
-		}
-		jsonWrite(w, mems)
-	case path == "/memory" && method == "POST":
-		var m map[string]string
-		if err := jsonRead(r, &m); err != nil {
-			http.Error(w, err.Error(), 400)
-			return
-		}
-		var mems []map[string]string
-		db.GetJSON("assistant_memory", &mems)
-		if mems == nil {
-			mems = []map[string]string{}
-		}
-		mems = append(mems, m)
-		db.SetJSON("assistant_memory", mems)
-		jsonWrite(w, m)
-	case path == "/memory" && method == "DELETE":
-		id := r.URL.Query().Get("id")
-		var mems []map[string]string
-		db.GetJSON("assistant_memory", &mems)
-		var filtered []map[string]string
-		for _, m := range mems {
-			if m["id"] != id {
-				filtered = append(filtered, m)
-			}
-		}
-		db.SetJSON("assistant_memory", filtered)
-		jsonWrite(w, map[string]string{"status": "ok"})
+	// --- Remote Servers ---
+	case path == "/remote/servers" && method == "GET":
+		handleRemoteList(w, r)
+	case path == "/remote/servers" && method == "POST":
+		handleRemoteAdd(w, r)
+	case path == "/remote/test" && method == "POST":
+		handleRemoteTest(w, r)
+	case strings.HasPrefix(path, "/remote/servers/"):
+		handleRemoteServer(w, r, path)
+
+	// --- Assistant Memory ---
+	case path == "/assistant/memory" && method == "GET":
+		handleMemoryList(w, r)
+	case path == "/assistant/memory" && method == "POST":
+		handleMemorySave(w, r)
+	case strings.HasPrefix(path, "/assistant/memory/"):
+		handleMemoryDelete(w, r, strings.TrimPrefix(path, "/assistant/memory/"))
 
 	default:
 		http.NotFound(w, r)
 	}
 }
 
-func handleServerAction(w http.ResponseWriter, r *http.Request, srv *remote.Server, action string) {
-	if srv == nil {
-		http.Error(w, "server not found", 404)
-		return
+// ============ Log Handlers ============
+
+func handleGetLogs(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	level := q.Get("level")
+	source := q.Get("source")
+	search := q.Get("search")
+	limit := 100
+	offset := 0
+	fmt.Sscanf(q.Get("limit"), "%d", &limit)
+	fmt.Sscanf(q.Get("offset"), "%d", &offset)
+
+	logsMu.RLock()
+	result := make([]LogEntry, 0)
+	for _, l := range logs {
+		if level != "" && l.Level != level {
+			continue
+		}
+		if source != "" && l.Source != source {
+			continue
+		}
+		if search != "" && !strings.Contains(strings.ToLower(l.Message), strings.ToLower(search)) {
+			continue
+		}
+		result = append(result, l)
 	}
-	switch action {
-	case "connect":
-		if err := remote.Mgr.Connect(srv); err != nil {
-			http.Error(w, err.Error(), 500)
-			return
-		}
-		data, _ := json.Marshal(map[string]interface{}{"type": "remote_status", "serverId": srv.ID, "connected": true})
-		wsHub.Broadcast(data)
-		jsonWrite(w, srv)
-	case "disconnect":
-		remote.Mgr.Disconnect(srv)
-		data, _ := json.Marshal(map[string]interface{}{"type": "remote_status", "serverId": srv.ID, "connected": false})
-		wsHub.Broadcast(data)
-		jsonWrite(w, map[string]string{"status": "ok"})
-	case "test":
-		err := remote.TestConnection(srv.Host, srv.Port, srv.User, srv.Password)
-		if err != nil {
-			http.Error(w, err.Error(), 500)
-			return
-		}
-		jsonWrite(w, map[string]string{"status": "ok"})
-	case "stats":
-		stats := srv.GetStats()
-		jsonWrite(w, stats)
-	case "files":
-		path := r.URL.Query().Get("path")
-		if path == "" {
-			path = "/"
-		}
-		out, err := srv.ListFiles(path)
-		if err != nil {
-			http.Error(w, err.Error(), 500)
-			return
-		}
-		var files []map[string]string
-		for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
-			if line == "" {
-				continue
-			}
-			parts := strings.SplitN(line, "|", 3)
-			if len(parts) >= 2 {
-				var size int64
-				fmt.Sscanf(parts[1], "%d", &size)
-				files = append(files, map[string]string{"name": parts[0], "size": fmt.Sprintf("%d", size)})
-			}
-		}
-		jsonWrite(w, files)
-	case "logs":
-		path := r.URL.Query().Get("path")
-		if path == "" {
-			path = "/var/log/syslog"
-		}
-		lines := 200
-		fmt.Sscanf(r.URL.Query().Get("lines"), "%d", &lines)
-		out, err := srv.ReadLog(path, lines)
-		if err != nil {
-			http.Error(w, err.Error(), 500)
-			return
-		}
-		jsonWrite(w, map[string]string{"content": out})
-	case "read":
-		path := r.URL.Query().Get("path")
-		if path == "" {
-			http.Error(w, "path required", 400)
-			return
-		}
-		var offset, limit int64 = 0, 1 << 20
-		fmt.Sscanf(r.URL.Query().Get("offset"), "%d", &offset)
-		fmt.Sscanf(r.URL.Query().Get("limit"), "%d", &limit)
-		content, err := srv.ReadFile(path, offset, limit)
-		if err != nil {
-			http.Error(w, err.Error(), 500)
-			return
-		}
-		jsonWrite(w, map[string]string{"content": content})
-	case "write":
-		path := r.URL.Query().Get("path")
-		content := r.URL.Query().Get("content")
-		if path == "" {
-			http.Error(w, "path required", 400)
-			return
-		}
-		if err := srv.WriteFile(path, content); err != nil {
-			http.Error(w, err.Error(), 500)
-			return
-		}
-		jsonWrite(w, map[string]string{"status": "ok"})
-	case "shell":
-		srv.HandleShell(w, r)
-	case "exec":
-		cmd := r.URL.Query().Get("cmd")
-		if cmd == "" {
-			http.Error(w, "cmd required", 400)
-			return
-		}
-		out, err := srv.Exec(cmd)
-		if err != nil {
-			http.Error(w, err.Error(), 500)
-			return
-		}
-		jsonWrite(w, map[string]string{"output": out})
-	case "upload":
-		path := r.URL.Query().Get("path")
-		if path == "" {
-			http.Error(w, "path required", 400)
-			return
-		}
-		content, err := io.ReadAll(r.Body)
-		if err != nil {
-			http.Error(w, err.Error(), 500)
-			return
-		}
-		if err := srv.Upload(path, content); err != nil {
-			http.Error(w, err.Error(), 500)
-			return
-		}
-		jsonWrite(w, map[string]string{"status": "ok"})
-	default:
-		http.Error(w, "unknown action: "+action, 400)
+	total := len(result)
+	if offset < len(result) {
+		result = result[offset:]
 	}
+	if limit < len(result) {
+		result = result[:limit]
+	}
+	logsMu.RUnlock()
+
+	jsonWrite(w, map[string]interface{}{"logs": result, "total": total})
 }
 
-func handleAIChat(w http.ResponseWriter, r *http.Request) {
+func handleGetLogFiles(w http.ResponseWriter, r *http.Request) {
+	settings := getSettings()
+	sources, _ := settings["watchSources"].([]interface{})
+
+	var files []map[string]interface{}
+	for _, s := range sources {
+		src, ok := s.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		logPath, _ := src["path"].(string)
+		if logPath == "" {
+			continue
+		}
+		_ = filepath.Walk(logPath, func(filePath string, info os.FileInfo, err error) error {
+			if err != nil || info.IsDir() || !strings.HasSuffix(filePath, ".log") {
+				return nil
+			}
+			files = append(files, map[string]interface{}{
+				"name": filepath.Base(filePath),
+				"path": filePath,
+				"size": info.Size(),
+			})
+			return nil
+		})
+	}
+	jsonWrite(w, files)
+}
+
+func handleGenerateSample(w http.ResponseWriter, r *http.Request) {
+	levels := []string{"INFO", "WARN", "ERROR", "DEBUG"}
+	messages := []string{
+		"Server started on port 3000",
+		"Database connection established",
+		"User login successful",
+		"High memory usage detected: 85%",
+		"Connection timeout to database",
+		"Failed to parse JSON payload",
+		"Rate limit exceeded for IP 192.168.1.1",
+	}
+
+	count := 5 + time.Now().UnixNano()%5
+	for i := 0; i < int(count); i++ {
+		level := levels[time.Now().UnixNano()%4]
+		msg := messages[time.Now().UnixNano()%int64(len(messages))]
+		log := LogEntry{
+			ID:        uuid(),
+			Timestamp: time.Now().Format(time.RFC3339),
+			Level:     level,
+			Message:   msg,
+			Source:    "sample.log",
+			Metadata:  "{}",
+		}
+		saveLog(log)
+		wsHub.Broadcast([]byte(fmt.Sprintf(`{"type":"log","data":%s}`, mustMarshal(log))))
+	}
+	jsonWrite(w, map[string]int{"count": int(count)})
+}
+
+// ============ AI Handlers ============
+
+func handleAIAnalyze(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Messages []map[string]string `json:"messages"`
-		Model    string               `json:"model"`
+		Logs  []LogEntry `json:"logs"`
+		Prompt string    `json:"prompt"`
 	}
 	if err := jsonRead(r, &req); err != nil {
 		http.Error(w, err.Error(), 400)
 		return
 	}
-	if req.Model == "" {
-		req.Model = "qwen2.5:7b"
+
+	baseUrl, model, _ := getAIConfig()
+	prompt := req.Prompt
+	if prompt == "" {
+		logText := ""
+		for _, l := range req.Logs {
+			logText += fmt.Sprintf("[%s] [%s] %s\n", l.Timestamp, l.Level, l.Message)
+		}
+		prompt = fmt.Sprintf("你是一个专业的运维工程师和日志分析专家。请分析以下日志，找出可能存在的问题并提供修复建议。\n\n%s", logText)
 	}
-	cfg := config.Load()
-	payload := map[string]interface{}{
-		"model":    req.Model,
-		"messages": req.Messages,
-		"stream":   false,
-	}
-	body, _ := json.Marshal(payload)
-	resp, err := http.Post(cfg.AIEndpoint+"/chat/completions", "application/json", strings.NewReader(string(body)))
+
+	resp, err := callLLM(baseUrl, model, prompt)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
 	}
-	defer resp.Body.Close()
-	result, _ := io.ReadAll(resp.Body)
-	w.Header().Set("Content-Type", "application/json")
-	w.Write(result)
+	jsonWrite(w, map[string]string{"analysis": resp})
 }
 
-func handleAIStream(w http.ResponseWriter, r *http.Request) {
+func handleAIFix(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Messages []map[string]string `json:"messages"`
-		Model    string               `json:"model"`
+		ErrorLog    string `json:"errorLog"`
+		CodeContext string `json:"codeContext"`
+		FilePath    string `json:"filePath"`
 	}
 	if err := jsonRead(r, &req); err != nil {
 		http.Error(w, err.Error(), 400)
 		return
 	}
-	if req.Model == "" {
-		req.Model = "qwen2.5:7b"
+
+	baseUrl, model, _ := getAIConfig()
+	prompt := fmt.Sprintf("你是一个专业的全栈开发工程师。以下代码有错误：\n%s\n错误信息：%s\n请给出修复后的代码。", req.CodeContext, req.ErrorLog)
+
+	resp, err := callLLM(baseUrl, model, prompt)
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
 	}
-	cfg := config.Load()
+	jsonWrite(w, map[string]string{"fix": resp})
+}
+
+func handleOllamaModels(w http.ResponseWriter, r *http.Request) {
+	baseUrl, _, _ := getAIConfig()
+	// Only local Ollama
+	if !strings.Contains(baseUrl, "localhost") && !strings.Contains(baseUrl, "127.0.0.1") {
+		jsonWrite(w, map[string]interface{}{"models": []string{}, "error": "仅支持本地 Ollama"})
+		return
+	}
+
+	resp, err := http.Get(strings.Replace(baseUrl, "/v1", "/api/tags", 1))
+	if err != nil {
+		jsonWrite(w, map[string]interface{}{"models": []string{}, "error": err.Error()})
+		return
+	}
+	defer resp.Body.Close()
+	io.Copy(w, resp.Body)
+}
+
+func handleAnalysisTrigger(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Message    string `json:"message"`
+		SourceID   string `json:"sourceId"`
+		SourceName string `json:"sourceName"`
+	}
+	if err := jsonRead(r, &req); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	if req.SourceID == "" {
+		req.SourceID = "manual"
+	}
+	if req.SourceName == "" {
+		req.SourceName = "手动触发"
+	}
+
+	entry := services.LogEntry{
+		Time:    time.Now().Format(time.RFC3339),
+		Level:   "ERROR",
+		Message: req.Message,
+		Raw:     req.Message,
+	}
+	record := services.AnalysisMgr.TriggerManual(req.Message, req.SourceID, req.SourceName)
+	jsonWrite(w, map[string]interface{}{"success": true, "record": record, "log": entry})
+}
+
+func handleAnalysisHistory(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	sourceID := q.Get("sourceId")
+	status := q.Get("status")
+	limit := 50
+	offset := 0
+	fmt.Sscanf(q.Get("limit"), "%d", &limit)
+	fmt.Sscanf(q.Get("offset"), "%d", &offset)
+
+	records := services.AnalysisMgr.GetHistory(sourceID, status, limit, offset)
+	jsonWrite(w, map[string]interface{}{"records": records})
+}
+
+func handleAnalysisHistoryDelete(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method == "DELETE" {
+		if id == "" {
+			services.AnalysisMgr.ClearHistory()
+		} else {
+			services.AnalysisMgr.DeleteHistory(id)
+		}
+		jsonWrite(w, map[string]bool{"success": true})
+	}
+}
+
+func handleChat(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Messages []map[string]string `json:"messages"`
+	}
+	if err := jsonRead(r, &req); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+
+	baseUrl, model, _ := getAIConfig()
+
+	// System prompt
+	messages := append([]map[string]string{{
+		"role":    "system",
+		"content": "你是一个专业的运维工程师和技术支持助手。你的职责是帮助运维人员排查服务器、网络、数据库、中间件等问题，提供清晰、可操作的解决方案。回复使用与用户相同的语言。",
+	}}, req.Messages...)
+
+	// Stream SSE
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
 	payload := map[string]interface{}{
-		"model":    req.Model,
-		"messages": req.Messages,
+		"model":    model,
+		"messages": messages,
 		"stream":   true,
 	}
 	body, _ := json.Marshal(payload)
 
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.WriteHeader(200)
-
-	resp, err := http.Post(cfg.AIEndpoint+"/chat/completions", "application/json", strings.NewReader(string(body)))
+	resp, err := http.Post(baseUrl+"/chat/completions", "application/json", strings.NewReader(string(body)))
 	if err != nil {
 		return
 	}
 	defer resp.Body.Close()
 
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		return
-	}
-
-	// Thinking filter
-	thinkingEnabled := getThinkingEnabled()
-	filter := services.NewThinkingStreamFilter(thinkingEnabled)
+	flusher, _ := w.(http.Flusher)
+	filter := services.NewThinkingStreamFilter(getThinkingEnabled())
 
 	reader := bufio.NewReader(resp.Body)
 	for {
@@ -613,7 +772,6 @@ func handleAIStream(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(line, "data: ") {
 			data := strings.TrimPrefix(line, "data: ")
 			if data == "[DONE]\n" || data == "[DONE]" {
-				// Flush remaining
 				if remaining := filter.Flush(); remaining != "" {
 					fmt.Fprintf(w, "data: %s\n\n", remaining)
 					flusher.Flush()
@@ -633,9 +791,7 @@ func handleAIStream(w http.ResponseWriter, r *http.Request) {
 				content := sse.Choices[0].Delta.Content
 				filtered := filter.Process(content)
 				if filtered != "" {
-					sse.Choices[0].Delta.Content = filtered
-					newData, _ := json.Marshal(sse)
-					fmt.Fprintf(w, "data: %s\n\n", string(newData))
+					fmt.Fprintf(w, "data: {\"content\":%q}\n\n", filtered)
 					flusher.Flush()
 				}
 			}
@@ -643,150 +799,642 @@ func handleAIStream(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func getThinkingEnabled() bool {
-	var settings struct {
-		ThinkingEnabled bool `json:"thinkingEnabled"`
+func callLLM(baseUrl, model, prompt string) (string, error) {
+	payload := map[string]interface{}{
+		"model": model,
+		"messages": []map[string]string{
+			{"role": "user", "content": prompt},
+		},
+		"stream": false,
 	}
-	if val, _ := db.Get("settings"); val != "" {
-		json.Unmarshal([]byte(val), &settings)
-	}
-	return settings.ThinkingEnabled
-}
+	body, _ := json.Marshal(payload)
 
-func handleOllamaModels(w http.ResponseWriter, r *http.Request) {
-	cfg := config.Load()
-	resp, err := http.Get(cfg.AIEndpoint + "/api/tags")
+	resp, err := http.Post(baseUrl+"/chat/completions", "application/json", strings.NewReader(string(body)))
 	if err != nil {
-		http.Error(w, err.Error(), 500)
-		return
+		return "", err
 	}
 	defer resp.Body.Close()
-	io.Copy(w, resp.Body)
+
+	var result struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	json.NewDecoder(resp.Body).Decode(&result)
+	if len(result.Choices) > 0 {
+		return services.StripThinking(result.Choices[0].Message.Content, getThinkingEnabled()), nil
+	}
+	return "", fmt.Errorf("no response")
 }
 
-func handleAIAnalyze(w http.ResponseWriter, r *http.Request) {
+// ============ Docker Handlers ============
+
+func handleDockerPing(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Logs    string `json:"logs"`
-		Context string `json:"context"`
+		SourceID string             `json:"sourceId"`
+		Config   docker.DockerConfig `json:"config"`
 	}
 	if err := jsonRead(r, &req); err != nil {
 		http.Error(w, err.Error(), 400)
 		return
 	}
-	cfg := config.Load()
-	systemPrompt := "你是一位资深运维工程师。请分析以下日志，找出可能的错误原因并给出修复建议。日志：\n" + req.Logs
-	if req.Context != "" {
-		systemPrompt += "\n上下文信息：" + req.Context
+	if req.SourceID == "" {
+		req.SourceID = "local"
 	}
-	payload := map[string]interface{}{
-		"model":    cfg.AIModel,
-		"messages": []map[string]string{{"role": "system", "content": systemPrompt}, {"role": "user", "content": "请分析"}},
-		"stream":   false,
-	}
-	body, _ := json.Marshal(payload)
-	resp, err := http.Post(cfg.AIEndpoint+"/chat/completions", "application/json", strings.NewReader(string(body)))
-	if err != nil {
-		http.Error(w, err.Error(), 500)
-		return
-	}
-	defer resp.Body.Close()
-	result, _ := io.ReadAll(resp.Body)
-	w.Header().Set("Content-Type", "application/json")
-	w.Write(result)
-}
 
-func handleAIFix(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Code  string `json:"code"`
-		Error string `json:"error"`
-	}
-	if err := jsonRead(r, &req); err != nil {
-		http.Error(w, err.Error(), 400)
-		return
-	}
-	cfg := config.Load()
-	systemPrompt := "你是一位资深运维工程师。以下代码有错误：" + req.Code + "\n错误信息：" + req.Error + "\n请给出修复后的代码。"
-	payload := map[string]interface{}{
-		"model":    cfg.AIModel,
-		"messages": []map[string]string{{"role": "system", "content": systemPrompt}, {"role": "user", "content": "请修复代码"}},
-		"stream":   false,
-	}
-	body, _ := json.Marshal(payload)
-	resp, err := http.Post(cfg.AIEndpoint+"/chat/completions", "application/json", strings.NewReader(string(body)))
+	info, err := docker.PingDocker(req.SourceID, req.Config)
 	if err != nil {
-		http.Error(w, err.Error(), 500)
+		jsonWrite(w, map[string]interface{}{"success": false, "error": err.Error()})
 		return
 	}
-	defer resp.Body.Close()
-	result, _ := io.ReadAll(resp.Body)
-	w.Header().Set("Content-Type", "application/json")
-	w.Write(result)
+	jsonWrite(w, map[string]interface{}{"success": true, "info": info})
 }
 
 func handleDockerList(w http.ResponseWriter, r *http.Request) {
-	out, err := exec.Command("docker", "ps", "-a", "--format", "{{.ID}}|{{.Names}}|{{.Image}}|{{.Status}}|{{.Ports}}").Output()
-	if err != nil {
-		http.Error(w, err.Error(), 500)
-		return
-	}
-	var containers []map[string]string
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		if line == "" {
+	settings := getSettings()
+	sources, _ := settings["dockerSources"].([]interface{})
+
+	var results []map[string]interface{}
+	for _, s := range sources {
+		src, ok := s.(map[string]interface{})
+		if !ok {
 			continue
 		}
-		parts := strings.SplitN(line, "|", 5)
-		if len(parts) >= 4 {
-			containers = append(containers, map[string]string{
-				"id":     parts[0],
-				"name":   parts[1],
-				"image":  parts[2],
-				"status": parts[3],
-				"ports":  parts[4],
+		enabled, _ := src["enabled"].(bool)
+		if !enabled {
+			continue
+		}
+		sourceID, _ := src["id"].(string)
+		sourceName, _ := src["name"].(string)
+		if sourceID == "" {
+			continue
+		}
+
+		config := dockerConfigFromMap(src)
+		containers, err := docker.ListContainers(sourceID, config)
+		if err != nil {
+			results = append(results, map[string]interface{}{
+				"sourceId":   sourceID,
+				"sourceName": sourceName,
+				"error":      err.Error(),
+				"containers": []docker.ContainerInfo{},
+			})
+		} else {
+			results = append(results, map[string]interface{}{
+				"sourceId":   sourceID,
+				"sourceName": sourceName,
+				"containers": containers,
 			})
 		}
 	}
-	jsonWrite(w, containers)
+	jsonWrite(w, map[string]interface{}{"sources": results})
 }
 
-func handleDockerCreate(w http.ResponseWriter, r *http.Request) {
+func dockerConfigFromMap(m map[string]interface{}) docker.DockerConfig {
+	var cfg docker.DockerConfig
+	if v, ok := m["socketPath"].(string); ok {
+		cfg.SocketPath = v
+	}
+	if v, ok := m["host"].(string); ok {
+		cfg.Host = v
+	}
+	if v, ok := m["port"].(float64); ok {
+		cfg.Port = int(v)
+	}
+	if v, ok := m["tls"].(bool); ok {
+		cfg.TLS = v
+	}
+	if v, ok := m["ca"].(string); ok {
+		cfg.CACert = v
+	}
+	if v, ok := m["cert"].(string); ok {
+		cfg.Cert = v
+	}
+	if v, ok := m["key"].(string); ok {
+		cfg.Key = v
+	}
+	return cfg
+}
+
+func handleDockerContainer(w http.ResponseWriter, r *http.Request, path string) {
+	// /docker/containers/:sourceId/:containerId or /docker/containers/:sourceId/:containerId/logs
+	parts := strings.Split(strings.TrimPrefix(path, "/docker/containers/"), "/")
+	if len(parts) < 2 {
+		http.Error(w, "invalid path", 400)
+		return
+	}
+	sourceID := parts[0]
+	containerID := parts[1]
+	action := ""
+	if len(parts) > 2 {
+		action = parts[2]
+	}
+
+	config := getDockerConfig(sourceID)
+
+	switch action {
+	case "logs":
+		tail := 200
+		fmt.Sscanf(r.URL.Query().Get("tail"), "%d", &tail)
+		logs, err := docker.GetContainerLogs(sourceID, containerID, config, docker.LogOptions{Tail: tail})
+		if err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		jsonWrite(w, map[string]interface{}{"logs": logs, "containerId": containerID, "sourceId": sourceID})
+	default:
+		// Get container info
+		containers, err := docker.ListContainers(sourceID, config)
+		if err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		for _, c := range containers {
+			if c.ID == containerID || c.ShortID == containerID {
+				jsonWrite(w, c)
+				return
+			}
+		}
+		http.Error(w, "container not found", 404)
+	}
+}
+
+func handleDockerLogsBatch(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Image string `json:"image"`
-		Name  string `json:"name"`
-		Ports string `json:"ports"`
+		Containers []struct {
+			SourceID      string `json:"sourceId"`
+			ContainerID   string `json:"containerId"`
+			ContainerName string `json:"name"`
+		} `json:"containers"`
+		Tail int `json:"tail"`
 	}
 	if err := jsonRead(r, &req); err != nil {
 		http.Error(w, err.Error(), 400)
 		return
 	}
-	args := []string{"run", "-d"}
-	if req.Name != "" {
-		args = append(args, "--name", req.Name)
+	if req.Tail == 0 {
+		req.Tail = 200
 	}
-	if req.Ports != "" {
-		args = append(args, "-p", req.Ports)
+
+	var results []map[string]interface{}
+	for _, c := range req.Containers {
+		config := getDockerConfig(c.SourceID)
+		logs, err := docker.GetContainerLogs(c.SourceID, c.ContainerID, config, docker.LogOptions{Tail: req.Tail})
+		if err != nil {
+			results = append(results, map[string]interface{}{
+				"sourceId":      c.SourceID,
+				"containerId":   c.ContainerID,
+				"containerName": c.ContainerName,
+				"logs":          []docker.LogLine{},
+				"ok":            false,
+				"error":         err.Error(),
+			})
+		} else {
+			results = append(results, map[string]interface{}{
+				"sourceId":      c.SourceID,
+				"containerId":   c.ContainerID,
+				"containerName": c.ContainerName,
+				"logs":          logs,
+				"ok":            true,
+			})
+		}
 	}
-	args = append(args, req.Image)
-	out, err := exec.Command("docker", args...).Output()
-	if err != nil {
-		http.Error(w, string(out), 500)
-		return
-	}
-	jsonWrite(w, map[string]string{"id": strings.TrimSpace(string(out))})
+	jsonWrite(w, map[string]interface{}{"results": results})
 }
 
-func handleDockerAction(w http.ResponseWriter, r *http.Request, id, action string) {
-	switch action {
-	case "start", "stop", "restart", "remove", "logs":
-		out, err := exec.Command("docker", action, id).Output()
+func handleDockerAnalyzeBatch(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Containers []struct {
+			SourceID      string `json:"sourceId"`
+			ContainerID   string `json:"containerId"`
+			ContainerName string `json:"name"`
+		} `json:"containers"`
+		Prompt string `json:"prompt"`
+	}
+	if err := jsonRead(r, &req); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+
+	// Get logs first
+	var allLogs []string
+	for _, c := range req.Containers {
+		config := getDockerConfig(c.SourceID)
+		logs, err := docker.GetContainerLogs(c.SourceID, c.ContainerID, config, docker.LogOptions{Tail: 200})
+		if err == nil {
+			var lines []string
+			for _, l := range logs {
+				lines = append(lines, fmt.Sprintf("[%s] [%s] %s", l.Timestamp, l.Stream, l.Line))
+			}
+			allLogs = append(allLogs, fmt.Sprintf("=== %s ===\n%s", c.ContainerName, strings.Join(lines, "\n")))
+		}
+	}
+
+	// Analyze
+	baseUrl, model, _ := getAIConfig()
+	prompt := req.Prompt
+	if prompt == "" {
+		prompt = fmt.Sprintf("你是运维工程师，正在进行多容器日志联合会诊。\n\n%s\n\n请分析：\n1. 每个服务的健康状态\n2. 哪些服务出现 ERROR/异常\n3. 给出修复建议", strings.Join(allLogs, "\n\n"))
+	}
+
+	// Return logs immediately, analyze in background
+	jsonWrite(w, map[string]string{"message": "日志已获取，分析中..."})
+
+	go func() {
+		resp, err := callLLM(baseUrl, model, prompt)
 		if err != nil {
-			http.Error(w, string(out), 500)
+			wsHub.Broadcast([]byte(fmt.Sprintf(`{"type":"docker_batch_analysis","status":"error","message":%q}`, err.Error())))
 			return
 		}
-		jsonWrite(w, map[string]string{"output": string(out)})
+		wsHub.Broadcast([]byte(fmt.Sprintf(`{"type":"docker_batch_analysis","status":"done","analysis":%q}`, resp)))
+	}()
+}
+
+func handleDockerTrace(w http.ResponseWriter, r *http.Request, path string) {
+	// /docker/trace/:sourceId/:containerId
+	parts := strings.Split(strings.TrimPrefix(path, "/docker/trace/"), "/")
+	if len(parts) < 2 {
+		http.Error(w, "invalid path", 400)
+		return
+	}
+	sourceID := parts[0]
+	containerID := parts[1]
+
+	config := getDockerConfig(sourceID)
+	trace, err := docker.TraceContainerLinks(sourceID, containerID, config)
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	jsonWrite(w, trace)
+}
+
+func handleDockerAction(w http.ResponseWriter, r *http.Request, path string) {
+	// /docker/:sourceId/:containerId/:action
+	parts := strings.Split(strings.TrimPrefix(path, "/docker/"), "/")
+	if len(parts) < 3 {
+		http.Error(w, "invalid path", 400)
+		return
+	}
+	sourceID := parts[0]
+	containerID := parts[1]
+	action := parts[2]
+
+	config := getDockerConfig(sourceID)
+
+	var err error
+	switch action {
+	case "start":
+		err = docker.StartContainer(sourceID, containerID, config)
+	case "stop":
+		err = docker.StopContainer(sourceID, containerID, config)
+	case "restart":
+		err = docker.RestartContainer(sourceID, containerID, config)
+	case "pause":
+		err = docker.PauseContainer(sourceID, containerID, config)
+	case "unpause":
+		err = docker.UnpauseContainer(sourceID, containerID, config)
+	case "exec":
+		var req struct {
+			Command string `json:"command"`
+		}
+		if err := jsonRead(r, &req); err != nil {
+			http.Error(w, err.Error(), 400)
+			return
+		}
+		output, execErr := docker.ExecInContainer(sourceID, containerID, strings.Fields(req.Command), config)
+		if execErr != nil {
+			http.Error(w, execErr.Error(), 500)
+			return
+		}
+		jsonWrite(w, map[string]string{"output": output})
+		return
 	default:
-		http.NotFound(w, r)
+		http.Error(w, "unknown action: "+action, 400)
+		return
+	}
+
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	jsonWrite(w, map[string]bool{"ok": true})
+}
+
+func getDockerConfig(sourceID string) docker.DockerConfig {
+	settings := getSettings()
+	sources, _ := settings["dockerSources"].([]interface{})
+	for _, s := range sources {
+		src, ok := s.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		id, _ := src["id"].(string)
+		if id == sourceID {
+			return dockerConfigFromMap(src)
+		}
+	}
+	return docker.DockerConfig{}
+}
+
+// ============ Remote Handlers ============
+
+func handleRemoteList(w http.ResponseWriter, r *http.Request) {
+	var servers []remote.Server
+	db.GetJSON("remote_servers", &servers)
+	if servers == nil {
+		servers = []remote.Server{}
+	}
+	// Mark connection status
+	for i := range servers {
+		servers[i].Connected = remote.Mgr.IsConnected(servers[i].ID)
+	}
+	jsonWrite(w, map[string]interface{}{"servers": servers})
+}
+
+func handleRemoteAdd(w http.ResponseWriter, r *http.Request) {
+	var srv remote.Server
+	if err := jsonRead(r, &srv); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	if srv.ID == "" {
+		srv.ID = uuid()
+	}
+
+	var servers []remote.Server
+	db.GetJSON("remote_servers", &servers)
+	servers = append(servers, srv)
+	db.SetJSON("remote_servers", servers)
+	jsonWrite(w, map[string]bool{"success": true})
+}
+
+func handleRemoteTest(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Host     string `json:"host"`
+		Port     int    `json:"port"`
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if err := jsonRead(r, &req); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+
+	err := remote.TestConnection(req.Host, req.Port, req.Username, req.Password)
+	if err != nil {
+		jsonWrite(w, map[string]interface{}{"success": false, "error": err.Error()})
+		return
+	}
+	jsonWrite(w, map[string]bool{"success": true})
+}
+
+func handleRemoteServer(w http.ResponseWriter, r *http.Request, path string) {
+	// /remote/servers/:id/:action or /remote/servers/:id
+	parts := strings.Split(strings.TrimPrefix(path, "/remote/servers/"), "/")
+	serverID := parts[0]
+	action := ""
+	if len(parts) > 1 {
+		action = parts[1]
+	}
+
+	// Get server
+	var servers []remote.Server
+	db.GetJSON("remote_servers", &servers)
+	var srv *remote.Server
+	for i := range servers {
+		if servers[i].ID == serverID {
+			srv = &servers[i]
+			break
+		}
+	}
+
+	if srv == nil && action != "" && action != "connect" {
+		http.Error(w, "server not found", 404)
+		return
+	}
+
+	switch action {
+	case "":
+		// GET/PUT/DELETE /remote/servers/:id
+		switch r.Method {
+		case "GET":
+			if srv == nil {
+				http.Error(w, "server not found", 404)
+				return
+			}
+			srv.Connected = remote.Mgr.IsConnected(serverID)
+			jsonWrite(w, srv)
+		case "PUT":
+			var updated remote.Server
+			if err := jsonRead(r, &updated); err != nil {
+				http.Error(w, err.Error(), 400)
+				return
+			}
+			updated.ID = serverID
+			for i := range servers {
+				if servers[i].ID == serverID {
+					servers[i] = updated
+					break
+				}
+			}
+			db.SetJSON("remote_servers", servers)
+			jsonWrite(w, map[string]bool{"success": true})
+		case "DELETE":
+			var filtered []remote.Server
+			for _, s := range servers {
+				if s.ID != serverID {
+					filtered = append(filtered, s)
+				}
+			}
+			db.SetJSON("remote_servers", filtered)
+			jsonWrite(w, map[string]bool{"success": true})
+		}
+
+	case "connect":
+		if srv == nil {
+			http.Error(w, "server not found", 404)
+			return
+		}
+		if err := remote.Mgr.Connect(srv); err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		wsHub.Broadcast([]byte(fmt.Sprintf(`{"type":"remote_status","serverId":%q,"connected":true}`, serverID)))
+		jsonWrite(w, map[string]bool{"success": true})
+
+	case "disconnect":
+		if srv != nil {
+			remote.Mgr.Disconnect(srv)
+		}
+		wsHub.Broadcast([]byte(fmt.Sprintf(`{"type":"remote_status","serverId":%q,"connected":false}`, serverID)))
+		jsonWrite(w, map[string]bool{"success": true})
+
+	case "files":
+		path := r.URL.Query().Get("path")
+		if path == "" { path = "/"
+		}
+		if path == "" { path = "/"
+			path = "/"
+		}
+		out, err := srv.ListFiles(path)
+		if err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		jsonWrite(w, map[string]string{"output": out})
+
+	case "logs":
+		file := r.URL.Query().Get("file")
+		if file == "" {
+			http.Error(w, "file required", 400)
+			return
+		}
+		lines := 200
+		fmt.Sscanf(r.URL.Query().Get("lines"), "%d", &lines)
+		out, err := srv.ReadLog(file, lines)
+		if err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		jsonWrite(w, map[string]string{"content": out})
+
+	case "stats":
+		stats := srv.GetStats()
+		jsonWrite(w, stats)
+
+	case "exec":
+		var req struct {
+			Command string `json:"command"`
+		}
+		if err := jsonRead(r, &req); err != nil {
+			http.Error(w, err.Error(), 400)
+			return
+		}
+		out, err := srv.Exec(req.Command)
+		if err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		jsonWrite(w, map[string]string{"output": out})
+
+	case "shell":
+		srv.HandleShell(w, r)
+
+	case "file":
+		subAction := ""
+		if len(parts) > 2 {
+			subAction = parts[2]
+		}
+		switch subAction {
+		case "read":
+			path := r.URL.Query().Get("path")
+			if path == "" { path = "/"
+				http.Error(w, "path required", 400)
+				return
+			}
+			content, err := srv.ReadFile(path, 0, 1<<20)
+			if err != nil {
+				http.Error(w, err.Error(), 500)
+				return
+			}
+			jsonWrite(w, map[string]string{"content": content})
+		case "write":
+			var req struct {
+				Path    string `json:"path"`
+				Content string `json:"content"`
+			}
+			if err := jsonRead(r, &req); err != nil {
+				http.Error(w, err.Error(), 400)
+				return
+			}
+			if err := srv.WriteFile(req.Path, req.Content); err != nil {
+				http.Error(w, err.Error(), 500)
+				return
+			}
+			jsonWrite(w, map[string]bool{"success": true})
+		case "upload":
+			var req struct {
+				Path    string `json:"path"`
+				Content string `json:"content"`
+				Name    string `json:"name"`
+			}
+			if err := jsonRead(r, &req); err != nil {
+				http.Error(w, err.Error(), 400)
+				return
+			}
+			if err := srv.Upload(req.Path, []byte(req.Content)); err != nil {
+				http.Error(w, err.Error(), 500)
+				return
+			}
+			jsonWrite(w, map[string]bool{"success": true})
+		default:
+			http.Error(w, "unknown file action: "+subAction, 400)
+		}
+
+	default:
+		http.Error(w, "unknown action: "+action, 400)
 	}
 }
+
+// ============ Memory Handlers ============
+
+func handleMemoryList(w http.ResponseWriter, r *http.Request) {
+	var mems []map[string]string
+	db.GetJSON("assistant_memory", &mems)
+	if mems == nil {
+		mems = []map[string]string{}
+	}
+	jsonWrite(w, map[string]interface{}{"files": mems})
+}
+
+func handleMemorySave(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Name    string `json:"name"`
+		Content string `json:"content"`
+	}
+	if err := jsonRead(r, &req); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+
+	var mems []map[string]string
+	db.GetJSON("assistant_memory", &mems)
+
+	// Update or add
+	found := false
+	for i, m := range mems {
+		if m["name"] == req.Name {
+			mems[i] = map[string]string{"name": req.Name, "content": req.Content, "updatedAt": fmt.Sprintf("%d", time.Now().UnixMilli())}
+			found = true
+			break
+		}
+	}
+	if !found {
+		mems = append(mems, map[string]string{"name": req.Name, "content": req.Content, "updatedAt": fmt.Sprintf("%d", time.Now().UnixMilli())})
+	}
+
+	db.SetJSON("assistant_memory", mems)
+	jsonWrite(w, map[string]bool{"success": true})
+}
+
+func handleMemoryDelete(w http.ResponseWriter, r *http.Request, name string) {
+	var mems []map[string]string
+	db.GetJSON("assistant_memory", &mems)
+
+	var filtered []map[string]string
+	for _, m := range mems {
+		if m["name"] != name {
+			filtered = append(filtered, m)
+		}
+	}
+	db.SetJSON("assistant_memory", filtered)
+	jsonWrite(w, map[string]bool{"success": true})
+}
+
+// ============ Remote Auto Reconnect ============
 
 func startRemoteReconnect() {
 	ticker := time.NewTicker(30 * time.Second)
@@ -797,14 +1445,20 @@ func startRemoteReconnect() {
 			for _, srv := range servers {
 				if srv.Connected && !remote.Mgr.IsConnected(srv.ID) {
 					if err := remote.Mgr.Connect(&srv); err == nil {
-						data, _ := json.Marshal(map[string]interface{}{"type": "remote_status", "serverId": srv.ID, "connected": true})
-						wsHub.Broadcast(data)
+						wsHub.Broadcast([]byte(fmt.Sprintf(`{"type":"remote_status","serverId":%q,"connected":true}`, srv.ID)))
 					}
 				}
 			}
 		}
 	}()
 }
+
+func mustMarshal(v interface{}) string {
+	data, _ := json.Marshal(v)
+	return string(data)
+}
+
+// ============ Main ============
 
 func main() {
 	cfg := config.Load()
@@ -817,8 +1471,9 @@ func main() {
 	startMonitor()
 	startRemoteReconnect()
 
-	// Init log service with broadcast
+	// Init services
 	services.InitLogService(func(data []byte) { wsHub.Broadcast(data) })
+	services.AnalysisMgr.Init(func(data []byte) { wsHub.Broadcast(data) })
 
 	http.HandleFunc("/ws", handleWS)
 	http.HandleFunc("/api/", handleAPI)
