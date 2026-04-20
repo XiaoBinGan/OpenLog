@@ -90,7 +90,7 @@ export default function Settings() {
     fetch('/api/settings')
       .then(r => r.json())
       .then(data => {
-        setSettings(data);
+        setSettings(prev => ({ ...prev, ...data }));
         // Auto-detect provider from baseUrl
         const matched = providers.find(p => p.baseUrl && p.baseUrl === data.openaiBaseUrl);
         setProvider(matched?.id || 'custom');
@@ -117,7 +117,7 @@ export default function Settings() {
       .then(r => r.json())
       .then(data => {
         if (data.models && data.models.length > 0) {
-          setOllamaModels(data.models);
+          setOllamaModels(data.models.map((m: any) => typeof m === 'string' ? m : m.name || m.model));
         }
         setLoadingModels(false);
       })
