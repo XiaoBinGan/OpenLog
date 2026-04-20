@@ -1,9 +1,11 @@
 package remote
 
 import (
-	"net/http"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -13,15 +15,17 @@ import (
 )
 
 type Server struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	Host      string `json:"host"`
-	Port      int    `json:"port"`
-	User      string `json:"user"`
-	Password  string `json:"password"`
-	Connected bool   `json:"connected"`
-	client    *ssh.Client
-	mu        sync.RWMutex
+	ID             string `json:"id"`
+	Name           string `json:"name"`
+	Host           string `json:"host"`
+	Port           int    `json:"port"`
+	User           string `json:"user"`
+	Password       string `json:"password"`
+	PrivateKey     string `json:"privateKey,omitempty"`
+	PrivateKeyPath string `json:"privateKeyPath,omitempty"`
+	Connected      bool   `json:"connected"`
+	client         *ssh.Client
+	mu             sync.RWMutex
 }
 
 type Manager struct {
@@ -37,9 +41,43 @@ func (m *Manager) Connect(srv *Server) error {
 
 	config := &ssh.ClientConfig{
 		User: srv.User,
-		Auth: []ssh.AuthMethod{ssh.Password(srv.Password)},
+		Auth: []ssh.AuthMethod{},
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
 		Timeout: 10 * time.Second,
+	}
+
+	// Try private key authentication first
+	if srv.PrivateKey != "" || srv.PrivateKeyPath != "" {
+		var keyBytes []byte
+		var err error
+		if srv.PrivateKey != "" {
+			keyBytes = []byte(srv.PrivateKey)
+		} else {
+			keyBytes, err = os.ReadFile(srv.PrivateKeyPath)
+			if err != nil {
+				return fmt.Errorf("读取私钥文件失败: %v", err)
+			}
+		}
+		signer, err := ssh.ParsePrivateKey(keyBytes)
+		if err != nil {
+			// If private key fails and no password, return error
+			if srv.Password == "" {
+				return fmt.Errorf("解析私钥失败: %v", err)
+			}
+			// Fall through to password auth
+		} else {
+			config.Auth = append(config.Auth, ssh.PublicKeys(signer))
+		}
+	}
+
+	// Add password authentication if available
+	if srv.Password != "" {
+		config.Auth = append(config.Auth, ssh.Password(srv.Password))
+	}
+
+	// Ensure at least one auth method
+	if len(config.Auth) == 0 {
+		return fmt.Errorf("未提供认证方式（密码或私钥）")
 	}
 
 	addr := fmt.Sprintf("%s:%d", srv.Host, srv.Port)
@@ -344,13 +382,26 @@ func (srv *Server) HandleShell(w http.ResponseWriter, r *http.Request) {
 	stderr, _ := session.StderrPipe()
 	session.Shell()
 
-	// Forward WS -> stdin
+	// Forward WS -> stdin + handle resize
 	go func() {
 		for {
 			_, data, err := conn.ReadMessage()
 			if err != nil {
 				break
 			}
+			// Try to parse as JSON for resize messages
+			var msg struct {
+				Type string `json:"type"`
+				Cols int    `json:"cols"`
+				Rows int    `json:"rows"`
+			}
+			if json.Unmarshal(data, &msg) == nil && msg.Type == "resize" {
+				if msg.Cols > 0 && msg.Rows > 0 {
+					session.WindowChange(msg.Rows, msg.Cols)
+				}
+				continue
+			}
+			// Not a control message, write to stdin
 			stdin.Write(data)
 		}
 	}()

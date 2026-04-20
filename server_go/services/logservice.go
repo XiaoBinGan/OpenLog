@@ -52,6 +52,8 @@ func InitLogService(broadcast func([]byte)) {
 		analysisQueue: make(map[string]*logAnalysisJob),
 		broadcast:     broadcast,
 	}
+	// Initialize the analysis manager with broadcast
+	AnalysisMgr.Init(broadcast)
 }
 
 const MaxLogEntries = 10000
@@ -118,6 +120,11 @@ func (s *LogService) readNewContent(src *LogSource) {
 			src.Entries = append(src.Entries, entry)
 			if len(src.Entries) > MaxLogEntries {
 				src.Entries = src.Entries[len(src.Entries)-MaxLogEntries:]
+			}
+			// Auto-analysis trigger for ERROR/FATAL logs
+			level := strings.ToUpper(entry.Level)
+			if level == "ERROR" || level == "FATAL" || level == "CRITICAL" {
+				AnalysisMgr.Enqueue(entry, src)
 			}
 		}
 		src.mu.Unlock()
