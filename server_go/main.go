@@ -1161,12 +1161,12 @@ func handleRemoteList(w http.ResponseWriter, r *http.Request) {
 	if servers == nil {
 		servers = []remote.Server{}
 	}
-	// Mark connection status - always derive from live connection state
+	// Mark connection status - derive from live state but preserve error
 	for i := range servers {
 		servers[i].Connected = remote.Mgr.IsConnected(servers[i].ID)
 		if servers[i].Connected {
 			servers[i].Status = "connected"
-		} else {
+		} else if servers[i].Status != "error" {
 			servers[i].Status = "disconnected"
 		}
 	}
@@ -1278,9 +1278,32 @@ func handleRemoteServer(w http.ResponseWriter, r *http.Request, path string) {
 			return
 		}
 		if err := remote.Mgr.Connect(srv); err != nil {
-			http.Error(w, err.Error(), 500)
+			// Update status in database
+			var allSrvs []remote.Server
+			db.GetJSON("remote_servers", &allSrvs)
+			for i := range allSrvs {
+				if allSrvs[i].ID == serverID {
+					allSrvs[i].Status = "error"
+					allSrvs[i].Connected = false
+					break
+				}
+			}
+			db.SetJSON("remote_servers", allSrvs)
+			wsHub.Broadcast([]byte(fmt.Sprintf(`{"type":"remote_status","serverId":%q,"connected":false}`, serverID)))
+			jsonWrite(w, map[string]interface{}{"success": false, "error": err.Error()})
 			return
 		}
+		// Update status in database
+		var allSrvs []remote.Server
+		db.GetJSON("remote_servers", &allSrvs)
+		for i := range allSrvs {
+			if allSrvs[i].ID == serverID {
+				allSrvs[i].Status = "connected"
+				allSrvs[i].Connected = true
+				break
+			}
+		}
+		db.SetJSON("remote_servers", allSrvs)
 		wsHub.Broadcast([]byte(fmt.Sprintf(`{"type":"remote_status","serverId":%q,"connected":true}`, serverID)))
 		jsonWrite(w, map[string]bool{"success": true})
 

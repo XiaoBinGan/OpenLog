@@ -62,7 +62,7 @@ export default function Monitor() {
             const next = [...prev, {
               id: Date.now(),
               timestamp: new Date().toISOString(),
-              cpu: data.cpu?.load ?? 0,
+              cpu: typeof data.cpu?.load === 'number' ? data.cpu.load : (data.cpu?.percent ?? (Array.isArray(data.cpu?.load) ? data.cpu.load[0] : 0)),
               memory: memPct,
               disk: data.disk?.length > 0 ? Math.max(...data.disk.map(d => d.usePercent)) : 0,
               network: Array.isArray(data.network) && data.network[0] ? (data.network[0].rx + data.network[0].tx) : 0,
@@ -162,7 +162,7 @@ export default function Monitor() {
             CPU 使用率
           </h2>
           <span className="text-2xl font-bold text-accent-400">
-            {stats?.cpu?.load?.toFixed(1) || 0}%
+            {(typeof stats?.cpu?.load === 'number' ? stats.cpu.load.toFixed(1) : (stats?.cpu?.percent?.toFixed(1) ?? '0.0'))}%
           </span>
         </div>
         
@@ -199,7 +199,7 @@ export default function Monitor() {
               <Tooltip 
                 contentStyle={{ background: '#1e1e26', border: '1px solid #32323a', borderRadius: '8px' }}
                 labelFormatter={(v) => new Date(v).toLocaleTimeString()}
-                formatter={(v: number) => [`${v.toFixed(1)}%`, 'CPU']}
+                formatter={(v: any) => [`${typeof v === 'number' ? v.toFixed(1) : Number(v).toFixed(1)}%`, 'CPU']}
               />
               <Area type="monotone" dataKey="cpu" stroke="#0ea5e9" fill="url(#cpuGrad)" strokeWidth={2} />
             </AreaChart>
@@ -249,7 +249,7 @@ export default function Monitor() {
                 <Tooltip 
                   contentStyle={{ background: '#1e1e26', border: '1px solid #32323a', borderRadius: '8px' }}
                   labelFormatter={(v) => new Date(v).toLocaleTimeString()}
-                  formatter={(v: number) => [`${v.toFixed(1)}%`, '内存']}
+                  formatter={(v: any) => [`${typeof v === 'number' ? v.toFixed(1) : Number(v).toFixed(1)}%`, '内存']}
                 />
                 <Area type="monotone" dataKey="memory" stroke="#a855f7" fill="url(#memGrad)" strokeWidth={2} />
               </AreaChart>
@@ -381,7 +381,7 @@ export default function Monitor() {
                   <div>
                     <div className="flex justify-between text-xs text-dark-400 mb-1.5">
                       <span>算力占用</span>
-                      <span className="font-medium text-dark-200">{gpu.util.toFixed(1)}%</span>
+                      <span className="font-medium text-dark-200">{Number(gpu.util).toFixed(1)}%</span>
                     </div>
                     <div className="h-3 bg-dark-800 rounded-full overflow-hidden">
                       <div
@@ -398,7 +398,7 @@ export default function Monitor() {
                     <div className="flex justify-between text-xs text-dark-400 mb-1.5">
                       <span>显存占用</span>
                       <span className="font-medium text-dark-200">
-                        {gpu.memUsed.toFixed(0)} / {gpu.memTotal.toFixed(0)} MB
+                        {Number(gpu.memUsed).toFixed(0)} / {Number(gpu.memTotal).toFixed(0)} MB
                       </span>
                     </div>
                     <div className="h-3 bg-dark-800 rounded-full overflow-hidden">
@@ -410,8 +410,8 @@ export default function Monitor() {
                       />
                     </div>
                     <div className="flex justify-between mt-1">
-                      <span className="text-xs text-cyan-400">{memPct.toFixed(1)}% 已用</span>
-                      <span className="text-xs text-dark-500">{gpu.memUsed.toFixed(0)} MB</span>
+                      <span className="text-xs text-cyan-400">{Number(memPct).toFixed(1)}% 已用</span>
+                      <span className="text-xs text-dark-500">{Number(gpu.memUsed).toFixed(0)} MB</span>
                     </div>
                   </div>
                 </div>
@@ -435,7 +435,7 @@ export default function Monitor() {
                   <Tooltip
                     contentStyle={{ background: '#1e1e26', border: '1px solid #32323a', borderRadius: '8px' }}
                     labelFormatter={(v) => new Date(v).toLocaleTimeString()}
-                    formatter={(v: number) => [`${v.toFixed(1)}%`, 'GPU 算力']}
+                    formatter={(v: any) => [`${typeof v === 'number' ? v.toFixed(1) : Number(v).toFixed(1)}%`, 'GPU 算力']}
                   />
                   <Area type="monotone" dataKey="gpuUtil" stroke="#10b981" fill="url(#gpuGrad)" strokeWidth={2} />
                 </AreaChart>
@@ -472,12 +472,12 @@ export default function Monitor() {
                     <td className="py-2 text-dark-300">{proc.name}</td>
                     <td className="py-2 text-right">
                       <span className={proc.cpu > 50 ? 'text-red-400' : proc.cpu > 20 ? 'text-yellow-400' : 'text-dark-300'}>
-                        {proc.cpu.toFixed(1)}%
+                        {Number(proc.cpu).toFixed(1)}%
                       </span>
                     </td>
                     <td className="py-2 text-right">
                       <span className={proc.mem > 50 ? 'text-red-400' : proc.mem > 20 ? 'text-yellow-400' : 'text-dark-300'}>
-                        {proc.mem.toFixed(1)}%
+                        {Number(proc.mem).toFixed(1)}%
                       </span>
                     </td>
                   </tr>
