@@ -23,6 +23,10 @@ type Server struct {
 	Password       string `json:"password"`
 	PrivateKey     string `json:"privateKey,omitempty"`
 	PrivateKeyPath string `json:"privateKeyPath,omitempty"`
+	LogPath        string `json:"logPath,omitempty"`
+	WatchFiles     string `json:"watchFiles,omitempty"`
+	LastConnected  string `json:"lastConnected,omitempty"`
+	Status         string `json:"status,omitempty"`
 	Connected      bool   `json:"connected"`
 	client         *ssh.Client
 	mu             sync.RWMutex
