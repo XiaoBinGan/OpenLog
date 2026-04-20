@@ -41,8 +41,9 @@ export default function Monitor() {
           
           console.log('[Monitor] remote stats response:', JSON.stringify(data));
           
-          if (data.error) {
-            throw new Error(data.error);
+          if (data.error || !data.connected) {
+            // 远程服务器未连接，静默跳过，不 throw
+            return;
           }
           
           setStats({

@@ -330,8 +330,11 @@ func getSettings() map[string]interface{} {
 	}
 	if settings == nil {
 		settings = map[string]interface{}{
+			"openaiApiKey":   "",
 			"openaiBaseUrl":  "http://localhost:11434/v1",
 			"model":          "qwen2.5:7b",
+			"logPath":        "",
+			"watchFiles":     "*.log",
 			"refreshInterval": "5000",
 			"autoAnalysis":   true,
 			"thinkingEnabled": false,
