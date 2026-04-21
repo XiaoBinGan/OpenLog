@@ -7,7 +7,7 @@
 ```
 .
 ├── client/          # React 前端 (Vite + TypeScript + Tailwind)
-└── server_go/       # Go 后端
+└── server_go/       # Go 后 端
 ```
 
 ## 快速开始
