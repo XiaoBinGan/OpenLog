@@ -1156,8 +1156,7 @@ func getDockerConfig(sourceID string) docker.DockerConfig {
 // ============ Remote Handlers ============
 
 func handleRemoteList(w http.ResponseWriter, r *http.Request) {
-	var servers []remote.Server
-	db.GetJSON("remote_servers", &servers)
+	servers, _ := loadServers()
 	if servers == nil {
 		servers = []remote.Server{}
 	}
@@ -1178,9 +1177,51 @@ func handleRemoteList(w http.ResponseWriter, r *http.Request) {
 	jsonWrite(w, map[string]interface{}{"servers": servers})
 }
 
+// loadServers reads servers from DB and decrypts passwords
+func loadServers() ([]remote.Server, error) {
+	var servers []remote.Server
+	if err := db.GetJSON("remote_servers", &servers); err != nil {
+		return nil, err
+	}
+	for i := range servers {
+		if servers[i].Password != "" {
+			servers[i].Password = remote.DecryptPassword(servers[i].Password)
+		}
+	}
+	return servers, nil
+}
+
+// saveServers encrypts passwords and writes servers to DB
+func saveServers(servers []remote.Server) error {
+	toSave := make([]remote.Server, len(servers))
+	copy(toSave, servers)
+	for i := range toSave {
+		if toSave[i].Password != "" {
+			toSave[i].Password = remote.EncryptPassword(toSave[i].Password)
+		}
+	}
+	return db.SetJSON("remote_servers", toSave)
+}
+
 func handleRemoteAdd(w http.ResponseWriter, r *http.Request) {
+	// Read body once, support both "user" and "username" fields
+	var raw map[string]json.RawMessage
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	json.Unmarshal(body, &raw)
+	// Normalize: if "username" exists but "user" doesn't, copy it
+	if _, hasUser := raw["user"]; !hasUser {
+		if usernameRaw, hasUsername := raw["username"]; hasUsername {
+			raw["user"] = usernameRaw
+		}
+	}
+	normalized, _ := json.Marshal(raw)
+
 	var srv remote.Server
-	if err := jsonRead(r, &srv); err != nil {
+	if err := json.Unmarshal(normalized, &srv); err != nil {
 		http.Error(w, err.Error(), 400)
 		return
 	}
@@ -1189,9 +1230,9 @@ func handleRemoteAdd(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var servers []remote.Server
-	db.GetJSON("remote_servers", &servers)
-	servers = append(servers, srv)
-	db.SetJSON("remote_servers", servers)
+	existing, _ := loadServers()
+	servers = append(existing, srv)
+	saveServers(servers)
 	jsonWrite(w, map[string]bool{"success": true})
 }
 
@@ -1224,14 +1265,18 @@ func handleRemoteServer(w http.ResponseWriter, r *http.Request, path string) {
 		action = parts[1]
 	}
 
-	// Get server
-	var servers []remote.Server
-	db.GetJSON("remote_servers", &servers)
+	// Get server: prefer live Manager instance (has SSH client), fall back to DB
 	var srv *remote.Server
-	for i := range servers {
-		if servers[i].ID == serverID {
-			srv = &servers[i]
-			break
+	if liveSrv := remote.Mgr.GetServer(serverID); liveSrv != nil {
+		srv = liveSrv
+	}
+	if srv == nil {
+		servers, _ := loadServers()
+		for i := range servers {
+			if servers[i].ID == serverID {
+				srv = &servers[i]
+				break
+			}
 		}
 	}
 
@@ -1252,8 +1297,20 @@ func handleRemoteServer(w http.ResponseWriter, r *http.Request, path string) {
 			srv.Connected = remote.Mgr.IsConnected(serverID)
 			jsonWrite(w, srv)
 		case "PUT":
+			servers, _ := loadServers()
+			// Read body once, support both "user" and "username" fields
+			var raw map[string]json.RawMessage
+			putBody, _ := io.ReadAll(r.Body)
+			json.Unmarshal(putBody, &raw)
+			if _, hasUser := raw["user"]; !hasUser {
+				if usernameRaw, hasUsername := raw["username"]; hasUsername {
+					raw["user"] = usernameRaw
+				}
+			}
+			normalized, _ := json.Marshal(raw)
+
 			var updated remote.Server
-			if err := jsonRead(r, &updated); err != nil {
+			if err := json.Unmarshal(normalized, &updated); err != nil {
 				http.Error(w, err.Error(), 400)
 				return
 			}
@@ -1274,16 +1331,17 @@ func handleRemoteServer(w http.ResponseWriter, r *http.Request, path string) {
 					break
 				}
 			}
-			db.SetJSON("remote_servers", servers)
+			saveServers(servers)
 			jsonWrite(w, map[string]bool{"success": true})
 		case "DELETE":
+			servers, _ := loadServers()
 			var filtered []remote.Server
 			for _, s := range servers {
 				if s.ID != serverID {
 					filtered = append(filtered, s)
 				}
 			}
-			db.SetJSON("remote_servers", filtered)
+			saveServers(filtered)
 			jsonWrite(w, map[string]bool{"success": true})
 		}
 
@@ -1294,8 +1352,7 @@ func handleRemoteServer(w http.ResponseWriter, r *http.Request, path string) {
 		}
 		if err := remote.Mgr.Connect(srv); err != nil {
 			// Update status in database
-			var allSrvs []remote.Server
-			db.GetJSON("remote_servers", &allSrvs)
+			allSrvs, _ := loadServers()
 			for i := range allSrvs {
 				if allSrvs[i].ID == serverID {
 					allSrvs[i].Status = "error"
@@ -1303,14 +1360,13 @@ func handleRemoteServer(w http.ResponseWriter, r *http.Request, path string) {
 					break
 				}
 			}
-			db.SetJSON("remote_servers", allSrvs)
+			saveServers(allSrvs)
 			wsHub.Broadcast([]byte(fmt.Sprintf(`{"type":"remote_status","serverId":%q,"connected":false}`, serverID)))
 			jsonWrite(w, map[string]interface{}{"success": false, "error": err.Error()})
 			return
 		}
 		// Update status in database
-		var allSrvs []remote.Server
-		db.GetJSON("remote_servers", &allSrvs)
+		allSrvs, _ := loadServers()
 		for i := range allSrvs {
 			if allSrvs[i].ID == serverID {
 				allSrvs[i].Status = "connected"
@@ -1318,7 +1374,7 @@ func handleRemoteServer(w http.ResponseWriter, r *http.Request, path string) {
 				break
 			}
 		}
-		db.SetJSON("remote_servers", allSrvs)
+		saveServers(allSrvs)
 		wsHub.Broadcast([]byte(fmt.Sprintf(`{"type":"remote_status","serverId":%q,"connected":true}`, serverID)))
 		jsonWrite(w, map[string]bool{"success": true})
 
@@ -1327,8 +1383,7 @@ func handleRemoteServer(w http.ResponseWriter, r *http.Request, path string) {
 			remote.Mgr.Disconnect(srv)
 		}
 		// Update status in database
-		var allSrvs []remote.Server
-		db.GetJSON("remote_servers", &allSrvs)
+		allSrvs, _ := loadServers()
 		for i := range allSrvs {
 			if allSrvs[i].ID == serverID {
 				allSrvs[i].Status = "disconnected"
@@ -1336,7 +1391,7 @@ func handleRemoteServer(w http.ResponseWriter, r *http.Request, path string) {
 				break
 			}
 		}
-		db.SetJSON("remote_servers", allSrvs)
+		saveServers(allSrvs)
 		wsHub.Broadcast([]byte(fmt.Sprintf(`{"type":"remote_status","serverId":%q,"connected":false}`, serverID)))
 		jsonWrite(w, map[string]bool{"success": true})
 
@@ -1514,8 +1569,7 @@ func startRemoteReconnect() {
 	ticker := time.NewTicker(30 * time.Second)
 	go func() {
 		for range ticker.C {
-			var servers []remote.Server
-			db.GetJSON("remote_servers", &servers)
+			servers, _ := loadServers()
 			for _, srv := range servers {
 				if srv.Connected && !remote.Mgr.IsConnected(srv.ID) {
 					if err := remote.Mgr.Connect(&srv); err == nil {

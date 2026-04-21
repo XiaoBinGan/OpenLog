@@ -19,7 +19,7 @@ type Server struct {
 	Name           string `json:"name"`
 	Host           string `json:"host"`
 	Port           int    `json:"port"`
-	User           string `json:"user"`
+	User           string `json:"user"`  // also accepts "username" from frontend
 	Password       string `json:"password"`
 	PrivateKey     string `json:"privateKey,omitempty"`
 	PrivateKeyPath string `json:"privateKeyPath,omitempty"`
@@ -167,6 +167,21 @@ func (srv *Server) ResizeShell(sessionID string, cols, rows int) error {
 	return nil
 }
 
+// encryptPassword encrypts password with base64 (same as Node.js version for compatibility)
+func EncryptPassword(password string) string {
+	return base64.StdEncoding.EncodeToString([]byte(password))
+}
+
+// decryptPassword decrypts base64-encoded password (same as Node.js version for compatibility)
+func DecryptPassword(encoded string) string {
+	decoded, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		// Not base64, return as-is (might be plaintext)
+		return encoded
+	}
+	return string(decoded)
+}
+
 type RemoteStats struct {
 	CPU       RemoteCPU    `json:"cpu"`
 	Memory    RemoteMemory `json:"memory"`
@@ -222,12 +237,15 @@ type RemoteGPU struct {
 
 func (srv *Server) GetStats() RemoteStats {
 	var stats RemoteStats
-	stats.Connected = srv.Connected
 
-	if !srv.Connected {
+	if !srv.Connected || srv.client == nil {
+		srv.Connected = false
+		stats.Connected = false
 		stats.Error = "未连接"
 		return stats
 	}
+
+	stats.Connected = true
 
 	cmd := `
 		echo "STATS_BEGIN";
