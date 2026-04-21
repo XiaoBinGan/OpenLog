@@ -18,6 +18,13 @@ remote-servers.json
 # 构建产物
 dist/
 client/dist/
+vite.log
+
+# 本地数据库
+data/
+
+# Go 后端（在 golang 分支）
+server_go/
 
 # 编辑器配置
 .claude/
