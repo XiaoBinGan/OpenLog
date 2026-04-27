@@ -12,7 +12,8 @@ import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import * as remote from './remote.js';
 import * as docker from './docker.js';
-import { initDb, getDb, getKv, setKv } from './db/index.js';
+import * as gpu from './gpu.js';
+import { initDb, getDb, getKv, setKv, insertLogRecord, listLogRecords } from './db/index.js';
 
 dotenv.config();
 
@@ -111,6 +112,10 @@ const defaultSettings = {
   refreshInterval: '5000',
   autoAnalysis: true,
   thinkingEnabled: false,
+  // 日志持久化配置
+  logPersistence: false,                          // 是否持久化到数据库
+  logPersistenceLevels: ['ERROR', 'FATAL', 'WARN'], // 持久化的日志等级
+  logPersistenceMaxAge: 7,                        // 持久化日志保留天数
   watchSources: [
     {
       id: 'default',
@@ -422,8 +427,30 @@ function saveLog(log, source = null) {
     logs.pop();
   }
 
+  // 🚀 日志持久化到数据库（可选）
+  const settings = ensureSettings();
+  if (settings.logPersistence) {
+    const levels = settings.logPersistenceLevels || ['ERROR', 'FATAL', 'WARN'];
+    if (levels.includes(log.level)) {
+      try {
+        insertLogRecord({
+          id: log.id || uuidv4(),
+          machine_id: source?.id || 'default',
+          source_type: 'file',
+          source_name: source?.name || log.source || 'unknown',
+          content: log.message || log.raw || '',
+          severity: (log.level || 'info').toLowerCase(),
+          timestamp: log.timestamp ? Math.floor(new Date(log.timestamp).getTime() / 1000) : Math.floor(Date.now() / 1000),
+          parsed: log,
+        });
+      } catch (err) {
+        console.warn('[DB] 日志持久化失败:', err.message);
+      }
+    }
+  }
+
   // 🚀 主动分析：ERROR/FATAL 日志出现时加入分析队列
-  const autoAnalysisEnabled = ensureSettings().autoAnalysis && (source?.autoAnalysis ?? true);
+  const autoAnalysisEnabled = settings.autoAnalysis && (source?.autoAnalysis ?? true);
   if ((log.level === 'ERROR' || log.level === 'FATAL') && autoAnalysisEnabled) {
     enqueueAnalysis(log, source);
   }
@@ -589,7 +616,12 @@ function startMonitor() {
         timestamp: new Date().toISOString(),
         cpu: cpu.currentLoad || 0,
         memory: mem.total > 0 ? (mem.used / mem.total) * 100 : 0,
-        disk: disks[0] && disks[0].size > 0 ? (disks[0].used / disks[0].size) * 100 : 0,
+        disk: disks.map(d => ({
+          name: d.mount,
+          used: d.used,
+          total: d.size,
+          usePercent: d.use
+        })),
         network: network[0] ? network[0].rx_sec + network[0].tx_sec : 0,
         gpuUtil: 0, // populated separately if nvidia-smi available
       };
@@ -633,6 +665,46 @@ app.get('/api/logs', (req, res) => {
   result = result.slice(parseInt(offset), parseInt(offset) + parseInt(limit));
   
   res.json({ logs: result, total });
+});
+
+// 获取持久化历史日志（从数据库）
+app.get('/api/logs/history', async (req, res) => {
+  try {
+    const { machine_id, severity, limit = 200, offset = 0, startDate, endDate } = req.query;
+    
+    const records = listLogRecords({ machine_id, severity, limit: parseInt(limit), offset: parseInt(offset) });
+    
+    // 可选：按时间范围过滤
+    let filtered = records;
+    if (startDate) {
+      const startTs = Math.floor(new Date(startDate).getTime() / 1000);
+      filtered = filtered.filter(r => r.timestamp >= startTs);
+    }
+    if (endDate) {
+      const endTs = Math.floor(new Date(endDate).getTime() / 1000);
+      filtered = filtered.filter(r => r.timestamp <= endTs);
+    }
+    
+    res.json({ logs: filtered, total: filtered.length, source: 'database' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 清理过期持久化日志
+app.delete('/api/logs/history', async (req, res) => {
+  try {
+    const { maxAgeDays } = req.query;
+    const days = parseInt(maxAgeDays) || ensureSettings().logPersistenceMaxAge || 7;
+    const cutoffTs = Math.floor(Date.now() / 1000) - days * 86400;
+    
+    const db = getDb();
+    const result = db.run(`DELETE FROM log_records WHERE timestamp < ?`, cutoffTs);
+    
+    res.json({ deleted: result.changes, cutoffDate: new Date(cutoffTs * 1000).toISOString() });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Get available Ollama models
@@ -1761,5 +1833,58 @@ server.listen(PORT, async () => {
     }
   } catch (err) {
     console.error('自动重连出错:', err.message);
+  }
+});
+
+// ─── GPU 监控路由 ─────────────────────────────────────────────────────────
+
+// 获取 GPU 列表（本地）
+app.get('/api/gpu/local', async (req, res) => {
+  try {
+    const devices = await gpu.getLocalGPUs();
+    const summary = gpu.getGPUSummary(devices);
+    res.json({ devices, summary });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 获取 GPU 列表（远程）
+app.get('/api/gpu/remote', async (req, res) => {
+  try {
+    const { host, sshUser, sshPassword, sshKeyPath, sshPort } = req.query;
+    if (!host || !sshUser) return res.status(400).json({ error: 'host and sshUser required' });
+    const devices = await gpu.getRemoteGPUs(host, sshUser, sshPassword, sshKeyPath, parseInt(sshPort) || 22);
+    const summary = gpu.getGPUSummary(devices);
+    res.json({ devices, summary });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 通用 GPU 查询（自动本地/远程）
+app.post('/api/gpu/query', async (req, res) => {
+  try {
+    const { remote: isRemote, host, sshUser, sshPassword, sshKeyPath, sshPort } = req.body;
+    const devices = await gpu.getGPUs({ remote: isRemote, host, sshUser, sshPassword, sshKeyPath, sshPort });
+    const summary = gpu.getGPUSummary(devices);
+    res.json({ devices, summary });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 保存 / 加载 GPU 配置
+app.get('/api/gpu/configs', (req, res) => {
+  res.json({ configs: gpu.loadGPUConfigs() });
+});
+
+app.post('/api/gpu/configs', (req, res) => {
+  try {
+    const { configs } = req.body;
+    gpu.saveGPUConfigs(configs);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });

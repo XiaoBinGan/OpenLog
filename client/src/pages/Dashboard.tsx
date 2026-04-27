@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { 
   Activity, 
   Cpu, 
@@ -25,13 +25,13 @@ export default function Dashboard() {
   const [history, setHistory] = useState<MonitorHistory[]>([]);
   const [recentLogs, setRecentLogs] = useState<Log[]>([]);
   const [loading, setLoading] = useState(false);
-  const [ws, setWs] = useState<WebSocket | null>(null);
+  const [logWs, setLogWs] = useState<WebSocket | null>(null);
 
   // 设备切换时重新加载数据
   useEffect(() => {
     // 关闭之前的 WebSocket
-    if (ws) {
-      ws.close();
+    if (logWs) {
+      logWs.close();
     }
     
     // 重置状态
@@ -43,7 +43,7 @@ export default function Dashboard() {
     const fetchDeviceData = async () => {
       try {
         if (!isRemote) {
-          // 本地设备
+          // 本地设备 - 使用 HTTP 轮询，与 GlobalStatusBar 保持一致
           const [statsData, historyData, logsData] = await Promise.all([
             fetch('/api/monitor/stats').then(r => r.json()),
             fetch('/api/monitor/history?limit=30').then(r => r.json()),
@@ -52,35 +52,6 @@ export default function Dashboard() {
           setStats(statsData);
           setHistory(historyData);
           setRecentLogs(logsData.logs || []);
-          
-          // 连接 WebSocket
-          const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-          const wsInstance = new WebSocket(`${protocol}//${window.location.host}/ws`);
-          
-          wsInstance.onmessage = (event) => {
-            const data = JSON.parse(event.data);
-            
-            if (data.type === 'monitor') {
-              // WS 推送的是简化格式，转换为 HTTP API 格式
-              const raw = data.data;
-              const formatted = {
-                cpu: typeof raw.cpu === 'number' ? { load: raw.cpu, cores: [] } : raw.cpu,
-                memory: typeof raw.memory === 'number' ? { used: raw.memory, total: 100, free: 0 } : raw.memory,
-                disk: typeof raw.disk === 'number' ? [{ name: '/', used: 0, total: 1, usePercent: raw.disk }] : raw.disk,
-                network: raw.network !== undefined ? [{ iface: 'en0', rx: raw.network / 2, tx: raw.network / 2 }] : [],
-                processes: stats?.processes || []
-              };
-              setStats(formatted);
-              setHistory(prev => {
-                const newHistory = [...prev, data.data];
-                return newHistory.slice(-60);
-              });
-            } else if (data.type === 'log') {
-              setRecentLogs(prev => [data.data, ...prev].slice(0, 20));
-            }
-          };
-          
-          setWs(wsInstance);
         } else {
           // 远程已连接，走 stats API
           const [statsData] = await Promise.all([
@@ -174,9 +145,26 @@ export default function Dashboard() {
     
     fetchDeviceData();
     
+    // HTTP 轮询，与 GlobalStatusBar 保持一致
+    const pollInterval = setInterval(fetchDeviceData, 5000);
+    
+    // 仅用于日志的 WebSocket（不包含监控数据）
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsInstance = new WebSocket(`${protocol}//${window.location.host}/ws`);
+    
+    wsInstance.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      if (data.type === 'log') {
+        setRecentLogs(prev => [data.data, ...prev].slice(0, 20));
+      }
+    };
+    
+    setLogWs(wsInstance);
+    
     return () => {
-      if (ws) {
-        ws.close();
+      clearInterval(pollInterval);
+      if (wsInstance) {
+        wsInstance.close();
       }
     };
   }, [selectedDevice.id, isRemote]);
@@ -300,6 +288,37 @@ export default function Dashboard() {
               style={{ width: `${(() => { const p=stats?.disk?.map(d=>d.usePercent)||[]; return p.length>0?p.reduce((a,b)=>a+b,0)/p.length:0; })()}%` }}
             />
           </div>
+          {stats?.disk && stats.disk.length > 0 ? (() => {
+            // macOS APFS 卷共享同一个物理磁盘，total 值相同，需要去重
+            const uniqueTotals = [...new Set(stats.disk.map(d => d.total))];
+            const totalAll = uniqueTotals.length === 1 
+              ? uniqueTotals[0]  // APFS 单物理磁盘
+              : stats.disk.reduce((s, d) => s + (d.total || 0), 0);  // 多物理磁盘
+            const totalUsed = uniqueTotals.length === 1
+              ? stats.disk.reduce((s, d) => s + (d.used || 0), 0)  // APFS：累加所有卷的使用量
+              : stats.disk.reduce((s, d) => s + (d.used || 0), 0);  // 多磁盘
+            const totalPct = totalAll > 0 ? (totalUsed / totalAll) * 100 : 0;
+            return (
+              <>
+                <div className="text-2xl font-bold">{formatBytes(totalAll)}</div>
+                <div className="text-xs text-dark-400 mt-1">
+                  已用 {formatBytes(totalUsed)} ({totalPct.toFixed(1)}%) · {stats.disk.length} 个分区
+                </div>
+                <div className="mt-2 h-1.5 bg-dark-800 rounded-full overflow-hidden">
+                  <div
+                    className={`h-full transition-all duration-500 ${
+                      totalPct > 90 ? 'bg-red-500' :
+                      totalPct > 70 ? 'bg-yellow-500' :
+                      'bg-gradient-to-r from-orange-500 to-orange-400'
+                    }`}
+                    style={{ width: `${Math.min(totalPct, 100)}%` }}
+                  />
+                </div>
+              </>
+            );
+          })() : (
+            <div className="text-2xl font-bold">-</div>
+          )}
         </div>
 
         {/* Network */}
