@@ -13,6 +13,7 @@ import dotenv from 'dotenv';
 import * as remote from './remote.js';
 import * as docker from './docker.js';
 import * as gpu from './gpu.js';
+import * as docmind from './docmind.js';
 import { initDb, getDb, getKv, setKv, insertLogRecord, listLogRecords } from './db/index.js';
 
 dotenv.config();
@@ -157,76 +158,75 @@ function stripThinking(text) {
   return text.replace(/<think\b[^>]*>[\s\S]*?<\/think>/g, '').trim();
 }
 
-// 🧠 流式思维过滤器：状态机，逐 token 过滤 <think/> 块
+// 🧠 流式思维过滤器：过滤 Qwen3 等模型的思维过程
 class ThinkingStreamFilter {
   constructor() {
-    this.inThink = false;       // 当前是否在 <think/> 块内
-    this.buffer = '';           // 待判断的 buffer（可能跨 chunk）
+    this.inThinkingBlock = false;
+    this.hasSeenThinkStart = false;
+    this.lastThinkEndIndex = -1;
+    this.pendingOutput = '';  // 思维结束后待输出的内容
   }
 
-  /** 输入一个 chunk 的 content，返回应该输出给客户端的部分 */
   feed(content) {
     if (ensureSettings().thinkingEnabled) return content; // 开启思维 → 全部输出
 
     let output = '';
-    let i = 0;
-
-    // 先处理 buffer 中残留的内容
-    if (this.buffer) {
-      content = this.buffer + content;
-      this.buffer = '';
-    }
-
-    while (i < content.length) {
-      if (this.inThink) {
-        // 在 think 块内，寻找 </think&gt;
-        const closeIdx = content.indexOf('</think&gt;', i);
-        if (closeIdx !== -1) {
-          this.inThink = false;
-          i = closeIdx + 8; // 跳过 </think&gt;
-          continue;
-        }
-        // 没找到闭合标签，继续等待
-        i = content.length;
-        break;
+    
+    if (!this.hasSeenThinkStart) {
+      // 检查是否进入思维块
+      const thinkIdx = content.indexOf("Here's a thinking");
+      if (thinkIdx !== -1) {
+        this.hasSeenThinkStart = true;
+        this.inThinkingBlock = true;
+        // 输出思维开始前的内容
+        output += content.slice(0, thinkIdx);
       } else {
-        // 不在 think 块内，寻找 <think
-        const openIdx = content.indexOf('<think', i);
-        if (openIdx === -1) {
-          // 没有 <think，安全输出剩余内容
-          output += content.slice(i);
+        return content;
+      }
+    }
+    
+    if (this.inThinkingBlock) {
+      this.pendingOutput += content;
+      
+      // 检查思维结束标记（多个可能的结束模式）
+      const endPatterns = [
+        '\n  - Done.\n',
+        '\n  - Done.',
+        '\n[Final Response',
+        '\n[Final Output',
+        '1+1等于'
+      ];
+      
+      for (const pattern of endPatterns) {
+        const idx = this.pendingOutput.lastIndexOf(pattern);
+        if (idx !== -1) {
+          // 找到了结束标记，提取之后的内容
+          const afterEnd = this.pendingOutput.slice(idx + pattern.length).trim();
+          if (afterEnd) {
+            output += afterEnd;
+          }
+          this.inThinkingBlock = false;
+          this.pendingOutput = '';
           break;
         }
-        // 输出 <think 之前的内容
-        output += content.slice(i, openIdx);
-
-        // 检查 <think&gt; 是否在当前 content 内完整
-        const tagEnd = content.indexOf('>', openIdx);
-        if (tagEnd !== -1) {
-          this.inThink = true;
-          i = tagEnd + 1;
-          continue;
-        }
-        // <think 不完整（跨 chunk），存入 buffer
-        this.buffer = content.slice(openIdx);
-        break;
       }
     }
 
     return output;
   }
 
-  /** 流结束，返回 buffer 中残留的可输出内容 */
   flush() {
-    if (ensureSettings().thinkingEnabled) return this.buffer;
-    // 流结束时如果还在 <think/> 内，丢弃
-    if (this.inThink) {
-      this.buffer = '';
-      return '';
+    if (ensureSettings().thinkingEnabled) return '';
+    // 如果还在思维块内，尝试从 pending 中提取最后的数字/结果
+    if (this.pendingOutput) {
+      // 找最后一个换行后的内容
+      const lastNewline = this.pendingOutput.lastIndexOf('\n');
+      const lastPart = this.pendingOutput.slice(lastNewline + 1).trim();
+      if (lastPart && lastPart.length < 50 && /[\u4e00-\u9fa5a-zA-Z0-9]/.test(lastPart)) {
+        return lastPart;
+      }
     }
-    const remaining = this.buffer;
-    this.buffer = '';
-    return remaining;
+    return '';
   }
 }
 
@@ -736,16 +736,21 @@ app.get('/api/models/ollama', async (req, res) => {
 
 // Analyze logs with AI
 app.post('/api/logs/analyze', async (req, res) => {
+  console.log('[AI] 收到分析请求');
   const { logs: analyzeLogs, prompt } = req.body;
   
   const apiKey = ensureSettings().openaiApiKey;
   const baseUrl = ensureSettings().openaiBaseUrl || 'http://localhost:11434/v1';
   const model = ensureSettings().model || 'qwen3.5:9b';
+  console.log('[AI] 配置:', { baseUrl, model, apiKey: apiKey ? '[已设置]' : '[未设置]' });
   
   // 本地模型（Ollama/LM Studio）可能不需要 API Key
   const isLocalModel = baseUrl.includes('localhost') || baseUrl.includes('127.0.0.1') || baseUrl.includes('0.0.0.0');
   
-  if (!apiKey && !isLocalModel) {
+  // 如果 baseUrl 已配置，用户可选择是否需要 API Key
+  // 只有未配置 baseUrl 且不是本地模型时才强制要求 API Key
+  const baseUrlConfigured = baseUrl && baseUrl !== 'http://localhost:11434/v1';
+  if (!apiKey && !isLocalModel && !baseUrlConfigured) {
     return res.status(400).json({ error: 'API Key 未配置。请在设置页面配置 API Key，或使用本地模型。' });
   }
   
@@ -754,9 +759,10 @@ app.post('/api/logs/analyze', async (req, res) => {
   }
   
   try {
+    console.log('[AI] 开始调用 API...');
     const OpenAI = (await import('openai')).default;
     const openai = new OpenAI({ 
-      apiKey: apiKey || 'ollama',  // Ollama 不需要真实 key，但需要非空字符串
+      apiKey: apiKey || (isLocalModel ? 'ollama' : 'sk-dummy'),  // 本地模型用 ollama，远程用占位符
       baseURL: baseUrl 
     });
     
@@ -791,7 +797,43 @@ ${analyzeLogs.map(l => `[${l.timestamp}] [${l.level}] ${l.message}`).join('\n')}
       temperature: 0.7
     });
     
-    res.json({ analysis: response.choices[0].message.content });
+    let analysisResult = response.choices[0].message.content || '';
+    // 过滤思维过程（支持多种格式）
+    // 1. XML 标签格式（部分模型）
+    analysisResult = analysisResult
+      .replace(/<think\b[^>]*>[\s\S]*?<\/think>/gi, '')
+      .replace(/&lt;think\b[^&]*&gt;[\s\S]*?&lt;\/think&gt;/gi, '');
+    
+    // 2. "Here's a thinking process" 文本格式（Qwen3 等）
+    // 找到思维过程结束标记后的实际分析内容
+    const thinkEndPatterns = [
+      /\n\*\[Output Generation\][\s\S]*$/,  // Output Generation 标记
+      /\n\*\(Done\.\)[\s\S]*$/,            // (Done.) 标记
+      /\n\*\*\[Done\]\*\*[\s\S]*$/       // [Done] 标记
+    ];
+    
+    if (analysisResult.includes("Here's a thinking process") || analysisResult.includes("Here's a thinking")) {
+      // 找到分析摘要开始的标记
+      const analysisStart = analysisResult.indexOf('## 🔍');
+      if (analysisStart !== -1) {
+        analysisResult = analysisResult.substring(analysisStart).trim();
+      } else {
+        // 如果没找到摘要标记，尝试从其他结束标记后提取
+        for (const pattern of thinkEndPatterns) {
+          const match = analysisResult.match(pattern);
+          if (match) {
+            const endIndex = match.index;
+            const remaining = analysisResult.substring(endIndex + match[0].length).trim();
+            if (remaining.startsWith('## ')) {
+              analysisResult = remaining;
+              break;
+            }
+          }
+        }
+      }
+    }
+    
+    res.json({ analysis: analysisResult });
   } catch (err) {
     console.error('AI Analysis error:', err);
     
@@ -1098,35 +1140,45 @@ app.post('/api/chat', async (req, res) => {
   const baseUrl = ensureSettings().openaiBaseUrl || 'http://localhost:11434/v1';
   const model = ensureSettings().model;
   const isLocalModel = baseUrl.includes('localhost') || baseUrl.includes('127.0.0.1') || baseUrl.includes('0.0.0.0');
-
-  if (!apiKey && !isLocalModel) return res.status(400).json({ error: '未配置 API Key' });
+  const baseUrlConfigured = baseUrl && baseUrl !== 'http://localhost:11434/v1';
+  
+  if (!apiKey && !isLocalModel && !baseUrlConfigured) {
+    return res.status(400).json({ error: '未配置 API Key 或 Base URL' });
+  }
   if (!model) return res.status(400).json({ error: '未配置模型' });
 
   try {
     const OpenAI = (await import('openai')).default;
-    const openai = new OpenAI({ apiKey: apiKey || 'ollama', baseURL: baseUrl });
+    const openai = new OpenAI({ apiKey: apiKey || (isLocalModel ? 'ollama' : 'sk-dummy'), baseURL: baseUrl });
 
     const systemPrompt = {
       role: 'system',
-      content: `你是一个专业的运维工程师和技术支持助手。你的职责是：
-- 帮助运维人员排查服务器、网络、数据库、中间件等问题
-- 提供清晰、可操作的解决方案
-- 支持日志分析、性能调优、故障排查、安全加固等场景
-- 回复使用与用户相同的语言（中文提问用中文回答）
-- 回复要简洁专业，必要时给出命令示例和配置片段`
+      content: '你是一个专业的运维工程师和技术支持助手，帮助运维人员排查服务器、网络、数据库、中间件等问题，提供清晰、可操作的解决方案。回复使用与用户相同的语言（中文提问用中文回答），回复要简洁专业。'
     };
 
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
 
-    const stream = await openai.chat.completions.create({
+    // 构建消息数组：确保 system 在最前
+    const allMessages = [
+      systemPrompt,
+      ...messages.filter(m => m.role === 'user' || m.role === 'assistant')
+    ];
+
+    const streamParams = {
       model,
-      messages: [systemPrompt, ...messages],
-      temperature: 0.7,
+      messages: allMessages,
       stream: true,
-      timeout: 120_000
-    });
+      max_tokens: 4096
+    };
+    
+    // Ollama 支持 temperature
+    if (isLocalModel) {
+      streamParams.temperature = 0.7;
+    }
+
+    const stream = await openai.chat.completions.create(streamParams);
 
     const thinkingFilter = new ThinkingStreamFilter();
     for await (const chunk of stream) {
@@ -1590,6 +1642,69 @@ app.post('/api/remote/servers/:id/disconnect', async (req, res) => {
   try {
     await remote.disconnectServer(req.params.id);
     res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// FinalShell 密码解密
+function decryptFinalShellPassword(encrypted) {
+  try {
+    const key = 'FinalShell';
+    let result = '';
+    for (let i = 0; i < encrypted.length; i++) {
+      result += String.fromCharCode(encrypted.charCodeAt(i) ^ key.charCodeAt(i % key.length));
+    }
+    return result;
+  } catch {
+    return encrypted;
+  }
+}
+
+// 导入 FinalShell 配置
+app.post('/api/remote/import', async (req, res) => {
+  try {
+    const { configs } = req.body;
+    if (!configs || !Array.isArray(configs)) {
+      return res.status(400).json({ error: '缺少 configs 数组' });
+    }
+
+    let imported = 0;
+    let skipped = 0;
+    const errors = [];
+
+    for (const config of configs) {
+      try {
+        // 解析 FinalShell 格式
+        const serverData = {
+          name: config.name || config.host,
+          host: config.host,
+          port: config.port || 22,
+          username: config.user_name || 'root',
+          password: config.password || '',
+        };
+
+        // 尝试解密 FinalShell 密码
+        if (serverData.password && serverData.password.length > 0) {
+          const decrypted = decryptFinalShellPassword(serverData.password);
+          if (decrypted && decrypted.length > 0 && /^[\x20-\x7E]+$/.test(decrypted)) {
+            serverData.password = decrypted;
+          }
+        }
+
+        // 添加服务器（自动去重）
+        const result = remote.addServer(serverData);
+        if (result) {
+          imported++;
+        } else {
+          skipped++;
+        }
+      } catch (err) {
+        errors.push({ config: config.name || config.host, error: err.message });
+      }
+    }
+
+    res.json({ success: true, imported, skipped, errors });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
