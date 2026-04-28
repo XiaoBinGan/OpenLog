@@ -30,3 +30,4 @@ server_go/
 .claude/
 .vscode/
 .idea/
+__pycache__/

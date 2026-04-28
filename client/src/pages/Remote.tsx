@@ -8,7 +8,7 @@ import {
   ChevronLeft, Search, Terminal, Check, X, AlertCircle, Loader,
   Cpu, MemoryStick, HardDrive, Clock, Home, Eye, EyeOff, Upload,
   Code2, Save, Pencil, Wifi, WifiOff, PanelLeftClose,
-  PanelLeftOpen, ArrowUp, FileCode,
+  PanelLeftOpen, ArrowUp, FileCode, FolderOpen, FileJson,
 } from 'lucide-react';
 import { useRemote } from '../contexts/RemoteContext';
 import ShellTerminal from '../components/ShellTerminal';
@@ -314,6 +314,47 @@ export default function Remote() {
     if (activeServer?.id === server.id) disconnect();
   };
 
+  // 导入 FinalShell JSON 文件
+  const importFinalShell = async (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    
+    const configs: any[] = [];
+    for (const file of Array.from(files)) {
+      try {
+        const text = await file.text();
+        const json = JSON.parse(text);
+        // FinalShell 格式
+        if (json.host) {
+          configs.push(json);
+        }
+      } catch (e) {
+        console.error('解析文件失败:', file.name, e);
+      }
+    }
+    
+    if (configs.length === 0) {
+      showToast('未找到有效的服务器配置', 'error');
+      return;
+    }
+    
+    try {
+      const res = await fetch('/api/remote/import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ configs }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        showToast(`导入成功: ${data.imported} 个, 跳过: ${data.skipped} 个`, 'success');
+        await refreshServers();
+      } else {
+        showToast('导入失败: ' + data.error, 'error');
+      }
+    } catch (e: any) {
+      showToast('导入失败: ' + e.message, 'error');
+    }
+  };
+
   // 打开编辑弹窗
   const openEdit = (server: RemoteServer) => {
     setEditingServer(server);
@@ -365,6 +406,17 @@ export default function Remote() {
               <button onClick={() => refreshServers()} className="p-1.5 rounded-lg hover:bg-dark-800 text-dark-500 hover:text-dark-300 transition-colors" title="刷新">
                 <RefreshCw className="w-4 h-4" />
               </button>
+              <input
+                type="file"
+                id="import-finalshell"
+                className="hidden"
+                accept=".json"
+                multiple
+                onChange={e => importFinalShell(e.target.files)}
+              />
+              <label htmlFor="import-finalshell" className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-purple-500/20 text-purple-400 text-xs hover:bg-purple-500/30 transition-colors cursor-pointer">
+                <FileJson className="w-3.5 h-3.5" /> 导入
+              </label>
               <button onClick={() => { resetForm(); setShowAddModal(true); }} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-accent-500/20 text-accent-400 text-xs hover:bg-accent-500/30 transition-colors">
                 <Plus className="w-3.5 h-3.5" /> 添加
               </button>
