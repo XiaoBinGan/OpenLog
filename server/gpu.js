@@ -15,6 +15,17 @@ import { getKv, setKv } from './db/index.js';
 // ─── 类型定义 ──────────────────────────────────────────────────────────────
 
 /**
+ * @typedef {Object} GPUProcessInfo
+ * @property {string} gpuId        - GPU 编号
+ * @property {string} gpuGI        - GPU GI (GPU Instance ID)
+ * @property {string} ci           - CI (Compute Instance ID)
+ * @property {number} pid          - 进程 PID
+ * @property {string} type         - 进程类型: 'C' (Compute) | 'G' (Graphics) | 'X' (Other)
+ * @property {string} processName  - 进程名称
+ * @property {number} memoryUsed   - GPU 显存占用 (MB)
+ */
+
+/**
  * @typedef {Object} GPUDevice
  * @property {string} id           - GPU 编号 (0, 1, ...)
  * @property {string} name         - GPU 名称
@@ -29,6 +40,7 @@ import { getKv, setKv } from './db/index.js';
  * @property {string} powerDraw    - 功耗 (W)
  * @property {string} powerLimit   - 功耗上限 (W)
  * @property {string} status       - 状态: 'ok' | 'warning' | 'critical' | 'unknown'
+ * @property {GPUProcessInfo[]} processes - GPU 上运行的进程列表
  */
 
 /**
@@ -104,9 +116,36 @@ async function getNVIDIAGPUsLocal() {
     const output = await runCommand(
       'nvidia-smi --query-gpu=index,name,driver_version,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw,power.limit --format=csv,noheader,nounits'
     );
-    return parseNVIDIAOutput(output);
+    const devices = parseNVIDIAOutput(output);
+    
+    // 获取进程信息
+    const processes = await getNvidiaProcessesLocal();
+    
+    // 直接返回所有进程，不做 GPU 过滤（因为总线地址无法可靠匹配索引）
+    // 前端可以根据进程数据的 gpuId 显示
+    devices.forEach(device => {
+      device.processes = processes; // 显示所有进程
+    });
+    
+    return devices;
   } catch (err) {
     console.warn('[GPU] NVIDIA 检测失败:', err.message);
+    return [];
+  }
+}
+
+/**
+ * 获取本地 NVIDIA GPU 进程信息
+ * @returns {Promise<GPUProcessInfo[]>}
+ */
+async function getNvidiaProcessesLocal() {
+  try {
+    const output = await runCommand(
+      'nvidia-smi --query-compute-apps=gpu_bus_id,gpu_instance_id,compute_instance_id,pid,process_name,used_memory --format=csv,noheader,nounits'
+    );
+    return parseNVIDIAProcessOutput(output);
+  } catch (err) {
+    // 没有进程运行时会报错，返回空数组
     return [];
   }
 }
@@ -128,6 +167,37 @@ function parseNVIDIAOutput(output) {
       powerDraw: powerDraw ? `${powerDraw}W` : '',
       powerLimit: powerLimit ? `${powerLimit}W` : '',
       status: getGPUStatus(Number(temp) || 0, Number(util) || 0),
+      processes: [],
+    };
+  });
+}
+
+/**
+ * 解析 NVIDIA 进程输出
+ * nvidia-smi --query-compute-apps 输出格式:
+ * gpu_bus_id, gpu_instance_id, compute_instance_id, pid, process_name, used_memory
+ * 
+ * 需要将 gpu_bus_id 映射到 GPU index
+ */
+function parseNVIDIAProcessOutput(output, gpuBusIdToIndex = null) {
+  if (!output || !output.trim()) return [];
+  
+  const lines = output.trim().split('\n').filter(Boolean);
+  return lines.map(line => {
+    const parts = line.split(',').map(s => s.trim());
+    const [gpuBusId, gpuGI, ci, pid, processName, memUsed] = parts;
+    
+    // 如果有映射表，转换 bus_id 到 gpu index
+    const gpuId = gpuBusIdToIndex ? (gpuBusIdToIndex[gpuBusId] || gpuBusId) : gpuBusId;
+    
+    return {
+      gpuId: String(gpuId),
+      gpuGI: gpuGI || 'N/A',
+      ci: ci || 'N/A',
+      pid: Number(pid) || 0,
+      type: 'C', // Compute 类型
+      processName: processName || 'unknown',
+      memoryUsed: Number(memUsed) || 0,
     };
   });
 }
@@ -143,7 +213,20 @@ async function getAMDGPUsLocal() {
       runCommand('rocm-smi --showtemp --csv').catch(() => ''),
       runCommand('rocm-smi --showpower --csv').catch(() => ''),
     ]);
-    return parseAMDOutput(nameOut, memOut, utilOut, tempOut, powerOut);
+    const devices = parseAMDOutput(nameOut, memOut, utilOut, tempOut, powerOut);
+    
+    // AMD GPU 进程信息 (如果支持)
+    try {
+      const processOut = await runCommand('rocm-smi --showpids --csv 2>/dev/null');
+      const processes = parseAMDProcessOutput(processOut);
+      devices.forEach(device => {
+        device.processes = processes.filter(p => p.gpuId === device.id);
+      });
+    } catch {
+      // AMD 进程查询不支持时忽略
+    }
+    
+    return devices;
   } catch (err) {
     console.warn('[GPU] AMD 检测失败:', err.message);
     return [];
@@ -178,7 +261,15 @@ function parseAMDOutput(nameOut, memOut, utilOut, tempOut, powerOut) {
     powerDraw: powerArr[i] ? `${powerArr[i]}W` : '',
     powerLimit: '',
     status: getGPUStatus(tempArr[i] || 0, utilArr[i] || 0),
+    processes: [],
   }));
+}
+
+function parseAMDProcessOutput(output) {
+  // AMD rocm-smi --showpids 输出格式各异，这里做简单解析
+  if (!output || !output.trim()) return [];
+  // TODO: 根据实际输出格式解析
+  return [];
 }
 
 // ─── 沐熙 GPU ──────────────────────────────────────────────────────────────
@@ -186,7 +277,20 @@ function parseAMDOutput(nameOut, memOut, utilOut, tempOut, powerOut) {
 async function getMOXIGPUsLocal() {
   try {
     const output = await runCommand('muxi-smi --query-gpu=index,name,memory.used,memory.total,utilization.gpu,temperature,power.draw --format=csv,noheader');
-    return parseMOXIOutput(output);
+    const devices = parseMOXIOutput(output);
+    
+    // 沐熙 GPU 进程信息
+    try {
+      const processOut = await runCommand('muxi-smi --show-processes --format=csv,noheader 2>/dev/null');
+      const processes = parseMOXIProcessOutput(processOut);
+      devices.forEach(device => {
+        device.processes = processes.filter(p => p.gpuId === device.id);
+      });
+    } catch {
+      // 不支持时忽略
+    }
+    
+    return devices;
   } catch (err) {
     console.warn('[GPU] 沐熙检测失败，尝试 muxiinfo:', err.message);
     try {
@@ -216,8 +320,15 @@ function parseMOXIOutput(output) {
       powerDraw: power ? `${power}W` : '',
       powerLimit: '',
       status: getGPUStatus(Number(temp) || 0, Number(util) || 0),
+      processes: [],
     };
   });
+}
+
+function parseMOXIProcessOutput(output) {
+  if (!output || !output.trim()) return [];
+  // TODO: 根据实际输出格式解析
+  return [];
 }
 
 // ─── 华为昇腾 GPU ───────────────────────────────────────────────────────────
@@ -225,7 +336,20 @@ function parseMOXIOutput(output) {
 async function getHuaweiGPUsLocal() {
   try {
     const output = await runCommand('npu-smi info --query-gpu=index,name, memory.total,memory.used,utilization.gpu,temperature,power.draw --format=csv,noheader');
-    return parseHuaweiOutput(output);
+    const devices = parseHuaweiOutput(output);
+    
+    // 华为昇腾进程信息
+    try {
+      const processOut = await runCommand('npu-smi info --query-processes --format=csv,noheader 2>/dev/null');
+      const processes = parseHuaweiProcessOutput(processOut);
+      devices.forEach(device => {
+        device.processes = processes.filter(p => p.gpuId === device.id);
+      });
+    } catch {
+      // 不支持时忽略
+    }
+    
+    return devices;
   } catch (err) {
     console.warn('[GPU] 华为昇腾检测失败，尝试 npuinfo64:', err.message);
     try {
@@ -255,8 +379,15 @@ function parseHuaweiOutput(output) {
       powerDraw: power ? `${power}W` : '',
       powerLimit: '',
       status: getGPUStatus(Number(temp) || 0, Number(util) || 0),
+      processes: [],
     };
   });
+}
+
+function parseHuaweiProcessOutput(output) {
+  if (!output || !output.trim()) return [];
+  // TODO: 根据实际输出格式解析
+  return [];
 }
 
 // ─── 远程 GPU 检测 ──────────────────────────────────────────────────────────
@@ -287,7 +418,29 @@ export async function getRemoteGPUs(host, sshUser, sshPassword, sshKeyPath, sshP
     // 检测 NVIDIA
     try {
       const out = await sshExec(ssh, 'nvidia-smi --query-gpu=index,name,driver_version,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw,power.limit --format=csv,noheader,nounits');
-      results.push(...parseNVIDIAOutput(out));
+      const devices = parseNVIDIAOutput(out);
+      
+      // 获取 NVIDIA 进程信息
+      try {
+        const processOut = await sshExec(ssh, 'nvidia-smi --query-compute-apps=gpu_bus_id,gpu_instance_id,compute_instance_id,pid,process_name,used_memory --format=csv,noheader,nounits 2>/dev/null');
+        
+        // 获取 gpu_bus_id 到 index 的映射
+        const busIdOut = await sshExec(ssh, 'nvidia-smi --query-gpu=index,gpu_bus_id --format=csv,noheader,nounits');
+        const busIdToIndex = {};
+        busIdOut.trim().split('\n').forEach(line => {
+          const [idx, busId] = line.split(',').map(s => s.trim());
+          busIdToIndex[busId] = idx;
+        });
+        
+        const processes = parseNVIDIAProcessOutput(processOut, busIdToIndex);
+        devices.forEach(device => {
+          device.processes = processes.filter(p => p.gpuId === device.id);
+        });
+      } catch {
+        // 进程查询失败时忽略
+      }
+      
+      results.push(...devices);
     } catch {}
 
     // 检测 AMD
@@ -297,19 +450,52 @@ export async function getRemoteGPUs(host, sshUser, sshPassword, sshKeyPath, sshP
       const utilOut = await sshExec(ssh, 'rocm-smi --showutilization --csv 2>/dev/null');
       const tempOut = await sshExec(ssh, 'rocm-smi --showtemp --csv 2>/dev/null');
       const powerOut = await sshExec(ssh, 'rocm-smi --showpower --csv 2>/dev/null');
-      results.push(...parseAMDOutput(nameOut, memOut, utilOut, tempOut, powerOut));
+      const devices = parseAMDOutput(nameOut, memOut, utilOut, tempOut, powerOut);
+      
+      // AMD 进程信息
+      try {
+        const processOut = await sshExec(ssh, 'rocm-smi --showpids --csv 2>/dev/null');
+        const processes = parseAMDProcessOutput(processOut);
+        devices.forEach(device => {
+          device.processes = processes.filter(p => p.gpuId === device.id);
+        });
+      } catch {}
+      
+      results.push(...devices);
     } catch {}
 
     // 检测沐熙
     try {
       const out = await sshExec(ssh, 'muxi-smi --query-gpu=index,name,memory.used,memory.total,utilization.gpu,temperature,power.draw --format=csv,noheader 2>/dev/null');
-      results.push(...parseMOXIOutput(out));
+      const devices = parseMOXIOutput(out);
+      
+      // 沐熙进程信息
+      try {
+        const processOut = await sshExec(ssh, 'muxi-smi --show-processes --format=csv,noheader 2>/dev/null');
+        const processes = parseMOXIProcessOutput(processOut);
+        devices.forEach(device => {
+          device.processes = processes.filter(p => p.gpuId === device.id);
+        });
+      } catch {}
+      
+      results.push(...devices);
     } catch {}
 
     // 检测华为昇腾
     try {
       const out = await sshExec(ssh, 'npu-smi info --query-gpu=index,name,memory.total,memory.used,utilization.gpu,temperature,power.draw --format=csv,noheader 2>/dev/null');
-      results.push(...parseHuaweiOutput(out));
+      const devices = parseHuaweiOutput(out);
+      
+      // 华为进程信息
+      try {
+        const processOut = await sshExec(ssh, 'npu-smi info --query-processes --format=csv,noheader 2>/dev/null');
+        const processes = parseHuaweiProcessOutput(processOut);
+        devices.forEach(device => {
+          device.processes = processes.filter(p => p.gpuId === device.id);
+        });
+      } catch {}
+      
+      results.push(...devices);
     } catch {}
 
     return results;
@@ -402,6 +588,10 @@ export function getGPUSummary(devices) {
     acc[d.vendor] = (acc[d.vendor] || 0) + 1;
     return acc;
   }, {});
+  
+  // 汇总所有进程
+  const allProcesses = devices.flatMap(d => d.processes || []);
+  
   return {
     count: devices.length,
     totalMemory: totalMem,
@@ -411,5 +601,7 @@ export function getGPUSummary(devices) {
     maxTemperature: maxTemp,
     vendors: vendorSummary,
     devices,
+    processCount: allProcesses.length,
+    processes: allProcesses,
   };
 }

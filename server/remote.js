@@ -652,6 +652,10 @@ export async function getRemoteSystemStats(id) {
       # GPU 信息
       nvidia-smi --query-gpu=index,name,utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader,nounits 2>/dev/null | \
         awk -F', ' '{gsub(/%/,"",$3); gsub(/MiB|MB/,"",$4); gsub(/MiB|MB/,"",$5); gsub(/°C/,"",$6); print "GPU:" $1 ":" $2 ":" $3 ":" $4 ":" $5 ":" $6}'
+
+      # GPU 占用进程信息
+      nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv,noheader,nounits 2>/dev/null | \
+        awk -F', ' '{gsub(/MiB|MB/,"",$3); print "GPUPROC:" $1 ":" $2 ":" $3}'
     `);
     
     if (result.stderr && result.stderr.includes('Permission denied')) {
@@ -729,6 +733,18 @@ export async function getRemoteSystemStats(id) {
 
     // 解析 GPU 信息
     const gpuLines = lines.filter(l => l.startsWith('GPU:'));
+    const gpuProcLines = lines.filter(l => l.startsWith('GPUPROC:'));
+    
+    // 解析 GPU 进程
+    const gpuProcesses = gpuProcLines.map(l => {
+      const parts = l.replace('GPUPROC:', '').split(':');
+      return {
+        pid: parseInt(parts[0]) || 0,
+        name: parts[1] || 'unknown',
+        usedMemory: parseFloat(parts[2]) || 0,
+      };
+    });
+    
     const gpus = gpuLines.map(l => {
       const parts = l.replace('GPU:', '').split(':');
       return {
@@ -738,6 +754,7 @@ export async function getRemoteSystemStats(id) {
         memUsed: parseFloat(parts[3]) || 0,
         memTotal: parseFloat(parts[4]) || 1,
         temp: parseFloat(parts[5]) || 0,
+        processes: gpuProcesses, // 所有进程都附加到每个 GPU
       };
     });
 

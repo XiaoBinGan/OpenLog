@@ -1,39 +1,9 @@
+[DocMind] 已在运行 (PID 90980)
+[DB] SQLite initialized: /Users/wujiahao/.qclaw/workspace/OpenLog/data/openlog.db
+[DB] 数据库初始化完成
+[Remote] 从 SQLite 加载了 2 台服务器
 🚀 Give Me The Log server running on http://localhost:3001
-[default] 🚀 开始监听: /Users/supre/logs (*.log)
-🔄 正在重连 1 台之前在线的服务器...
-[default] 📄 监听: micro.log
-  ✅ 4090 重连成功
-Client connected to WebSocket
-Client connected to WebSocket
-Client disconnected from WebSocket
-Client disconnected from WebSocket
-Client connected to WebSocket
-Client disconnected from WebSocket
-Client connected to WebSocket
-Client disconnected from WebSocket
-Client connected to WebSocket
-Client disconnected from WebSocket
-Client connected to WebSocket
-Client connected to WebSocket
-Client disconnected from WebSocket
-Client connected to WebSocket
-Client connected to WebSocket
-Client connected to WebSocket
-Client disconnected from WebSocket
-Client connected to WebSocket
-Client disconnected from WebSocket
-Client disconnected from WebSocket
-Client connected to WebSocket
-Client connected to WebSocket
-Client disconnected from WebSocket
-Client disconnected from WebSocket
-Client connected to WebSocket
-Client connected to WebSocket
-Client disconnected from WebSocket
-Client disconnected from WebSocket
-Client disconnected from WebSocket
-Client disconnected from WebSocket
-Client connected to WebSocket
-Client connected to WebSocket
-Client disconnected from WebSocket
-[Docker ping] sourceId: docker-1776140714566 config: {"host":"100.100.150.220","port":2375,"tls":false}
+[default] 🚀 开始监听: /Users/wujiahao/logs (*.log)
+🔄 正在重连 2 台之前在线的服务器...
+  ✅ 双卡 重连成功
+  ✅ VLLM 重连成功
