@@ -115,10 +115,21 @@ export interface MonitorStats {
   gpus?: {
     index: number;
     name: string;
+    vendor?: string;
+    driver?: string;
+    uuid?: string;
     util: number;
     memUsed: number;
     memTotal: number;
+    memFree?: number;
     temp: number;
+    power?: number;
+    process?: string;
+    processes?: {
+      pid: number;
+      name: string;
+      usedMemory: number;
+    }[];
   }[];
 }
 

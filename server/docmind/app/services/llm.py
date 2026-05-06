@@ -2,49 +2,76 @@ import os
 import re
 from app.core.config import settings
 
+
 class ThinkingStreamFilter:
-    """流式思维过滤器"""
+    """流式思维过滤器 — 同时支持 XML 标签和纯文本 Qwen3 格式"""
     def __init__(self):
-        self.skip_mode = False
+        self.in_thinking = False
         self.buffer = ""
 
-    def feed(self, text):
+    def feed(self, text: str) -> str:
         if not text:
             return ""
         self.buffer += text
         result = ""
+
         while self.buffer:
-            # XML: 开始标签
-            think = '调查'
-            end_tag = '结束'
-            if think in self.buffer:
-                parts = self.buffer.split(think, 1)
-                result += parts[0]
-                self.buffer = parts[1] if len(parts) > 1 else ''
-                self.skip_mode = True
+            if not self.in_thinking:
+                # 找开始标记：XML <think...> 或文本 "Here's a thinking..."
+                xml_start = self.buffer.find('<think')
+                text_start = self.buffer.find("Here's a thinking")
+                entity_start = self.buffer.find('&lt;think')
+
+                # 取最近的开始位置
+                candidates = [(xml_start, 'xml'), (text_start, 'text'), (entity_start, 'entity')]
+                candidates = [(p, m) for p, m in candidates if p != -1]
+                if not candidates:
+                    # 还没找到开始，整个 buffer 留着等下一块
+                    return ""
+                start_pos, mode = min(candidates, key=lambda x: x[0])
+
+                # 输出开始标记之前的内容
+                result += self.buffer[:start_pos]
+                self.buffer = self.buffer[start_pos:]
+                self.in_thinking = True
                 continue
-            if self.skip_mode:
-                if end_tag in self.buffer:
-                    parts = self.buffer.split(end_tag, 1)
-                    self.buffer = parts[1] or ''
-                    self.skip_mode = False
-                elif "Here's a thinking process" in self.buffer:
-                    self.buffer = self.buffer.split("Here's a thinking process", 1)[1]
-                    continue
-                else:
-                    break
-            else:
-                break
+
+            # 在思维块内，找结束标记
+            xml_end = self.buffer.find('')
+            text_end = self.buffer.find('')
+            entity_end = self.buffer.find('&lt;/think&gt;')
+
+            candidates = [(xml_end, 8), (text_end, 8), (entity_end, 13)]
+            candidates = [(p, l) for p, l in candidates if p != -1]
+            if not candidates:
+                # 没找到结束，保留 buffer 等下一块
+                return result
+
+            end_pos, end_len = min(candidates, key=lambda x: x[0])
+            # 结束标记之后的内容才是真正的回答
+            after = self.buffer[end_pos + end_len:]
+            result += after
+            self.buffer = ""
+            self.in_thinking = False
+            return result
+
         return result
 
-    def flush(self):
+    def flush(self) -> str:
+        """处理残留 buffer（通常不会有，Qwen3 总是在结束标记后停止）"""
         out = ""
-        if self.skip_mode and self.buffer:
-            end_tag = '结束'
-            if end_tag in self.buffer:
-                out = self.buffer.split(end_tag, 1)[1]
-            self.buffer = ""
-            self.skip_mode = False
+        if self.in_thinking and self.buffer:
+            # 尝试提取最后一行有意义的内容
+            lines = self.buffer.split('\n')
+            last = ""
+            for line in reversed(lines):
+                stripped = line.strip()
+                if stripped and len(stripped) < 100 and any('\u4e00' <= c <= '\u9fff' or c.isalnum() for c in stripped):
+                    last = stripped
+                    break
+            out = last
+        self.buffer = ""
+        self.in_thinking = False
         return out
 
 

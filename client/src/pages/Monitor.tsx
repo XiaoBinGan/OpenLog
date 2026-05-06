@@ -206,6 +206,124 @@ export default function Monitor() {
         </div>
       </div>
 
+      {/* GPU Section */}
+      {stats?.gpus && stats.gpus.length > 0 && (
+        <div className="glass rounded-xl p-4">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-lg font-semibold flex items-center gap-2">
+              <Cpu className="w-5 h-5 text-emerald-500" />
+              GPU 监控
+            </h2>
+            <span className="text-sm text-dark-400">
+              {stats.gpus.length} 张显卡
+            </span>
+          </div>
+
+          {/* GPU Cards */}
+          <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {stats.gpus.map((gpu) => {
+              const memPct = gpu.memTotal > 0 ? (gpu.memUsed / gpu.memTotal) * 100 : 0;
+              return (
+                <div key={gpu.index} className="bg-dark-900/60 rounded-xl p-4 space-y-4">
+                  {/* GPU Name & Temp */}
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <div className="w-2 h-2 rounded-full bg-emerald-500" />
+                      <span className="font-medium text-sm truncate max-w-[180px]">{gpu.name}</span>
+                    </div>
+                    <span className={`text-sm font-bold ${
+                      gpu.temp > 80 ? 'text-red-400' : gpu.temp > 60 ? 'text-yellow-400' : 'text-emerald-400'
+                    }`}>
+                      {gpu.temp}°C
+                    </span>
+                  </div>
+
+                  {/* GPU Util */}
+                  <div>
+                    <div className="flex justify-between text-xs text-dark-400 mb-1.5">
+                      <span>算力占用</span>
+                      <span className="font-medium text-dark-200">{gpu.util.toFixed(1)}%</span>
+                    </div>
+                    <div className="h-3 bg-dark-800 rounded-full overflow-hidden">
+                      <div
+                        className={`h-full transition-all duration-500 ${
+                          gpu.util > 90 ? 'bg-red-500' : gpu.util > 70 ? 'bg-yellow-500' : 'bg-emerald-500'
+                        }`}
+                        style={{ width: `${gpu.util}%` }}
+                      />
+                    </div>
+                  </div>
+
+                  {/* GPU Memory */}
+                  <div>
+                    <div className="flex justify-between text-xs text-dark-400 mb-1.5">
+                      <span>显存占用</span>
+                      <span className="font-medium text-dark-200">
+                        {gpu.memUsed.toFixed(0)} / {gpu.memTotal.toFixed(0)} MB
+                      </span>
+                    </div>
+                    <div className="h-3 bg-dark-800 rounded-full overflow-hidden">
+                      <div
+                        className={`h-full transition-all duration-500 ${
+                          memPct > 90 ? 'bg-red-500' : memPct > 70 ? 'bg-yellow-500' : 'bg-cyan-500'
+                        }`}
+                        style={{ width: `${memPct}%` }}
+                      />
+                    </div>
+                    <div className="flex justify-between mt-1">
+                      <span className="text-xs text-cyan-400">{memPct.toFixed(1)}% 已用</span>
+                      <span className="text-xs text-dark-500">{gpu.memUsed.toFixed(0)} MB</span>
+                    </div>
+                  </div>
+
+                  {/* GPU Processes */}
+                  {gpu.processes && gpu.processes.length > 0 && (
+                    <div className="border-t border-dark-800 pt-3">
+                      <div className="text-xs text-dark-400 mb-2">GPU 进程 ({gpu.processes.length})</div>
+                      <div className="space-y-1.5">
+                        {gpu.processes.map((proc) => (
+                          <div key={proc.pid} className="flex items-center justify-between text-xs">
+                            <div className="flex items-center gap-2 min-w-0">
+                              <span className="text-dark-500 font-mono shrink-0">{proc.pid}</span>
+                              <span className="text-dark-300 truncate" title={proc.name}>{proc.name}</span>
+                            </div>
+                            <span className="text-cyan-400 shrink-0 ml-2">{(proc.usedMemory / 1024).toFixed(1)} GB</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+
+          {/* GPU History Chart (uses first GPU util) */}
+          {stats.gpus.length > 0 && (
+            <div className="h-40 mt-4">
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={history}>
+                  <defs>
+                    <linearGradient id="gpuGrad" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#10b981" stopOpacity={0.3}/>
+                      <stop offset="95%" stopColor="#10b981" stopOpacity={0}/>
+                    </linearGradient>
+                  </defs>
+                  <XAxis dataKey="timestamp" hide />
+                  <YAxis domain={[0, 100]} tickFormatter={(v) => `${v}%`} stroke="#5c5c66" fontSize={12} />
+                  <Tooltip
+                    contentStyle={{ background: '#1e1e26', border: '1px solid #32323a', borderRadius: '8px' }}
+                    labelFormatter={(v) => new Date(v).toLocaleTimeString()}
+                    formatter={(v: number) => [`${v.toFixed(1)}%`, 'GPU 算力']}
+                  />
+                  <Area type="monotone" dataKey="gpuUtil" stroke="#10b981" fill="url(#gpuGrad)" strokeWidth={2} />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Memory & Disk */}
       <div className="grid md:grid-cols-2 gap-6">
         {/* Memory */}
@@ -343,106 +461,6 @@ export default function Monitor() {
           </ResponsiveContainer>
         </div>
       </div>
-
-      {/* GPU Section */}
-      {stats?.gpus && stats.gpus.length > 0 && (
-        <div className="glass rounded-xl p-4">
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-lg font-semibold flex items-center gap-2">
-              <Cpu className="w-5 h-5 text-emerald-500" />
-              GPU 监控
-            </h2>
-            <span className="text-sm text-dark-400">
-              {stats.gpus.length} 张显卡
-            </span>
-          </div>
-
-          {/* GPU Cards */}
-          <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {stats.gpus.map((gpu) => {
-              const memPct = gpu.memTotal > 0 ? (gpu.memUsed / gpu.memTotal) * 100 : 0;
-              return (
-                <div key={gpu.index} className="bg-dark-900/60 rounded-xl p-4 space-y-4">
-                  {/* GPU Name & Temp */}
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <div className="w-2 h-2 rounded-full bg-emerald-500" />
-                      <span className="font-medium text-sm truncate max-w-[180px]">{gpu.name}</span>
-                    </div>
-                    <span className={`text-sm font-bold ${
-                      gpu.temp > 80 ? 'text-red-400' : gpu.temp > 60 ? 'text-yellow-400' : 'text-emerald-400'
-                    }`}>
-                      {gpu.temp}°C
-                    </span>
-                  </div>
-
-                  {/* GPU Util */}
-                  <div>
-                    <div className="flex justify-between text-xs text-dark-400 mb-1.5">
-                      <span>算力占用</span>
-                      <span className="font-medium text-dark-200">{gpu.util.toFixed(1)}%</span>
-                    </div>
-                    <div className="h-3 bg-dark-800 rounded-full overflow-hidden">
-                      <div
-                        className={`h-full transition-all duration-500 ${
-                          gpu.util > 90 ? 'bg-red-500' : gpu.util > 70 ? 'bg-yellow-500' : 'bg-emerald-500'
-                        }`}
-                        style={{ width: `${gpu.util}%` }}
-                      />
-                    </div>
-                  </div>
-
-                  {/* GPU Memory */}
-                  <div>
-                    <div className="flex justify-between text-xs text-dark-400 mb-1.5">
-                      <span>显存占用</span>
-                      <span className="font-medium text-dark-200">
-                        {gpu.memUsed.toFixed(0)} / {gpu.memTotal.toFixed(0)} MB
-                      </span>
-                    </div>
-                    <div className="h-3 bg-dark-800 rounded-full overflow-hidden">
-                      <div
-                        className={`h-full transition-all duration-500 ${
-                          memPct > 90 ? 'bg-red-500' : memPct > 70 ? 'bg-yellow-500' : 'bg-cyan-500'
-                        }`}
-                        style={{ width: `${memPct}%` }}
-                      />
-                    </div>
-                    <div className="flex justify-between mt-1">
-                      <span className="text-xs text-cyan-400">{memPct.toFixed(1)}% 已用</span>
-                      <span className="text-xs text-dark-500">{gpu.memUsed.toFixed(0)} MB</span>
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-
-          {/* GPU History Chart (uses first GPU util) */}
-          {stats.gpus.length > 0 && (
-            <div className="h-40 mt-4">
-              <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={history}>
-                  <defs>
-                    <linearGradient id="gpuGrad" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#10b981" stopOpacity={0.3}/>
-                      <stop offset="95%" stopColor="#10b981" stopOpacity={0}/>
-                    </linearGradient>
-                  </defs>
-                  <XAxis dataKey="timestamp" hide />
-                  <YAxis domain={[0, 100]} tickFormatter={(v) => `${v}%`} stroke="#5c5c66" fontSize={12} />
-                  <Tooltip
-                    contentStyle={{ background: '#1e1e26', border: '1px solid #32323a', borderRadius: '8px' }}
-                    labelFormatter={(v) => new Date(v).toLocaleTimeString()}
-                    formatter={(v: number) => [`${v.toFixed(1)}%`, 'GPU 算力']}
-                  />
-                  <Area type="monotone" dataKey="gpuUtil" stroke="#10b981" fill="url(#gpuGrad)" strokeWidth={2} />
-                </AreaChart>
-              </ResponsiveContainer>
-            </div>
-          )}
-        </div>
-      )}
 
       {/* Top Processes */}
       {stats?.processes && stats.processes.length > 0 && (

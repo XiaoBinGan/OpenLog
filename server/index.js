@@ -162,69 +162,76 @@ function stripThinking(text) {
 class ThinkingStreamFilter {
   constructor() {
     this.inThinkingBlock = false;
-    this.hasSeenThinkStart = false;
-    this.lastThinkEndIndex = -1;
-    this.pendingOutput = '';  // 思维结束后待输出的内容
+    this.buffer = '';
+  }
+
+  _extract(buffer) {
+    // 输出 thinking 之前的所有内容，并返回剩余部分
+    const thinkStart = buffer.indexOf('<think');
+    const textStart = buffer.indexOf("Here's a thinking");
+    const entityStart = buffer.indexOf('&lt;think');
+
+    if (!this.inThinkingBlock) {
+      // 找第一个出现的位置
+      let first = -1;
+      let mode = null;
+      if (thinkStart !== -1 && (first === -1 || thinkStart < first)) { first = thinkStart; mode = 'xml'; }
+      if (textStart !== -1 && (first === -1 || textStart < first)) { first = textStart; mode = 'text'; }
+      if (entityStart !== -1 && (first === -1 || entityStart < first)) { first = entityStart; mode = 'entity'; }
+
+      if (mode === null) {
+        // 还没看到开始标签，保留全部内容供下次处理
+        this.buffer = buffer;
+        return { output: '', remaining: '' };
+      }
+
+      // 输出开始标签之前的内容
+      const output = buffer.slice(0, first);
+      this.buffer = buffer.slice(first);
+      this.inThinkingBlock = true;
+      return { output, remaining: this.buffer };
+    }
+
+    // 已在思维块内，找结束标记
+    const thinkEnd = buffer.indexOf('</think>');
+    const textEnd = buffer.indexOf('');
+    const entityEnd = buffer.indexOf('&lt;/think&gt;');
+
+    let endIdx = -1;
+    let endLen = 0;
+    if (thinkEnd !== -1 && (endIdx === -1 || thinkEnd < endIdx)) { endIdx = thinkEnd; endLen = 8; }
+    if (textEnd !== -1 && (endIdx === -1 || textEnd < endIdx)) { endIdx = textEnd; endLen = 8; }
+    if (entityEnd !== -1 && (endIdx === -1 || entityEnd < endIdx)) { endIdx = entityEnd; endLen = 13; }
+
+    if (endIdx === -1) {
+      this.buffer = buffer;
+      return { output: '', remaining: '' };
+    }
+
+    // 结束标记之后的内容才是输出
+    const afterEnd = buffer.slice(endIdx + endLen);
+    this.buffer = '';
+    this.inThinkingBlock = false;
+    return { output: afterEnd, remaining: afterEnd };
   }
 
   feed(content) {
-    if (ensureSettings().thinkingEnabled) return content; // 开启思维 → 全部输出
+    if (ensureSettings().thinkingEnabled) return content;
+    if (!content) return '';
 
-    let output = '';
-    
-    if (!this.hasSeenThinkStart) {
-      // 检查是否进入思维块
-      const thinkIdx = content.indexOf("Here's a thinking");
-      if (thinkIdx !== -1) {
-        this.hasSeenThinkStart = true;
-        this.inThinkingBlock = true;
-        // 输出思维开始前的内容
-        output += content.slice(0, thinkIdx);
-      } else {
-        return content;
-      }
-    }
-    
-    if (this.inThinkingBlock) {
-      this.pendingOutput += content;
-      
-      // 检查思维结束标记（多个可能的结束模式）
-      const endPatterns = [
-        '\n  - Done.\n',
-        '\n  - Done.',
-        '\n[Final Response',
-        '\n[Final Output',
-        '1+1等于'
-      ];
-      
-      for (const pattern of endPatterns) {
-        const idx = this.pendingOutput.lastIndexOf(pattern);
-        if (idx !== -1) {
-          // 找到了结束标记，提取之后的内容
-          const afterEnd = this.pendingOutput.slice(idx + pattern.length).trim();
-          if (afterEnd) {
-            output += afterEnd;
-          }
-          this.inThinkingBlock = false;
-          this.pendingOutput = '';
-          break;
-        }
-      }
-    }
-
+    const { output } = this._extract(this.buffer + content);
     return output;
   }
 
   flush() {
     if (ensureSettings().thinkingEnabled) return '';
-    // 如果还在思维块内，尝试从 pending 中提取最后的数字/结果
-    if (this.pendingOutput) {
-      // 找最后一个换行后的内容
-      const lastNewline = this.pendingOutput.lastIndexOf('\n');
-      const lastPart = this.pendingOutput.slice(lastNewline + 1).trim();
-      if (lastPart && lastPart.length < 50 && /[\u4e00-\u9fa5a-zA-Z0-9]/.test(lastPart)) {
-        return lastPart;
-      }
+    // 如果还有残留但未到结束标记，尝试提取最后一行有意义内容
+    const lastNewline = this.buffer.lastIndexOf('\n');
+    const lastPart = this.buffer.slice(lastNewline + 1).trim();
+    this.buffer = '';
+    this.inThinkingBlock = false;
+    if (lastPart && lastPart.length < 100 && /[\u4e00-\u9fa5a-zA-Z0-9]/.test(lastPart)) {
+      return lastPart;
     }
     return '';
   }
