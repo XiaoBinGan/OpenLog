@@ -20,12 +20,12 @@ export default defineConfig({
       },
       // OpenLog 后端
       '/api': {
-        target: 'http://localhost:3002',
+        target: 'http://localhost:3001',
         changeOrigin: true,
       },
       // WebSocket
       '/ws': {
-        target: 'ws://localhost:3002',
+        target: 'ws://localhost:3001',
         ws: true,
         changeOrigin: true,
       },
