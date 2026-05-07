@@ -287,7 +287,7 @@ export default function Monitor() {
                               <span className="text-dark-500 font-mono shrink-0">{proc.pid}</span>
                               <span className="text-dark-300 truncate" title={proc.name}>{proc.name}</span>
                             </div>
-                            <span className="text-cyan-400 shrink-0 ml-2">{(proc.usedMemory / 1024).toFixed(1)} GB</span>
+                            <span className="text-cyan-400 shrink-0 ml-2">{proc.usedMemory} MiB</span>
                           </div>
                         ))}
                       </div>

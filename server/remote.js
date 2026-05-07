@@ -653,9 +653,9 @@ export async function getRemoteSystemStats(id) {
       nvidia-smi --query-gpu=index,name,utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader,nounits 2>/dev/null | \
         awk -F', ' '{gsub(/%/,"",$3); gsub(/MiB|MB/,"",$4); gsub(/MiB|MB/,"",$5); gsub(/°C/,"",$6); print "GPU:" $1 ":" $2 ":" $3 ":" $4 ":" $5 ":" $6}'
 
-      # GPU 占用进程信息
+      # GPU 占用进程信息（兼容逗号/逗号空格两种CSV格式）
       nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv,noheader,nounits 2>/dev/null | \
-        awk -F', ' '{gsub(/MiB|MB/,"",$3); print "GPUPROC:" $1 ":" $2 ":" $3}'
+        awk '{gsub(/,[[:space:]]*/, "|"); gsub(/MiB|MB/, "", $3); print "GPUPROC:" $1 "|" $2 "|" $3}'
     `);
     
     if (result.stderr && result.stderr.includes('Permission denied')) {
@@ -737,7 +737,7 @@ export async function getRemoteSystemStats(id) {
     
     // 解析 GPU 进程
     const gpuProcesses = gpuProcLines.map(l => {
-      const parts = l.replace('GPUPROC:', '').split(':');
+      const parts = l.replace('GPUPROC:', '').split('|');
       return {
         pid: parseInt(parts[0]) || 0,
         name: parts[1] || 'unknown',
