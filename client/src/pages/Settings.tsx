@@ -1039,13 +1039,56 @@ export default function Settings() {
                     <div>
                       <p className="text-dark-400 font-medium">Linux</p>
                       <pre className="mt-1 px-2.5 py-1.5 bg-dark-800 rounded text-dark-300 font-mono overflow-x-auto">
-                        {'#'} 查看 Docker 监听地址{'\n'}
-                        sudo systemctl show docker --property=ListenStream{'\n'}
-                        cat /etc/docker/daemon.json | grep hosts{'\n'}
+                        {'# 1. 查看当前 Docker 配置\n'}
+                        sudo systemctl status docker --no-pager{'\n'}
                         {'\n'}
-                        {'#'} 开启远程 TCP（需重启 Docker）{'\n'}
-                        {'#'} 在 /etc/docker/daemon.json 中添加：{'\n'}
-                        {'{'}`"hosts"`: [`"unix:///var/run/docker.sock"`, `"tcp://0.0.0.0:2375"`]{'}'}
+                        {'# 2. 查看 daemon.json\n'}
+                        cat /etc/docker/daemon.json{'\n'}
+                        {'\n'}
+                        {'# 3. 配置 Docker 开启 TCP 2375\n'}
+                        sudo mkdir -p /etc/docker{'\n'}
+                        {'\n'}
+                        sudo tee /etc/docker/daemon.json {`>`} /dev/null {'<<'}EOF{'\n'}
+                        {'{\n'}
+                        {' "hosts": [\n'}
+                        {' "unix:///var/run/docker.sock",\n'}
+                        {' "tcp://0.0.0.0:2375"\n'}
+                        {' ]\n'}
+                        {'}\n'}
+                        EOF{'\n'}
+                        {'\n'}
+                        {'# 4. 创建 systemd 覆盖配置\n'}
+                        sudo mkdir -p /etc/systemd/system/docker.service.d{'\n'}
+                        {'\n'}
+                        sudo tee /etc/systemd/system/docker.service.d/override.conf {`>`} /dev/null {'<<'}EOF{'\n'}
+                        [Service]{'\n'}
+                        ExecStart={'\n'}
+                        ExecStart=/usr/bin/dockerd --containerd=/run/containerd/containerd.sock{'\n'}
+                        EOF{'\n'}
+                        {'\n'}
+                        {'# 5. 重新加载 systemd 配置\n'}
+                        sudo systemctl daemon-reload{'\n'}
+                        {'\n'}
+                        {'# 6. 重启 Docker\n'}
+                        sudo systemctl restart docker{'\n'}
+                        {'\n'}
+                        {'# 7. 验证 Docker 状态\n'}
+                        sudo systemctl status docker --no-pager{'\n'}
+                        {'\n'}
+                        {'# 8. 验证 2375 端口监听\n'}
+                        sudo ss -lntp | grep 2375{'\n'}
+                        {'\n'}
+                        {'# 9. 验证 Docker Remote API\n'}
+                        curl http://127.0.0.1:2375/version{'\n'}
+                        {'\n'}
+                        {'# 远程访问示例\n'}
+                        docker -H tcp://{'<服务器IP>'}:2375 ps{'\n'}
+                        {'\n'}
+                        export DOCKER_HOST=tcp://{'<服务器IP>'}:2375{'\n'}
+                        docker ps{'\n'}
+                        {'\n'}
+                        {'⚠️ 注意: 0.0.0.0:2375 为无认证明文接口，仅建议在内网环境使用。\n'}
+                        {'公网环境应限制防火墙访问或改用 TLS (2376) 认证。'}
                       </pre>
                     </div>
                     <div>
