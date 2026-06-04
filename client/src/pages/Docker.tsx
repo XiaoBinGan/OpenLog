@@ -15,6 +15,8 @@ interface ContainerInfo {
   created: string;
   state: string;
   status: string;
+  exitCode?: number | null;
+  exitType?: 'normal' | 'oom' | 'segfault' | 'terminated' | 'error' | null;
   ports: any[];
   labels: any;
 }
@@ -120,18 +122,37 @@ export default function Docker() {
     );
   });
 
-  const getStateColor = (state: string) => {
+  const getStateColor = (state: string, exitType?: string | null) => {
     if (state === 'running') return 'text-green-400';
-    if (state === 'exited') return 'text-dark-500';
+    if (state === 'exited') {
+      if (exitType === 'oom') return 'text-red-400';
+      if (exitType === 'error' || exitType === 'segfault') return 'text-orange-400';
+      if (exitType === 'terminated') return 'text-yellow-400';
+      return 'text-dark-400';
+    }
     if (state === 'paused') return 'text-yellow-400';
     return 'text-red-400';
   };
 
-  const getStateDot = (state: string) => {
+  const getStateDot = (state: string, exitType?: string | null) => {
     if (state === 'running') return 'bg-green-400';
-    if (state === 'exited') return 'bg-dark-600';
+    if (state === 'exited') {
+      if (exitType === 'oom') return 'bg-red-500 animate-pulse';
+      if (exitType === 'error' || exitType === 'segfault') return 'bg-orange-400';
+      if (exitType === 'terminated') return 'bg-yellow-400';
+      return 'bg-dark-500';
+    }
     if (state === 'paused') return 'bg-yellow-400';
     return 'bg-red-400';
+  };
+
+  const getExitLabel = (exitType?: string | null, exitCode?: number | null) => {
+    if (exitType === 'oom') return '💀 OOM 内存溢出';
+    if (exitType === 'error') return `❌ 异常退出(${exitCode})`;
+    if (exitType === 'segfault') return '💥 段错误';
+    if (exitType === 'terminated') return '🛑 被终止';
+    if (exitType === 'normal') return '✅ 正常退出';
+    return null;
   };
 
   const toggleExpand = async (sourceId: string, container: ContainerInfo) => {
@@ -353,7 +374,10 @@ export default function Docker() {
 
             return (
               <div key={key} className={`glass rounded-xl border transition-all overflow-hidden ${
-                isSelected ? 'border-accent-500/50 bg-accent-500/5' : 'border-dark-800 hover:border-dark-700'
+                isSelected ? 'border-accent-500/50 bg-accent-500/5' :
+                c.exitType === 'oom' ? 'border-red-500/30 border-l-2 bg-red-500/5' :
+                c.exitType === 'error' || c.exitType === 'segfault' ? 'border-orange-500/20 border-l-2 bg-orange-500/3' :
+                'border-dark-800 hover:border-dark-700'
               }`}>
                 {/* Container row */}
                 <div className="flex items-center gap-3 px-4 py-3">
@@ -370,7 +394,7 @@ export default function Docker() {
                   </button>
 
                   {/* State dot */}
-                  <div className={`w-2 h-2 rounded-full flex-shrink-0 ${getStateDot(c.state)}`} />
+                  <div className={`w-2 h-2 rounded-full flex-shrink-0 ${getStateDot(c.state, c.exitType)}`} />
 
                   {/* Info */}
                   <div className="flex-1 min-w-0">
@@ -378,10 +402,20 @@ export default function Docker() {
                       <span className="text-sm font-medium text-dark-100 truncate">
                         {c.names[0] || c.shortId}
                       </span>
-                      <span className={`text-xs ${getStateColor(c.state)}`}>{c.state}</span>
+                      <span className={`text-xs ${getStateColor(c.state, c.exitType)}`}>{c.state}</span>
                       {errorLogs.length > 0 && (
                         <span className="text-xs px-1.5 py-0.5 rounded bg-red-500/15 text-red-400 border border-red-500/20">
                           {errorLogs.length} 错误
+                        </span>
+                      )}
+                      {getExitLabel(c.exitType, c.exitCode) && (
+                        <span className={`text-xs px-1.5 py-0.5 rounded border ${
+                          c.exitType === 'oom' ? 'bg-red-500/20 text-red-300 border-red-500/30' :
+                          c.exitType === 'error' || c.exitType === 'segfault' ? 'bg-orange-500/15 text-orange-300 border-orange-500/20' :
+                          c.exitType === 'terminated' ? 'bg-yellow-500/15 text-yellow-300 border-yellow-500/20' :
+                          'bg-dark-600/50 text-dark-400 border-dark-600'
+                        }`}>
+                          {getExitLabel(c.exitType, c.exitCode)}
                         </span>
                       )}
                     </div>
