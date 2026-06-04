@@ -13,12 +13,6 @@ export default defineConfig({
     host: '0.0.0.0',
     port: 5173,
     proxy: {
-      // DocMind 后端（精确匹配优先，必须在前面）
-      '/api/docmind': {
-        target: 'http://localhost:8000',
-        changeOrigin: true,
-        rewrite: (p) => p.replace(/^\/api\/docmind/, '/api'),
-      },
       // OpenLog 后端
       '/api': {
         target: 'http://localhost:3001',

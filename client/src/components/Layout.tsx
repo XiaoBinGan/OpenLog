@@ -14,7 +14,6 @@ import {
   History,
   MessageSquare,
   Boxes,
-  Code2,
 } from 'lucide-react';
 import clsx from 'clsx';
 import GlobalStatusBar from './GlobalStatusBar';

@@ -9,7 +9,6 @@ import Monitor from './pages/Monitor';
 import Docker from './pages/Docker';
 import Settings from './pages/Settings';
 import Remote from './pages/Remote';
-import DevAssistant from './pages/DevAssistant';
 import { RemoteProvider } from './contexts/RemoteContext';
 import { DeviceProvider } from './contexts/DeviceContext';
 
@@ -25,7 +24,6 @@ function App() {
               <Route path="logs" element={<Logs />} />
               <Route path="remote" element={<Remote />} />
               <Route path="docker" element={<Docker />} />
-              <Route path="dev-assistant" element={<DevAssistant />} />
               <Route path="analytics" element={<Analytics />} />
               <Route path="analysis-history" element={<AnalysisHistory />} />
               <Route path="assistant" element={<Assistant />} />
