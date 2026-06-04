@@ -1039,25 +1039,65 @@ export default function Settings() {
                     <div>
                       <p className="text-dark-400 font-medium">Linux</p>
                       <pre className="mt-1 px-2.5 py-1.5 bg-dark-800 rounded text-dark-300 font-mono overflow-x-auto">
-                        {'# 1. 查看当前 Docker 配置\n'}
+                        {'# 开启 Docker Remote API（2375）\n'}
+                        {'\n'}
+                        {'## 1. 检查当前配置\n'}
+                        {'\n'}
+                        {'# 查看 Docker 服务状态：\n'}
                         sudo systemctl status docker --no-pager{'\n'}
-                        {'\n'}
-                        {'# 2. 查看 daemon.json\n'}
+                        {'# 查看 Docker 配置：\n'}
                         cat /etc/docker/daemon.json{'\n'}
+                        {'# 查看 Runtime：\n'}
+                        docker info | grep -A5 Runtimes{'\n'}
                         {'\n'}
-                        {'# 3. 配置 Docker 开启 TCP 2375\n'}
-                        sudo mkdir -p /etc/docker{'\n'}
+                        {'# 记录当前配置，确认是否存在：\n'}
+                        {'# - nvidia runtime\n'}
+                        {'# - registry-mirrors\n'}
+                        {'# - data-root\n'}
+                        {'# - insecure-registries\n'}
+                        {'# - 其它自定义配置\n'}
                         {'\n'}
-                        sudo tee /etc/docker/daemon.json {`>`} /dev/null {'<<'}EOF{'\n'}
+                        {'## 2. 备份配置\n'}
+                        sudo cp /etc/docker/daemon.json {'\\'}
+                        {'  /etc/docker/daemon.json.bak.$(date +%F-%H%M%S)\n'}
+                        {'\n'}
+                        {'## 3. 修改 daemon.json\n'}
+                        {'# 编辑配置文件：\n'}
+                        sudo vim /etc/docker/daemon.json{'\n'}
+                        {'# 在保留现有配置的前提下增加：\n'}
                         {'{\n'}
                         {' "hosts": [\n'}
                         {' "unix:///var/run/docker.sock",\n'}
                         {' "tcp://0.0.0.0:2375"\n'}
                         {' ]\n'}
                         {'}\n'}
-                        EOF{'\n'}
                         {'\n'}
-                        {'# 4. 创建 systemd 覆盖配置\n'}
+                        {'# 例如 NVIDIA 服务器：\n'}
+                        {'{\n'}
+                        {' "hosts": [\n'}
+                        {' "unix:///var/run/docker.sock",\n'}
+                        {' "tcp://0.0.0.0:2375"\n'}
+                        {' ],\n'}
+                        {' "runtimes": {\n'}
+                        {' "nvidia": {\n'}
+                        {' "path": "nvidia-container-runtime",\n'}
+                        {' "args": []\n'}
+                        {' }\n'}
+                        {' }\n'}
+                        {'}\n'}
+                        {'\n'}
+                        {'#> 注意：不要直接覆盖整个 daemon.json，\n'}
+                        {'#> 否则可能导致 NVIDIA Runtime、\n'}
+                        {'#> 镜像加速器、数据目录等配置丢失。\n'}
+                        {'\n'}
+                        {'## 4. 如出现 hosts 冲突\n'}
+                        {'\n'}
+                        {'# 如果重启 Docker 后出现类似报错：\n'}
+                        {'# the following directives are specified\n'}
+                        {'# both as a flag and in the configuration\n'}
+                        {'# file: hosts\n'}
+                        {'\n'}
+                        {'# 创建 systemd Override：\n'}
                         sudo mkdir -p /etc/systemd/system/docker.service.d{'\n'}
                         {'\n'}
                         sudo tee /etc/systemd/system/docker.service.d/override.conf {`>`} /dev/null {'<<'}EOF{'\n'}
@@ -1066,29 +1106,42 @@ export default function Settings() {
                         ExecStart=/usr/bin/dockerd --containerd=/run/containerd/containerd.sock{'\n'}
                         EOF{'\n'}
                         {'\n'}
-                        {'# 5. 重新加载 systemd 配置\n'}
+                        {'## 5. 重启 Docker\n'}
                         sudo systemctl daemon-reload{'\n'}
-                        {'\n'}
-                        {'# 6. 重启 Docker\n'}
                         sudo systemctl restart docker{'\n'}
                         {'\n'}
-                        {'# 7. 验证 Docker 状态\n'}
+                        {'## 6. 验证配置\n'}
+                        {'# 查看 Docker 状态：\n'}
                         sudo systemctl status docker --no-pager{'\n'}
-                        {'\n'}
-                        {'# 8. 验证 2375 端口监听\n'}
+                        {'# 查看 2375 监听：\n'}
                         sudo ss -lntp | grep 2375{'\n'}
-                        {'\n'}
-                        {'# 9. 验证 Docker Remote API\n'}
+                        {'# 查看 Runtime：\n'}
+                        docker info | grep -A5 Runtimes{'\n'}
+                        {'# 验证 Docker Remote API：\n'}
                         curl http://127.0.0.1:2375/version{'\n'}
                         {'\n'}
-                        {'# 远程访问示例\n'}
+                        {'## 7. 远程访问 Docker\n'}
+                        {'# 直接指定远程 Docker：\n'}
                         docker -H tcp://{'<服务器IP>'}:2375 ps{'\n'}
-                        {'\n'}
+                        {'# 或者：\n'}
                         export DOCKER_HOST=tcp://{'<服务器IP>'}:2375{'\n'}
                         docker ps{'\n'}
                         {'\n'}
-                        {'⚠️ 注意: 0.0.0.0:2375 为无认证明文接口，仅建议在内网环境使用。\n'}
-                        {'公网环境应限制防火墙访问或改用 TLS (2376) 认证。'}
+                        {'## 8. 安全说明\n'}
+                        {'\n'}
+                        {'⚠️ 0.0.0.0:2375 为无认证明文接口。\n'}
+                        {'\n'}
+                        {'任何能够访问该端口的主机，都相当于\n'}
+                        {'拥有 Docker 主机的高权限控制能力。\n'}
+                        {'\n'}
+                        {'仅建议在可信内网环境使用：\n'}
+                        sudo ufw allow from 192.168.0.0/16 to any port 2375{'\n'}
+                        sudo ufw deny 2375{'\n'}
+                        {'\n'}
+                        {'生产环境建议：\n'}
+                        {' - 使用 TLS (2376) 认证\n'}
+                        {' - 或仅监听 127.0.0.1:2375\n'}
+                        {' - 通过 SSH Tunnel 进行远程访问'}
                       </pre>
                     </div>
                     <div>
