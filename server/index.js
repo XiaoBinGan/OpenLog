@@ -1102,6 +1102,10 @@ app.put('/api/settings', (req, res) => {
 
   const currentSettings = ensureSettings();
   for (const [key, value] of Object.entries(updates)) {
+    // 拒绝保存脱敏后的敏感字段（含 *** 占位符）
+    if (SENSITIVE_KEYS.includes(key) && typeof value === 'string' && value.includes('***') && value.length < 30) {
+      continue;
+    }
     currentSettings[key] = value;
   }
 
