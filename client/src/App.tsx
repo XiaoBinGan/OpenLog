@@ -20,7 +20,7 @@ function App() {
         <RemoteProvider>
           <Routes>
             <Route path="/" element={<Layout />}>
-              <Route index element={<Navigate to="/dashboard" replace />} />
+              <Route index element={<Navigate to="/monitor" replace />} />
               <Route path="dashboard" element={<Dashboard />} />
               <Route path="logs" element={<Logs />} />
               <Route path="remote" element={<Remote />} />

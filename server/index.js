@@ -1933,7 +1933,7 @@ async function handleShellWebSocket(ws, serverId) {
 // 先初始化数据库
 await initDatabase();
 
-server.listen(PORT, async () => {
+server.listen(PORT, '0.0.0.0', async () => {
   console.log(`🚀 Give Me The Log server running on http://localhost:${PORT}`);
   startLogWatcher();
   startMonitor();
