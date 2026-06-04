@@ -117,5 +117,5 @@ export function status() {
   return { running: false };
 }
 
-// 自动启动
-start();
+// 不再自动启动 DocMind
+// start();
