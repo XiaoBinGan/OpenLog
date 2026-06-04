@@ -47,6 +47,19 @@ function parseContainerId(id) {
   return id.replace(/[^a-f0-9]/g, '').slice(0, 12);
 }
 
+// 解析容器退出码和异常类型
+// Docker: 0=正常, 1=错误, 137=OOM(SIGKILL), 139=Segfault, 143=SIGTERM
+function parseExitInfo(status, state) {
+  const match = status?.match(/Exited \((\d+)\)/);
+  if (!match) return { exitCode: null, exitType: null };
+  const code = parseInt(match[1]);
+  if (code === 0) return { exitCode: 0, exitType: 'normal' };
+  if (code === 137) return { exitCode: 137, exitType: 'oom' };
+  if (code === 139) return { exitCode: 139, exitType: 'segfault' };
+  if (code === 143) return { exitCode: 143, exitType: 'terminated' };
+  return { exitCode: code, exitType: 'error' };
+}
+
 // 从容器 labels 推断上下游关系
 function inferUpstreamDownstream(containers, targetId) {
   const target = containers.find(c => c.id === targetId);
@@ -167,6 +180,7 @@ export async function listContainers(sourceId, config = {}) {
         created: new Date(c.Created * 1000).toISOString(),
         state: c.State,
         status: c.Status,
+        ...parseExitInfo(c.Status, c.State),
         ports: c.Ports.map(p => ({
           ip: p.IP || '0.0.0.0',
           privatePort: p.PrivatePort,
