@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import { createServer } from 'http';
 import { WebSocketServer } from 'ws';
+import crypto from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
 import os from 'os';
 import * as si from 'systeminformation';
@@ -13,13 +14,68 @@ import dotenv from 'dotenv';
 import * as remote from './remote.js';
 import * as docker from './docker.js';
 import * as gpu from './gpu.js';
-import * as docmind from './docmind.js';
 import { initDb, getDb, getKv, setKv, insertLogRecord, listLogRecords } from './db/index.js';
 
 dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+// ─── 鉴权 ──────────────────────────────────────────────────
+const TOKEN_FILE = path.join(__dirname, '..', 'data', '.auth_token');
+const AUTH_TOKEN = loadOrCreateToken();
+
+function loadOrCreateToken() {
+  if (process.env.OPENLOG_TOKEN) return process.env.OPENLOG_TOKEN;
+  try {
+    if (fs.existsSync(TOKEN_FILE)) return fs.readFileSync(TOKEN_FILE, 'utf8').trim();
+  } catch {}
+  const token = crypto.randomBytes(24).toString('hex');
+  try {
+    fs.mkdirSync(path.dirname(TOKEN_FILE), { recursive: true });
+    fs.writeFileSync(TOKEN_FILE, token, { mode: 0o600 });
+  } catch {}
+  return token;
+}
+
+function authMiddleware(req, res, next) {
+  const ip = (req.ip || req.connection?.remoteAddress || '').replace('::ffff:', '');
+  // localhost / Vite proxy 免鉴权
+  if (ip === '127.0.0.1' || ip === '::1' || ip === 'localhost') return next();
+  const auth = req.headers.authorization;
+  const token = auth?.startsWith('Bearer ') ? auth.slice(7) : req.query.token;
+  if (token === AUTH_TOKEN) return next();
+  res.status(401).json({ error: 'Unauthorized — 需要有效的访问令牌' });
+}
+
+// ─── Settings 敏感字段加密（文件落盘用）────────────────────
+const SETTINGS_ENC_KEY = crypto.scryptSync('openlog-settings-salt-v2', 'openlog-settings', 32);
+const SENSITIVE_KEYS = ['openaiApiKey'];
+
+function encryptField(value) {
+  if (!value) return value;
+  const iv = crypto.randomBytes(16);
+  const cipher = crypto.createCipheriv('aes-256-gcm', SETTINGS_ENC_KEY, iv);
+  const encrypted = Buffer.concat([cipher.update(value, 'utf8'), cipher.final()]);
+  const authTag = cipher.getAuthTag();
+  return iv.toString('hex') + ':' + authTag.toString('hex') + ':' + encrypted.toString('hex');
+}
+
+function decryptField(value) {
+  if (!value) return value;
+  // 非加密格式直接返回（兼容旧数据）
+  if (!value.includes(':')) return value;
+  try {
+    const [ivHex, authTagHex, cipherHex] = value.split(':');
+    if (!ivHex || !authTagHex || !cipherHex) return value;
+    const iv = Buffer.from(ivHex, 'hex');
+    const authTag = Buffer.from(authTagHex, 'hex');
+    const decipher = crypto.createDecipheriv('aes-256-gcm', SETTINGS_ENC_KEY, iv);
+    decipher.setAuthTag(authTag);
+    const decrypted = Buffer.concat([decipher.update(Buffer.from(cipherHex, 'hex')), decipher.final()]);
+    return decrypted.toString('utf8');
+  } catch { return value; }
+}
 
 // Settings 持久化文件（在项目根目录）
 const SETTINGS_FILE = path.join(__dirname, '..', 'settings.json');
@@ -44,6 +100,10 @@ function loadSettings() {
     if (fs.existsSync(SETTINGS_FILE)) {
       const raw = fs.readFileSync(SETTINGS_FILE, 'utf8');
       const fileSettings = JSON.parse(raw);
+      // 解密敏感字段
+      for (const key of SENSITIVE_KEYS) {
+        if (fileSettings[key]) fileSettings[key] = decryptField(fileSettings[key]);
+      }
       // 自动迁移到 DB
       if (db) {
         try {
@@ -73,7 +133,12 @@ function saveSettings(data) {
 
   // 回退到文件
   try {
-    fs.writeFileSync(SETTINGS_FILE, JSON.stringify(data, null, 2), 'utf8');
+    const fileData = { ...data };
+    // 加密敏感字段
+    for (const key of SENSITIVE_KEYS) {
+      if (fileData[key]) fileData[key] = encryptField(fileData[key]);
+    }
+    fs.writeFileSync(SETTINGS_FILE, JSON.stringify(fileData, null, 2), 'utf8');
     return true;
   } catch (e2) {
     console.error('[Settings] 保存到文件失败:', e2.message);
@@ -100,8 +165,42 @@ const wss = new WebSocketServer({ noServer: true }); // 关键：使用 noServer
 const PORT = process.env.PORT || 3001;
 
 // Middleware
-app.use(cors());
-app.use(express.json({ limit: '50mb' }));
+app.use(cors({
+  origin: [/^https?:\/\/localhost(:\d+)?$/, /^https?:\/\/127\.0\.0\.1(:\d+)?$/],
+  credentials: true,
+}));
+app.use(express.json({ limit: '10mb' }));
+
+// 简易 Rate Limiter（每 IP 每分钟 120 次）
+const rateLimitMap = new Map();
+app.use((req, res, next) => {
+  const ip = (req.ip || req.connection?.remoteAddress || 'unknown').replace('::ffff:', '');
+  // localhost 不限速
+  if (ip === '127.0.0.1' || ip === '::1') return next();
+  const now = Date.now();
+  const record = rateLimitMap.get(ip) || { count: 0, resetAt: now + 60000 };
+  if (now > record.resetAt) { record.count = 0; record.resetAt = now + 60000; }
+  record.count++;
+  rateLimitMap.set(ip, record);
+  if (record.count > 120) return res.status(429).json({ error: 'Too Many Requests' });
+  next();
+});
+
+// 鉴权中间件（排除公开端点）
+const PUBLIC_PATHS = ['/api/auth/token'];
+app.use((req, res, next) => {
+  if (PUBLIC_PATHS.some(p => req.path.startsWith(p))) return next();
+  authMiddleware(req, res, next);
+});
+
+// Token 获取端点（仅 localhost）
+app.get('/api/auth/token', (req, res) => {
+  const ip = (req.ip || req.connection?.remoteAddress || '').replace('::ffff:', '');
+  if (ip !== '127.0.0.1' && ip !== '::1' && ip !== 'localhost') {
+    return res.status(403).json({ error: '仅允许本地访问' });
+  }
+  res.json({ token: AUTH_TOKEN });
+});
 
 // 默认 settings
 const defaultSettings = {
@@ -989,7 +1088,13 @@ app.get('/api/monitor/history', (req, res) => {
 
 // Settings
 app.get('/api/settings', (req, res) => {
-  res.json(ensureSettings());
+  const settings = ensureSettings();
+  // 敏感字段脱敏
+  const sanitized = { ...settings };
+  if (sanitized.openaiApiKey && sanitized.openaiApiKey.length > 8) {
+    sanitized.openaiApiKey = sanitized.openaiApiKey.slice(0, 4) + '***' + sanitized.openaiApiKey.slice(-4);
+  }
+  res.json(sanitized);
 });
 
 app.put('/api/settings', (req, res) => {
@@ -1565,6 +1670,12 @@ app.post('/api/docker/:sourceId/:containerId/exec', async (req, res) => {
   const config = getDockerConfig(sourceId);
   if (!config) return res.status(404).json({ error: 'Docker 源未找到' });
   if (!command) return res.status(400).json({ error: '缺少 command 参数' });
+  // 安全白名单
+  const DOCKER_SAFE = ['ls','cat','head','tail','wc','grep','find','du','df','free','ps','top','uptime','date','env','echo','pwd','whoami','id','uname','ss','ip','ping','python','python3','node','npm','npx','nvidia-smi','docker','docker-compose'];
+  const cmdBase = command.trim().split(/\s+/)[0].split('/').pop();
+  if (!DOCKER_SAFE.includes(cmdBase)) {
+    return res.status(403).json({ error: `命令被安全策略阻止: ${cmdBase}` });
+  }
 
   try {
     const { output } = await docker.execInContainer(sourceId, containerId, command, config);
@@ -1839,6 +1950,12 @@ app.post('/api/remote/servers/:id/shell', async (req, res) => {
     const { command, timeout } = req.body;
     if (!command) {
       return res.status(400).json({ error: '缺少命令' });
+    }
+    // 安全白名单（比 exec 更宽，但仍限制）
+    const SHELL_SAFE = ['ls','cat','head','tail','wc','grep','find','du','df','free','ps','top','htop','uptime','date','env','echo','pwd','whoami','id','uname','hostname','ss','ip','ping','curl','wget','python','python3','node','npm','npx','nvidia-smi','docker','docker-compose','systemctl','journalctl','dmesg','lsof','lscpu','lsblk','mount','df','iostat','vmstat','netstat','ss','iptables','git','make','cmake','tar','zip','unzip','gzip','gunzip','sudo','kill','killall','pgrep','pkill'];
+    const cmdBase = command.trim().split(/\s+/)[0].split('/').pop();
+    if (!SHELL_SAFE.includes(cmdBase)) {
+      return res.status(403).json({ error: `命令被安全策略阻止: ${cmdBase}` });
     }
     const result = await remote.execShellCommand(req.params.id, command, timeout);
     res.json({ success: true, ...result });

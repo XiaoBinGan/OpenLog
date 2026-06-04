@@ -1,8 +1,13 @@
 import { NodeSSH } from 'node-ssh';
 import { v4 as uuidv4 } from 'uuid';
+import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { getKv, setKv, getDb } from './db/index.js';
+
+// AES-256-GCM 加密密钥（32 字节，从固定种子派生）
+const ENC_KEY = crypto.scryptSync('openlog-remote-secret-salt-v2', 'openlog', 32);
+const ALGORITHM = 'aes-256-gcm';
 
 /**
  * 远程服务器日志管理模块
@@ -94,11 +99,31 @@ function saveServers() {
  * 简单的密码加密（生产环境应使用更安全的方案）
  */
 function encryptPassword(password) {
-  return Buffer.from(password).toString('base64');
+  const iv = crypto.randomBytes(16);
+  const cipher = crypto.createCipheriv(ALGORITHM, ENC_KEY, iv);
+  const encrypted = Buffer.concat([cipher.update(password, 'utf8'), cipher.final()]);
+  const authTag = cipher.getAuthTag();
+  // 格式: iv:authTag:ciphertext (均为 hex)
+  return iv.toString('hex') + ':' + authTag.toString('hex') + ':' + encrypted.toString('hex');
 }
 
 function decryptPassword(encrypted) {
-  return Buffer.from(encrypted, 'base64').toString('utf-8');
+  try {
+    // 兼容旧 Base64 格式（无冒号分隔）
+    if (!encrypted.includes(':')) {
+      return Buffer.from(encrypted, 'base64').toString('utf-8');
+    }
+    const [ivHex, authTagHex, cipherHex] = encrypted.split(':');
+    const iv = Buffer.from(ivHex, 'hex');
+    const authTag = Buffer.from(authTagHex, 'hex');
+    const decipher = crypto.createDecipheriv(ALGORITHM, ENC_KEY, iv);
+    decipher.setAuthTag(authTag);
+    const decrypted = Buffer.concat([decipher.update(Buffer.from(cipherHex, 'hex')), decipher.final()]);
+    return decrypted.toString('utf8');
+  } catch {
+    // 解密失败，返回原值（可能已是明文）
+    return encrypted;
+  }
 }
 
 /**

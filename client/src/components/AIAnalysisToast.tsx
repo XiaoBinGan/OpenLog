@@ -69,10 +69,7 @@ export default function AIAnalysisToast({ wsRef, onViewLogs }: AIAnalysisToastPr
 
   const dismiss = (id: string) => setToasts(prev => prev.filter(t => t.id !== id));
 
-  const goToAssistant = (tab?: string) => {
-    if (tab === 'docs') navigate('/dev-assistant');
-    else navigate('/assistant');
-  };
+  const goToAssistant = () => navigate('/assistant');
 
   if (toasts.length === 0 && assistantTips.length === 0) return null;
 
@@ -101,7 +98,7 @@ export default function AIAnalysisToast({ wsRef, onViewLogs }: AIAnalysisToastPr
               <div className="text-xs text-dark-400 truncate mt-0.5">{tip.preview}…</div>
             </div>
             <button
-              onClick={() => goToAssistant(tip.tab)}
+              onClick={() => goToAssistant()}
               className="flex-shrink-0 px-2.5 py-1 rounded-lg bg-accent-500/20 text-accent-400 text-xs font-medium hover:bg-accent-500/30 transition-colors"
             >
               去查看

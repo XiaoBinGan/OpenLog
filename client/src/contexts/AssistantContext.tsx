@@ -64,7 +64,6 @@ interface AssistantContextValue {
   saveMemory: (name: string, content: string) => Promise<void>;
   // 页面状态
   isOnAssistantPage: boolean;
-  isOnDevAssistantPage: boolean;
 }
 
 const AssistantContext = createContext<AssistantContextValue | null>(null);
@@ -138,7 +137,6 @@ export function AssistantProvider({ children }: { children: React.ReactNode }) {
   const location = useLocation();
 
   const isOnAssistantPage = location.pathname === '/assistant';
-  const isOnDevAssistantPage = location.pathname === '/dev-assistant';
 
   useEffect(() => { persist(store); }, [store]);
 
@@ -223,10 +221,10 @@ export function AssistantProvider({ children }: { children: React.ReactNode }) {
       );
       const prevConv = s.docConvs.find(c => c.id === s.docActiveId);
       const nextConv = nextConvs.find(c => c.id === s.docActiveId);
-      if (prevConv && nextConv) dispatchTip('docs', isOnDevAssistantPage)(prevConv.messages, nextConv.messages);
+      if (prevConv && nextConv) dispatchTip('docs', false)(prevConv.messages, nextConv.messages);
       return { ...s, docConvs: nextConvs };
     });
-  }, [isOnDevAssistantPage]);
+  }, []);
 
   const createDocConv = useCallback(() => {
     const c = makeConv(`文档对话 ${store.docConvs.length + 1}`);
@@ -273,7 +271,6 @@ export function AssistantProvider({ children }: { children: React.ReactNode }) {
       deleteMemory,
       saveMemory,
       isOnAssistantPage,
-      isOnDevAssistantPage,
     }}>
       {children}
     </AssistantContext.Provider>
