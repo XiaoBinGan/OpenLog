@@ -423,3 +423,245 @@ ${combined.map(d => `### ${d.container}${d.success ? '' : ' ⚠️ ' + d.error}`
     containers: combined.map(d => ({ name: d.container, success: d.success }))
   };
 }
+
+// ─── Docker 容器健康诊断 ────────────────────────────────
+export async function healthCheck(sources) {
+  if (!sources || sources.length === 0) throw new Error('未配置 Docker 源');
+
+  const allContainers = [];
+  const sourceMap = {};
+
+  for (const src of sources) {
+    if (!src.enabled) continue;
+    try {
+      const containers = await listContainers(src.id, src);
+      for (const c of containers) {
+        c._sourceId = src.id;
+        c._sourceName = src.name;
+      }
+      allContainers.push(...containers);
+      sourceMap[src.id] = src;
+    } catch (err) {
+      console.warn(`[healthCheck] 跳过 ${src.name}:`, err.message);
+    }
+  }
+
+  // 分类统计
+  const running = allContainers.filter(c => c.state === 'running');
+  const exited = allContainers.filter(c => c.state === 'exited');
+  const oomKilled = exited.filter(c => c.exitType === 'oom');
+  const errorExited = exited.filter(c => c.exitType === 'error' || c.exitType === 'segfault');
+  const normalExited = exited.filter(c => c.exitType === 'normal');
+
+  // 为异常容器拉取最近日志（last 50 lines, filter errors）
+  const problemContainers = [...oomKilled, ...errorExited];
+  const problemDetails = [];
+
+  for (const c of problemContainers) {
+    try {
+      const config = sourceMap[c._sourceId];
+      const logResult = await getContainerLogs(c._sourceId, c.id, config, { tail: 50 });
+      const errorLines = (logResult.logs || [])
+        .filter(l => /error|fatal|panic|exception|traceback|killed|oom/i.test(l.line || ''))
+        .map(l => `[${l.timestamp || ''}] ${l.line}`);
+      problemDetails.push({
+        name: c.names[0] || c.shortId,
+        image: c.image,
+        state: c.state,
+        exitCode: c.exitCode,
+        exitType: c.exitType,
+        status: c.status,
+        errors: errorLines.slice(-10),
+        sourceName: c._sourceName,
+      });
+    } catch (err) {
+      problemDetails.push({
+        name: c.names[0] || c.shortId,
+        image: c.image,
+        state: c.state,
+        exitCode: c.exitCode,
+        exitType: c.exitType,
+        status: c.status,
+        errors: [`无法获取日志: ${err.message}`],
+        sourceName: c._sourceName,
+      });
+    }
+  }
+
+  return {
+    summary: {
+      total: allContainers.length,
+      running: running.length,
+      exited: exited.length,
+      oomKilled: oomKilled.length,
+      errorExited: errorExited.length,
+      normalExited: normalExited.length,
+      healthy: running.length + normalExited.length,
+      unhealthy: oomKilled.length + errorExited.length,
+    },
+    running: running.map(c => ({ name: c.names[0] || c.shortId, image: c.image, status: c.status, sourceName: c._sourceName })),
+    problems: problemDetails,
+    normalExited: normalExited.map(c => ({ name: c.names[0] || c.shortId, image: c.image, exitCode: c.exitCode, sourceName: c._sourceName })),
+  };
+}
+
+// ─── Docker Events 监听（容器异常退出推送）─────────────────
+const eventWatchers = new Map(); // sourceId -> { stream, docker }
+
+function exitTypeLabel(type) {
+  switch (type) {
+    case 'oom': return '💀 OOM (内存溢出)';
+    case 'segfault': return '🔥 Segfault (段错误)';
+    case 'terminated': return '🛑 SIGTERM 终止';
+    case 'error': return '❌ 异常退出';
+    case 'normal': return '';
+    default: return `⚠️ 退出码 ${type}`;
+  }
+}
+
+// 开始监听 Docker 事件（die 事件 → 异常退出通知）
+export async function startEventWatcher(sourceId, config, onEvent) {
+  stopEventWatcher(sourceId);
+  if (!config.enabled) return;
+
+  try {
+    const docker = getDocker(sourceId, config);
+    const stream = await docker.getEvents({
+      filters: JSON.stringify({ type: ['container'], event: ['die'] })
+    });
+
+    eventWatchers.set(sourceId, { stream, docker });
+    console.log(`[Docker Events] 开始监听 ${config.name || sourceId} 容器退出事件`);
+
+    let buf = '';
+    stream.on('data', async (chunk) => {
+      buf += chunk.toString();
+      const lines = buf.split('\n');
+      buf = lines.pop(); // 保留不完整的最后一行
+
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try {
+          const event = JSON.parse(line);
+          const actor = event.Actor?.Attributes || {};
+          const status = actor.exitCode ? `Exited (${actor.exitCode})` : '';
+          const exitInfo = parseExitInfo(status, 'exited');
+
+          // 只关注异常退出
+          if (!exitInfo.exitCode || exitInfo.exitType === 'normal') continue;
+
+          const containerName = actor.name || event.Actor?.ID?.slice(0, 12) || 'unknown';
+          const image = actor.image || '';
+          const label = exitTypeLabel(exitInfo.exitType);
+
+          // 拉一下最近日志用于上下文
+          let recentErrors = [];
+          try {
+            const logs = await getContainerLogs(sourceId, event.Actor?.ID, config);
+            recentErrors = (logs || [])
+              .filter(l => /error|fatal|panic|exception|kill|oom/i.test(l.line || ''))
+              .slice(-5)
+              .map(l => l.line);
+          } catch (_) { /* 忽略 */ }
+
+          onEvent({
+            type: 'container_exited',
+            sourceId,
+            sourceName: config.name,
+            containerId: event.Actor?.ID,
+            containerName,
+            image,
+            exitCode: exitInfo.exitCode,
+            exitType: exitInfo.exitType,
+            label,
+            timestamp: new Date(parseInt(event.time) * 1000).toISOString(),
+            recentErrors
+          });
+        } catch (_) { /* 忽略解析失败的事件 */ }
+      }
+    });
+
+    stream.on('error', err => {
+      console.error(`[Docker Events] ${config.name}:`, err.message);
+      eventWatchers.delete(sourceId);
+    });
+
+    stream.on('end', () => {
+      console.log(`[Docker Events] ${config.name} 事件流结束`);
+      eventWatchers.delete(sourceId);
+    });
+  } catch (err) {
+    console.error(`[Docker Events] ${config.name} 启动失败:`, err.message);
+    // 不支持 events 的 Docker 版本静默跳过
+    if (!err.message.includes('400')) {
+      console.warn(`[Docker Events] ${config.name}: ${err.message}`);
+    }
+  }
+}
+
+export function stopEventWatcher(sourceId) {
+  const w = eventWatchers.get(sourceId);
+  if (w) {
+    try { w.stream.destroy(); } catch (_) {}
+    eventWatchers.delete(sourceId);
+    console.log(`[Docker Events] 已停止 ${sourceId}`);
+  }
+}
+
+export function stopAllEventWatchers() {
+  for (const [id] of eventWatchers) stopEventWatcher(id);
+}
+
+// ─── 容器日志定时巡检 ────────────────────────────────────
+// 巡检所有已启用 Docker 源的容器日志，按配置等级过滤异常行
+export async function patrolContainerLogs(sources, levels) {
+  const results = [];
+  const effectiveLevels = (levels && levels.length > 0) ? levels : ['ERROR', 'FATAL'];
+
+  for (const src of sources) {
+    if (!src.enabled) continue;
+    try {
+      const containers = await listContainers(src.id, src);
+      for (const c of containers) {
+        if (c.state !== 'running') continue; // 巡检只扫运行中的容器
+        try {
+          const logs = await getContainerLogs(src.id, c.id, src);
+          const matchedLines = (logs || []).filter(l => {
+            const lineLevel = l.line?.match(/\b(INFO|WARN|WARNING|ERROR|DEBUG|TRACE|FATAL|CRITICAL)\b/i);
+            if (lineLevel) {
+              const lvl = lineLevel[1].toUpperCase();
+              if (lvl === 'WARNING') lvl = 'WARN';
+              if (lvl === 'CRITICAL') lvl = 'FATAL';
+              return effectiveLevels.includes(lvl);
+            }
+            // 没有标准日志级别时，用关键词匹配
+            return effectiveLevels.some(lv => {
+              const kw = { ERROR: /error|fail|exception/i, FATAL: /fatal|panic|crash/i, WARN: /warn/i }[lv];
+              return kw && kw.test(l.line || '');
+            });
+          });
+
+          if (matchedLines.length > 0) {
+            results.push({
+              sourceId: src.id,
+              sourceName: src.name,
+              containerId: c.shortId,
+              containerName: c.names?.[0] || c.shortId,
+              image: c.image,
+              state: c.state,
+              matchCount: matchedLines.length,
+              lines: matchedLines.slice(-20).map(l => ({
+                timestamp: l.timestamp,
+                line: l.line
+              }))
+            });
+          }
+        } catch (_) { /* 单个容器日志读取失败跳过 */ }
+      }
+    } catch (err) {
+      console.warn(`[Patrol] 跳过 ${src.name}:`, err.message);
+    }
+  }
+
+  return results;
+}

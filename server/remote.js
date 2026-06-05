@@ -514,6 +514,125 @@ export async function uploadRemoteFile(id, localFileBuffer, remotePath) {
   }
 }
 
+// ─── 分片上传 ───────────────────────────────────────────
+const UPLOAD_SESSIONS = new Map(); // uploadId → { id, remotePath, totalChunks, receivedChunks, fileSize, tempDir }
+const CHUNK_SIZE = 2 * 1024 * 1024; // 2MB
+
+// 初始化分片上传会话
+export async function initChunkedUpload(id, remotePath, fileSize) {
+  const ssh = sshConnections.get(id);
+  if (!ssh) return { error: '服务器未连接' };
+
+  const uploadId = `up_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const safePath = remotePath.replace(/'/g, "'\\''");
+  const tempDir = `/tmp/openlog_upload_${uploadId}`;
+
+  try {
+    await ssh.execCommand(`mkdir -p '${tempDir}'`);
+    UPLOAD_SESSIONS.set(uploadId, {
+      id: uploadId,
+      remotePath,
+      totalChunks: 0,
+      receivedChunks: new Set(),
+      fileSize,
+      tempDir,
+      safePath,
+      createdAt: Date.now()
+    });
+    return { uploadId, chunkSize: CHUNK_SIZE, totalChunks: Math.ceil(fileSize / CHUNK_SIZE) };
+  } catch (err) {
+    return { error: err.message };
+  }
+}
+
+// 上传单个分片
+export async function uploadChunk(id, uploadId, chunkIndex, base64Data) {
+  const ssh = sshConnections.get(id);
+  if (!ssh) return { error: '服务器未连接' };
+
+  const session = UPLOAD_SESSIONS.get(uploadId);
+  if (!session) return { error: '上传会话不存在或已过期' };
+
+  try {
+    // base64 通过 stdin 管道解码（避免 shell 命令行长度限制）
+    const tempFile = `${session.tempDir}/part_${String(chunkIndex).padStart(5, '0')}`;
+    const cleanBase64 = base64Data.replace(/\s/g, '');
+    const result = await ssh.execCommand(`base64 -d > '${tempFile}'`, {
+      stdin: cleanBase64 + '\n',
+      execOptions: { timeout: 30000 }
+    });
+    if (result.code !== 0) {
+      return { error: result.stderr || '分片写入失败' };
+    }
+
+    session.receivedChunks.add(chunkIndex);
+    return { success: true, chunkIndex, received: session.receivedChunks.size };
+  } catch (err) {
+    return { error: err.message };
+  }
+}
+
+// 完成分片上传：合并分片 + 校验 + 清理
+export async function completeChunkedUpload(id, uploadId, totalChunks) {
+  const ssh = sshConnections.get(id);
+  if (!ssh) return { error: '服务器未连接' };
+
+  const session = UPLOAD_SESSIONS.get(uploadId);
+  if (!session) return { error: '上传会话不存在或已过期' };
+
+  try {
+    // 合并所有分片（先确保目标目录存在）
+    const targetDir = session.safePath.substring(0, session.safePath.lastIndexOf('/'));
+    const tmpFile = `${session.tempDir}/merged`;
+    const cmd = `mkdir -p '${targetDir}' && cd '${session.tempDir}' && cat part_* > '${tmpFile}' && mv '${tmpFile}' '${session.safePath}' && cd / && rm -rf '${session.tempDir}'`;
+    const result = await ssh.execCommand(cmd);
+    if (result.code !== 0) {
+      console.error(`[complete] merge failed for ${uploadId}:`, result.stderr || result.stdout || '');
+      return { error: '文件合并失败: ' + (result.stderr || result.stdout || String(result.code)) };
+    }
+
+    // 校验文件大小
+    const sizeResult = await ssh.execCommand(`stat -c%s '${session.safePath}' 2>/dev/null || stat -f%z '${session.safePath}' 2>/dev/null`);
+    const actualSize = parseInt(sizeResult.stdout?.trim());
+
+    UPLOAD_SESSIONS.delete(uploadId);
+
+    if (actualSize !== session.fileSize) {
+      return { 
+        success: true, 
+        warning: `文件大小不匹配: 期望 ${session.fileSize} bytes, 实际 ${actualSize} bytes`,
+        remotePath: session.remotePath 
+      };
+    }
+
+    return { success: true, remotePath: session.remotePath, size: actualSize };
+  } catch (err) {
+    return { error: err.message };
+  }
+}
+
+// 取消上传（清理远程临时文件）
+export async function cancelChunkedUpload(id, uploadId) {
+  const ssh = sshConnections.get(id);
+  const session = UPLOAD_SESSIONS.get(uploadId);
+  if (!session) return;
+
+  try {
+    if (ssh) await ssh.execCommand(`rm -rf '${session.tempDir}'`);
+  } catch (_) {}
+  UPLOAD_SESSIONS.delete(uploadId);
+}
+
+// 定期清理过期上传会话（> 30 分钟）
+setInterval(() => {
+  const now = Date.now();
+  for (const [uploadId, session] of UPLOAD_SESSIONS) {
+    if (now - session.createdAt > 30 * 60 * 1000) {
+      cancelChunkedUpload(session.id, uploadId);
+    }
+  }
+}, 60_000);
+
 /**
  * 读取远程日志文件
  */
@@ -865,6 +984,10 @@ export default {
   readRemoteFileRaw,
   writeRemoteFile,
   uploadRemoteFile,
+  initChunkedUpload,
+  uploadChunk,
+  completeChunkedUpload,
+  cancelChunkedUpload,
   tailRemoteFile,
   execRemoteCommand,
   getRemoteSystemStats,
