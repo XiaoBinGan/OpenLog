@@ -185,9 +185,13 @@ export interface Settings {
   thinkingEnabled: boolean;
   watchSources: WatchSource[];
   dockerSources: DockerSource[];
+  dockerEventNotify?: boolean;
+  containerPatrolEnabled?: boolean;
+  containerPatrolInterval?: string;
+  containerPatrolLevels?: string[];
 }
 
 export interface WebSocketMessage {
-  type: 'log' | 'monitor' | 'ai_analysis' | 'docker_batch_analysis';
+  type: 'log' | 'monitor' | 'ai_analysis' | 'docker_batch_analysis' | 'container_exited' | 'container_patrol';
   data: any;
 }

@@ -230,6 +230,7 @@ const defaultSettings = {
     {
       id: 'local',
       name: '本地 Docker',
+      socketPath: '/var/run/docker.sock',
       host: 'localhost',
       port: 2375,
       tls: false,
@@ -237,7 +238,13 @@ const defaultSettings = {
       autoAnalysis: true,
       projects: []
     }
-  ]
+  ],
+  // 容器异常退出通知
+  dockerEventNotify: true,
+  // 容器日志定时巡检
+  containerPatrolEnabled: false,
+  containerPatrolInterval: '300000',  // ms，默认 5 分钟
+  containerPatrolLevels: ['ERROR', 'FATAL', 'WARN']
 };
 
 // Settings - 懒加载，数据库初始化完成后加载
@@ -245,7 +252,13 @@ let settings = null;
 
 function ensureSettings() {
   if (!settings) {
-    settings = loadSettings() || defaultSettings;
+    const saved = loadSettings();
+    if (saved) {
+      // 合并默认值：新字段用默认值，已有字段保持不变
+      settings = { ...defaultSettings, ...saved };
+    } else {
+      settings = defaultSettings;
+    }
   }
   return settings;
 }
@@ -746,6 +759,70 @@ function startMonitor() {
   }, interval);
 }
 
+// ─── Docker 事件监听（容器异常退出推送）─────────────────
+let dockerEventStarted = false;
+
+function startDockerEventWatch() {
+  const enabled = ensureSettings().dockerEventNotify !== false;
+  const sources = ensureSettings().dockerSources || [];
+
+  if (!enabled || dockerEventStarted) return;
+  dockerEventStarted = true;
+
+  for (const src of sources) {
+    docker.startEventWatcher(src.id, src, (event) => {
+      broadcast(event);
+    });
+  }
+}
+
+function restartDockerEventWatch() {
+  docker.stopAllEventWatchers();
+  dockerEventStarted = false;
+  startDockerEventWatch();
+}
+
+// ─── 容器日志定时巡检 ────────────────────────────────────
+let patrolTimer = null;
+let lastPatrolResults = [];
+
+function startContainerPatrol() {
+  if (patrolTimer) clearInterval(patrolTimer);
+
+  const enabled = ensureSettings().containerPatrolEnabled;
+  if (!enabled) return;
+
+  const interval = parseInt(ensureSettings().containerPatrolInterval || '300000');
+  const levels = ensureSettings().containerPatrolLevels || ['ERROR', 'FATAL'];
+  const sources = ensureSettings().dockerSources || [];
+
+  // 立即执行一次
+  runPatrol(sources, levels);
+
+  patrolTimer = setInterval(() => {
+    runPatrol(sources, levels);
+  }, interval);
+
+  console.log(`[Patrol] 容器日志巡检已启动 (间隔: ${interval / 1000}s, 等级: ${levels.join(',')})`);
+}
+
+async function runPatrol(sources, levels) {
+  try {
+    const results = await docker.patrolContainerLogs(sources, levels);
+    lastPatrolResults = results;
+    if (results.length > 0) {
+      broadcast({ type: 'container_patrol', data: { results, timestamp: new Date().toISOString() } });
+    }
+  } catch (err) {
+    console.error('[Patrol] 巡检异常:', err.message);
+  }
+}
+
+function restartContainerPatrol() {
+  if (patrolTimer) clearInterval(patrolTimer);
+  startContainerPatrol();
+}
+
 // API Routes
 
 // Get logs
@@ -1123,6 +1200,16 @@ app.put('/api/settings', (req, res) => {
     if (docker.dockerInstances) {
       docker.dockerInstances.forEach((_, k) => docker.dockerInstances.delete(k));
     }
+    restartDockerEventWatch();
+    restartContainerPatrol();
+  }
+
+  if (updates.dockerEventNotify !== undefined) {
+    restartDockerEventWatch();
+  }
+
+  if (updates.containerPatrolEnabled !== undefined || updates.containerPatrolInterval !== undefined || updates.containerPatrolLevels !== undefined) {
+    restartContainerPatrol();
   }
 
   if (updates.refreshInterval) {
@@ -1628,6 +1715,168 @@ ${logsText}
   }
 });
 
+// ─── Docker 容器健康诊断 API ────────────────────────────
+app.get('/api/docker/health-check', async (req, res) => {
+  try {
+    const sources = ensureSettings().dockerSources || [];
+    const report = await docker.healthCheck(sources);
+    res.json(report);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/docker/health-check/analyze', async (req, res) => {
+  try {
+    const sources = ensureSettings().dockerSources || [];
+    const report = await docker.healthCheck(sources);
+    const { summary, problems } = report;
+
+    if (problems.length === 0) {
+      return res.json({ analysis: '🎉 所有容器运行正常，无需诊断。\n\n' +
+        `- ${summary.running} 个运行中\n- ${summary.normalExited} 个正常退出` });
+    }
+
+    const apiKey = ensureSettings().openaiApiKey;
+    const baseUrl = ensureSettings().openaiBaseUrl;
+    const model = ensureSettings().model;
+
+    if (!apiKey) return res.status(400).json({ error: '未配置 API Key' });
+
+    const problemText = problems.map(p =>
+      `### ${p.name} (${p.sourceName})\n` +
+      `- 镜像: ${p.image}\n` +
+      `- 状态: ${p.state}\n` +
+      `- 退出码: ${p.exitCode} (` +
+      (p.exitType === 'oom' ? 'OOM内存溢出' : p.exitType === 'segfault' ? '段错误' : '异常退出') + `)\n` +
+      `- 最近错误日志:\n${p.errors.map(l => '  ' + l).join('\n') || '  无'}`
+    ).join('\n\n');
+
+    const prompt = `你是资深运维工程师，正在进行 Docker 容器健康诊断。
+
+## 整体概况
+- 总容器: ${summary.total}
+- 运行中: ${summary.running}
+- OOM被杀: ${summary.oomKilled}
+- 异常退出: ${summary.errorExited}
+- 正常退出: ${summary.normalExited}
+
+## 问题容器详情
+${problemText}
+
+## 诊断要求（用中文回答）：
+### 🔴 紧急问题
+### 📊 根因分析
+### 💡 修复建议
+### 🛡️ 预防措施`;
+
+    const OpenAI = (await import('openai')).default;
+    const openai = new OpenAI({ apiKey, baseURL: baseUrl });
+
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+
+    const stream = await openai.chat.completions.create({
+      model,
+      messages: [{ role: 'user', content: prompt }],
+      stream: true,
+      max_tokens: 4096,
+      temperature: 0.3
+    });
+
+    for await (const chunk of stream) {
+      const content = chunk.choices[0]?.delta?.content || '';
+      if (content) res.write(`data: ${JSON.stringify({ content })}\n\n`);
+    }
+    res.write('data: [DONE]\n\n');
+    res.end();
+  } catch (err) {
+    console.error('[health-check/analyze]', err.message);
+    if (!res.headersSent) res.status(500).json({ error: err.message });
+    else { res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`); res.end(); }
+  }
+});
+
+
+// ─── 容器日志巡检 API ───────────────────────────────────
+// 获取最近一次巡检结果
+app.get('/api/docker/patrol', (req, res) => {
+  res.json({ results: lastPatrolResults, timestamp: new Date().toISOString() });
+});
+
+// 立即触发一次巡检
+app.post('/api/docker/patrol/now', async (req, res) => {
+  try {
+    const sources = ensureSettings().dockerSources || [];
+    const levels = ensureSettings().containerPatrolLevels || ['ERROR', 'FATAL'];
+    const results = await docker.patrolContainerLogs(sources, levels);
+    lastPatrolResults = results;
+    broadcast({ type: 'container_patrol', data: { results, timestamp: new Date().toISOString() } });
+    res.json({ success: true, results });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// AI 分析巡检结果（SSE 流式）
+app.post('/api/docker/patrol/analyze', async (req, res) => {
+  try {
+    const results = lastPatrolResults;
+    if (!results || results.length === 0) {
+      return res.status(400).json({ error: '暂无巡检结果，请先触发巡检' });
+    }
+
+    const apiKey = ensureSettings().openaiApiKey;
+    const baseUrl = ensureSettings().openaiBaseUrl;
+    const model = ensureSettings().model;
+
+    if (!apiKey) return res.status(400).json({ error: '未配置 API Key' });
+
+    const containerText = results.map(r =>
+      `### ${r.containerName} (${r.sourceName})\n` +
+      `- 镜像: ${r.image}\n` +
+      `- 匹配日志行数: ${r.matchCount}\n` +
+      `- 最近日志:\n${r.lines.map(l => `  [${l.timestamp}] ${l.line}`).join('\n')}`
+    ).join('\n\n');
+
+    const prompt = `你是资深运维工程师，请分析以下容器日志巡检结果。
+
+## 巡检结果（共 ${results.length} 个容器存在异常日志）
+${containerText}
+
+## 分析要求（用中文回答）：
+### 📋 问题汇总
+### 🔍 关键错误分析
+### 💡 处理建议
+### 🛡️ 预防措施`;
+
+    const OpenAI = (await import('openai')).default;
+    const openai = new OpenAI({ apiKey, baseURL: baseUrl });
+
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+
+    const stream = await openai.chat.completions.create({
+      model,
+      messages: [{ role: 'user', content: prompt }],
+      stream: true,
+      max_tokens: 4096,
+      temperature: 0.3
+    });
+
+    for await (const chunk of stream) {
+      const content = chunk.choices[0]?.delta?.content || '';
+      if (content) res.write(`data: ${JSON.stringify({ content })}\n\n`);
+    }
+    res.write('data: [DONE]\n\n');
+    res.end();
+  } catch (err) {
+    console.error('[patrol/analyze]', err.message);
+    if (!res.headersSent) res.status(500).json({ error: err.message });
+    else { res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`); res.end(); }
+  }
+});
+
 // ────────────────────────────────────────
 // Docker 容器操作
 // ────────────────────────────────────────
@@ -1918,6 +2167,62 @@ app.post('/api/remote/servers/:id/file/upload', async (req, res) => {
   }
 });
 
+// ─── 分片上传 API ──────────────────────────────────────
+
+// 初始化分片上传
+app.post('/api/remote/servers/:id/file/upload/init', async (req, res) => {
+  try {
+    const { path: remotePath, fileSize } = req.body;
+    if (!remotePath || !fileSize) return res.status(400).json({ error: '缺少参数' });
+    const result = await remote.initChunkedUpload(req.params.id, remotePath, fileSize);
+    if (result.error) return res.status(500).json(result);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 上传单个分片
+app.post('/api/remote/servers/:id/file/upload/chunk', async (req, res) => {
+  try {
+    const { uploadId, chunkIndex, data: base64Data } = req.body;
+    if (!uploadId || chunkIndex === undefined || !base64Data) return res.status(400).json({ error: '缺少参数' });
+    const result = await remote.uploadChunk(req.params.id, uploadId, chunkIndex, base64Data);
+    if (result.error) return res.status(500).json(result);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 完成分片上传
+app.post('/api/remote/servers/:id/file/upload/complete', async (req, res) => {
+  try {
+    const { uploadId, totalChunks } = req.body;
+    if (!uploadId || !totalChunks) return res.status(400).json({ error: '缺少参数' });
+    const result = await remote.completeChunkedUpload(req.params.id, uploadId, totalChunks);
+    if (result.error) {
+      console.error('[upload/complete]', result.error);
+      return res.status(500).json(result);
+    }
+    res.json(result);
+  } catch (err) {
+    console.error('[upload/complete] uncaught:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 取消分片上传
+app.post('/api/remote/servers/:id/file/upload/cancel', async (req, res) => {
+  try {
+    const { uploadId } = req.body;
+    await remote.cancelChunkedUpload(req.params.id, uploadId);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Get remote system stats
 app.get('/api/remote/servers/:id/stats', async (req, res) => {
   try {
@@ -2058,6 +2363,8 @@ server.listen(PORT, '0.0.0.0', async () => {
   console.log(`🚀 Give Me The Log server running on http://localhost:${PORT}`);
   startLogWatcher();
   startMonitor();
+  startDockerEventWatch();
+  startContainerPatrol();
 
   // 启动时自动重连之前在线的服务器
   try {

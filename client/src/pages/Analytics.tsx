@@ -14,9 +14,16 @@ import {
   Eye,
   EyeOff,
   Server,
-  Monitor
+  Monitor,
+  Stethoscope,
+  Boxes,
+  Container,
+  X,
+  Clock,
+  Search
 } from 'lucide-react';
 import { useDevice } from '../contexts/DeviceContext';
+import { useWsMessage } from '../contexts/WebSocketContext';
 import type { Log, RemoteServer } from '../types';
 
 export default function Analytics() {
@@ -26,6 +33,9 @@ export default function Analytics() {
   const [analyzing, setAnalyzing] = useState(false);
   const [analysis, setAnalysis] = useState<string | null>(null);
   const [errorLogsOnly, setErrorLogsOnly] = useState(true);
+  const [healthMode, setHealthMode] = useState<'logs' | 'containers'>('logs');
+  const [healthReport, setHealthReport] = useState<any>(null);
+  const [healthLoading, setHealthLoading] = useState(false);
   const [customPrompt, setCustomPrompt] = useState('');
   const [copied, setCopied] = useState(false);
   
@@ -36,6 +46,29 @@ export default function Analytics() {
   const [confirmStep, setConfirmStep] = useState(0);
   const [codeContext, setCodeContext] = useState('');
   const [showCodeInput, setShowCodeInput] = useState(false);
+
+  // 容器异常退出通知
+  const [exitAlerts, setExitAlerts] = useState<any[]>([]);
+  const [dismissedAlerts, setDismissedAlerts] = useState<Set<string>>(new Set());
+
+  // 容器日志巡检
+  const [patrolResults, setPatrolResults] = useState<any[]>([]);
+  const [patrolTimestamp, setPatrolTimestamp] = useState('');
+  const [patrolAnalyzing, setPatrolAnalyzing] = useState(false);
+  const [patrolAnalysis, setPatrolAnalysis] = useState<string | null>(null);
+
+  // WebSocket 事件监听
+  useWsMessage('container_exited', (data) => {
+    const key = `${data.containerId}-${data.timestamp}`;
+    setExitAlerts(prev => [{ ...data, _key: key }, ...prev].slice(0, 20));
+  });
+
+  useWsMessage('container_patrol', (data) => {
+    if (data.data?.results) {
+      setPatrolResults(data.data.results);
+      setPatrolTimestamp(data.data.timestamp);
+    }
+  });
 
   useEffect(() => {
     fetchLogs();
@@ -77,6 +110,53 @@ export default function Analytics() {
     }
     
     setLoading(false);
+  };
+
+  const runHealthCheck = async () => {
+    setHealthLoading(true);
+    setAnalysis(null);
+    setHealthReport(null);
+    try {
+      // Step 1: Get health report
+      const reportRes = await fetch('/api/docker/health-check');
+      const report = await reportRes.json();
+      setHealthReport(report);
+      
+      if (report.problems && report.problems.length > 0) {
+        // Step 2: AI diagnosis (SSE)
+        const analyzeRes = await fetch('/api/docker/health-check/analyze', { method: 'POST' });
+        const reader = analyzeRes.body?.getReader();
+        if (!reader) throw new Error('No response body');
+        
+        const decoder = new TextDecoder();
+        let buffer = '';
+        setAnalysis('');
+        
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              const data = line.slice(6);
+              if (data === '[DONE]') continue;
+              try {
+                const parsed = JSON.parse(data);
+                if (parsed.content) setAnalysis(prev => (prev || '') + parsed.content);
+                if (parsed.error) setAnalysis(prev => (prev || '') + '\n❌ ' + parsed.error);
+              } catch {}
+            }
+          }
+        }
+      } else {
+        setAnalysis(report.analysis || '🎉 所有容器运行正常');
+      }
+    } catch (err: any) {
+      setAnalysis('❌ 诊断失败: ' + (err.message || err));
+    }
+    setHealthLoading(false);
   };
 
   const analyzeLogs = async () => {
@@ -200,6 +280,160 @@ export default function Analytics() {
     });
   };
 
+  const renderHealthPanel = () => (
+    <>
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="text-lg font-semibold flex items-center gap-2">
+          <Container className="w-5 h-5 text-green-400" />
+          容器健康报告
+          {healthReport && (
+            <span className="text-sm font-normal text-dark-400">
+              ({healthReport.summary?.total || 0} 个容器)
+            </span>
+          )}
+        </h2>
+      </div>
+      {healthLoading ? (
+        <div className="flex items-center justify-center py-8">
+          <Loader2 className="w-6 h-6 text-accent-500 animate-spin" />
+        </div>
+      ) : healthReport ? (
+        <>
+          <div className="p-3 bg-dark-900 rounded-lg border border-dark-800 mb-3">
+            <div className="grid grid-cols-3 gap-2 text-center">
+              <div><div className="text-green-400 font-bold text-lg">{healthReport.summary?.running || 0}</div><div className="text-xs text-dark-500">运行中</div></div>
+              <div><div className="text-red-400 font-bold text-lg">{healthReport.summary?.unhealthy || 0}</div><div className="text-xs text-dark-500">异常</div></div>
+              <div><div className="text-dark-400 font-bold text-lg">{healthReport.summary?.normalExited || 0}</div><div className="text-xs text-dark-500">正常退出</div></div>
+            </div>
+          </div>
+          <div className="space-y-2 max-h-64 overflow-y-auto">
+            {healthReport.problems?.map((p: any) => (
+              <div key={p.name} className={`p-3 bg-dark-900 rounded-lg border-l-2 ${
+                p.exitType === 'oom' ? 'border-red-500 bg-red-500/5' : 'border-orange-500 bg-orange-500/5'
+              }`}>
+                <div className="flex items-center justify-between mb-1">
+                  <span className="font-medium text-sm">{p.name}</span>
+                  <span className={`text-xs px-1.5 py-0.5 rounded ${
+                    p.exitType === 'oom' ? 'bg-red-500/20 text-red-400' : 'bg-orange-500/20 text-orange-400'
+                  }`}>
+                    {p.exitType === 'oom' ? 'OOM' : `退出码 ${p.exitCode}`}
+                  </span>
+                </div>
+                <p className="text-xs text-dark-500">{p.image} · {p.sourceName}</p>
+                {p.errors?.length > 0 && (
+                  <div className="mt-2 text-xs font-mono text-dark-400 bg-dark-950 rounded p-2 max-h-20 overflow-y-auto">
+                    {p.errors.slice(0, 3).map((e: string, i: number) => (
+                      <div key={i} className="truncate text-red-300/70">{e}</div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
+            {healthReport.problems?.length === 0 && (
+              <div className="text-center py-4 text-green-400">✅ 无问题容器</div>
+            )}
+          </div>
+        </>
+      ) : (
+        <div className="flex flex-col items-center justify-center py-12 text-dark-500">
+          <Stethoscope className="w-10 h-10 mb-3 opacity-50" />
+          <p>点击下方按钮开始诊断</p>
+        </div>
+      )}
+      <button
+        onClick={runHealthCheck}
+        disabled={healthLoading}
+        className="w-full mt-4 px-4 py-3 rounded-lg bg-gradient-to-r from-green-600 to-green-500 hover:from-green-500 hover:to-green-400 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 font-semibold"
+      >
+        {healthLoading ? (
+          <>
+            <Loader2 className="w-5 h-5 animate-spin" />
+            诊断中...
+          </>
+        ) : (
+          <>
+            <Stethoscope className="w-5 h-5" />
+            开始容器健康诊断
+          </>
+        )}
+      </button>
+    </>
+  );
+
+  const renderLogPanel = () => (
+    <>
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="text-lg font-semibold flex items-center gap-2">
+          <FileText className="w-5 h-5 text-blue-400" />
+          待分析日志
+          <span className="text-sm font-normal text-dark-400">({logs.length} 条)</span>
+        </h2>
+      </div>
+
+      <div className="space-y-2 max-h-96 overflow-y-auto">
+        {loading ? (
+          <div className="flex items-center justify-center py-8">
+            <Loader2 className="w-6 h-6 text-accent-500 animate-spin" />
+          </div>
+        ) : logs.length === 0 ? (
+          <div className="text-center py-8 text-dark-500">
+            暂无日志数据
+          </div>
+        ) : (
+          logs.map(log => (
+            <div 
+              key={log.id}
+              className="p-3 bg-dark-900 rounded-lg border border-dark-800 hover:border-dark-700 transition-colors"
+            >
+              <div className="flex items-center justify-between mb-1">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-dark-500">
+                    {new Date(log.timestamp).toLocaleString()}
+                  </span>
+                  <span className={`px-2 py-0.5 rounded text-xs font-medium ${
+                    log.level === 'ERROR' 
+                      ? 'bg-red-500/20 text-red-400' 
+                      : 'bg-yellow-500/20 text-yellow-400'
+                  }`}>
+                    {log.level}
+                  </span>
+                </div>
+                <button
+                  onClick={() => requestFix(log)}
+                  className="px-2 py-1 rounded bg-blue-500/20 text-blue-400 hover:bg-blue-500/30 text-xs flex items-center gap-1 transition-colors"
+                >
+                  <Wrench className="w-3 h-3" />
+                  AI 修复
+                </button>
+              </div>
+              <p className="text-sm text-dark-300 font-mono line-clamp-2">
+                {log.message}
+              </p>
+            </div>
+          ))
+        )}
+      </div>
+
+      <button
+        onClick={analyzeLogs}
+        disabled={analyzing || logs.length === 0}
+        className="w-full mt-4 px-4 py-3 rounded-lg bg-gradient-to-r from-accent-600 to-accent-500 hover:from-accent-500 hover:to-accent-400 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 font-semibold"
+      >
+        {analyzing ? (
+          <>
+            <Loader2 className="w-5 h-5 animate-spin" />
+            AI 正在分析中...
+          </>
+        ) : (
+          <>
+            <Sparkles className="w-5 h-5" />
+            开始 AI 分析
+          </>
+        )}
+      </button>
+    </>
+  );
+
   return (
     <div className="space-y-6 animate-fade-in">
       {/* Header */}
@@ -225,6 +459,43 @@ export default function Analytics() {
         </div>
       </div>
 
+      {/* 容器异常退出通知 */}
+      {exitAlerts.filter(a => !dismissedAlerts.has(a._key)).slice(0, 3).map((alert, i) => (
+        <div key={alert._key} className={`rounded-xl p-4 flex items-start gap-3 animate-fade-in ${
+          alert.exitType === 'oom' ? 'bg-red-500/15 border border-red-500/30'
+          : alert.exitType === 'segfault' ? 'bg-orange-500/15 border border-orange-500/30'
+          : 'bg-red-500/10 border border-red-500/20'
+        }`}>
+          <AlertOctagon className={`w-5 h-5 mt-0.5 flex-shrink-0 ${
+            alert.exitType === 'oom' ? 'text-red-400' : 'text-orange-400'
+          }`} />
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-medium">
+              {alert.label} — <span className="font-mono text-dark-300">{alert.containerName}</span>
+            </p>
+            <p className="text-xs text-dark-400 mt-1">
+              {alert.sourceName} · 镜像: {alert.image} · 退出码: {alert.exitCode} · {new Date(alert.timestamp).toLocaleTimeString()}
+            </p>
+            {alert.recentErrors && alert.recentErrors.length > 0 && (
+              <details className="mt-2">
+                <summary className="text-xs text-dark-400 cursor-pointer hover:text-dark-300">
+                  最近错误日志 ({alert.recentErrors.length} 条) ▸
+                </summary>
+                <pre className="mt-1 text-xs text-dark-500 font-mono bg-dark-900/50 rounded p-2 overflow-x-auto max-h-32">
+                  {alert.recentErrors.join('\n')}
+                </pre>
+              </details>
+            )}
+          </div>
+          <button
+            onClick={() => setDismissedAlerts(prev => new Set([...prev, alert._key]))}
+            className="text-dark-500 hover:text-dark-300"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      ))}
+
       {/* Quick Actions */}
       <div className="flex flex-wrap gap-3">
         <button
@@ -237,93 +508,37 @@ export default function Analytics() {
         </button>
         
         <button
-          onClick={() => setErrorLogsOnly(!errorLogsOnly)}
+          onClick={() => { setErrorLogsOnly(!errorLogsOnly); setHealthMode('logs'); }}
           className={`px-4 py-2 rounded-lg transition-colors flex items-center gap-2 ${
-            errorLogsOnly 
+            errorLogsOnly && healthMode === 'logs'
               ? 'bg-red-500/20 text-red-400' 
-              : 'bg-dark-800 text-dark-300 hover:bg-dark-700'
+              : healthMode === 'logs'
+              ? 'bg-dark-800 text-dark-300 hover:bg-dark-700'
+              : 'bg-dark-800/50 text-dark-500 hover:bg-dark-700'
           }`}
         >
           <AlertTriangle className="w-4 h-4" />
           {errorLogsOnly ? '仅错误日志' : '全部日志'}
         </button>
+
+        <button
+          onClick={() => { setHealthMode('containers'); }}
+          className={`px-4 py-2 rounded-lg transition-colors flex items-center gap-2 ${
+            healthMode === 'containers'
+              ? 'bg-green-500/20 text-green-400 border border-green-500/30'
+              : 'bg-dark-800 text-dark-300 hover:bg-dark-700'
+          }`}
+        >
+          <Stethoscope className="w-4 h-4" />
+          容器健康诊断
+        </button>
       </div>
 
       {/* Main Content */}
       <div className="grid md:grid-cols-2 gap-6">
-        {/* Log Selection */}
+        {/* Left Panel */}
         <div className="glass rounded-xl p-4">
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-lg font-semibold flex items-center gap-2">
-              <FileText className="w-5 h-5 text-blue-400" />
-              待分析日志
-              <span className="text-sm font-normal text-dark-400">({logs.length} 条)</span>
-            </h2>
-          </div>
-
-          {/* Log List */}
-          <div className="space-y-2 max-h-96 overflow-y-auto">
-            {loading ? (
-              <div className="flex items-center justify-center py-8">
-                <Loader2 className="w-6 h-6 text-accent-500 animate-spin" />
-              </div>
-            ) : logs.length === 0 ? (
-              <div className="text-center py-8 text-dark-500">
-                暂无日志数据
-              </div>
-            ) : (
-              logs.map(log => (
-                <div 
-                  key={log.id}
-                  className="p-3 bg-dark-900 rounded-lg border border-dark-800 hover:border-dark-700 transition-colors"
-                >
-                  <div className="flex items-center justify-between mb-1">
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs text-dark-500">
-                        {new Date(log.timestamp).toLocaleString()}
-                      </span>
-                      <span className={`px-2 py-0.5 rounded text-xs font-medium ${
-                        log.level === 'ERROR' 
-                          ? 'bg-red-500/20 text-red-400' 
-                          : 'bg-yellow-500/20 text-yellow-400'
-                      }`}>
-                        {log.level}
-                      </span>
-                    </div>
-                    <button
-                      onClick={() => requestFix(log)}
-                      className="px-2 py-1 rounded bg-blue-500/20 text-blue-400 hover:bg-blue-500/30 text-xs flex items-center gap-1 transition-colors"
-                    >
-                      <Wrench className="w-3 h-3" />
-                      AI 修复
-                    </button>
-                  </div>
-                  <p className="text-sm text-dark-300 font-mono line-clamp-2">
-                    {log.message}
-                  </p>
-                </div>
-              ))
-            )}
-          </div>
-
-          {/* Analyze Button */}
-          <button
-            onClick={analyzeLogs}
-            disabled={analyzing || logs.length === 0}
-            className="w-full mt-4 px-4 py-3 rounded-lg bg-gradient-to-r from-accent-600 to-accent-500 hover:from-accent-500 hover:to-accent-400 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 font-semibold"
-          >
-            {analyzing ? (
-              <>
-                <Loader2 className="w-5 h-5 animate-spin" />
-                AI 正在分析中...
-              </>
-            ) : (
-              <>
-                <Sparkles className="w-5 h-5" />
-                开始 AI 分析
-              </>
-            )}
-          </button>
+          {healthMode === 'containers' ? renderHealthPanel() : renderLogPanel()}
         </div>
 
         {/* Analysis Result */}
@@ -573,6 +788,116 @@ export default function Analytics() {
               </>
             )}
           </div>
+        </div>
+      )}
+
+      {/* 容器日志巡检结果 */}
+      {patrolResults.length > 0 && (
+        <div className="glass rounded-xl p-4 border border-yellow-500/20">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-lg font-semibold flex items-center gap-2">
+              <Search className="w-5 h-5 text-yellow-400" />
+              容器日志巡检
+              <span className="text-sm font-normal text-dark-400">
+                ({patrolResults.length} 个容器 · {patrolTimestamp ? new Date(patrolTimestamp).toLocaleTimeString() : ''})
+              </span>
+            </h2>
+            <div className="flex gap-2">
+              <button
+                onClick={async () => {
+                  try {
+                    const res = await fetch('/api/docker/patrol/now', { method: 'POST' });
+                    const data = await res.json();
+                    if (data.results) {
+                      setPatrolResults(data.results);
+                      setPatrolTimestamp(new Date().toISOString());
+                    }
+                  } catch (_) {}
+                }}
+                className="px-3 py-1.5 rounded-lg bg-dark-800 text-dark-400 hover:text-dark-200 transition-colors flex items-center gap-1 text-sm"
+              >
+                <RefreshCw className="w-4 h-4" />
+                立即巡检
+              </button>
+              <button
+                onClick={async () => {
+                  setPatrolAnalyzing(true);
+                  setPatrolAnalysis('');
+                  try {
+                    const res = await fetch('/api/docker/patrol/analyze', { method: 'POST' });
+                    const reader = res.body?.getReader();
+                    const decoder = new TextDecoder();
+                    if (!reader) return;
+                    while (true) {
+                      const { done, value } = await reader.read();
+                      if (done) break;
+                      const text = decoder.decode(value, { stream: true });
+                      const lines = text.split('\n');
+                      for (const line of lines) {
+                        if (line.startsWith('data: ')) {
+                          const payload = line.slice(6);
+                          if (payload === '[DONE]') continue;
+                          try {
+                            const j = JSON.parse(payload);
+                            if (j.content) setPatrolAnalysis(prev => (prev || '') + j.content);
+                            if (j.error) setPatrolAnalysis(prev => (prev || '') + `\n❌ ${j.error}`);
+                          } catch (_) {}
+                        }
+                      }
+                    }
+                  } catch (_) {}
+                  setPatrolAnalyzing(false);
+                }}
+                disabled={patrolAnalyzing}
+                className="px-3 py-1.5 rounded-lg bg-accent-600 text-white hover:bg-accent-500 transition-colors flex items-center gap-1 text-sm disabled:opacity-50"
+              >
+                <Sparkles className="w-4 h-4" />
+                {patrolAnalyzing ? '分析中...' : 'AI 分析'}
+              </button>
+            </div>
+          </div>
+
+          {/* 容器列表 */}
+          <div className="space-y-2 mb-4">
+            {patrolResults.map((r, i) => (
+              <details key={i} className="bg-dark-900/50 rounded-lg border border-dark-800">
+                <summary className="px-4 py-2.5 cursor-pointer flex items-center justify-between hover:bg-dark-800/50 rounded-lg">
+                  <div className="flex items-center gap-3">
+                    <Container className="w-4 h-4 text-dark-400" />
+                    <span className="font-mono text-sm">{r.containerName}</span>
+                    <span className="text-xs text-dark-500">{r.sourceName}</span>
+                    <span className="text-xs text-dark-600">{r.image}</span>
+                  </div>
+                  <span className="px-2 py-0.5 rounded text-xs font-medium bg-red-500/20 text-red-400">
+                    {r.matchCount} 条匹配
+                  </span>
+                </summary>
+                <div className="px-4 pb-3">
+                  <pre className="text-xs text-dark-400 font-mono bg-dark-950 rounded p-2 overflow-x-auto max-h-48">
+                    {r.lines.map((l: any, j: number) => (
+                      <div key={j} className="flex gap-2">
+                        <span className="text-dark-600 flex-shrink-0">{l.timestamp ? new Date(l.timestamp).toLocaleTimeString() : ''}</span>
+                        <span>{l.line}</span>
+                      </div>
+                    ))}
+                  </pre>
+                </div>
+              </details>
+            ))}
+          </div>
+
+          {/* AI 分析结果 */}
+          {patrolAnalysis && (
+            <div className="bg-dark-900/50 rounded-lg p-4 border border-accent-500/20">
+              <div className="flex items-center gap-2 mb-2">
+                <Brain className="w-4 h-4 text-accent-400" />
+                <h3 className="text-sm font-semibold text-accent-400">AI 巡检分析</h3>
+              </div>
+              <div className="prose prose-invert prose-sm max-w-none text-dark-300 whitespace-pre-wrap">
+                {patrolAnalysis}
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>

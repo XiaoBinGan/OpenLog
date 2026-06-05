@@ -23,6 +23,8 @@ interface RemoteContextValue {
   saveFile: () => Promise<{ success: boolean; error?: string }>;
   closeEditor: () => void;
   uploadFile: (localFile: File, remoteDir: string) => Promise<{ success: boolean; error?: string }>;
+  uploadProgress: { current: number; total: number; fileName: string } | null;
+  cancelUpload: () => void;
   toast: ToastMsg | null;
   clearToast: () => void;
 }
@@ -39,6 +41,9 @@ export function RemoteProvider({ children }: { children: React.ReactNode }) {
   const [servers, setServers] = useState<RemoteServer[]>([]);
   const [activeServer, setActiveServer] = useState<RemoteServerState | null>(null);
   const [toast, setToast] = useState<ToastMsg | null>(null);
+  const [uploadProgress, setUploadProgress] = useState<{ current: number; total: number; fileName: string } | null>(null);
+  const uploadAbortRef = useRef<AbortController | null>(null);
+  const loadingRef = useRef(false); // 防并发导航锁
 
   // 用 ref 追踪最新 activeServer，避免闭包陈旧
   const activeServerRef = useRef(activeServer);
@@ -116,21 +121,39 @@ export function RemoteProvider({ children }: { children: React.ReactNode }) {
         if (statsRes.ok) systemStats = await statsRes.json();
       } catch {}
 
+      const initPath = server.logPath?.replace(/\/$/, '') || '/var/log';
       const connectedServer: RemoteServerState = {
         ...server,
         status: 'connected',
         systemStats,
-        files: { files: [], dirs: [], currentPath: server.logPath?.replace(/\/$/, '') || '/var/log' },
+        files: { files: [], dirs: [], currentPath: initPath },
         selectedFile: null,
         fileContent: '',
         fileModified: false,
         logs: [],
         logsLoading: false,
-        filesLoading: false,
+        filesLoading: true,
         editingFilePath: null,
       };
       setActiveServer(connectedServer);
-      setSelectedDevice(server); // 同步 DeviceContext，让右上角显示当前设备
+      setSelectedDevice(server);
+
+      // 立即加载初始目录文件（不靠 useEffect，避免时序问题）
+      try {
+        const filesRes = await fetch(`/api/remote/servers/${server.id}/files?path=${encodeURIComponent(initPath)}`);
+        if (filesRes.ok) {
+          const fileData = await filesRes.json();
+          setActiveServer(prev => {
+            if (!prev || prev.id !== server.id) return prev;
+            return { ...prev, files: fileData, filesLoading: false };
+          });
+        } else {
+          setActiveServer(prev => prev && prev.id === server.id ? { ...prev, filesLoading: false } : prev);
+        }
+      } catch {
+        setActiveServer(prev => prev && prev.id === server.id ? { ...prev, filesLoading: false } : prev);
+      }
+
       showToast('success', `已连接到 ${server.name}`);
       refreshServers();
       refreshDevices(); // 立即更新右上角设备列表
@@ -167,22 +190,28 @@ export function RemoteProvider({ children }: { children: React.ReactNode }) {
   }, [servers, refreshServers, refreshDevices, showToast, resetToLocal]);
 
   // 加载文件列表：用 ref 获取最新 ID
+  // 路径规范化：消除多余的 /
+  const normPath = (p: string) => '/' + p.split('/').filter(Boolean).join('/');
+
   const loadFiles = useCallback(async (filePath?: string) => {
     const server = activeServerRef.current;
-    if (!server) return;
+    if (!server || loadingRef.current) return;
+    loadingRef.current = true;
     const serverId = server.id;
-    const path = filePath || server.files.currentPath;
+    const path = normPath(filePath || server.files.currentPath);
     setActiveServer(prev => prev ? { ...prev, filesLoading: true } : prev);
     try {
       const res = await fetch(`/api/remote/servers/${serverId}/files?path=${encodeURIComponent(path)}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data: RemoteFileList = await res.json();
       setActiveServer(prev => {
-        if (!prev || prev.id !== serverId) return prev; // 确保不覆盖其他服务器
+        if (!prev || prev.id !== serverId) return prev;
         return { ...prev, files: data, filesLoading: false };
       });
     } catch (err: any) {
       setActiveServer(prev => prev ? { ...prev, files: { files: [], dirs: [], currentPath: path, error: err.message }, filesLoading: false } : prev);
+    } finally {
+      loadingRef.current = false;
     }
   }, []);
 
@@ -190,19 +219,19 @@ export function RemoteProvider({ children }: { children: React.ReactNode }) {
   const navigateDir = useCallback(async (name: string) => {
     const server = activeServerRef.current;
     if (!server) return;
-    const base = server.files.currentPath;
+    const base = normPath(server.files.currentPath);
     const newPath = base === '/' ? `/${name}` : `${base}/${name}`;
-    await loadFiles(newPath);
+    await loadFiles(normPath(newPath));
   }, [loadFiles]);
 
   // 返回上级
   const goUp = useCallback(async () => {
     const server = activeServerRef.current;
     if (!server) return;
-    const parts = server.files.currentPath.split('/').filter(Boolean);
-    if (parts.length <= 1) { await loadFiles('/'); return; }
+    const parts = normPath(server.files.currentPath).split('/').filter(Boolean);
+    if (parts.length === 0) { await loadFiles('/'); return; }
     parts.pop();
-    await loadFiles('/' + parts.join('/'));
+    await loadFiles(parts.length === 0 ? '/' : '/' + parts.join('/'));
   }, [loadFiles]);
 
   // 加载日志
@@ -282,28 +311,109 @@ export function RemoteProvider({ children }: { children: React.ReactNode }) {
     setActiveServer(prev => prev ? { ...prev, editingFilePath: null, fileContent: '', fileModified: false } : prev);
   }, []);
 
-  // 上传文件
+  // 上传文件（分片上传）
+  const CHUNK_SIZE = 2 * 1024 * 1024; // 2MB
+
+  const cancelUpload = useCallback(() => {
+    uploadAbortRef.current?.abort();
+    setUploadProgress(null);
+  }, []);
+
   const uploadFile = useCallback(async (localFile: File, remoteDir: string) => {
     const server = activeServerRef.current;
     if (!server) return { success: false, error: '未连接服务器' };
     const serverId = server.id;
+
+    const abort = new AbortController();
+    uploadAbortRef.current = abort;
+
+    const remotePath = remoteDir === '/' ? `/${localFile.name}` : `${remoteDir}/${localFile.name}`;
+    const totalChunks = Math.ceil(localFile.size / CHUNK_SIZE);
+    setUploadProgress({ current: 0, total: totalChunks, fileName: localFile.name });
+
+    const MAX_RETRIES = 3;
+
     try {
-      const buffer = await localFile.arrayBuffer();
-      const base64 = btoa(String.fromCharCode(...new Uint8Array(buffer)));
-      const remotePath = remoteDir === '/' ? `/${localFile.name}` : `${remoteDir}/${localFile.name}`;
-      const res = await fetch(`/api/remote/servers/${serverId}/file/upload`, {
+      // 1. 初始化
+      const initRes = await fetch(`/api/remote/servers/${serverId}/file/upload/init`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path: remotePath, content: base64, name: localFile.name }),
+        body: JSON.stringify({ path: remotePath, fileSize: localFile.size }),
+        signal: abort.signal,
       });
-      const data = await res.json();
-      if (data.error) throw new Error(data.error);
-      showToast('success', `✅ 上传成功: ${localFile.name}`);
+      const initData = await initRes.json();
+      if (initData.error) throw new Error(initData.error);
+      const { uploadId } = initData;
+
+      // 2. 逐片上传
+      for (let i = 0; i < totalChunks; i++) {
+        if (abort.signal.aborted) throw new DOMException('Aborted', 'AbortError');
+
+        const start = i * CHUNK_SIZE;
+        const end = Math.min(start + CHUNK_SIZE, localFile.size);
+        const blob = localFile.slice(start, end);
+        const arrayBuf = await blob.arrayBuffer();
+        const bytes = new Uint8Array(arrayBuf);
+        // 手动 base64 编码（大文件避免 btoa 栈溢出）
+        let base64 = '';
+        for (let j = 0; j < bytes.length; j += 4096) {
+          const slice = bytes.subarray(j, j + 4096);
+          base64 += String.fromCharCode(...slice);
+        }
+        base64 = btoa(base64);
+
+        // 带重试
+        let lastErr = '';
+        for (let retry = 0; retry < MAX_RETRIES; retry++) {
+          try {
+            const chunkRes = await fetch(`/api/remote/servers/${serverId}/file/upload/chunk`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ uploadId, chunkIndex: i, data: base64 }),
+              signal: abort.signal,
+            });
+            const chunkData = await chunkRes.json();
+            if (chunkData.error) throw new Error(chunkData.error);
+            setUploadProgress({ current: i + 1, total: totalChunks, fileName: localFile.name });
+            break;
+          } catch (err: any) {
+            if (err.name === 'AbortError') throw err;
+            lastErr = err.message;
+            if (retry < MAX_RETRIES - 1) await new Promise(r => setTimeout(r, 1000 * (retry + 1)));
+          }
+        }
+        if (lastErr && !abort.signal.aborted) throw new Error(`分片 ${i + 1}/${totalChunks} 上传失败: ${lastErr}`);
+      }
+
+      // 3. 完成合并
+      const completeRes = await fetch(`/api/remote/servers/${serverId}/file/upload/complete`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ uploadId, totalChunks }),
+        signal: abort.signal,
+      });
+      const completeData = await completeRes.json();
+      if (completeData.error) throw new Error(completeData.error);
+
+      setUploadProgress(null);
+      showToast('success', `✅ 上传成功: ${localFile.name}${completeData.warning ? ' ⚠️ ' + completeData.warning : ''}`);
       await loadFiles(remoteDir);
       return { success: true };
     } catch (err: any) {
+      setUploadProgress(null);
+      if (err.name === 'AbortError') {
+        // 清理远程会话
+        try { await fetch(`/api/remote/servers/${serverId}/file/upload/cancel`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ uploadId: '' }),
+        }); } catch (_) {}
+        showToast('info', '上传已取消');
+        return { success: false, error: '已取消' };
+      }
       showToast('error', `❌ 上传失败: ${err.message}`);
       return { success: false, error: err.message };
+    } finally {
+      uploadAbortRef.current = null;
     }
   }, [loadFiles, showToast]);
 
@@ -360,6 +470,8 @@ export function RemoteProvider({ children }: { children: React.ReactNode }) {
       saveFile,
       closeEditor,
       uploadFile,
+      uploadProgress,
+      cancelUpload,
       toast,
       clearToast,
     }}>

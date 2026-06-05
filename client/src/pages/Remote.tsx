@@ -248,7 +248,7 @@ export default function Remote() {
     servers, activeServer, setActiveServer, selectServer, connect, disconnect, refreshServers,
     loadFiles, navigateDir, goUp,
     loadLogs, openInEditor, updateFileContent, saveFile, closeEditor,
-    uploadFile, toast, clearToast,
+    uploadFile, uploadProgress, cancelUpload, toast, clearToast,
   } = useRemote();
 
   // 本地 UI 状态
@@ -557,7 +557,31 @@ export default function Remote() {
                   </label>
                 </div>
 
-                {/* 文件列表：移除整个区域的 onClick */}
+                {/* 上传进度条 */}
+                {uploadProgress && (
+                  <div className="px-4 py-2 bg-dark-800/80 border border-dark-700 rounded-lg">
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-sm text-dark-300 truncate flex-1">
+                        📤 上传中: {uploadProgress.fileName}
+                      </span>
+                      <span className="text-xs text-dark-500 ml-2">
+                        {uploadProgress.current}/{uploadProgress.total}
+                      </span>
+                      <button onClick={cancelUpload} className="ml-2 text-dark-500 hover:text-red-400">
+                        <X className="w-4 h-4" />
+                      </button>
+                    </div>
+                    <div className="w-full h-2 bg-dark-700 rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-gradient-to-r from-accent-500 to-accent-400 rounded-full transition-all duration-300"
+                        style={{ width: `${Math.round((uploadProgress.current / uploadProgress.total) * 100)}%` }}
+                      />
+                    </div>
+                    <p className="text-xs text-dark-500 mt-1">{Math.round((uploadProgress.current / uploadProgress.total) * 100)}%</p>
+                  </div>
+                )}
+
+                {/* 文件列表 */}
                 <div
                   className={`flex-1 glass rounded-xl overflow-hidden transition-colors ${dragOver ? 'border-accent-500 bg-accent-500/5' : ''}`}
                   onDragOver={e => { e.preventDefault(); setDragOver(true); }}

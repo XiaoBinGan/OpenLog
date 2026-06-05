@@ -210,6 +210,10 @@ export default function Settings() {
           thinkingEnabled: settings.thinkingEnabled,
           watchSources: settings.watchSources,
           dockerSources: settings.dockerSources,
+          dockerEventNotify: settings.dockerEventNotify,
+          containerPatrolEnabled: settings.containerPatrolEnabled,
+          containerPatrolInterval: settings.containerPatrolInterval,
+          containerPatrolLevels: settings.containerPatrolLevels,
         })
       });
 
@@ -1167,6 +1171,102 @@ export default function Settings() {
           )}
         </div>
       </div>
+
+      {/* 容器监控配置 */}
+      {((settings.dockerSources || []).filter(s => s.enabled).length > 0) && (
+      <div className="glass rounded-xl p-6">
+        <div className="flex items-center gap-2 mb-4">
+          <AlertCircle className="w-5 h-5 text-accent-500" />
+          <h2 className="text-lg font-semibold">容器异常监控</h2>
+        </div>
+
+        {/* 异常退出通知 */}
+        <div className="mb-4 pb-4 border-b border-dark-800">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="font-medium">容器异常退出通知</p>
+              <p className="text-sm text-dark-400">Docker 容器非正常退出时实时推送通知</p>
+            </div>
+            <label className="relative inline-flex items-center cursor-pointer">
+              <input
+                type="checkbox"
+                checked={settings.dockerEventNotify !== false}
+                onChange={e => setSettings({ ...settings, dockerEventNotify: e.target.checked })}
+                className="sr-only peer"
+              />
+              <div className="w-10 h-5 bg-dark-700 rounded-full peer peer-checked:bg-accent-500 peer-checked:after:translate-x-5 after:content-[''] after:absolute after:top-0.5 after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all"></div>
+            </label>
+          </div>
+        </div>
+
+        {/* 定时巡检配置 */}
+        <div>
+          <div className="flex items-center justify-between mb-3">
+            <div>
+              <p className="font-medium">容器日志巡检</p>
+              <p className="text-sm text-dark-400">定时扫描所有运行中容器的日志，匹配配置的异常等级</p>
+            </div>
+            <label className="relative inline-flex items-center cursor-pointer">
+              <input
+                type="checkbox"
+                checked={settings.containerPatrolEnabled || false}
+                onChange={e => setSettings({ ...settings, containerPatrolEnabled: e.target.checked })}
+                className="sr-only peer"
+              />
+              <div className="w-10 h-5 bg-dark-700 rounded-full peer peer-checked:bg-accent-500 peer-checked:after:translate-x-5 after:content-[''] after:absolute after:top-0.5 after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all"></div>
+            </label>
+          </div>
+
+          {settings.containerPatrolEnabled && (
+            <div className="space-y-3 ml-0">
+              <div>
+                <label className="block text-sm text-dark-400 mb-1">巡检间隔</label>
+                <select
+                  value={settings.containerPatrolInterval || '300000'}
+                  onChange={e => setSettings({ ...settings, containerPatrolInterval: e.target.value })}
+                  className="w-full px-3 py-2 bg-dark-900 border border-dark-700 rounded-lg text-dark-200 text-sm"
+                >
+                  <option value="60000">1 分钟</option>
+                  <option value="300000">5 分钟</option>
+                  <option value="600000">10 分钟</option>
+                  <option value="1800000">30 分钟</option>
+                  <option value="3600000">1 小时</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-sm text-dark-400 mb-1">匹配日志等级</label>
+                <div className="flex flex-wrap gap-2">
+                  {['FATAL','ERROR','WARN','INFO'].map(level => {
+                    const selected = (settings.containerPatrolLevels || ['ERROR','FATAL']).includes(level);
+                    return (
+                      <button
+                        key={level}
+                        onClick={() => {
+                          const current = settings.containerPatrolLevels || ['ERROR','FATAL'];
+                          const next = selected ? current.filter(l => l !== level) : [...current, level];
+                          setSettings({ ...settings, containerPatrolLevels: next });
+                        }}
+                        className={`px-3 py-1 rounded text-xs font-medium transition-colors ${
+                          selected
+                            ? level === 'FATAL' ? 'bg-red-500/30 text-red-300 border border-red-500/50'
+                            : level === 'ERROR' ? 'bg-red-500/20 text-red-400 border border-red-500/30'
+                            : level === 'WARN' ? 'bg-yellow-500/20 text-yellow-400 border border-yellow-500/30'
+                            : 'bg-blue-500/20 text-blue-400 border border-blue-500/30'
+                            : 'bg-dark-800 text-dark-500 border border-dark-700'
+                        }`}
+                      >
+                        {level}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+      )}
 
       {/* Save */}
       <div className="flex items-center justify-end gap-4">
