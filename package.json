@@ -4,11 +4,12 @@
   "description": "智能日志分析与监控系统 - AI-Powered Log Analysis & Monitoring",
   "type": "module",
   "scripts": {
-    "dev": "concurrently \"npm run server\" \"npm run client\"",
+    "init-db": "node scripts/init-db.js",
+    "dev": "npm run init-db && concurrently \"npm run server\" \"npm run client\"",
     "client": "npm run dev --prefix client",
-    "server": "node server/index.js",
+    "server": "npm run init-db && node server/index.js",
     "build": "npm run build --prefix client",
-    "start": "NODE_ENV=production node server/index.js"
+    "start": "npm run init-db && NODE_ENV=production node server/index.js"
   },
   "dependencies": {
     "better-sqlite3": "^12.9.0",
