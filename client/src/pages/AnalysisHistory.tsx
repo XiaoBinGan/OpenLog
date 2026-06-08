@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   History,
   Brain,
@@ -10,7 +11,8 @@ import {
   XCircle,
   Clock,
   Search,
-  Server
+  Server,
+  ArrowRight
 } from 'lucide-react';
 
 interface AnalysisRecord {
@@ -28,6 +30,7 @@ interface AnalysisRecord {
 }
 
 export default function AnalysisHistory() {
+  const navigate = useNavigate();
   const [records, setRecords] = useState<AnalysisRecord[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -228,7 +231,15 @@ export default function AnalysisHistory() {
                   {/* Analysis result */}
                   {record.status === 'done' && record.analysis ? (
                     <div>
-                      <p className="text-xs text-dark-500 mb-1">AI 分析结果</p>
+                      <div className="flex items-center justify-between mb-1">
+                        <p className="text-xs text-dark-500">AI 分析结果</p>
+                        <button
+                          onClick={() => navigate(`/assistant?ref=${record.id}`)}
+                          className="flex items-center gap-1 px-2 py-0.5 rounded text-xs text-accent-400 hover:bg-accent-500/10 border border-dark-700 hover:border-accent-500/30 transition-colors"
+                        >
+                          追问 <ArrowRight className="w-3 h-3" />
+                        </button>
+                      </div>
                       <div
                         className="px-3 py-3 bg-dark-900 rounded-lg text-sm text-dark-200 leading-relaxed prose-invert max-h-96 overflow-y-auto
                           [&_h2]:text-dark-100 [&_h2]:text-sm [&_h2]:font-bold [&_h2]:mt-3 [&_h2]:mb-1
