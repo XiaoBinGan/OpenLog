@@ -1290,6 +1290,20 @@ app.get('/api/analysis/history', (req, res) => {
   res.json({ records: result, total });
 });
 
+// 分析历史摘要（供 @ 提及选择）
+app.get('/api/analysis/history/brief', (_req, res) => {
+  const brief = analysisHistory.slice(0, 30).map(r => ({
+    id: r.id,
+    timestamp: r.timestamp,
+    type: r.type || 'log',
+    sourceName: r.sourceName,
+    summary: (r.summary || r.log?.message || '').slice(0, 120),
+    status: r.status,
+    model: r.model,
+  }));
+  res.json({ records: brief });
+});
+
 // 删除单条分析历史
 app.delete('/api/analysis/history/:id', (req, res) => {
   const idx = analysisHistory.findIndex(r => r.id === req.params.id);
@@ -1356,6 +1370,21 @@ app.delete('/api/assistant/memory/:name', (req, res) => {
 // ============================================================
 // LLM 助手聊天 API（流式 SSE）
 // ============================================================
+
+function buildAssistantContext() {
+  const parts = [];
+  if (lastPatrolResults.length > 0) {
+    const lines = lastPatrolResults.map(r => `- ${r.containerName}(${r.image}): ${r.uniqueCount || r.matchCount} 种异常`).join('\n');
+    if (lines) parts.push(`### 最近巡检\n${lines}`);
+  }
+  const recent = analysisHistory.filter(r => r.status === 'done').slice(0, 5);
+  if (recent.length > 0) {
+    const lines = recent.map(a => `- [${a.type || 'log'}] ${a.sourceName}`).join('\n');
+    if (lines) parts.push(`### 最近分析\n${lines}`);
+  }
+  return parts.length > 0 ? parts.join('\n\n') : '暂无。';
+}
+
 app.post('/api/chat', async (req, res) => {
   const { messages } = req.body;
   if (!messages || !Array.isArray(messages) || messages.length === 0) {
@@ -1379,7 +1408,12 @@ app.post('/api/chat', async (req, res) => {
 
     const systemPrompt = {
       role: 'system',
-      content: '你是一个专业的运维工程师和技术支持助手，帮助运维人员排查服务器、网络、数据库、中间件等问题，提供清晰、可操作的解决方案。回复使用与用户相同的语言（中文提问用中文回答），回复要简洁专业。'
+      content: `你是 OpenLog 的运维助手，帮用户排查服务器、Docker 容器、日志异常、性能问题。
+风格：简洁有力，像老运维跟同事说话，不啰嗦不念经。用中文。
+格式：关键结论加粗，代码用 \`\`\` 包裹，操作步骤编号列出。
+
+## 最近的系统状态
+${buildAssistantContext()}`
     };
 
     res.setHeader('Content-Type', 'text/event-stream');
