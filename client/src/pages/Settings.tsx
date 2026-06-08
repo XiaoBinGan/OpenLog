@@ -1134,7 +1134,7 @@ export default function Settings() {
                       placeholder="输入路径按回车添加..."
                       className="flex-1 min-w-[160px] px-2.5 py-1 bg-dark-800/60 border border-dark-700/50 rounded text-xs text-dark-200 placeholder-dark-600 focus:outline-none focus:border-blue-500/50"
                       onKeyDown={e => {
-                        if (e.key === 'Enter') {
+                        if (e.key === 'Enter' && !(e.nativeEvent as any).isComposing) {
                           const val = (e.target as HTMLInputElement).value.trim();
                           if (val) {
                             const updated = [...(settings.dockerSources || [])];

@@ -168,7 +168,11 @@ export default function Assistant() {
     if (e.key === 'ArrowUp') { e.preventDefault(); setAtIdx(prev => Math.max(prev - 1, 0)); }
     if (e.key === 'Enter') {
       e.preventDefault();
-      if (filtered[atIdx]) selectAtItem(filtered[atIdx]);
+      if (!(e.nativeEvent as any).isComposing) {
+        if (filtered[atIdx]) selectAtItem(filtered[atIdx]);
+      } else {
+        setAtOpen(false);
+      }
     }
     if (e.key === 'Escape') setAtOpen(false);
   };
@@ -331,7 +335,7 @@ export default function Assistant() {
             <div className="flex items-center gap-2 px-3 py-1.5 bg-dark-900 border border-dark-800 rounded-lg">
               {editingConvTitle && editingConvTitle === activeConv?.id ? (
                 <input value={convTitleInput} onChange={e => setConvTitleInput(e.target.value)}
-                  onBlur={commitRenameConv} onKeyDown={e => { if (e.key === 'Enter') commitRenameConv(); if (e.key === 'Escape') setEditingConvTitle(null); }}
+                  onBlur={commitRenameConv} onKeyDown={e => { if (e.key === 'Enter' && !(e.nativeEvent as any).isComposing) commitRenameConv(); if (e.key === 'Escape') setEditingConvTitle(null); }}
                   autoFocus className="bg-transparent text-sm text-dark-200 outline-none w-48" />
               ) : (
                 <>
@@ -440,7 +444,7 @@ export default function Assistant() {
                 ref={inputRef}
                 value={input}
                 onChange={handleInputChange}
-                onKeyDown={e => { handleAtKey(e); if (e.key === 'Enter' && !e.shiftKey && !atOpen) { e.preventDefault(); sendMessage(); } }}
+                onKeyDown={e => { handleAtKey(e); if (e.key === 'Enter' && !e.shiftKey && !atOpen && !(e.nativeEvent as any).isComposing) { e.preventDefault(); sendMessage(); } }}
                 placeholder="输入问题，Shift+Enter 换行，@ 引用分析历史..."
                 rows={1}
                 className="w-full px-4 py-3 bg-dark-900 border border-dark-800 rounded-xl text-sm text-dark-200 placeholder-dark-600
@@ -499,7 +503,7 @@ export default function Assistant() {
           {showNewForm && (
             <div className="px-4 py-3 border-b border-dark-800 bg-dark-950/50">
               <input autoFocus value={newFileName} onChange={e => setNewFileName(e.target.value)}
-                onKeyDown={e => { if (e.key === 'Enter') handleCreateFile(); if (e.key === 'Escape') setShowNewForm(false); }}
+                onKeyDown={e => { if (e.key === 'Enter' && !(e.nativeEvent as any).isComposing) handleCreateFile(); if (e.key === 'Escape') setShowNewForm(false); }}
                 placeholder="文件名（如：Docker 运维指南）"
                 className="w-full px-3 py-2 bg-dark-900 border border-dark-700 rounded-lg text-sm text-dark-200 placeholder-dark-600 focus:outline-none focus:border-accent-500/50 mb-2" />
               <div className="flex gap-2">
