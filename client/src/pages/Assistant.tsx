@@ -179,15 +179,38 @@ export default function Assistant() {
     if (!content || loading) return;
 
     setInput('');
-    // 构建消息（带上 @ 上下文）
-    let displayContent = content;
-    const atContexts: string[] = [];
+    setAtOpen(false);
+
+    // @ 提及 -> 获取完整分析内容注入上下文
+    let displayContent = content.replace(/@(巡检|诊断|日志)\s+[^\s@]+(\s*)/g, '').trim();
     const atMatches = content.matchAll(/@(巡检|诊断|日志)\s+(.+?)(?=\s|@|$)/g);
+    const atIds = new Set<string>();
     for (const m of atMatches) {
-      const item = atItems.find(i => i.sourceName === m[2] || i.type === m[1]);
-      if (item) atContexts.push(`[已关联分析记录: ${item.sourceName} | ${item.summary?.slice(0, 80)}]`);
+      const item = atItems.find(i => i.sourceName === m[2]);
+      if (item) atIds.add(item.id);
     }
-    if (atContexts.length > 0) displayContent = displayContent + '\n\n---\n' + atContexts.join('\n');
+
+    // 获取完整记录上下文
+    let contextBlock = '';
+    if (atIds.size > 0) {
+      try {
+        const histRes = await fetch('/api/analysis/history');
+        const histData = await histRes.json();
+        const matched = (histData.records || []).filter((r: any) => atIds.has(r.id));
+        if (matched.length > 0) {
+          contextBlock = '\n\n---\n以下是从分析历史中引用的上下文：\n\n' +
+            matched.map((r: any) => {
+              const typeLabel = r.type === 'patrol' ? '🔍 巡检报告' : r.type === 'health' ? '🩺 健康诊断' : '📄 日志分析';
+              const body = r.type !== 'log'
+                ? `来源: ${r.sourceName}\n${r.summary || ''}\n\n分析结论:\n${r.analysis || '无'}`
+                : `来源: ${r.sourceName}\n日志: ${r.log?.message || ''}\n\n分析:\n${r.analysis || '无'}`;
+              return `### ${typeLabel}\n${body}`;
+            }).join('\n\n---\n\n');
+        }
+      } catch {}
+    }
+
+    displayContent = displayContent + contextBlock;
 
     const userMsg = { role: 'user' as const, content: displayContent, ts: Date.now(), streaming: false };
     const assistantMsg = { role: 'assistant' as const, content: '', ts: Date.now() + 1, streaming: true };
