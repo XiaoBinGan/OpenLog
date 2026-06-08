@@ -19,11 +19,9 @@ export default function GlobalStatusBar() {
       try {
         if (isRemote) {
           const res = await fetch(`/api/remote/servers/${selectedDevice.id}/stats`);
-          if (!res.ok) {
-            console.error('Stats request failed:', res.status);
-            return;
-          }
+          if (!res.ok) return; // 静默跳过，不打印错误
           const data = await res.json();
+          if (data.offline) return; // 未连接，静默跳过
 
           // 解析远程统计 - 新结构化格式
           let cpu = 0, memory = 0, disk = 0;
@@ -81,8 +79,8 @@ export default function GlobalStatusBar() {
             })() : 0,
           });
         }
-      } catch (err) {
-        console.error('Failed to fetch quick stats:', err);
+      } catch {
+        // 静默跳过（未连接、网络波动等）
       }
     };
 

@@ -2465,7 +2465,12 @@ app.get('/api/remote/servers/:id/stats', async (req, res) => {
     const stats = await remote.getRemoteSystemStats(req.params.id);
     res.json(stats);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    // 未连接不算错误，前端静默处理
+    if (err.message === '服务器未连接') {
+      res.json({ offline: true });
+    } else {
+      res.status(500).json({ error: err.message });
+    }
   }
 });
 
