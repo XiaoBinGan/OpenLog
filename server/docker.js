@@ -1,5 +1,144 @@
 import Docker from 'dockerode';
 import path from 'path';
+import fs from 'fs';
+
+// ─── 工具函数 ──────────────────────────────────────────
+
+// 去重规范化：去掉时间戳，只保留错误模式
+function normalizeForDedup(line) {
+  // 去掉常见的日期时间前缀：Mon Jun 8 09:48:37 UTC 2026 -
+  return (line || '')
+    .replace(/^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+\w+\s+\d+\s+\d{2}:\d{2}:\d{2}\s+\w+\s+\d{4}\s*-\s*/i, '')
+    .replace(/^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}[^\s]*\s*-?\s*/i, '')
+    // 去掉请求 ID 等动态值
+    .replace(/req_[a-f0-9]+/gi, 'req_XXX')
+    .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, 'UUID')
+    .trim();
+}
+
+// 解析日志行中的等级
+function parseLogLine(line) {
+  const match = line.match(/^\s*\[(FATAL|ERROR|WARN|WARNING|INFO|DEBUG|TRACE)\]\s*/i);
+  if (match) {
+    const level = match[1].toUpperCase() === 'WARNING' ? 'WARN' : match[1].toUpperCase();
+    return { level, content: line.substring(match[0].length) };
+  }
+  return { level: 'INFO', content: line };
+}
+
+// ─── 容器内文件日志扫描 ──────────────────────────────────
+
+// 获取容器的挂载信息（需要在 listContainers 之后单独 inspect）
+async function getContainerMounts(docker, containerId) {
+  try {
+    const c = docker.getContainer(containerId);
+    const info = await c.inspect();
+    return (info.Mounts || []).map(m => ({
+      type: m.Type,
+      source: m.Source,
+      destination: m.Destination,
+      mode: m.Mode || 'rw',
+    }));
+  } catch {
+    return [];
+  }
+}
+
+// 从宿主机路径扫描日志文件中的错误行
+// hostExec: 远程命令执行回调，为空表示本地直接读
+async function scanContainerFileLogs(docker, containerId, logPaths, sinceCheckpoint, hostExec = null) {
+  const results = [];
+  if (!logPaths || logPaths.length === 0) return results;
+
+  const mounts = await getContainerMounts(docker, containerId);
+  if (mounts.length === 0) return results;
+
+  // 匹配：容器内路径是否命中配置的 logPaths
+  const matchedMounts = mounts.filter(m =>
+    logPaths.some(lp => {
+      // 支持精确匹配和前缀匹配（如 /app/logs 匹配 /app/logs/xxx）
+      const dest = m.destination.replace(/\/+$/, '');
+      const cfg = lp.replace(/\/+$/, '');
+      return dest === cfg || dest.startsWith(cfg + '/') || cfg.startsWith(dest + '/') || dest === cfg;
+    })
+  );
+
+  for (const mount of matchedMounts) {
+    try {
+      let fileList = [];
+
+      if (hostExec) {
+        // 远程：通过 SSH 执行 find/tail
+        const sinceArg = sinceCheckpoint
+          ? `-newermt "${new Date(sinceCheckpoint).toISOString().slice(0, 19).replace('T', ' ')}"`
+          : '-mmin -5'; // 默认最近 5 分钟
+
+        const cmd = `find "${mount.source}" -maxdepth 2 -name "*.log" ${sinceArg} 2>/dev/null | head -20`;
+        const res = await hostExec(cmd);
+        if (res && res.stdout) {
+          fileList = res.stdout.trim().split('\n').filter(Boolean);
+        }
+      } else {
+        // 本地：直接读文件系统
+        try {
+          const dirEntries = fs.readdirSync(mount.source, { withFileTypes: true });
+          fileList = dirEntries
+            .filter(e => e.isFile() && e.name.endsWith('.log'))
+            .map(e => path.join(mount.source, e.name));
+
+          // 按修改时间过滤
+          if (sinceCheckpoint) {
+            const sinceMs = new Date(sinceCheckpoint).getTime();
+            fileList = fileList.filter(f => {
+              try { return fs.statSync(f).mtimeMs > sinceMs; } catch { return false; }
+            });
+          } else {
+            // 默认最近 5 分钟
+            const cutoff = Date.now() - 5 * 60 * 1000;
+            fileList = fileList.filter(f => {
+              try { return fs.statSync(f).mtimeMs > cutoff; } catch { return false; }
+            });
+          }
+        } catch { /* dir missing */ }
+      }
+
+      // 对每个文件，grep 错误行
+      for (const f of fileList) {
+        try {
+          let content = '';
+          if (hostExec) {
+            const res = await hostExec(`grep -iE "error|fail|exception|fatal|traceback|panic|timeout|refused" "${f}" 2>/dev/null | tail -20`);
+            content = res?.stdout || '';
+          } else {
+            try {
+              content = fs.readFileSync(f, 'utf8');
+              // 本地读，取最后 200 行再 grep
+              const lines = content.split('\n').slice(-200);
+              content = lines.filter(l => /error|fail|exception|fatal|traceback|panic|timeout|refused/i.test(l)).slice(-20).join('\n');
+            } catch { content = ''; }
+          }
+
+          if (content.trim()) {
+            const fileName = path.basename(f);
+            const lines = content.split('\n').filter(Boolean);
+            for (const line of lines) {
+              const parsed = parseLogLine(line.trim());
+              results.push({
+                timestamp: new Date().toISOString(),
+                line: line.trim(),
+                level: /error|fail|exception|fatal|timeout|refused/i.test(line) ? 'ERROR' : 'WARN',
+                content: parsed.content,
+                source: fileName,
+              });
+            }
+          }
+        } catch { /* single file fail */ }
+      }
+    } catch { /* mount fail */ }
+  }
+
+  return results;
+}
 
 // Docker 连接池（每个 sourceId 一个实例）
 export const dockerInstances = new Map();
@@ -246,11 +385,16 @@ export async function getContainerLogs(sourceId, containerId, config = {}) {
 
       if (parts) {
         currentTimestamp = parts[1];
-        lines.push({ timestamp: currentTimestamp, line: parts[2] });
+        const parsed = parseLogLine(parts[2]);
+        lines.push({ timestamp: currentTimestamp, line: parts[2], level: parsed.level, content: parsed.content });
       } else if (currentTimestamp) {
-        lines.push({ timestamp: currentTimestamp, line: data.trim() });
+        const rawLine = data.trim();
+        const parsed = parseLogLine(rawLine);
+        lines.push({ timestamp: currentTimestamp, line: rawLine, level: parsed.level, content: parsed.content });
       } else {
-        lines.push({ timestamp: new Date().toISOString(), line: data.trim() });
+        const rawLine = data.trim();
+        const parsed = parseLogLine(rawLine);
+        lines.push({ timestamp: new Date().toISOString(), line: rawLine, level: parsed.level, content: parsed.content });
       }
 
       i += 8 + size;
@@ -614,54 +758,149 @@ export function stopAllEventWatchers() {
 
 // ─── 容器日志定时巡检 ────────────────────────────────────
 // 巡检所有已启用 Docker 源的容器日志，按配置等级过滤异常行
-export async function patrolContainerLogs(sources, levels) {
+// 1. 扫描容器 stdout/stderr（docker logs）
+// 2. 扫描容器内文件日志（通过挂载点读取 host 上的日志文件）
+// 增量巡检：记录每个容器上次检查的日志时间戳
+// hostExecForSource: (src) => (cmd) => { stdout, stderr } | null
+let _patrolCheckpoints = new Map(); // key: "sourceId:containerId" → { timestamp, lineCount }
+let _reportedPatterns = new Map(); // key: "sourceId:containerId" → Set<normalizedPattern>
+
+export function resetPatrolCheckpoints() {
+  _patrolCheckpoints.clear();
+  _reportedPatterns.clear();
+}
+
+/** 检测容器重启：当前最后一条日志时间小于 checkpoint 时间 → 时间倒流 = 重启过 */
+function getPatrolSince(key, currentLogs) {
+  const cp = _patrolCheckpoints.get(key);
+  if (!cp) {
+    _reportedPatterns.delete(key); // 首次扫描，清空历史
+    return null;
+  }
+  if (currentLogs.length === 0) return cp.timestamp;
+  const lastTs = currentLogs[currentLogs.length - 1].timestamp;
+  // 时间倒流 = 容器重启，checkpoint 和 reported patterns 都失效
+  if (lastTs < cp.timestamp) {
+    _reportedPatterns.delete(key);
+    return null;
+  }
+  return cp.timestamp;
+}
+
+function updatePatrolCheckpoint(key, allLogs) {
+  if (allLogs.length === 0) return;
+  _patrolCheckpoints.set(key, {
+    timestamp: allLogs[allLogs.length - 1].timestamp,
+    lineCount: allLogs.length,
+  });
+}
+
+export async function patrolContainerLogs(sources, levels, hostExecForSource = null) {
   const results = [];
   const effectiveLevels = (levels && levels.length > 0) ? levels : ['ERROR', 'FATAL'];
 
-  for (const src of sources) {
-    if (!src.enabled) continue;
+  // 所有源并行巡检
+  await Promise.all(sources.map(async (src) => {
+    if (!src.enabled) return;
+    const srcExec = hostExecForSource ? hostExecForSource(src) : null;
     try {
+      const docker = getDocker(src.id, src);
       const containers = await listContainers(src.id, src);
-      for (const c of containers) {
-        if (c.state !== 'running') continue; // 巡检只扫运行中的容器
+      const runningContainers = containers.filter(c => c.state === 'running');
+      const logPaths = (src.logPaths && src.logPaths.length > 0) ? src.logPaths : null;
+
+      // 每个容器并行扫描
+      await Promise.all(runningContainers.map(async (c) => {
         try {
-          const logs = await getContainerLogs(src.id, c.id, src);
-          const matchedLines = (logs || []).filter(l => {
-            const lineLevel = l.line?.match(/\b(INFO|WARN|WARNING|ERROR|DEBUG|TRACE|FATAL|CRITICAL)\b/i);
-            if (lineLevel) {
-              const lvl = lineLevel[1].toUpperCase();
-              if (lvl === 'WARNING') lvl = 'WARN';
-              if (lvl === 'CRITICAL') lvl = 'FATAL';
-              return effectiveLevels.includes(lvl);
-            }
-            // 没有标准日志级别时，用关键词匹配
-            return effectiveLevels.some(lv => {
-              const kw = { ERROR: /error|fail|exception/i, FATAL: /fatal|panic|crash/i, WARN: /warn/i }[lv];
-              return kw && kw.test(l.line || '');
-            });
+          const key = `${src.id}:${c.id}`;
+
+          // 并行：stdout/stderr + 文件日志
+          const [stdLogs, fileLogs] = await Promise.all([
+            getContainerLogs(src.id, c.id, src)
+              .then(logs => logs || [])
+              .catch(() => []),
+            logPaths
+              ? scanContainerFileLogs(docker, c.id, logPaths,
+                  _patrolCheckpoints.get(key)?.timestamp || null, srcExec)
+              : Promise.resolve([]),
+          ]);
+
+          // 检测重启：时间倒流则重置 checkpoint
+          const since = getPatrolSince(key, stdLogs);
+
+          // stdout/stderr 增量过滤
+          const newStdLogs = since
+            ? stdLogs.filter(l => l.timestamp > since)
+            : stdLogs.slice(-100);
+
+          // 合并所有新日志
+          const allNew = [...newStdLogs, ...fileLogs];
+          if (allNew.length === 0) return;
+
+          // 更新检查点
+          updatePatrolCheckpoint(key, stdLogs);
+
+          // 按等级过滤
+          const matchedLines = allNew.filter(l => {
+            const lvl = (l.level || 'INFO').toUpperCase();
+            return effectiveLevels.includes(lvl);
           });
 
           if (matchedLines.length > 0) {
-            results.push({
-              sourceId: src.id,
-              sourceName: src.name,
-              containerId: c.shortId,
-              containerName: c.names?.[0] || c.shortId,
-              image: c.image,
-              state: c.state,
-              matchCount: matchedLines.length,
-              lines: matchedLines.slice(-20).map(l => ({
-                timestamp: l.timestamp,
-                line: l.line
-              }))
+            // 去重（忽略时间戳和动态值）
+            const deduped = [];
+            const seen = new Set();
+            for (let i = matchedLines.length - 1; i >= 0; i--) {
+              const raw = matchedLines[i].content || matchedLines[i].line || '';
+              const sig = normalizeForDedup(raw);
+              if (!seen.has(sig)) {
+                seen.add(sig);
+                deduped.unshift(matchedLines[i]);
+              }
+            }
+
+            // 过滤已报告过的错误模式
+            let reported = _reportedPatterns.get(key);
+            if (!reported) {
+              reported = new Set();
+              _reportedPatterns.set(key, reported);
+            }
+            const newErrors = deduped.filter(l => {
+              const sig = normalizeForDedup(l.content || l.line || '');
+              if (reported.has(sig)) return false;
+              reported.add(sig);
+              return true;
             });
+
+            // 只上报新错误
+            if (newErrors.length > 0) {
+              results.push({
+                sourceId: src.id,
+                sourceName: src.name,
+                containerId: c.shortId,
+                containerName: c.names?.[0] || c.shortId,
+                image: c.image,
+                state: c.state,
+                totalNewLines: allNew.length,
+                matchCount: matchedLines.length,
+                uniqueCount: newErrors.length,
+                totalUnique: reported.size, // 该容器所有已发现的不同错误类型数
+                lines: newErrors.slice(-30).map(l => ({
+                  timestamp: l.timestamp,
+                  line: l.line,
+                  level: l.level,
+                  content: l.content,
+                  source: l.source,
+                })),
+              });
+            }
           }
-        } catch (_) { /* 单个容器日志读取失败跳过 */ }
-      }
+        } catch (_) { /* 单个容器跳过 */ }
+      }));
     } catch (err) {
       console.warn(`[Patrol] 跳过 ${src.name}:`, err.message);
     }
-  }
+  }));
 
   return results;
 }

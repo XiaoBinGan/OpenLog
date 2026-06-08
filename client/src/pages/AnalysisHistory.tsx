@@ -16,10 +16,12 @@ import {
 interface AnalysisRecord {
   id: string;
   timestamp: string;
-  sourceId: string;
+  sourceId?: string;
   sourceName: string;
-  log: { id: string; timestamp: string; level: string; message: string; source: string };
+  type?: 'patrol' | 'health' | 'log';
+  log?: { id: string; timestamp: string; level: string; message: string; source: string };
   analysis: string | null;
+  summary?: string;
   status: 'done' | 'error';
   error?: string;
   model: string;
@@ -48,6 +50,7 @@ export default function AnalysisHistory() {
         const q = search.toLowerCase();
         result = result.filter((r: AnalysisRecord) =>
           r.log?.message?.toLowerCase().includes(q) ||
+          r.summary?.toLowerCase().includes(q) ||
           r.analysis?.toLowerCase().includes(q) ||
           r.sourceName?.toLowerCase().includes(q)
         );
@@ -168,15 +171,21 @@ export default function AnalysisHistory() {
                 {statusIcon(record.status)}
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
+                    {record.type === 'patrol' && <span className="text-xs px-1 py-0.5 rounded bg-yellow-500/15 text-yellow-400 border border-yellow-500/20 flex-shrink-0">巡检</span>}
+                    {record.type === 'health' && <span className="text-xs px-1 py-0.5 rounded bg-red-500/15 text-red-400 border border-red-500/20 flex-shrink-0">诊断</span>}
                     <span className="text-sm font-medium text-dark-200 truncate max-w-md">
-                      {record.log?.message?.slice(0, 80)}
+                      {record.type !== 'log' ? record.sourceName : record.log?.message?.slice(0, 80)}
                     </span>
                   </div>
                   <div className="flex items-center gap-3 mt-1">
-                    <span className="text-xs text-dark-500 flex items-center gap-1">
-                      <Server className="w-3 h-3" />
-                      {record.sourceName}
-                    </span>
+                    {record.type !== 'log' ? (
+                      <span className="text-xs text-dark-500 line-clamp-1">{record.summary?.replace(/\n/g, ' · ')?.slice(0, 120)}</span>
+                    ) : (
+                      <span className="text-xs text-dark-500 flex items-center gap-1">
+                        <Server className="w-3 h-3" />
+                        {record.sourceName}
+                      </span>
+                    )}
                     <span className={`text-xs px-1.5 py-0.5 rounded border ${statusBadge(record.status)}`}>
                       {record.status === 'done' ? '完成' : '失败'}
                     </span>
@@ -203,12 +212,18 @@ export default function AnalysisHistory() {
               {/* Expanded content */}
               {expanded === record.id && (
                 <div className="px-4 pb-4 border-t border-dark-800">
-                  {/* Original log */}
+                  {/* Original log / context */}
                   <div className="mt-3 mb-3">
-                    <p className="text-xs text-dark-500 mb-1">原始日志</p>
-                    <pre className="px-3 py-2 bg-dark-900 rounded-lg text-xs text-dark-300 font-mono overflow-x-auto whitespace-pre-wrap">
-                      {record.log?.message}
-                    </pre>
+                    <p className="text-xs text-dark-500 mb-1">{record.type !== 'log' ? '分析上下文' : '原始日志'}</p>
+                    {record.type !== 'log' ? (
+                      <pre className="px-3 py-2 bg-dark-900 rounded-lg text-xs text-dark-400 font-mono overflow-x-auto whitespace-pre-wrap max-h-32">
+                        {record.summary}
+                      </pre>
+                    ) : (
+                      <pre className="px-3 py-2 bg-dark-900 rounded-lg text-xs text-dark-300 font-mono overflow-x-auto whitespace-pre-wrap">
+                        {record.log?.message}
+                      </pre>
+                    )}
                   </div>
                   {/* Analysis result */}
                   {record.status === 'done' && record.analysis ? (

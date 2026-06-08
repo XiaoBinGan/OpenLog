@@ -1,4 +1,6 @@
 import { useState, useEffect } from 'react';
+import { useSearchParams } from 'react-router-dom';
+import { useToast } from '../contexts/ToastContext';
 import { 
   Brain, 
   Sparkles, 
@@ -28,6 +30,7 @@ import type { Log, RemoteServer } from '../types';
 
 export default function Analytics() {
   const { selectedDevice, isRemote } = useDevice();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [logs, setLogs] = useState<Log[]>([]);
   const [loading, setLoading] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
@@ -38,6 +41,7 @@ export default function Analytics() {
   const [healthLoading, setHealthLoading] = useState(false);
   const [customPrompt, setCustomPrompt] = useState('');
   const [copied, setCopied] = useState(false);
+  const toast = useToast();
   
   // Fix code flow
   const [selectedLog, setSelectedLog] = useState<Log | null>(null);
@@ -69,6 +73,137 @@ export default function Analytics() {
       setPatrolTimestamp(data.data.timestamp);
     }
   });
+
+  // 从 toast 点击跳转过来的，自动触发 AI 分析
+  useEffect(() => {
+    const auto = searchParams.get('autoPatrol');
+    if (auto === '1') {
+      setSearchParams({}, { replace: true });
+
+      (async () => {
+        // Step 1: 触发巡检
+        try {
+          const patrolRes = await fetch('/api/docker/patrol/now', { method: 'POST' });
+          const patrolData = await patrolRes.json();
+          if (patrolData.results?.length > 0) {
+            setPatrolResults(patrolData.results);
+            setPatrolTimestamp(new Date().toISOString());
+          } else {
+            // 巡检无新增，尝试从缓存拿
+            try {
+              const last = await fetch('/api/docker/patrol/last').then(r => r.json());
+              if (last.results?.length > 0) {
+                setPatrolResults(last.results);
+                setPatrolTimestamp(last.timestamp);
+              }
+            } catch {}
+          }
+        } catch {}
+
+        // Step 2: AI 分析
+        setPatrolAnalyzing(true);
+        setPatrolAnalysis('');
+        try {
+          const res = await fetch('/api/docker/patrol/analyze', { method: 'POST' });
+          if (!res.ok) {
+            setPatrolAnalysis('🕐 暂无新异常日志，尝试分析历史数据...');
+            // 从 patrol/last 拉已有数据展示
+            const last = await fetch('/api/docker/patrol/last').then(r => r.json());
+            if (last.results?.length > 0) {
+              setPatrolResults(last.results);
+              setPatrolTimestamp(last.timestamp);
+              setPatrolAnalysis('✅ 上次巡检无新增异常。以下为已记录的异常：');
+            } else {
+              setPatrolAnalysis('✨ 所有容器运行正常，未发现任何异常日志。');
+            }
+            setPatrolAnalyzing(false);
+            return;
+          }
+          const reader = res.body?.getReader();
+          const decoder = new TextDecoder();
+          if (!reader) return;
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            const text = decoder.decode(value, { stream: true });
+            const lines = text.split('\n');
+            for (const line of lines) {
+              if (line.startsWith('data: ')) {
+                const payload = line.slice(6);
+                if (payload === '[DONE]') continue;
+                try {
+                  const j = JSON.parse(payload);
+                  if (j.content) setPatrolAnalysis(prev => (prev || '') + j.content);
+                  if (j.error) setPatrolAnalysis(prev => (prev || '') + `\n❌ ${j.error}`);
+                } catch {}
+              }
+            }
+          }
+        } catch {}
+        setPatrolAnalyzing(false);
+      })();
+    }
+  }, [searchParams]);
+
+  // 从容器退出 toast 跳转过来的，触发单容器诊断
+  useEffect(() => {
+    if (searchParams.get('autoExit') === '1') {
+      const sourceId = searchParams.get('sourceId') || '';
+      const containerId = searchParams.get('containerId') || '';
+      const containerName = searchParams.get('containerName') || '';
+      setSearchParams({}, { replace: true });
+      setHealthMode('containers');
+
+      if (!sourceId || !containerId) return;
+
+      // 单容器诊断
+      setTimeout(async () => {
+        setHealthLoading(true);
+        setAnalysis('');
+        try {
+          const res = await fetch(`/api/docker/container/${encodeURIComponent(sourceId)}/${encodeURIComponent(containerId)}/analyze`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              exitCode: parseInt(searchParams.get('exitCode') || '0'),
+              exitType: searchParams.get('exitType') || '',
+              exitLabel: searchParams.get('exitLabel') || '',
+              image: searchParams.get('image') || '',
+            }),
+          });
+          const reader = res.body?.getReader();
+          if (reader) {
+            const decoder = new TextDecoder();
+            let buffer = '';
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              buffer += decoder.decode(value, { stream: true });
+              const lines = buffer.split('\n');
+              buffer = lines.pop() || '';
+              for (const line of lines) {
+                if (line.startsWith('data: ')) {
+                  const d = line.slice(6);
+                  if (d === '[DONE]') continue;
+                  try {
+                    const j = JSON.parse(d);
+                    if (j.content) setAnalysis(p => (p || '') + j.content);
+                  } catch {}
+                }
+              }
+            }
+          }
+          // 拉退出容器清单展示在健康报告里
+          setHealthReport({
+            target: containerName,
+            problems: [{ name: containerName, image: searchParams.get('image') || '?', exitCode: searchParams.get('exitCode'), exitType: searchParams.get('exitType'), sourceName: searchParams.get('sourceId'), errors: [] }],
+            summary: { total: 1, running: 0, oomKilled: 0, errorExited: 1, normalExited: 0 }
+          });
+        } catch {}
+        setHealthLoading(false);
+      }, 300);
+    }
+  }, [searchParams]);
 
   useEffect(() => {
     fetchLogs();
@@ -123,6 +258,7 @@ export default function Analytics() {
       setHealthReport(report);
       
       if (report.problems && report.problems.length > 0) {
+        toast.warning(`健康检查: ${report.problems.length} 个问题`);
         // Step 2: AI diagnosis (SSE)
         const analyzeRes = await fetch('/api/docker/health-check/analyze', { method: 'POST' });
         const reader = analyzeRes.body?.getReader();
@@ -152,6 +288,7 @@ export default function Analytics() {
         }
       } else {
         setAnalysis(report.analysis || '🎉 所有容器运行正常');
+        toast.success('健康检查通过 · 所有容器正常');
       }
     } catch (err: any) {
       setAnalysis('❌ 诊断失败: ' + (err.message || err));
@@ -487,12 +624,56 @@ export default function Analytics() {
               </details>
             )}
           </div>
-          <button
-            onClick={() => setDismissedAlerts(prev => new Set([...prev, alert._key]))}
-            className="text-dark-500 hover:text-dark-300"
-          >
-            <X className="w-4 h-4" />
-          </button>
+          <div className="flex items-center gap-1">
+            <button
+              onClick={async () => {
+                setAnalysis('');
+                setHealthMode('containers');
+                setHealthLoading(true);
+                try {
+                  const res = await fetch(`/api/docker/container/${encodeURIComponent(alert.sourceId)}/${encodeURIComponent(alert.containerId)}/analyze`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                      exitCode: alert.exitCode,
+                      exitType: alert.exitType,
+                      exitLabel: alert.label,
+                      image: alert.image,
+                    }),
+                  });
+                  const reader = res.body?.getReader();
+                  if (reader) {
+                    const decoder = new TextDecoder();
+                    let buffer = '';
+                    while (true) {
+                      const { done, value } = await reader.read();
+                      if (done) break;
+                      buffer += decoder.decode(value, { stream: true });
+                      const lines = buffer.split('\n');
+                      buffer = lines.pop() || '';
+                      for (const line of lines) {
+                        if (line.startsWith('data: ')) {
+                          const d = line.slice(6);
+                          if (d === '[DONE]') continue;
+                          try { const j = JSON.parse(d); if (j.content) setAnalysis(p => (p || '') + j.content); } catch {}
+                        }
+                      }
+                    }
+                  }
+                } catch {}
+                setHealthLoading(false);
+              }}
+              className="px-2.5 py-1 text-xs rounded-lg bg-dark-800 text-accent-400 hover:bg-dark-700 border border-dark-700 hover:border-accent-500/30 transition-colors"
+            >
+              诊断
+            </button>
+            <button
+              onClick={() => setDismissedAlerts(prev => new Set([...prev, alert._key]))}
+              className="p-1 text-dark-500 hover:text-dark-300"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
         </div>
       ))}
 
@@ -811,8 +992,14 @@ export default function Analytics() {
                     if (data.results) {
                       setPatrolResults(data.results);
                       setPatrolTimestamp(new Date().toISOString());
+                      if (data.results.length > 0) {
+                        const total = data.results.reduce((s: number, r: any) => s + (r.uniqueCount || r.matchCount || 0), 0);
+                        toast.info(`巡检完成 · ${data.results.length} 个容器 · ${total} 种异常`);
+                      } else {
+                        toast.success('巡检完成 · 无异常');
+                      }
                     }
-                  } catch (_) {}
+                  } catch (_) { toast.error('巡检请求失败'); }
                 }}
                 className="px-3 py-1.5 rounded-lg bg-dark-800 text-dark-400 hover:text-dark-200 transition-colors flex items-center gap-1 text-sm"
               >
@@ -868,18 +1055,26 @@ export default function Analytics() {
                     <span className="text-xs text-dark-500">{r.sourceName}</span>
                     <span className="text-xs text-dark-600">{r.image}</span>
                   </div>
-                  <span className="px-2 py-0.5 rounded text-xs font-medium bg-red-500/20 text-red-400">
-                    {r.matchCount} 条匹配
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-dark-500">{r.totalNewLines} 行新日志 · {r.uniqueCount} 种错误</span>
+                    <span className="px-2 py-0.5 rounded text-xs font-medium bg-red-500/20 text-red-400">
+                      {r.matchCount} 条匹配
+                    </span>
+                  </div>
                 </summary>
                 <div className="px-4 pb-3">
-                  <pre className="text-xs text-dark-400 font-mono bg-dark-950 rounded p-2 overflow-x-auto max-h-48">
-                    {r.lines.map((l: any, j: number) => (
-                      <div key={j} className="flex gap-2">
-                        <span className="text-dark-600 flex-shrink-0">{l.timestamp ? new Date(l.timestamp).toLocaleTimeString() : ''}</span>
-                        <span>{l.line}</span>
-                      </div>
-                    ))}
+                  <pre className="text-xs font-mono bg-dark-950 rounded p-2 overflow-x-auto max-h-48">
+                    {r.lines.map((l: any, j: number) => {
+                      const lvl = l.level || 'INFO';
+                      const lvlColor = lvl === 'ERROR' || lvl === 'FATAL' ? 'text-red-400' : lvl === 'WARN' ? 'text-yellow-400' : 'text-blue-400';
+                      return (
+                        <div key={j} className="flex gap-2 py-0.5">
+                          <span className="text-dark-600 flex-shrink-0 w-20">{l.timestamp ? new Date(l.timestamp).toLocaleTimeString() : ''}</span>
+                          <span className={`flex-shrink-0 w-14 font-semibold ${lvlColor}`}>[{lvl}]</span>
+                          <span className="text-dark-300">{l.content || l.line}</span>
+                        </div>
+                      );
+                    })}
                   </pre>
                 </div>
               </details>

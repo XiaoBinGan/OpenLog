@@ -1,6 +1,7 @@
-import { useState, useEffect, useRef } from 'react';
-import { Outlet, NavLink, useNavigate } from 'react-router-dom';
+import { useState, useEffect, useRef, useCallback } from 'react';
+import { Outlet, NavLink, useNavigate, useLocation } from 'react-router-dom';
 import { AssistantProvider } from '../contexts/AssistantContext';
+import { useToast } from '../contexts/ToastContext';
 import {
   LayoutDashboard,
   FileText,
@@ -37,16 +38,113 @@ function LayoutContent() {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [ws, setWs] = useState<WebSocket | null>(null);
   const navigate = useNavigate();
+  const location = useLocation();
+  const toast = useToast();
 
-  // 统一 WebSocket 连接（供 AI 分析通知使用）
-  useEffect(() => {
+  // 统一 WebSocket 连接（带自动重连，供全局通知使用）
+  const wsRef = useRef<WebSocket | null>(null);
+  const reconnectTimer = useRef<ReturnType<typeof setTimeout>>();
+
+  const connectWs = useCallback(() => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) return;
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsInstance = new WebSocket(`${protocol}//${window.location.host}/ws`);
-    wsInstance.onopen = () => console.log('[WS] Connected');
-    wsInstance.onclose = () => console.log('[WS] Disconnected');
+    wsRef.current = wsInstance;
+
+    wsInstance.onopen = () => {
+      console.log('[WS] Connected');
+      // 重连后检查是否有遗漏的巡检/退出事件
+      fetch('/api/docker/patrol/last')
+        .then(r => r.json())
+        .then(data => {
+          if (data.results?.length > 0) {
+            for (const r of data.results) {
+              const cName = r.containerName || r.containerId?.slice(0, 12);
+              const count = r.totalUnique || r.uniqueCount;
+              toast.warning(
+                `🐳 ${cName} · ${count} 种异常`,
+                { action: { label: '分析 →', onClick: () => navigate('/analytics?autoPatrol=1') },
+                  persistent: true,
+                  group: `patrol-${cName}` }
+              );
+            }
+          }
+        })
+        .catch(() => {});
+    };
+    wsInstance.onclose = () => {
+      console.log('[WS] Disconnected, 5s 后重连...');
+      wsRef.current = null;
+      setWs(null);
+      clearTimeout(reconnectTimer.current);
+      reconnectTimer.current = setTimeout(connectWs, 5000);
+    };
+    wsInstance.onerror = () => {
+      wsInstance.close(); // 触发 onclose → 重连
+    };
+
+    // 全局监听容器退出和巡检事件
+    wsInstance.addEventListener('message', (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        if (data.type === 'container_exited') {
+          const { containerName, containerId, exitCode, exitType, sourceId, image } = data;
+          const name = containerName || containerId?.slice(0, 12);
+          const label = exitType === 'oom' ? 'OOM 内存溢出'
+            : exitType === 'error' ? '异常退出'
+            : exitType === 'segfault' ? '段错误崩溃'
+            : '已退出';
+          const code = exitCode != null ? ` (${exitCode})` : '';
+          // 非正常退出才给分析入口
+          if (exitType && exitType !== 'normal') {
+            const params = new URLSearchParams({
+              autoExit: '1',
+              sourceId: sourceId || '',
+              containerId: containerId || '',
+              containerName: name,
+              exitCode: String(exitCode || ''),
+              exitType: exitType,
+              exitLabel: label,
+              image: image || '',
+            });
+            toast.error(`${name} ${label}${code}`, {
+              action: { label: '诊断 →', onClick: () => navigate(`/analytics?${params.toString()}`) },
+              persistent: true,
+              group: `exit-${containerId || name}`
+            });
+          } else {
+            toast.error(`${name} ${label}${code}`, { persistent: true, group: `exit-${containerId || name}` });
+          }
+        }
+        if (data.type === 'container_patrol') {
+          const results = data.data?.results || [];
+          if (!location.pathname.startsWith('/analytics')) {
+            for (const r of results) {
+              const cName = r.containerName || r.containerId?.slice(0, 12);
+              const count = r.totalUnique || r.uniqueCount;
+              toast.warning(
+                `🐳 ${cName} · ${count} 种异常`,
+                { action: { label: '分析 →', onClick: () => navigate('/analytics?autoPatrol=1') },
+                  persistent: true,
+                  group: `patrol-${cName}` }
+              );
+            }
+          }
+        }
+      } catch {}
+    });
+
     setWs(wsInstance);
-    return () => wsInstance.close();
   }, []);
+
+  // 挂载时连接，卸载时清理
+  useEffect(() => {
+    connectWs();
+    return () => {
+      clearTimeout(reconnectTimer.current);
+      wsRef.current?.close();
+    };
+  }, [connectWs]);
 
   const handleViewLogs = () => {
     navigate('/logs');

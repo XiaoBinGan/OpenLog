@@ -172,6 +172,8 @@ export interface DockerSource {
   enabled: boolean;
   autoAnalysis: boolean;
   projects: string[];
+  /** 容器内日志文件路径，如 /app/logs，巡检时扫描这些路径下的 *.log */
+  logPaths?: string[];
 }
 
 export interface Settings {

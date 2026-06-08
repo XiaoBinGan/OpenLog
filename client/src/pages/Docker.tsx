@@ -371,6 +371,9 @@ export default function Docker() {
             const logsLoading = loadingLogs.has(key);
             const traceLoading_ = traceLoading.has(key);
             const errorLogs = logs.filter(l => l.level === 'ERROR' || l.level === 'WARN');
+            // 去重计数：忽略时间戳，只比错误模式
+            const normalize = (s: string) => (s || '').replace(/^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+\w+\s+\d+\s+\d{2}:\d{2}:\d{2}\s+\w+\s+\d{4}\s*-\s*/i, '').replace(/req_[a-f0-9]+/gi,'req_XXX').trim();
+            const uniqueErrorSet = new Set(errorLogs.map(l => normalize(l.content || l.line)));
 
             return (
               <div key={key} className={`glass rounded-xl border transition-all overflow-hidden ${
@@ -405,7 +408,7 @@ export default function Docker() {
                       <span className={`text-xs ${getStateColor(c.state, c.exitType)}`}>{c.state}</span>
                       {errorLogs.length > 0 && (
                         <span className="text-xs px-1.5 py-0.5 rounded bg-red-500/15 text-red-400 border border-red-500/20">
-                          {errorLogs.length} 错误
+                          {uniqueErrorSet.size} 种错误
                         </span>
                       )}
                       {getExitLabel(c.exitType, c.exitCode) && (

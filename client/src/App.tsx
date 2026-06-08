@@ -11,28 +11,31 @@ import Settings from './pages/Settings';
 import Remote from './pages/Remote';
 import { RemoteProvider } from './contexts/RemoteContext';
 import { DeviceProvider } from './contexts/DeviceContext';
+import { ToastProvider } from './contexts/ToastContext';
 
 function App() {
   return (
     <BrowserRouter>
-      <DeviceProvider>
-        <RemoteProvider>
-          <Routes>
-            <Route path="/" element={<Layout />}>
-              <Route index element={<Navigate to="/monitor" replace />} />
-              <Route path="dashboard" element={<Dashboard />} />
-              <Route path="logs" element={<Logs />} />
-              <Route path="remote" element={<Remote />} />
-              <Route path="docker" element={<Docker />} />
-              <Route path="analytics" element={<Analytics />} />
-              <Route path="analysis-history" element={<AnalysisHistory />} />
-              <Route path="assistant" element={<Assistant />} />
-              <Route path="monitor" element={<Monitor />} />
-              <Route path="settings" element={<Settings />} />
-            </Route>
-          </Routes>
-        </RemoteProvider>
-      </DeviceProvider>
+      <ToastProvider>
+        <DeviceProvider>
+          <RemoteProvider>
+            <Routes>
+              <Route path="/" element={<Layout />}>
+                <Route index element={<Navigate to="/monitor" replace />} />
+                <Route path="dashboard" element={<Dashboard />} />
+                <Route path="logs" element={<Logs />} />
+                <Route path="remote" element={<Remote />} />
+                <Route path="docker" element={<Docker />} />
+                <Route path="analytics" element={<Analytics />} />
+                <Route path="analysis-history" element={<AnalysisHistory />} />
+                <Route path="assistant" element={<Assistant />} />
+                <Route path="monitor" element={<Monitor />} />
+                <Route path="settings" element={<Settings />} />
+              </Route>
+            </Routes>
+          </RemoteProvider>
+        </DeviceProvider>
+      </ToastProvider>
     </BrowserRouter>
   );
 }
