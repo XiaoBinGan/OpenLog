@@ -806,10 +806,32 @@ function startContainerPatrol() {
   console.log(`[Patrol] 容器日志巡检已启动 (间隔: ${interval / 1000}s, 等级: ${levels.join(',')})`);
 }
 
+// 为远程 Docker 源构建 hostExec 回调
+function buildHostExecMap() {
+  const remoteServers = remote.getServers();
+  const map = new Map();
+  for (const rs of remoteServers) {
+    if (rs.status === 'online') {
+      map.set(rs.host, async (cmd) => {
+        try {
+          return await remote.execShellCommand(rs.id, cmd, 10000);
+        } catch { return { stdout: '', stderr: 'ssh failed' }; }
+      });
+    }
+  }
+  return map;
+}
+
 async function runPatrol(sources, levels) {
   try {
-    const results = await docker.patrolContainerLogs(sources, levels);
-    lastPatrolResults = results;
+    const hostExecMap = buildHostExecMap();
+    const hostExecForSource = (src) => hostExecMap.get(src.host) || null;
+
+    const results = await docker.patrolContainerLogs(sources, levels, hostExecForSource);
+    // 只在有新结果时覆盖，避免空巡检冲掉上一次有效数据
+    if (results.length > 0) {
+      lastPatrolResults = results;
+    }
     if (results.length > 0) {
       broadcast({ type: 'container_patrol', data: { results, timestamp: new Date().toISOString() } });
     }
@@ -820,6 +842,7 @@ async function runPatrol(sources, levels) {
 
 function restartContainerPatrol() {
   if (patrolTimer) clearInterval(patrolTimer);
+  docker.resetPatrolCheckpoints();
   startContainerPatrol();
 }
 
@@ -1776,6 +1799,8 @@ ${problemText}
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
 
+    let fullAnalysis = '';
+
     const stream = await openai.chat.completions.create({
       model,
       messages: [{ role: 'user', content: prompt }],
@@ -1786,14 +1811,42 @@ ${problemText}
 
     for await (const chunk of stream) {
       const content = chunk.choices[0]?.delta?.content || '';
-      if (content) res.write(`data: ${JSON.stringify({ content })}\n\n`);
+      if (content) {
+        fullAnalysis += content;
+        res.write(`data: ${JSON.stringify({ content })}\n\n`);
+      }
     }
     res.write('data: [DONE]\n\n');
     res.end();
+
+    analysisHistory.unshift({
+      id: uuidv4(),
+      timestamp: new Date().toISOString(),
+      type: 'health',
+      sourceName: `健康诊断 · ${problems.length} 个问题容器`,
+      analysis: fullAnalysis,
+      summary: problemText.slice(0, 300),
+      status: 'done',
+      model
+    });
+    if (analysisHistory.length > MAX_ANALYSIS_HISTORY) analysisHistory.pop();
   } catch (err) {
     console.error('[health-check/analyze]', err.message);
     if (!res.headersSent) res.status(500).json({ error: err.message });
     else { res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`); res.end(); }
+
+    analysisHistory.unshift({
+      id: uuidv4(),
+      timestamp: new Date().toISOString(),
+      type: 'health',
+      sourceName: '健康诊断',
+      analysis: null,
+      summary: '',
+      status: 'error',
+      error: err.message,
+      model: ensureSettings().model
+    });
+    if (analysisHistory.length > MAX_ANALYSIS_HISTORY) analysisHistory.pop();
   }
 });
 
@@ -1809,8 +1862,11 @@ app.post('/api/docker/patrol/now', async (req, res) => {
   try {
     const sources = ensureSettings().dockerSources || [];
     const levels = ensureSettings().containerPatrolLevels || ['ERROR', 'FATAL'];
-    const results = await docker.patrolContainerLogs(sources, levels);
-    lastPatrolResults = results;
+    const hostExecMap = buildHostExecMap();
+    const results = await docker.patrolContainerLogs(sources, levels, (src) => hostExecMap.get(src.host) || null);
+    if (results.length > 0) {
+      lastPatrolResults = results;
+    }
     broadcast({ type: 'container_patrol', data: { results, timestamp: new Date().toISOString() } });
     res.json({ success: true, results });
   } catch (err) {
@@ -1818,12 +1874,24 @@ app.post('/api/docker/patrol/now', async (req, res) => {
   }
 });
 
+// 重置巡检检查点（容器重启后需要调用）
+app.post('/api/docker/patrol/reset', async (_req, res) => {
+  docker.resetPatrolCheckpoints();
+  res.json({ success: true });
+});
+
+// 获取最后一次巡检结果
+app.get('/api/docker/patrol/last', async (_req, res) => {
+  res.json({ results: lastPatrolResults, timestamp: lastPatrolResults.length > 0 ? new Date().toISOString() : null });
+});
+
 // AI 分析巡检结果（SSE 流式）
 app.post('/api/docker/patrol/analyze', async (req, res) => {
   try {
-    const results = lastPatrolResults;
+    // 直接用缓存结果；如果没数据说明还没有异常日志
+    let results = lastPatrolResults;
     if (!results || results.length === 0) {
-      return res.status(400).json({ error: '暂无巡检结果，请先触发巡检' });
+      return res.status(400).json({ error: '暂无异常日志' });
     }
 
     const apiKey = ensureSettings().openaiApiKey;
@@ -1835,8 +1903,12 @@ app.post('/api/docker/patrol/analyze', async (req, res) => {
     const containerText = results.map(r =>
       `### ${r.containerName} (${r.sourceName})\n` +
       `- 镜像: ${r.image}\n` +
-      `- 匹配日志行数: ${r.matchCount}\n` +
-      `- 最近日志:\n${r.lines.map(l => `  [${l.timestamp}] ${l.line}`).join('\n')}`
+      `- 异常种类: ${r.uniqueCount || r.matchCount} 种，共 ${r.matchCount} 条匹配\n` +
+      `- 最近异常日志:\n${r.lines.map(l => {
+        const src = l.source ? ` [${l.source}]` : ' [stdout]';
+        const lvl = l.level || 'ERROR';
+        return `  [${lvl}]${src} ${l.content || l.line}`;
+      }).join('\n')}`
     ).join('\n\n');
 
     const prompt = `你是资深运维工程师，请分析以下容器日志巡检结果。
@@ -1845,9 +1917,9 @@ app.post('/api/docker/patrol/analyze', async (req, res) => {
 ${containerText}
 
 ## 分析要求（用中文回答）：
-### 📋 问题汇总
-### 🔍 关键错误分析
-### 💡 处理建议
+### 📋 问题汇总（按容器分组）
+### 🔍 关键错误分析（每个错误类型的影响和严重程度）
+### 💡 处理建议（具体的操作步骤或代码修复建议）
 ### 🛡️ 预防措施`;
 
     const OpenAI = (await import('openai')).default;
@@ -1855,6 +1927,8 @@ ${containerText}
 
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
+
+    let fullAnalysis = '';
 
     const stream = await openai.chat.completions.create({
       model,
@@ -1866,14 +1940,142 @@ ${containerText}
 
     for await (const chunk of stream) {
       const content = chunk.choices[0]?.delta?.content || '';
-      if (content) res.write(`data: ${JSON.stringify({ content })}\n\n`);
+      if (content) {
+        fullAnalysis += content;
+        res.write(`data: ${JSON.stringify({ content })}\n\n`);
+      }
     }
     res.write('data: [DONE]\n\n');
     res.end();
+
+    // 保存分析历史
+    analysisHistory.unshift({
+      id: uuidv4(),
+      timestamp: new Date().toISOString(),
+      type: 'patrol',
+      sourceName: `容器巡检 · ${results.length} 个容器`,
+      analysis: fullAnalysis,
+      summary: containerText.slice(0, 300),
+      status: 'done',
+      model
+    });
+    if (analysisHistory.length > MAX_ANALYSIS_HISTORY) analysisHistory.pop();
   } catch (err) {
     console.error('[patrol/analyze]', err.message);
     if (!res.headersSent) res.status(500).json({ error: err.message });
     else { res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`); res.end(); }
+
+    analysisHistory.unshift({
+      id: uuidv4(),
+      timestamp: new Date().toISOString(),
+      type: 'patrol',
+      sourceName: '容器巡检',
+      analysis: null,
+      summary: '',
+      status: 'error',
+      error: err.message,
+      model: ensureSettings().model
+    });
+    if (analysisHistory.length > MAX_ANALYSIS_HISTORY) analysisHistory.pop();
+  }
+});
+
+// ────────────────────────────────────────
+// 单容器异常诊断（SSE 流式）
+// ────────────────────────────────────────
+app.post('/api/docker/container/:sourceId/:containerId/analyze', async (req, res) => {
+  try {
+    const { sourceId, containerId } = req.params;
+    const { exitCode, exitType, exitLabel, image } = req.body;
+
+    const apiKey = ensureSettings().openaiApiKey;
+    const baseUrl = ensureSettings().openaiBaseUrl;
+    const model = ensureSettings().model;
+
+    if (!apiKey) return res.status(400).json({ error: '未配置 API Key' });
+
+    const config = getDockerConfig(sourceId);
+    if (!config) return res.status(404).json({ error: 'Docker 源未找到' });
+
+    // 拉取容器最近日志
+    let recentErrorLines = [];
+    let containerName = containerId?.slice(0, 12);
+    try {
+      const logs = await docker.getContainerLogs(sourceId, containerId, config);
+      recentErrorLines = (logs || [])
+        .filter(l => l.level === 'ERROR' || l.level === 'FATAL')
+        .slice(-10);
+      // Infer name from latest log or use containerId
+    } catch { /* 容器已被删除，日志读不到 */ }
+
+    const containerText = `- 容器 ID: ${containerId}\n- 镜像: ${image || '未知'}\n- 退出码: ${exitCode} (${exitLabel || exitType || '异常退出'})\n` +
+      (recentErrorLines.length > 0
+        ? `- 退出前最后 ${recentErrorLines.length} 条错误:\n${recentErrorLines.map(l => `  [${l.level}] ${l.content || l.line}`).join('\n')}`
+        : '- 未获取到最近错误日志（容器可能已被清理）');
+
+    const prompt = `你是资深运维工程师，正在进行单个容器的异常退出诊断。
+
+## 容器信息
+${containerText}
+
+## 诊断要求（用中文回答）：
+### 🔴 退出原因（结合退出码和日志综合判断最可能的根因）
+### 💡 修复建议（给出 2-3 条具体操作步骤）
+### 🛡️ 预防措施（如何避免再次发生）`;
+
+    const OpenAI = (await import('openai')).default;
+    const openai = new OpenAI({ apiKey, baseURL: baseUrl });
+
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+
+    let fullAnalysis = '';
+    const stream = await openai.chat.completions.create({
+      model,
+      messages: [{ role: 'user', content: prompt }],
+      stream: true,
+      max_tokens: 2048,
+      temperature: 0.3
+    });
+
+    for await (const chunk of stream) {
+      const content = chunk.choices[0]?.delta?.content || '';
+      if (content) {
+        fullAnalysis += content;
+        res.write(`data: ${JSON.stringify({ content })}\n\n`);
+      }
+    }
+    res.write('data: [DONE]\n\n');
+    res.end();
+
+    analysisHistory.unshift({
+      id: uuidv4(),
+      timestamp: new Date().toISOString(),
+      type: 'health',
+      sourceName: `容器诊断 · ${containerName}`,
+      analysis: fullAnalysis,
+      summary: containerText.slice(0, 300),
+      status: 'done',
+      model
+    });
+    if (analysisHistory.length > MAX_ANALYSIS_HISTORY) analysisHistory.pop();
+  } catch (err) {
+    console.error('[container/analyze]', err.message);
+    if (!res.headersSent) res.status(500).json({ error: err.message });
+    else { res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`); res.end(); }
+
+    analysisHistory.unshift({
+      id: uuidv4(),
+      timestamp: new Date().toISOString(),
+      type: 'health',
+      sourceName: '容器诊断',
+      analysis: null,
+      summary: '',
+      status: 'error',
+      error: err.message,
+      model: ensureSettings().model
+    });
+    if (analysisHistory.length > MAX_ANALYSIS_HISTORY) analysisHistory.pop();
   }
 });
 

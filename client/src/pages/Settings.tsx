@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { useToast } from '../contexts/ToastContext';
 import {
   Settings as SettingsIcon,
   Folder,
@@ -16,7 +17,8 @@ import {
   Trash2,
   Brain,
   X,
-  Boxes
+  Boxes,
+  ChevronDown
 } from 'lucide-react';
 import type { Settings as SettingsType } from '../types';
 
@@ -84,6 +86,9 @@ export default function Settings() {
   const [loadingModels, setLoadingModels] = useState(false);
   const [thinkingTestStatus, setThinkingTestStatus] = useState<'idle' | 'testing' | 'ok' | 'fail'>('idle');
   const [thinkingTestMsg, setThinkingTestMsg] = useState('');
+  const [remoteServers, setRemoteServers] = useState<{ host: string; name: string; port: number }[]>([]);
+  const [hostDropdownOpen, setHostDropdownOpen] = useState<Record<string, boolean>>({});
+  const toast = useToast();
 
   useEffect(() => {
     // Load settings
@@ -109,6 +114,16 @@ export default function Settings() {
 
     // Load Ollama models
     fetchOllamaModels();
+
+    // Load remote servers for Docker host dropdown
+    fetch('/api/remote/servers')
+      .then(r => r.json())
+      .then(data => {
+        if (data.servers) {
+          setRemoteServers(data.servers.map((s: any) => ({ host: s.host, name: s.name, port: s.port })));
+        }
+      })
+      .catch(() => {});
   }, []);
 
   const fetchOllamaModels = () => {
@@ -220,11 +235,14 @@ export default function Settings() {
       if (res.ok) {
         setSaved(true);
         setTimeout(() => setSaved(false), 3000);
+        toast.success('设置已保存');
       } else {
         setTestResult({ success: false, message: '保存失败' });
+        toast.error('保存失败');
       }
     } catch {
       setTestResult({ success: false, message: '保存失败' });
+      toast.error('保存失败');
     }
 
     setSaving(false);
@@ -247,13 +265,16 @@ export default function Settings() {
       if (data.success) {
         setDockerTestStatus(prev => ({ ...prev, [ds.id]: 'ok' }));
         setDockerTestMsg(prev => ({ ...prev, [ds.id]: `${data.name} ✅ ${data.containers} 容器 / ${data.running} 运行中` }));
+        toast.success(`${ds.name} 连接成功 · ${data.running} 容器运行中`);
       } else {
         setDockerTestStatus(prev => ({ ...prev, [ds.id]: 'fail' }));
         setDockerTestMsg(prev => ({ ...prev, [ds.id]: data.error || '连接失败' }));
+        toast.warning(`${ds.name} 连接失败`);
       }
     } catch (err: any) {
       setDockerTestStatus(prev => ({ ...prev, [ds.id]: 'fail' }));
       setDockerTestMsg(prev => ({ ...prev, [ds.id]: err.message }));
+      toast.warning(`${ds.name} 连接失败: ${err.message}`);
     }
   };
 
@@ -836,7 +857,8 @@ export default function Settings() {
                     setSettings(p => ({ ...p, dockerSources: updated }));
                     setSaved(false);
                   }}
-                  className="flex-1 bg-transparent text-sm font-medium text-dark-100 focus:outline-none"
+                  className="flex-1 bg-transparent text-sm font-medium text-dark-100 border-b border-transparent hover:border-dark-600 focus:border-blue-500 focus:outline-none py-0.5 transition-colors"
+                  placeholder="输入名称..."
                 />
                 <div className="flex items-center gap-2">
                   <span className={`text-xs px-2 py-0.5 rounded border ${
@@ -956,20 +978,83 @@ export default function Settings() {
 
               {/* Fields */}
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3 p-4">
-                <div>
+                <div className="relative">
                   <p className="text-xs text-dark-600 mb-1">主机地址</p>
-                  <input
-                    type="text"
-                    value={ds.host}
-                    onChange={e => {
-                      const updated = [...(settings.dockerSources || [])];
-                      updated[idx] = { ...ds, host: e.target.value };
-                      setSettings(p => ({ ...p, dockerSources: updated }));
-                      setSaved(false);
-                    }}
-                    placeholder="localhost / 192.168.1.100"
-                    className="w-full px-2.5 py-1.5 bg-dark-800/60 border border-dark-700/50 rounded-lg text-xs text-dark-200 placeholder-dark-600 focus:outline-none focus:border-blue-500/50 transition-colors"
-                  />
+                  {!ds.socketPath && remoteServers.length > 0 ? (
+                    <div className="relative">
+                      <div className="flex items-center">
+                        <input
+                          type="text"
+                          value={ds.host}
+                          onChange={e => {
+                            const updated = [...(settings.dockerSources || [])];
+                            updated[idx] = { ...ds, host: e.target.value };
+                            setSettings(p => ({ ...p, dockerSources: updated }));
+                            setSaved(false);
+                          }}
+                          onFocus={() => setHostDropdownOpen(prev => ({ ...prev, [ds.id]: true }))}
+                          onBlur={() => setTimeout(() => setHostDropdownOpen(prev => ({ ...prev, [ds.id]: false })), 150)}
+                          placeholder="localhost / 192.168.1.100"
+                          className="w-full pl-2.5 pr-7 py-1.5 bg-dark-800/60 border border-dark-700/50 rounded-lg text-xs text-dark-200 placeholder-dark-600 focus:outline-none focus:border-blue-500/50 transition-colors"
+                        />
+                        <button
+                          type="button"
+                          onMouseDown={e => { e.preventDefault(); e.stopPropagation(); }}
+                          onClick={() => setHostDropdownOpen(prev => ({ ...prev, [ds.id]: !prev[ds.id] }))}
+                          className="absolute right-1 top-1/2 -translate-y-1/2 p-1 text-dark-500 hover:text-dark-300 rounded"
+                        >
+                          <ChevronDown className="w-3 h-3" />
+                        </button>
+                      </div>
+                      {hostDropdownOpen[ds.id] && (
+                        <div className="absolute z-50 mt-1 w-full bg-dark-800 border border-dark-700 rounded-lg shadow-xl max-h-36 overflow-y-auto">
+                          {/* 手动输入选项 */}
+                          <div className="px-3 py-1.5 border-b border-dark-700/50">
+                            <span className="text-[10px] text-dark-500 uppercase tracking-wider">手动输入</span>
+                          </div>
+                          {remoteServers
+                            .filter(s => s.host.toLowerCase().includes(ds.host?.toLowerCase() || '') || !ds.host)
+                            .map((s, i) => (
+                              <button
+                                key={i}
+                                type="button"
+                                onMouseDown={e => {
+                                  e.preventDefault();
+                                  const updated = [...(settings.dockerSources || [])];
+                                  updated[idx] = { ...ds, host: s.host, port: 2375 };
+                                  setSettings(p => ({ ...p, dockerSources: updated }));
+                                  setSaved(false);
+                                  setHostDropdownOpen(prev => ({ ...prev, [ds.id]: false }));
+                                }}
+                                className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-dark-300 hover:bg-dark-700 hover:text-dark-100 transition-colors text-left"
+                              >
+                                <Server className="w-3 h-3 text-dark-500 flex-shrink-0" />
+                                <span className="text-dark-400 flex-shrink-0">{s.name}</span>
+                                <span className="text-dark-200 font-mono text-[11px]">{s.host}</span>
+                                <span className="text-dark-600 text-[10px] ml-auto">SSH:{s.port}</span>
+                              </button>
+                            ))}
+                          {remoteServers.filter(s => s.host.toLowerCase().includes(ds.host?.toLowerCase() || '') || !ds.host).length === 0 && (
+                            <div className="px-3 py-2 text-xs text-dark-600">无匹配服务器</div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <input
+                      type="text"
+                      value={ds.host}
+                      onChange={e => {
+                        const updated = [...(settings.dockerSources || [])];
+                        updated[idx] = { ...ds, host: e.target.value };
+                        setSettings(p => ({ ...p, dockerSources: updated }));
+                        setSaved(false);
+                      }}
+                      placeholder={ds.socketPath ? '已使用 Socket 连接' : 'localhost / 192.168.1.100'}
+                      disabled={!!ds.socketPath}
+                      className="w-full px-2.5 py-1.5 bg-dark-800/60 border border-dark-700/50 rounded-lg text-xs text-dark-200 placeholder-dark-600 focus:outline-none focus:border-blue-500/50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    />
+                  )}
                 </div>
                 <div>
                   <p className="text-xs text-dark-600 mb-1">端口</p>
@@ -1022,6 +1107,48 @@ export default function Settings() {
                   </button>
                 </div>
               </div>
+              {/* 容器内日志路径 */}
+              {!ds.socketPath ? (
+                <div className="px-4 pb-2">
+                  <p className="text-xs text-dark-600 mb-1">
+                    📂 容器内日志路径
+                    <span className="text-dark-600 ml-1">（如 /app/logs，巡检时扫描 *.log 中的错误行。留空则仅检查容器 stdout/stderr 输出）</span>
+                  </p>
+                  <div className="flex flex-wrap gap-1.5 items-center">
+                    {(ds.logPaths || []).map((lp: string, li: number) => (
+                      <span key={li} className="inline-flex items-center gap-1 px-2 py-0.5 bg-dark-800/60 border border-dark-700/50 rounded text-xs text-dark-300">
+                        {lp}
+                        <button
+                          onClick={() => {
+                            const updated = [...(settings.dockerSources || [])];
+                            updated[idx] = { ...ds, logPaths: (ds.logPaths || []).filter((_: string, fi: number) => fi !== li) };
+                            setSettings(p => ({ ...p, dockerSources: updated }));
+                            setSaved(false);
+                          }}
+                          className="text-dark-500 hover:text-red-400"
+                        >×</button>
+                      </span>
+                    ))}
+                    <input
+                      type="text"
+                      placeholder="输入路径按回车添加..."
+                      className="flex-1 min-w-[160px] px-2.5 py-1 bg-dark-800/60 border border-dark-700/50 rounded text-xs text-dark-200 placeholder-dark-600 focus:outline-none focus:border-blue-500/50"
+                      onKeyDown={e => {
+                        if (e.key === 'Enter') {
+                          const val = (e.target as HTMLInputElement).value.trim();
+                          if (val) {
+                            const updated = [...(settings.dockerSources || [])];
+                            updated[idx] = { ...ds, logPaths: [...(ds.logPaths || []), val] };
+                            setSettings(p => ({ ...p, dockerSources: updated }));
+                            setSaved(false);
+                            (e.target as HTMLInputElement).value = '';
+                          }
+                        }
+                      }}
+                    />
+                  </div>
+                </div>
+              ) : null}
               <div className="px-4 pb-3">
                 <p className="text-xs text-dark-600 mb-1">💡 连接说明</p>
                 <p className="text-xs text-dark-600 leading-relaxed mb-2">
@@ -1226,6 +1353,7 @@ export default function Settings() {
                   onChange={e => setSettings({ ...settings, containerPatrolInterval: e.target.value })}
                   className="w-full px-3 py-2 bg-dark-900 border border-dark-700 rounded-lg text-dark-200 text-sm"
                 >
+                  <option value="10000">10 秒（测试）</option>
                   <option value="60000">1 分钟</option>
                   <option value="300000">5 分钟</option>
                   <option value="600000">10 分钟</option>
