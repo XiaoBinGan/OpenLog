@@ -174,9 +174,15 @@ export function updateServer(id, updates) {
   const index = servers.findIndex(s => s.id === id);
   if (index === -1) return null;
   
+  // 密码为空时不覆盖已有密码（编辑弹窗安全约定）
+  const clean = { ...updates };
+  if (!clean.password && !clean.privateKey && !clean.privateKeyPath) {
+    delete clean.password;
+  }
+  
   servers[index] = {
     ...servers[index],
-    ...updates,
+    ...clean,
     id, // 保持 id 不变
   };
   
@@ -201,23 +207,35 @@ export function deleteServer(id) {
 
 /**
  * 测试服务器连接
+ * config 可带 serverId：编辑时密码为空则用已存密码
  */
 export async function testConnection(config) {
   const ssh = new NodeSSH();
   
+  // 编辑模式下密码为空时，从已存配置补全密码/私钥
+  let resolvedConfig = { ...config };
+  if (config.serverId && !config.password && !config.privateKey && !config.privateKeyPath) {
+    const existing = servers.find(s => s.id === config.serverId);
+    if (existing) {
+      resolvedConfig.password = existing.password || resolvedConfig.password;
+      resolvedConfig.privateKey = existing.privateKey || resolvedConfig.privateKey;
+      resolvedConfig.privateKeyPath = existing.privateKeyPath || resolvedConfig.privateKeyPath;
+    }
+  }
+  
   try {
     const sshConfig = {
-      host: config.host,
-      port: config.port || 22,
-      username: config.username,
+      host: resolvedConfig.host,
+      port: resolvedConfig.port || 22,
+      username: resolvedConfig.username,
     };
     
-    if (config.privateKey) {
-      sshConfig.privateKey = config.privateKey;
-    } else if (config.privateKeyPath) {
-      sshConfig.privateKeyPath = config.privateKeyPath;
-    } else if (config.password) {
-      sshConfig.password = config.password;
+    if (resolvedConfig.privateKey) {
+      sshConfig.privateKey = resolvedConfig.privateKey;
+    } else if (resolvedConfig.privateKeyPath) {
+      sshConfig.privateKeyPath = resolvedConfig.privateKeyPath;
+    } else if (resolvedConfig.password) {
+      sshConfig.password = resolvedConfig.password;
     } else {
       throw new Error('需要密码或私钥');
     }
@@ -271,6 +289,8 @@ export async function connectServer(id) {
       sshConfig.privateKeyPath = server.privateKeyPath;
     } else if (server.password) {
       sshConfig.password = server.password;
+    } else {
+      throw new Error('服务器未配置密码或私钥，请在编辑中填写认证信息');
     }
     
     await ssh.connect(sshConfig);

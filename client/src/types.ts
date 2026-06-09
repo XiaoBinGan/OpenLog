@@ -27,6 +27,7 @@ export interface RemoteServerState extends RemoteServer {
   fileContent: string;
   fileModified: boolean;
   logs: Log[];
+  totalLines: number;
   logsLoading: boolean;
   filesLoading: boolean;
   editingFilePath: string | null;
