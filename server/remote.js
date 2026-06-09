@@ -168,6 +168,15 @@ export function addServer(config) {
 }
 
 /**
+ * 获取服务器解密后的密码（编辑弹窗用）
+ */
+export function getServerPassword(id) {
+  const server = servers.find(s => s.id === id);
+  if (!server) return null;
+  return server.password || null;
+}
+
+/**
  * 更新服务器配置
  */
 export function updateServer(id, updates) {
@@ -992,6 +1001,7 @@ export async function searchRemoteLogs(id, search, options = {}) {
 export default {
   loadServers,
   getServers,
+  getServerPassword,
   addServer,
   updateServer,
   deleteServer,

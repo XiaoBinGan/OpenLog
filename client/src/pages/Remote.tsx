@@ -95,7 +95,7 @@ function ServerModal({
             <label className="block text-xs text-dark-400 mb-1">密码</label>
             <div className="relative">
               <input type={showPw ? 'text' : 'password'} value={formData.password} onChange={e => setFormData({ ...formData, password: e.target.value })}
-                placeholder={editingServer ? '留空则不修改密码' : 'SSH 密码'} autoComplete="new-password" name={pwKey} className="w-full px-3 py-2 pr-10 bg-dark-900 border border-dark-700 rounded-lg text-sm focus:border-accent-500 focus:outline-none" />
+                placeholder="SSH 密码" autoComplete="new-password" name={pwKey} className="w-full px-3 py-2 pr-10 bg-dark-900 border border-dark-700 rounded-lg text-sm focus:border-accent-500 focus:outline-none" />
               <button type="button" onClick={() => setShowPw(v => !v)}
                 className="absolute right-2 top-1/2 -translate-y-1/2 text-dark-500 hover:text-dark-300">
                 {showPw ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
@@ -302,11 +302,7 @@ export default function Remote() {
     try {
       const url = editingServer ? `/api/remote/servers/${editingServer.id}` : '/api/remote/servers';
       const method = editingServer ? 'PUT' : 'POST';
-      // 编辑模式且没填密码：不发送 password 字段，让后端保留已有
-      const body = editingServer && !formData.password && !formData.privateKey
-        ? Object.fromEntries(Object.entries(formData).filter(([k]) => k !== 'password'))
-        : formData;
-      const res = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      const res = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(formData) });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
       if (data.success) {
@@ -369,11 +365,21 @@ export default function Remote() {
   };
 
   // 打开编辑弹窗
-  const openEdit = (server: RemoteServer) => {
+  const openEdit = async (server: RemoteServer) => {
     setEditingServer(server);
     setPwKey(Math.random().toString(36).slice(2));
-    setFormData({ name: server.name, host: server.host, port: server.port, username: server.username, password: '', logPath: server.logPath, watchFiles: server.watchFiles });
     setShowAddModal(true);
+    
+    let password = '';
+    try {
+      const res = await fetch(`/api/remote/servers/${server.id}/password`);
+      if (res.ok) {
+        const data = await res.json();
+        password = data.password || '';
+      }
+    } catch {}
+    
+    setFormData({ name: server.name, host: server.host, port: server.port, username: server.username, password, logPath: server.logPath, watchFiles: server.watchFiles });
   };
 
   const resetForm = () => {

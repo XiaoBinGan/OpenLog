@@ -2322,6 +2322,17 @@ app.post('/api/remote/import', async (req, res) => {
   }
 });
 
+// Get decrypted password (编辑弹窗用)
+app.get('/api/remote/servers/:id/password', (req, res) => {
+  try {
+    const pw = remote.getServerPassword(req.params.id);
+    if (pw === null) return res.status(404).json({ error: '服务器不存在' });
+    res.json({ password: pw });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // List remote files
 app.get('/api/remote/servers/:id/files', async (req, res) => {
   try {
