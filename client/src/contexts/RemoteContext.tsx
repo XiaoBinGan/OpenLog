@@ -98,6 +98,7 @@ export function RemoteProvider({ children }: { children: React.ReactNode }) {
           fileContent: '',
           fileModified: false,
           logs: [],
+          totalLines: 0,
           logsLoading: false,
           filesLoading: false,
           editingFilePath: null,
@@ -110,8 +111,8 @@ export function RemoteProvider({ children }: { children: React.ReactNode }) {
   const connect = useCallback(async (server: RemoteServer) => {
     try {
       const res = await fetch(`/api/remote/servers/${server.id}/connect`, { method: 'POST' });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
       if (!data.success) throw new Error(data.error || '连接失败');
 
       // 拉取 stats
@@ -131,6 +132,7 @@ export function RemoteProvider({ children }: { children: React.ReactNode }) {
         fileContent: '',
         fileModified: false,
         logs: [],
+        totalLines: 0,
         logsLoading: false,
         filesLoading: true,
         editingFilePath: null,
@@ -248,10 +250,10 @@ export function RemoteProvider({ children }: { children: React.ReactNode }) {
       const data = await res.json();
       setActiveServer(prev => {
         if (!prev || prev.id !== serverId) return prev;
-        return { ...prev, logs: data.logs || [], logsLoading: false };
+        return { ...prev, logs: data.logs || [], totalLines: data.totalLines ?? 0, logsLoading: false };
       });
     } catch {
-      setActiveServer(prev => prev ? { ...prev, logs: [], logsLoading: false } : prev);
+      setActiveServer(prev => prev ? { ...prev, logs: [], totalLines: 0, logsLoading: false } : prev);
     }
   }, []);
 
