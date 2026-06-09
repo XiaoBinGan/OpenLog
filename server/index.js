@@ -1379,7 +1379,12 @@ function buildAssistantContext() {
   }
   const recent = analysisHistory.filter(r => r.status === 'done').slice(0, 5);
   if (recent.length > 0) {
-    const lines = recent.map(a => `- [${a.type || 'log'}] ${a.sourceName}`).join('\n');
+    const lines = recent.map(a => {
+      const typeLabel = a.type === 'patrol' ? '巡检' : a.type === 'health' ? '诊断' : '日志';
+      const summary = (a.summary || '').slice(0, 200).replace(/\n/g, ' · ');
+      const analysisBrief = (a.analysis || '').slice(0, 200).replace(/\n/g, ' · ');
+      return `- [${typeLabel}] ${a.sourceName}\n  摘要: ${summary}${analysisBrief ? '\n  结论: ' + analysisBrief : ''}`;
+    }).join('\n');
     if (lines) parts.push(`### 最近分析\n${lines}`);
   }
   return parts.length > 0 ? parts.join('\n\n') : '暂无。';
