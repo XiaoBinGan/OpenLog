@@ -87,6 +87,7 @@ export default function Assistant() {
 
   // @ 提及状态
   const [atOpen, setAtOpen] = useState(false);
+  const [selectedHistoryIds, setSelectedHistoryIds] = useState<string[]>([]);
   const [atFilter, setAtFilter] = useState('');
   const [atItems, setAtItems] = useState<HistoryBrief[]>([]);
   const [atIdx, setAtIdx] = useState(0);
@@ -123,9 +124,10 @@ export default function Assistant() {
         const record = (data.records || []).find((r: any) => r.id === refParam);
         if (record) {
           const typeLabel = record.type === 'patrol' ? '巡检报告' : record.type === 'health' ? '健康诊断' : '日志分析';
+          const analysis = (record.analysis || '').slice(0, 3000);
           const ctx = record.type !== 'log'
-            ? `@${typeLabel} ${record.sourceName}\n\n> ${(record.summary || '').slice(0, 200)}\n\n`
-            : `@日志 ${(record.log?.message || '').slice(0, 200)}\n\n`;
+            ? `@${typeLabel} ${record.sourceName}\n\n分析上下文：\n${(record.summary || '').slice(0, 500)}\n\n分析结论：\n${analysis}\n\n`
+            : `@日志 ${record.sourceName}\n\n日志内容：\n${(record.log?.message || '').slice(0, 500)}\n\n分析结论：\n${analysis}\n\n`;
           const msg = `${ctx}帮我深入分析，给出解决方案。`;
           sendMessage(msg);
         }
@@ -153,6 +155,7 @@ export default function Assistant() {
     const replacement = `@${typeLabel} ${item.sourceName} `;
     const newInput = input.replace(/@[^\s]*$/, replacement);
     setInput(newInput);
+    setSelectedHistoryIds(prev => [...prev, item.id]);
     setAtOpen(false);
     inputRef.current?.focus();
   };
@@ -186,13 +189,20 @@ export default function Assistant() {
     setAtOpen(false);
 
     // @ 提及 -> 获取完整分析内容注入上下文
-    let displayContent = content.replace(/@(巡检|诊断|日志)\s+[^\s@]+(\s*)/g, '').trim();
-    const atMatches = content.matchAll(/@(巡检|诊断|日志)\s+(.+?)(?=\s|@|$)/g);
-    const atIds = new Set<string>();
-    for (const m of atMatches) {
-      const item = atItems.find(i => i.sourceName === m[2]);
-      if (item) atIds.add(item.id);
+    const atIds = new Set(selectedHistoryIds);
+    setSelectedHistoryIds([]);
+
+    // 用已知的 atItems 精确移除 @ 提及文本
+    let displayContent = content;
+    for (const id of atIds) {
+      const item = atItems.find(i => i.id === id);
+      if (item) {
+        const typeLabel = item.type === 'patrol' ? '巡检' : item.type === 'health' ? '诊断' : '日志';
+        displayContent = displayContent.replace(`@${typeLabel} ${item.sourceName}`, '').trim();
+      }
     }
+    // 兜底：清除残留的 @ 提及标记
+    displayContent = displayContent.replace(/@(?:巡检|诊断|日志)\s*/g, '').trim();
 
     // 获取完整记录上下文
     let contextBlock = '';
