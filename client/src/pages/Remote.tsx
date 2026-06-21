@@ -8,10 +8,11 @@ import {
   ChevronLeft, Search, Terminal, Check, X, AlertCircle, Loader,
   Cpu, MemoryStick, HardDrive, Clock, Home, Eye, EyeOff, Upload,
   Code2, Save, Pencil, Wifi, WifiOff, PanelLeftClose,
-  PanelLeftOpen, ArrowUp, FileCode, FolderOpen, FileJson,
+  PanelLeftOpen, ArrowUp, FileCode, FolderOpen, FileJson, Sparkles,
 } from 'lucide-react';
 import { useRemote } from '../contexts/RemoteContext';
 import ShellTerminal from '../components/ShellTerminal';
+import AIShellTerminal from '../components/AIShellTerminal';
 import type { RemoteServer, RemoteServerConfig, RemoteServerState, RemoteFile, RemoteDir } from '../types';
 
 const levelColors: Record<string, string> = {
@@ -190,7 +191,7 @@ function FileEditor({
 }
 
 // 单个服务器卡片组件
-const ServerCard = ({ server, isActive, onConnect, onDisconnect, onEdit, onDelete, onShell, onSelect }: {
+const ServerCard = ({ server, isActive, onConnect, onDisconnect, onEdit, onDelete, onShell, onAIShell, onSelect }: {
   server: RemoteServer;
   isActive: boolean;
   onConnect: () => void;
@@ -198,6 +199,7 @@ const ServerCard = ({ server, isActive, onConnect, onDisconnect, onEdit, onDelet
   onEdit: () => void;
   onDelete: () => void;
   onShell: () => void;
+  onAIShell: () => void;
   onSelect: () => void;
   onOpenEditor?: () => void;
 }) => (
@@ -234,6 +236,9 @@ const ServerCard = ({ server, isActive, onConnect, onDisconnect, onEdit, onDelet
         <button onClick={onShell} className="flex-1 px-2 py-1.5 text-xs rounded bg-green-500/20 text-green-400 hover:bg-green-500/30 transition-colors flex items-center justify-center gap-1">
           <Terminal className="w-3 h-3" /> Shell
         </button>
+        <button onClick={onAIShell} className="flex-1 px-2 py-1.5 text-xs rounded bg-purple-500/20 text-purple-400 hover:bg-purple-500/30 transition-colors flex items-center justify-center gap-1">
+          <Sparkles className="w-3 h-3" /> AI Shell
+        </button>
       </div>
     ) : (
       <button onClick={onConnect} className="w-full px-2 py-1.5 text-xs rounded bg-green-500/20 text-green-400 hover:bg-green-500/30 transition-colors flex items-center justify-center gap-1">
@@ -263,6 +268,7 @@ export default function Remote() {
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ success: boolean; info?: any; error?: string } | null>(null);
   const [showShell, setShowShell] = useState(false);
+  const [showAIShell, setShowAIShell] = useState(false);
   const [logLines, setLogLines] = useState(200);
   const [logSearch, setLogSearch] = useState('');
   const [showServerList, setShowServerList] = useState(true);
@@ -461,6 +467,7 @@ export default function Remote() {
                 onEdit={() => openEdit(server)}
                 onDelete={() => deleteServer(server)}
                 onShell={() => setShowShell(true)}
+                onAIShell={() => setShowAIShell(true)}
                 onSelect={() => {
                   if (server.status !== 'connected') {
                     setActiveServer(null); // 未连接 → 显示默认空白状态
@@ -749,6 +756,18 @@ export default function Remote() {
             <ShellTerminal
               server={{ ...activeServer, name: activeServer.name, host: activeServer.host, port: activeServer.port, username: activeServer.username }}
               onClose={() => setShowShell(false)}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* AI Shell 终端弹窗 */}
+      {showAIShell && activeServer && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+          <div className="w-full max-w-5xl mx-4 h-[640px]">
+            <AIShellTerminal
+              server={{ ...activeServer, name: activeServer.name, host: activeServer.host, port: activeServer.port, username: activeServer.username }}
+              onClose={() => setShowAIShell(false)}
             />
           </div>
         </div>

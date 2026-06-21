@@ -227,7 +227,7 @@ export default function Assistant() {
     displayContent = displayContent + contextBlock;
 
     const userMsg = { role: 'user' as const, content: displayContent, ts: Date.now(), streaming: false };
-    const assistantMsg = { role: 'assistant' as const, content: '', ts: Date.now() + 1, streaming: true };
+    const assistantMsg = { role: 'assistant' as const, content: '', ts: Date.now() + 1, streaming: true, toolCalls: [] as any[] };
     setOpsMessages(prev => [...prev, userMsg, assistantMsg]);
     setLoading(true);
     abortRef.current = new AbortController();
@@ -259,7 +259,22 @@ export default function Assistant() {
           if (line.startsWith('data: ')) {
             const data = line.slice(6);
             if (data === '[DONE]') continue;
-            try { const p = JSON.parse(data); if (p.content) acc += p.content; } catch {}
+            try {
+              const p = JSON.parse(data);
+              if (p.type === 'tool_start') {
+                setOpsMessages(prev => prev.map((m, i) => i === prev.length - 1 ? {
+                  ...m, toolCalls: [...(m.toolCalls || []), { tool: p.tool, args: p.args, status: 'running', result: null }]
+                } : m));
+              } else if (p.type === 'tool_result') {
+                setOpsMessages(prev => prev.map((m, i) => i === prev.length - 1 ? {
+                  ...m, toolCalls: (m.toolCalls || []).map((tc: any) =>
+                    tc.tool === p.tool && tc.status === 'running' ? { ...tc, status: 'done', result: p.result } : tc
+                  )
+                } : m));
+              } else if (p.content) {
+                acc += p.content;
+              }
+            } catch {}
           }
         }
         setOpsMessages(prev => prev.map((m, i) => i === prev.length - 1 ? { ...m, content: acc } : m));
@@ -272,6 +287,16 @@ export default function Assistant() {
     setLoading(false);
     abortRef.current = null;
   };
+
+  // 工具名 → 中文标签
+  const toolLabel = (t: string) =>
+    ({ docker_list: '列出容器', docker_logs: '读取日志', docker_inspect: '查看容器',
+       docker_start: '启动容器', docker_stop: '停止容器', docker_restart: '重启容器',
+       docker_exec: '执行命令', docker_health_check: '健康诊断',
+       remote_servers: '远程服务器', remote_exec: '远程执行', remote_system_stats: '系统状态',
+       remote_list_files: '文件列表', remote_read_file: '读取文件', remote_search_logs: '搜索日志',
+       local_system_stats: '本机状态', local_log_files: '日志文件', local_read_log: '读取日志',
+    } as Record<string, string>)[t] || t;
 
   const stopGeneration = () => abortRef.current?.abort();
   const clearChat = () => { if (opsMessages.length > 0) setOpsMessages([]); };
@@ -424,6 +449,21 @@ export default function Assistant() {
                   <div className={`max-w-[78%] rounded-2xl px-4 py-3 text-sm leading-relaxed ${
                     msg.role === 'user' ? 'bg-accent-500/20 text-dark-100 rounded-br-md' : 'bg-dark-900 border border-dark-800 text-dark-200 rounded-bl-md'
                   }`}>
+                    {/* 工具调用状态 */}
+                    {(msg as any).toolCalls?.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5 mb-2">
+                        {(msg as any).toolCalls.map((tc: any, i: number) => (
+                          <span key={i} className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium ${
+                            tc.status === 'running' ? 'bg-yellow-500/10 text-yellow-400 border border-yellow-500/20' :
+                            tc.status === 'done' && tc.result?.error ? 'bg-red-500/10 text-red-400 border border-red-500/20' :
+                            'bg-green-500/10 text-green-400 border border-green-500/20'
+                          }`}>
+                            {tc.status === 'running' && <Loader className="w-3 h-3 animate-spin" />}
+                            {toolLabel(tc.tool)}
+                          </span>
+                        ))}
+                      </div>
+                    )}
                     {msg.content ? (
                       <div className="prose-invert [&_code]:bg-dark-800 [&_code]:px-1 [&_code]:py-0.5 [&_code]:rounded [&_code]:text-xs [&_code]:font-mono
                         [&_pre]:bg-dark-800 [&_pre]:p-3 [&_pre]:rounded-lg [&_pre]:mt-2 [&_pre]:overflow-x-auto

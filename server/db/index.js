@@ -247,6 +247,19 @@ async function runMigrations() {
       updated_at INTEGER DEFAULT (strftime('%s', 'now'))
     )
   `);
+
+  // skills 表（自定义技能）
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS skills (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      command TEXT NOT NULL,
+      description TEXT DEFAULT '',
+      category TEXT DEFAULT '通用',
+      created_at INTEGER DEFAULT (strftime('%s', 'now')),
+      updated_at INTEGER DEFAULT (strftime('%s', 'now'))
+    )
+  `);
 }
 
 // ─── CRUD helpers ────────────────────────────────────────────────────────────
@@ -339,6 +352,37 @@ export function setKv(key, value) {
 
 export function deleteKv(key) {
   return db.run(`DELETE FROM kv_store WHERE key = ?`, key);
+}
+
+// ─── Skills ────────────────────────────────────────────────────────────────
+
+export function listSkills() {
+  return db.all(`SELECT * FROM skills ORDER BY category, name`);
+}
+
+export function getSkill(id) {
+  return db.get(`SELECT * FROM skills WHERE id = ?`, id);
+}
+
+export function createSkill(skill) {
+  const now = Math.floor(Date.now() / 1000);
+  return db.run(
+    `INSERT INTO skills (id, name, command, description, category, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [skill.id, skill.name, skill.command, skill.description || '', skill.category || '通用', now, now]
+  );
+}
+
+export function updateSkill(id, skill) {
+  const now = Math.floor(Date.now() / 1000);
+  return db.run(
+    `UPDATE skills SET name=?, command=?, description=?, category=?, updated_at=? WHERE id=?`,
+    [skill.name, skill.command, skill.description || '', skill.category || '通用', now, id]
+  );
+}
+
+export function deleteSkill(id) {
+  return db.run(`DELETE FROM skills WHERE id = ?`, id);
 }
 
 export function listKv(prefix = '') {
