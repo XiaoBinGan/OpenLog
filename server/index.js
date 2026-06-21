@@ -14,7 +14,7 @@ import dotenv from 'dotenv';
 import * as remote from './remote.js';
 import * as docker from './docker.js';
 import * as gpu from './gpu.js';
-import { initDb, getDb, getKv, setKv, insertLogRecord, listLogRecords } from './db/index.js';
+import { initDb, getDb, getKv, setKv, insertLogRecord, listLogRecords, listSkills, getSkill, createSkill, updateSkill, deleteSkill } from './db/index.js';
 
 dotenv.config();
 
@@ -1243,6 +1243,63 @@ app.put('/api/settings', (req, res) => {
 });
 
 // ============================================================
+// 自定义技能 (Skills) API
+// ============================================================
+
+// 获取所有技能
+app.get('/api/skills', (req, res) => {
+  try {
+    const skills = listSkills();
+    res.json({ skills });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 创建技能
+app.post('/api/skills', (req, res) => {
+  const { name, command, description, category } = req.body;
+  if (!name || !command) return res.status(400).json({ error: 'name and command required' });
+
+  try {
+    const skill = { id: uuidv4(), name, command, description, category };
+    createSkill(skill);
+    res.json({ success: true, skill });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 更新技能
+app.put('/api/skills/:id', (req, res) => {
+  const { name, command, description, category } = req.body;
+  if (!name || !command) return res.status(400).json({ error: 'name and command required' });
+
+  try {
+    const existing = getSkill(req.params.id);
+    if (!existing) return res.status(404).json({ error: '技能不存在' });
+
+    updateSkill(req.params.id, { name, command, description, category });
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 删除技能
+app.delete('/api/skills/:id', (req, res) => {
+  try {
+    const existing = getSkill(req.params.id);
+    if (!existing) return res.status(404).json({ error: '技能不存在' });
+
+    deleteSkill(req.params.id);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================================================
 // 日志分析状态 API
 // ============================================================
 
@@ -1390,15 +1447,216 @@ function buildAssistantContext() {
   return parts.length > 0 ? parts.join('\n\n') : '暂无。';
 }
 
+// ─── 运维助手 Tool Calling ──────────────────────────────────────────
+
+const ASSISTANT_TOOLS = [
+  // ── Docker 工具 ──
+  { type: 'function', function: { name: 'docker_list', description: '列出所有Docker容器（运行状态、镜像名、端口映射、退出码等）', parameters: { type: 'object', properties: { sourceId: { type: 'string', description: 'Docker源ID（可选，不传则列出所有源）' } } } } },
+  { type: 'function', function: { name: 'docker_logs', description: '读取指定容器的日志（最近N行）', parameters: { type: 'object', properties: { containerId: { type: 'string', description: '容器ID（12位短ID）或名称' }, sourceId: { type: 'string', description: 'Docker源ID（可选）' }, tail: { type: 'number', description: '读取最后N行，默认200' } }, required: ['containerId'] } } },
+  { type: 'function', function: { name: 'docker_inspect', description: '查看容器详细信息（状态、端口、环境变量、挂载卷、网络）', parameters: { type: 'object', properties: { containerId: { type: 'string', description: '容器ID或名称' }, sourceId: { type: 'string', description: 'Docker源ID（可选）' } }, required: ['containerId'] } } },
+  { type: 'function', function: { name: 'docker_start', description: '⚠️ 启动一个已停止的容器。需要用户确认后才能调用。', parameters: { type: 'object', properties: { containerId: { type: 'string' }, sourceId: { type: 'string' } }, required: ['containerId'] } } },
+  { type: 'function', function: { name: 'docker_stop', description: '⚠️ 停止一个运行中的容器。需要用户确认后才能调用。', parameters: { type: 'object', properties: { containerId: { type: 'string' }, sourceId: { type: 'string' } }, required: ['containerId'] } } },
+  { type: 'function', function: { name: 'docker_restart', description: '⚠️ 重启容器。需要用户确认后才能调用。', parameters: { type: 'object', properties: { containerId: { type: 'string' }, sourceId: { type: 'string' } }, required: ['containerId'] } } },
+  { type: 'function', function: { name: 'docker_exec', description: '⚠️ 在容器内执行命令。需要用户确认后才能调用。', parameters: { type: 'object', properties: { containerId: { type: 'string' }, command: { type: 'string', description: '要执行的命令' }, sourceId: { type: 'string' } }, required: ['containerId', 'command'] } } },
+  { type: 'function', function: { name: 'docker_health_check', description: '执行所有容器健康诊断（检查退出状态、OOM、异常退出等）', parameters: { type: 'object', properties: {} } } },
+  // ── 远程服务器工具 ──
+  { type: 'function', function: { name: 'remote_servers', description: '列出已配置的远程服务器及其连接状态', parameters: { type: 'object', properties: {} } } },
+  { type: 'function', function: { name: 'remote_exec', description: '⚠️ 在远程服务器执行Shell命令。需要用户确认后才能调用。', parameters: { type: 'object', properties: { serverId: { type: 'string', description: '服务器ID' }, command: { type: 'string', description: 'Shell命令' } }, required: ['serverId', 'command'] } } },
+  { type: 'function', function: { name: 'remote_system_stats', description: '获取远程服务器系统状态（CPU/内存/磁盘/网络/进程/GPU）', parameters: { type: 'object', properties: { serverId: { type: 'string' } }, required: ['serverId'] } } },
+  { type: 'function', function: { name: 'remote_list_files', description: '列出远程服务器的日志文件目录', parameters: { type: 'object', properties: { serverId: { type: 'string' }, path: { type: 'string', description: '目录路径（可选，默认服务器配置的日志目录）' } }, required: ['serverId'] } } },
+  { type: 'function', function: { name: 'remote_read_file', description: '读取远程服务器上的日志文件内容', parameters: { type: 'object', properties: { serverId: { type: 'string' }, filePath: { type: 'string' }, lines: { type: 'number', description: '读取最后N行，默认200' } }, required: ['serverId', 'filePath'] } } },
+  { type: 'function', function: { name: 'remote_search_logs', description: '在远程服务器日志中搜索关键词', parameters: { type: 'object', properties: { serverId: { type: 'string' }, search: { type: 'string', description: '搜索关键词' } }, required: ['serverId', 'search'] } } },
+  // ── 本地工具 ──
+  { type: 'function', function: { name: 'local_system_stats', description: '获取本机（OpenLog所在服务器）系统状态：CPU/内存/磁盘/网络/进程/GPU', parameters: { type: 'object', properties: {} } } },
+  { type: 'function', function: { name: 'local_log_files', description: '列出本地日志文件', parameters: { type: 'object', properties: {} } } },
+  { type: 'function', function: { name: 'local_read_log', description: '读取本地日志文件内容', parameters: { type: 'object', properties: { filePath: { type: 'string' }, lines: { type: 'number', description: '读取最后N行，默认200' } }, required: ['filePath'] } } },
+];
+
+const DANGEROUS_TOOLS = new Set(['docker_start', 'docker_stop', 'docker_restart', 'docker_exec', 'remote_exec']);
+
+/** 执行工具调用，返回结果对象 */
+async function executeAssistantTool(name, args) {
+  const settings = ensureSettings();
+  const dockerSources = settings.dockerSources || [];
+
+  // 辅助：根据 sourceId 获取 Docker 配置
+  const getDockerConfig = (sourceId) => {
+    const src = sourceId ? dockerSources.find(s => s.id === sourceId) : dockerSources.find(s => s.enabled);
+    if (!src) throw new Error('未找到可用的 Docker 源');
+    return { sourceId: src.id, config: { socketPath: src.socketPath || undefined, host: src.socketPath ? undefined : (src.host || 'localhost'), port: src.socketPath ? undefined : (src.port || 2375), tls: src.tls, ca: src.ca, cert: src.cert, key: src.key } };
+  };
+
+  try {
+    switch (name) {
+      // ── Docker ──
+      case 'docker_list': {
+        if (args.sourceId) {
+          const { sourceId, config } = getDockerConfig(args.sourceId);
+          const containers = await docker.listContainers(sourceId, config);
+          return { containers, sourceId, total: containers.length };
+        }
+        const all = [];
+        for (const src of dockerSources.filter(s => s.enabled)) {
+          try {
+            const config = { socketPath: src.socketPath || undefined, host: src.socketPath ? undefined : (src.host || 'localhost'), port: src.socketPath ? undefined : (src.port || 2375), tls: src.tls, ca: src.ca, cert: src.cert, key: src.key };
+            const containers = await docker.listContainers(src.id, config);
+            all.push({ sourceId: src.id, sourceName: src.name, containers });
+          } catch (e) { all.push({ sourceId: src.id, sourceName: src.name, error: e.message, containers: [] }); }
+        }
+        return { sources: all, totalSources: all.length };
+      }
+      case 'docker_logs': {
+        const dc = getDockerConfig(args.sourceId);
+        const logs = await docker.getContainerLogs(dc.sourceId, args.containerId, dc.config, { tail: args.tail || 200 });
+        const logLines = (logs || []).slice(-(args.tail || 200));
+        return { containerId: args.containerId, totalLines: logLines.length, logs: logLines };
+      }
+      case 'docker_inspect': {
+        const dc = getDockerConfig(args.sourceId);
+        const containers = await docker.listContainers(dc.sourceId, dc.config);
+        const c = containers.find(x => x.id === args.containerId || x.shortId === args.containerId || (x.names || []).some(n => n.includes(args.containerId)));
+        if (!c) return { error: `容器 ${args.containerId} 未找到` };
+        return { container: c };
+      }
+      case 'docker_start': {
+        const dc = getDockerConfig(args.sourceId);
+        const r = await docker.startContainer(dc.sourceId, args.containerId, dc.config);
+        return r;
+      }
+      case 'docker_stop': {
+        const dc = getDockerConfig(args.sourceId);
+        const r = await docker.stopContainer(dc.sourceId, args.containerId, dc.config);
+        return r;
+      }
+      case 'docker_restart': {
+        const dc = getDockerConfig(args.sourceId);
+        const r = await docker.restartContainer(dc.sourceId, args.containerId, dc.config);
+        return r;
+      }
+      case 'docker_exec': {
+        const dc = getDockerConfig(args.sourceId);
+        const r = await docker.execInContainer(dc.sourceId, args.containerId, args.command, dc.config);
+        return { output: r.output, exitCode: r.exitCode };
+      }
+      case 'docker_health_check': {
+        const r = await docker.healthCheck(dockerSources);
+        return r;
+      }
+      // ── 远程服务器 ──
+      case 'remote_servers': {
+        const servers = remote.getServers();
+        return { servers, total: servers.length };
+      }
+      case 'remote_exec': {
+        // 确保已连接
+        const servers = remote.getServers();
+        const s = servers.find(x => x.id === args.serverId);
+        if (!s) return { error: `服务器 ${args.serverId} 未找到` };
+        if (s.status !== 'connected') {
+          try { await remote.connectServer(args.serverId); } catch (e) { return { error: `连接失败: ${e.message}` }; }
+        }
+        const r = await remote.execRemoteCommand(args.serverId, args.command);
+        return r;
+      }
+      case 'remote_system_stats': {
+        const servers = remote.getServers();
+        const s = servers.find(x => x.id === args.serverId);
+        if (!s) return { error: `服务器 ${args.serverId} 未找到` };
+        if (s.status !== 'connected') {
+          try { await remote.connectServer(args.serverId); } catch (e) { return { error: `连接失败: ${e.message}` }; }
+        }
+        const r = await remote.getRemoteSystemStats(args.serverId);
+        return r;
+      }
+      case 'remote_list_files': {
+        const servers = remote.getServers();
+        const s = servers.find(x => x.id === args.serverId);
+        if (!s) return { error: `服务器 ${args.serverId} 未找到` };
+        if (s.status !== 'connected') {
+          try { await remote.connectServer(args.serverId); } catch (e) { return { error: `连接失败: ${e.message}` }; }
+        }
+        const r = await remote.listRemoteFiles(args.serverId, args.path || '');
+        return r;
+      }
+      case 'remote_read_file': {
+        const servers = remote.getServers();
+        const s = servers.find(x => x.id === args.serverId);
+        if (!s) return { error: `服务器 ${args.serverId} 未找到` };
+        if (s.status !== 'connected') {
+          try { await remote.connectServer(args.serverId); } catch (e) { return { error: `连接失败: ${e.message}` }; }
+        }
+        const r = await remote.readRemoteFile(args.serverId, args.filePath, { lines: args.lines || 200 });
+        return r;
+      }
+      case 'remote_search_logs': {
+        const servers = remote.getServers();
+        const s = servers.find(x => x.id === args.serverId);
+        if (!s) return { error: `服务器 ${args.serverId} 未找到` };
+        if (s.status !== 'connected') {
+          try { await remote.connectServer(args.serverId); } catch (e) { return { error: `连接失败: ${e.message}` }; }
+        }
+        const r = await remote.searchRemoteLogs(args.serverId, args.search);
+        return r;
+      }
+      // ── 本地 ──
+      case 'local_system_stats': {
+        const [cpu, mem, disksData, network, processes] = await Promise.all([
+          si.currentLoad(), si.mem(), si.fsSize(), si.networkStats(), si.processes()
+        ]);
+        let gpus = [];
+        try {
+          const { execSync } = await import('child_process');
+          const out = execSync('nvidia-smi --query-gpu=index,name,utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader,nounits 2>/dev/null', { timeout: 3000 });
+          gpus = out.toString().trim().split('\n').filter(Boolean).map(line => {
+            const [idx, name, util, memUsed, memTotal, temp] = line.split(',').map(s => s.trim());
+            return { index: parseInt(idx) || 0, name: name || '', util: parseFloat(util) || 0, memUsed: parseFloat(memUsed) || 0, memTotal: parseFloat(memTotal) || 1, temp: parseFloat(temp) || 0 };
+          });
+        } catch {}
+        return {
+          cpu: { load: cpu.currentLoad || 0 },
+          memory: { used: mem.used || 0, total: mem.total || 1, free: mem.free || 0, usePercent: mem.total > 0 ? ((mem.used / mem.total) * 100).toFixed(1) : 0 },
+          disk: disksData.map(d => ({ name: d.fs, used: d.used, total: d.size, usePercent: d.use })),
+          network: (network || []).slice(0, 3).map(n => ({ iface: n.iface, rx: n.rx_sec, tx: n.tx_sec })),
+          processes: (processes?.list || []).slice(0, 10).map(p => ({ pid: p.pid, name: p.name, cpu: p.cpu, mem: p.mem })),
+          gpus,
+        };
+      }
+      case 'local_log_files': {
+        const logPath = settings.logPath || path.join(os.homedir(), 'logs');
+        let files = [];
+        try {
+          if (fs.existsSync(logPath)) {
+            files = fs.readdirSync(logPath).filter(f => f.endsWith('.log')).map(f => ({
+              name: f, path: path.join(logPath, f), size: fs.statSync(path.join(logPath, f)).size
+            }));
+          }
+        } catch {}
+        return { logPath, files, total: files.length };
+      }
+      case 'local_read_log': {
+        const content = fs.readFileSync(args.filePath, 'utf8');
+        const allLines = content.split('\n').filter(Boolean);
+        const lines = allLines.slice(-(args.lines || 200));
+        return { filePath: args.filePath, totalLines: allLines.length, returnedLines: lines.length, lines };
+      }
+      default:
+        return { error: `未知工具: ${name}` };
+    }
+  } catch (err) {
+    return { error: err.message };
+  }
+}
+
 app.post('/api/chat', async (req, res) => {
   const { messages } = req.body;
   if (!messages || !Array.isArray(messages) || messages.length === 0) {
     return res.status(400).json({ error: 'messages required' });
   }
 
-  const apiKey = ensureSettings().openaiApiKey;
-  const baseUrl = ensureSettings().openaiBaseUrl || 'http://localhost:11434/v1';
-  const model = ensureSettings().model;
+  const settings = ensureSettings();
+  const apiKey = settings.openaiApiKey;
+  const baseUrl = settings.openaiBaseUrl || 'http://localhost:11434/v1';
+  const model = settings.model;
   const isLocalModel = baseUrl.includes('localhost') || baseUrl.includes('127.0.0.1') || baseUrl.includes('0.0.0.0');
   const baseUrlConfigured = baseUrl && baseUrl !== 'http://localhost:11434/v1';
   
@@ -1407,54 +1665,153 @@ app.post('/api/chat', async (req, res) => {
   }
   if (!model) return res.status(400).json({ error: '未配置模型' });
 
+  // 汇总工具可用的资源上下文
+  const dockerSources = settings.dockerSources || [];
+  const enabledDocker = dockerSources.filter(s => s.enabled);
+  const remoteServers = remote.getServers();
+  const connectedRemote = remoteServers.filter(s => s.status === 'connected');
+
+  const systemPrompt = {
+    role: 'system',
+    content: `你是 OpenLog 的运维助手，帮用户排查服务器、Docker 容器、日志异常、性能问题。
+风格：简洁有力，像老运维跟同事说话，不啰嗦不念经。用中文。
+格式：关键结论加粗，代码用 \`\`\` 包裹，操作步骤编号列出。
+
+## 🔧 你能直接操作
+你有一组工具可以**直接查询系统状态、读取日志、列出容器**。
+- 用户问"有哪些容器""系统状态怎么样""帮我看看日志"→ 直接调工具，不用问
+- 查询完成后自然地告诉用户结果
+
+## ⚠️ 危险操作安全规则
+对**启动/停止/重启/删除容器、在容器或远程服务器执行命令**的操作：
+1. 先在回复中说清楚你要做什么、为什么
+2. 明确说"确认执行吗？"等待用户同意
+3. 用户说"确认"/"好的"/"行"/"执行"后才调用工具
+4. 绝不在用户确认前调用 docker_start / docker_stop / docker_restart / docker_exec / remote_exec
+
+## 📋 当前环境
+- Docker 源: ${enabledDocker.length > 0 ? enabledDocker.map(s => s.name).join('、') : '无'}
+- 远程服务器: ${connectedRemote.length > 0 ? connectedRemote.map(s => `${s.name}(${s.id.slice(0,8)})`).join('、') : (remoteServers.length > 0 ? `${remoteServers.length}台(均未连接)` : '无')}
+
+## 最近的系统状态
+${buildAssistantContext()}`
+  };
+
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+
   try {
     const OpenAI = (await import('openai')).default;
     const openai = new OpenAI({ apiKey: apiKey || (isLocalModel ? 'ollama' : 'sk-dummy'), baseURL: baseUrl });
 
-    const systemPrompt = {
-      role: 'system',
-      content: `你是 OpenLog 的运维助手，帮用户排查服务器、Docker 容器、日志异常、性能问题。
-风格：简洁有力，像老运维跟同事说话，不啰嗦不念经。用中文。
-格式：关键结论加粗，代码用 \`\`\` 包裹，操作步骤编号列出。
-
-## 最近的系统状态
-${buildAssistantContext()}`
-    };
-
-    res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('Connection', 'keep-alive');
-
-    // 构建消息数组：确保 system 在最前
+    // 消息历史（会在 tool calling 循环中更新）
     const allMessages = [
       systemPrompt,
       ...messages.filter(m => m.role === 'user' || m.role === 'assistant')
     ];
 
-    const streamParams = {
-      model,
-      messages: allMessages,
-      stream: true,
-      max_tokens: 4096
-    };
-    
-    // Ollama 支持 temperature
-    if (isLocalModel) {
-      streamParams.temperature = 0.7;
-    }
+    // ── Tool Calling 循环（最多 5 轮）──
+    let toolRound = 0;
+    const MAX_TOOL_ROUNDS = 5;
 
-    const stream = await openai.chat.completions.create(streamParams);
+    while (toolRound < MAX_TOOL_ROUNDS) {
+      toolRound++;
 
-    const thinkingFilter = new ThinkingStreamFilter();
-    for await (const chunk of stream) {
-      const raw = chunk.choices[0]?.delta?.content || '';
-      if (raw) {
-        const content = thinkingFilter.feed(raw);
-        if (content) res.write(`data: ${JSON.stringify({ content })}\n\n`);
+      const streamParams = {
+        model,
+        messages: allMessages,
+        stream: true,
+        max_tokens: 4096,
+        tools: ASSISTANT_TOOLS,
+        tool_choice: 'auto',
+      };
+      if (isLocalModel) streamParams.temperature = 0.7;
+
+      const stream = await openai.chat.completions.create(streamParams);
+
+      // 累积流式输出：content + tool_calls
+      let contentAcc = '';
+      const toolCallAcc = new Map(); // index → { id, name, arguments }
+
+      for await (const chunk of stream) {
+        const delta = chunk.choices[0]?.delta;
+        if (!delta) continue;
+
+        // 文本内容 → 流式发送
+        if (delta.content) {
+          contentAcc += delta.content;
+        }
+
+        // 工具调用增量
+        if (delta.tool_calls) {
+          for (const tc of delta.tool_calls) {
+            const idx = tc.index ?? 0;
+            if (!toolCallAcc.has(idx)) toolCallAcc.set(idx, { id: tc.id || '', name: tc.function?.name || '', arguments: '' });
+            const entry = toolCallAcc.get(idx);
+            if (tc.id) entry.id = tc.id;
+            if (tc.function?.name) entry.name = tc.function.name;
+            if (tc.function?.arguments) entry.arguments += tc.function.arguments;
+          }
+        }
       }
+
+      // 有工具调用 → 执行并回填
+      if (toolCallAcc.size > 0) {
+        const toolCalls = [...toolCallAcc.values()];
+
+        // 先发送 LLM 说的内容（如果有）
+        if (contentAcc.trim()) {
+          const thinkingFilter = new ThinkingStreamFilter();
+          const filtered = thinkingFilter.feed(contentAcc) + thinkingFilter.flush();
+          if (filtered) res.write(`data: ${JSON.stringify({ content: filtered })}\n\n`);
+        }
+
+        // 将 assistant 消息加入历史
+        const assistantMsg = {
+          role: 'assistant',
+          content: contentAcc || null,
+          tool_calls: toolCalls.map(tc => ({
+            id: tc.id,
+            type: 'function',
+            function: { name: tc.name, arguments: tc.arguments }
+          }))
+        };
+        allMessages.push(assistantMsg);
+
+        // 逐个执行工具
+        for (const tc of toolCalls) {
+          let args = {};
+          try { args = JSON.parse(tc.arguments); } catch { args = {}; }
+
+          res.write(`data: ${JSON.stringify({ type: 'tool_start', tool: tc.name, args })}\n\n`);
+
+          const result = await executeAssistantTool(tc.name, args);
+
+          res.write(`data: ${JSON.stringify({ type: 'tool_result', tool: tc.name, result })}\n\n`);
+
+          allMessages.push({
+            role: 'tool',
+            tool_call_id: tc.id,
+            content: JSON.stringify(result)
+          });
+        }
+
+        // 继续循环，让 LLM 基于工具结果回复
+        continue;
+      }
+
+      // 无工具调用 → 流式输出最终内容
+      const thinkingFilter = new ThinkingStreamFilter();
+      const filtered = thinkingFilter.feed(contentAcc) + thinkingFilter.flush();
+      if (filtered) res.write(`data: ${JSON.stringify({ content: filtered })}\n\n`);
+      res.write('data: [DONE]\n\n');
+      res.end();
+      return;
     }
-    const remaining = thinkingFilter.flush();
-    if (remaining) res.write(`data: ${JSON.stringify({ content: remaining })}\n\n`);
+
+    // 超过最大轮数
+    res.write(`data: ${JSON.stringify({ content: '\n\n⚠️ 工具调用轮数已达上限，请简化问题重试。' })}\n\n`);
     res.write('data: [DONE]\n\n');
     res.end();
   } catch (err) {
@@ -2530,6 +2887,124 @@ app.post('/api/remote/servers/:id/shell', async (req, res) => {
   }
 });
 
+// AI Shell: 自然语言转 Shell 命令并执行
+app.post('/api/remote/:id/aishell', async (req, res) => {
+  try {
+    const { prompt } = req.body;
+    if (!prompt || !prompt.trim()) {
+      return res.status(400).json({ error: '缺少提示词' });
+    }
+
+    const serverId = req.params.id;
+    const server = remote.getServers().find(s => s.id === serverId);
+    if (!server) {
+      return res.status(404).json({ error: '服务器不存在' });
+    }
+
+    // 获取 LLM 配置
+    const settings = ensureSettings();
+    const apiKey = settings.openaiApiKey;
+    const baseUrl = settings.openaiBaseUrl || 'http://localhost:11434/v1';
+    const model = settings.model;
+    const isLocalModel = baseUrl.includes('localhost') || baseUrl.includes('127.0.0.1') || baseUrl.includes('0.0.0.0');
+
+    if (!apiKey && !isLocalModel) {
+      return res.status(400).json({ error: '未配置 LLM API Key，请在设置中配置' });
+    }
+    if (!model) {
+      return res.status(400).json({ error: '未配置 LLM 模型，请在设置中配置' });
+    }
+
+    // 获取系统信息作为上下文
+    let systemContext = '';
+    try {
+      const stats = await remote.getRemoteSystemStats(serverId);
+      if (!stats.error) {
+        systemContext = `\n\n当前服务器状态（${server.host}）：\n` +
+          `- CPU 使用率: ${stats.cpu?.load?.toFixed(1) || 'N/A'}%\n` +
+          `- 内存: ${(stats.memory?.used / 1e9).toFixed(1) || 'N/A'}/${(stats.memory?.total / 1e9).toFixed(1) || 'N/A'} GB\n` +
+          `- 磁盘: ${stats.disk?.map(d => `${d.name} ${d.usePercent}%`).join(', ') || 'N/A'}`;
+      }
+    } catch (_) {}
+
+    // 调用 LLM 翻译为 Shell 命令
+    const OpenAI = (await import('openai')).default;
+    const openai = new OpenAI({ apiKey: apiKey || 'ollama', baseURL: baseUrl });
+
+    const systemPrompt = `你是一个专业的 Linux 运维工程师。用户会用自然语言描述他们想执行的操作。
+你需要将用户的请求转换为一个或多个安全的 Shell 命令。
+
+重要规则：
+1. 只输出安全的只读命令（ls, cat, head, tail, grep, find, du, df, free, ps, top, uptime, date, netstat, ss, lsof, journalctl, systemctl status, docker ps, docker logs, nvidia-smi, iostat, vmstat, uname, hostname, whoami, id, pwd, env, ip, ping, curl, wget, stat, wc, sort, uniq, awk, sed）
+2. 绝对不能执行写入、删除、修改类命令（rm, mv, dd, mkfs, fdisk, shutdown, reboot, systemctl start/stop/restart, docker rm/stop/kill）
+3. 如果用户的请求涉及危险操作，回复一个安全的替代方案
+4. 尽量用单个命令，必要时用管道组合
+5. 限制输出量（使用 head -20 或 tail -50 等）
+
+返回格式为 JSON：
+{
+  "command": "要执行的 shell 命令",
+  "explanation": "简短的中文解释（1-2句话）"
+}
+
+只返回 JSON，不要包含其他内容。${systemContext}`;
+
+    const response = await openai.chat.completions.create({
+      model,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: `请将以下请求转换为 Shell 命令：${prompt.trim()}` }
+      ],
+      temperature: 0.1,
+      timeout: 60_000,
+      response_format: { type: 'json_object' }
+    });
+
+    const llmOutput = stripThinking(response.choices[0].message.content);
+    let parsed;
+    try {
+      parsed = JSON.parse(llmOutput);
+    } catch {
+      // 尝试从文本中提取 JSON
+      const jsonMatch = llmOutput.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        parsed = JSON.parse(jsonMatch[0]);
+      } else {
+        return res.status(500).json({ error: 'AI 返回格式错误，请重试', raw: llmOutput });
+      }
+    }
+
+    const command = parsed.command || '';
+    const explanation = parsed.explanation || '';
+
+    if (!command) {
+      return res.status(400).json({ error: 'AI 未能生成有效命令', raw: llmOutput });
+    }
+
+    // 安全校验：再次检查命令白名单
+    const cmdBase = command.trim().split(/\s+/)[0].split('/').pop();
+    const SAFE_CMDS = ['ls','cat','head','tail','wc','grep','find','du','df','free','ps','top','htop','uptime','date','env','echo','pwd','whoami','id','uname','hostname','ss','ip','ping','curl','wget','python','python3','node','npm','npx','nvidia-smi','docker','docker-compose','systemctl','journalctl','dmesg','lsof','lscpu','lsblk','mount','iostat','vmstat','netstat','git','stat','sort','uniq','awk','sed'];
+    if (!SAFE_CMDS.includes(cmdBase)) {
+      return res.status(403).json({ error: `AI 生成的命令被安全策略阻止: ${cmdBase}`, command, explanation });
+    }
+
+    // 执行命令
+    const result = await remote.execShellCommand(serverId, command, 30000);
+
+    res.json({
+      success: true,
+      command,
+      explanation,
+      stdout: result.stdout,
+      stderr: result.stderr,
+      exitCode: result.code
+    });
+
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Shell 会话存储
 const shellSessions = new Map();
 
@@ -2543,6 +3018,13 @@ server.on('upgrade', (request, socket, head) => {
 
     wss.handleUpgrade(request, socket, head, (ws) => {
       handleShellWebSocket(ws, serverId);
+    });
+  } else if (pathname.startsWith('/ws/aishell/')) {
+    // AI Shell WebSocket 端点: /ws/aishell/:serverId
+    const serverId = pathname.split('/')[3];
+
+    wss.handleUpgrade(request, socket, head, (ws) => {
+      handleAIShellWebSocket(ws, serverId);
     });
   } else if (pathname === '/ws') {
     // 原有的主 WebSocket 连接
@@ -2610,6 +3092,170 @@ async function handleShellWebSocket(ws, serverId) {
     }));
     ws.close();
   }
+}
+
+// AI Shell WebSocket 处理器 — 自然语言 → AI 生成命令 → 远程执行
+async function handleAIShellWebSocket(ws, serverId) {
+  console.log(`AI Shell WebSocket connected for server: ${serverId}`);
+
+  const SYSTEM_PROMPT = `You are an expert shell command generator running on a remote Linux server. 
+
+Given a natural language request from the user, generate a SINGLE concise shell command that accomplishes the task on the remote server.
+
+Rules:
+1. Output ONLY the command on a single line — no explanation, no markdown formatting, no code blocks, no backticks
+2. Use POSIX-compatible syntax (sh, not bash-specific unless necessary)
+3. Never generate destructive commands (rm -rf, dd, mkfs, chmod -R 777, etc.) unless the user explicitly requests them
+4. If the request is ambiguous, output the safest reasonable interpretation
+5. For monitoring/read-only queries, prefer concise output (use head/tail/grep)
+6. Multi-step operations should be joined with && or ;
+7. Assume common tools: grep, awk, sed, find, curl, wget, netstat, ss, ps, top, df, free, du, systemctl, journalctl, docker, kubectl, python3, nvidia-smi
+8. Output "NO_COMMAND" if the request cannot be reasonably converted to a shell command
+9. For Chinese input, interpret the request in Chinese context`;
+
+  ws.send(JSON.stringify({
+    type: 'aishell_ready',
+    message: 'AI Shell session ready'
+  }));
+
+  ws.on('message', async (data) => {
+    try {
+      const msg = JSON.parse(data.toString());
+
+      // 自然语言指令 → 生成命令
+      if (msg.type === 'natural_language' || msg.type === 'regenerate') {
+        const requestId = msg.id;
+        const text = msg.text;
+
+        console.log(`[AIShell] 收到自然语言: "${text.slice(0, 80)}"`);
+
+        try {
+          const apiKey = ensureSettings().openaiApiKey;
+          const baseUrl = ensureSettings().openaiBaseUrl || 'http://localhost:11434/v1';
+          const model = ensureSettings().model || 'qwen3.5:9b';
+          const isLocalModel = baseUrl.includes('localhost') || baseUrl.includes('127.0.0.1') || baseUrl.includes('0.0.0.0');
+
+          if (!apiKey && !isLocalModel) {
+            ws.send(JSON.stringify({
+              type: 'error',
+              id: requestId,
+              error: '未配置 LLM API Key。请在设置页面配置。'
+            }));
+            return;
+          }
+
+          const OpenAI = (await import('openai')).default;
+          const openai = new OpenAI({
+            apiKey: apiKey || 'ollama',
+            baseURL: baseUrl
+          });
+
+          const response = await openai.chat.completions.create({
+            model,
+            messages: [
+              { role: 'system', content: SYSTEM_PROMPT },
+              { role: 'user', content: text }
+            ],
+            temperature: 0.2,
+            max_tokens: 200,
+            timeout: 30_000
+          });
+
+          let command = (response.choices[0].message.content || '').trim();
+
+          // 清理可能的 markdown 代码块标记
+          command = command
+            .replace(/^```(?:bash|sh|shell|cmd|powershell)?\s*/i, '')
+            .replace(/\s*```$/i, '')
+            .trim();
+
+          console.log(`[AIShell] 生成命令: "${command}"`);
+
+          ws.send(JSON.stringify({
+            type: 'command_generated',
+            id: requestId,
+            command
+          }));
+
+        } catch (err) {
+          console.error('[AIShell] AI 生成命令失败:', err.message);
+          ws.send(JSON.stringify({
+            type: 'error',
+            id: requestId,
+            error: `AI 生成命令失败: ${err.message}`
+          }));
+        }
+      }
+
+      // 执行命令
+      else if (msg.type === 'execute') {
+        const requestId = msg.id;
+        const command = msg.command;
+
+        console.log(`[AIShell] 执行命令: "${command}"`);
+
+        try {
+          const result = await remote.execRemoteCommand(serverId, command);
+
+          if (result.error) {
+            ws.send(JSON.stringify({
+              type: 'command_error',
+              id: requestId,
+              error: result.error
+            }));
+            ws.send(JSON.stringify({
+              type: 'command_done',
+              id: requestId,
+              exitCode: -1
+            }));
+            return;
+          }
+
+          // 发送 stdout
+          if (result.stdout) {
+            ws.send(JSON.stringify({
+              type: 'command_output',
+              id: requestId,
+              data: result.stdout
+            }));
+          }
+
+          // 发送 stderr
+          if (result.stderr) {
+            ws.send(JSON.stringify({
+              type: 'command_output',
+              id: requestId,
+              data: `\x1b[33m${result.stderr}\x1b[0m`
+            }));
+          }
+
+          ws.send(JSON.stringify({
+            type: 'command_done',
+            id: requestId,
+            exitCode: result.exitCode ?? 0
+          }));
+
+        } catch (err) {
+          console.error('[AIShell] 命令执行失败:', err.message);
+          ws.send(JSON.stringify({
+            type: 'command_error',
+            id: requestId,
+            error: err.message
+          }));
+        }
+      }
+    } catch (err) {
+      console.error('[AIShell] 消息处理错误:', err);
+    }
+  });
+
+  ws.on('close', () => {
+    console.log(`AI Shell WebSocket closed for server: ${serverId}`);
+  });
+
+  ws.on('error', (err) => {
+    console.error(`AI Shell WebSocket error for server ${serverId}:`, err.message);
+  });
 }
 
 // Start server
