@@ -255,11 +255,23 @@ async function runMigrations() {
       name TEXT NOT NULL,
       command TEXT NOT NULL,
       description TEXT DEFAULT '',
+      content TEXT DEFAULT '',
       category TEXT DEFAULT '通用',
+      is_default INTEGER DEFAULT 0,
       created_at INTEGER DEFAULT (strftime('%s', 'now')),
       updated_at INTEGER DEFAULT (strftime('%s', 'now'))
     )
   `);
+
+  // 为已有 skills 表添加 content 列（兼容旧数据）
+  try {
+    await db.exec(`ALTER TABLE skills ADD COLUMN content TEXT DEFAULT ''`);
+  } catch { /* 列已存在 */ }
+
+  // 为已有 skills 表添加 is_default 列（兼容旧数据）
+  try {
+    await db.exec(`ALTER TABLE skills ADD COLUMN is_default INTEGER DEFAULT 0`);
+  } catch { /* 列已存在 */ }
 }
 
 // ─── CRUD helpers ────────────────────────────────────────────────────────────
@@ -367,17 +379,17 @@ export function getSkill(id) {
 export function createSkill(skill) {
   const now = Math.floor(Date.now() / 1000);
   return db.run(
-    `INSERT INTO skills (id, name, command, description, category, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    [skill.id, skill.name, skill.command, skill.description || '', skill.category || '通用', now, now]
+    `INSERT INTO skills (id, name, command, description, content, category, is_default, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [skill.id, skill.name, skill.command, skill.description || '', skill.content || '', skill.category || '通用', skill.is_default ? 1 : 0, now, now]
   );
 }
 
 export function updateSkill(id, skill) {
   const now = Math.floor(Date.now() / 1000);
   return db.run(
-    `UPDATE skills SET name=?, command=?, description=?, category=?, updated_at=? WHERE id=?`,
-    [skill.name, skill.command, skill.description || '', skill.category || '通用', now, id]
+    `UPDATE skills SET name=?, command=?, description=?, content=?, category=?, updated_at=? WHERE id=?`,
+    [skill.name, skill.command, skill.description || '', skill.content || '', skill.category || '通用', now, id]
   );
 }
 

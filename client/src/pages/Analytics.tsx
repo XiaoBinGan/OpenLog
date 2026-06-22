@@ -1,5 +1,6 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
+import { marked } from 'marked';
 import { useToast } from '../contexts/ToastContext';
 import { 
   Brain, 
@@ -381,41 +382,8 @@ export default function Analytics() {
     setCodeContext('');
   };
 
-  const renderMarkdown = (text: string) => {
-    return text.split('\n').map((line, idx) => {
-      if (line.startsWith('## ')) {
-        return <h3 key={idx} className="text-lg font-bold mt-4 mb-2 text-accent-400">{line.slice(3)}</h3>;
-      }
-      if (line.startsWith('### ')) {
-        return <h4 key={idx} className="text-md font-semibold mt-3 mb-1 text-dark-200">{line.slice(4)}</h4>;
-      }
-      if (line.match(/^[-*]\s/)) {
-        return <li key={idx} className="ml-4 text-dark-300">{line.slice(2)}</li>;
-      }
-      if (line.match(/^\d+\.\s/)) {
-        return <li key={idx} className="ml-4 text-dark-300">{line.replace(/^\d+\.\s/, '')}</li>;
-      }
-      if (line.startsWith('```')) {
-        return null;
-      }
-      if (line.includes('**')) {
-        const parts = line.split(/(\*\*[^*]+\*\*)/g);
-        return (
-          <p key={idx} className="text-dark-300 my-1">
-            {parts.map((part, i) => 
-              part.startsWith('**') && part.endsWith('**') 
-                ? <strong key={i} className="text-dark-100">{part.slice(2, -2)}</strong>
-                : part
-            )}
-          </p>
-        );
-      }
-      if (!line.trim()) {
-        return <br key={idx} />;
-      }
-      return <p key={idx} className="text-dark-300 my-1">{line}</p>;
-    });
-  };
+  const renderMarkdown = (text: string): string => marked.parse(text, { breaks: true }) as string;
+
 
   const renderHealthPanel = () => (
     <>
@@ -772,9 +740,14 @@ export default function Analytics() {
             )}
             
             {analysis && (
-              <div className="prose prose-invert max-w-none">
-                {renderMarkdown(analysis)}
-              </div>
+              <div className="prose prose-invert max-w-none text-sm text-dark-200 leading-relaxed
+                [&_h2]:text-dark-100 [&_h2]:text-sm [&_h2]:font-bold [&_h2]:mt-3 [&_h2]:mb-1
+                [&_h3]:text-dark-200 [&_h3]:text-xs [&_h3]:font-semibold
+                [&_code]:bg-dark-800 [&_code]:px-1 [&_code]:py-0.5 [&_code]:rounded [&_code]:text-xs
+                [&_li]:text-dark-300 [&_li]:text-xs [&_li]:ml-3
+                [&_strong]:text-dark-100 [&_table]:w-full [&_table]:text-xs [&_th]:text-left [&_th]:p-2 [&_th]:border-b [&_th]:border-dark-700 [&_td]:p-2 [&_td]:border-b [&_td]:border-dark-800"
+                dangerouslySetInnerHTML={{ __html: renderMarkdown(analysis) }}
+              />
             )}
           </div>
         </div>
@@ -880,9 +853,13 @@ export default function Analytics() {
                       <span className="ml-3 text-dark-400">AI 正在分析并生成修复方案...</span>
                     </div>
                   ) : fixResult ? (
-                    <div className="prose prose-invert max-w-none">
-                      {renderMarkdown(fixResult)}
-                    </div>
+                    <div className="prose prose-invert max-w-none text-sm text-dark-200 leading-relaxed
+                        [&_h2]:text-dark-100 [&_h2]:text-sm [&_h2]:font-bold [&_h2]:mt-3 [&_h2]:mb-1
+                        [&_code]:bg-dark-800 [&_code]:px-1 [&_code]:py-0.5 [&_code]:rounded [&_code]:text-xs
+                        [&_li]:text-dark-300 [&_li]:text-xs [&_li]:ml-3
+                        [&_strong]:text-dark-100 [&_table]:w-full [&_table]:text-xs [&_th]:text-left [&_th]:p-2 [&_th]:border-b [&_th]:border-dark-700 [&_td]:p-2 [&_td]:border-b [&_td]:border-dark-800"
+                        dangerouslySetInnerHTML={{ __html: renderMarkdown(fixResult) }}
+                      />
                   ) : (
                     <p className="text-red-400">无法生成修复方案</p>
                   )}
@@ -1088,9 +1065,14 @@ export default function Analytics() {
                 <Brain className="w-4 h-4 text-accent-400" />
                 <h3 className="text-sm font-semibold text-accent-400">AI 巡检分析</h3>
               </div>
-              <div className="prose prose-invert prose-sm max-w-none text-dark-300 whitespace-pre-wrap">
-                {patrolAnalysis}
-              </div>
+              <div className="prose prose-invert prose-sm max-w-none text-dark-300
+                [&_h2]:text-dark-100 [&_h2]:text-sm [&_h2]:font-bold [&_h2]:mt-3 [&_h2]:mb-1
+                [&_h3]:text-dark-200 [&_h3]:text-xs [&_h3]:font-semibold
+                [&_code]:bg-dark-800 [&_code]:px-1 [&_code]:py-0.5 [&_code]:rounded [&_code]:text-xs
+                [&_li]:text-dark-300 [&_li]:text-xs [&_li]:ml-3
+                [&_strong]:text-dark-100 [&_table]:w-full [&_table]:text-xs [&_th]:text-left [&_th]:p-2 [&_th]:border-b [&_th]:border-dark-700 [&_td]:p-2 [&_td]:border-b [&_td]:border-dark-800"
+                dangerouslySetInnerHTML={{ __html: renderMarkdown(patrolAnalysis) }}
+              />
             </div>
           )}
         </div>

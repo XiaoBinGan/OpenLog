@@ -9,6 +9,7 @@ import Monitor from './pages/Monitor';
 import Docker from './pages/Docker';
 import Settings from './pages/Settings';
 import Remote from './pages/Remote';
+import Skills from './pages/Skills';
 import { RemoteProvider } from './contexts/RemoteContext';
 import { DeviceProvider } from './contexts/DeviceContext';
 import { ToastProvider } from './contexts/ToastContext';
@@ -29,6 +30,7 @@ function App() {
                 <Route path="analytics" element={<Analytics />} />
                 <Route path="analysis-history" element={<AnalysisHistory />} />
                 <Route path="assistant" element={<Assistant />} />
+                <Route path="skills" element={<Skills />} />
                 <Route path="monitor" element={<Monitor />} />
                 <Route path="settings" element={<Settings />} />
               </Route>

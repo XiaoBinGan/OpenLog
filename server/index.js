@@ -1258,11 +1258,11 @@ app.get('/api/skills', (req, res) => {
 
 // 创建技能
 app.post('/api/skills', (req, res) => {
-  const { name, command, description, category } = req.body;
+  const { name, command, description, content, category, is_default } = req.body;
   if (!name || !command) return res.status(400).json({ error: 'name and command required' });
 
   try {
-    const skill = { id: uuidv4(), name, command, description, category };
+    const skill = { id: uuidv4(), name, command, description, content, category, is_default };
     createSkill(skill);
     res.json({ success: true, skill });
   } catch (err) {
@@ -1272,14 +1272,15 @@ app.post('/api/skills', (req, res) => {
 
 // 更新技能
 app.put('/api/skills/:id', (req, res) => {
-  const { name, command, description, category } = req.body;
+  const { name, command, description, content, category } = req.body;
   if (!name || !command) return res.status(400).json({ error: 'name and command required' });
 
   try {
     const existing = getSkill(req.params.id);
     if (!existing) return res.status(404).json({ error: '技能不存在' });
+    if (existing.is_default) return res.status(403).json({ error: '内置技能不允许修改' });
 
-    updateSkill(req.params.id, { name, command, description, category });
+    updateSkill(req.params.id, { name, command, description, content, category });
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1291,6 +1292,7 @@ app.delete('/api/skills/:id', (req, res) => {
   try {
     const existing = getSkill(req.params.id);
     if (!existing) return res.status(404).json({ error: '技能不存在' });
+    if (existing.is_default) return res.status(403).json({ error: '内置技能不允许删除' });
 
     deleteSkill(req.params.id);
     res.json({ success: true });
@@ -1677,17 +1679,22 @@ app.post('/api/chat', async (req, res) => {
 风格：简洁有力，像老运维跟同事说话，不啰嗦不念经。用中文。
 格式：关键结论加粗，代码用 \`\`\` 包裹，操作步骤编号列出。
 
-## 🔧 你能直接操作
-你有一组工具可以**直接查询系统状态、读取日志、列出容器**。
-- 用户问"有哪些容器""系统状态怎么样""帮我看看日志"→ 直接调工具，不用问
-- 查询完成后自然地告诉用户结果
+## 🔧 你可以直接调用的工具
+- docker_list / docker_logs / docker_inspect / docker_health_check — 查询容器状态
+- remote_servers / remote_system_stats / remote_exec / remote_list_files / remote_read_file / remote_search_logs — 远程服务器操作
+- local_system_stats / local_log_files / local_read_log — 本机操作
+
+## 📌 任务执行原则
+1. **持续追踪**：收到任务后，要主动调用工具获取信息，不要等用户推一步走一步。
+2. **工具失败时换方案**：如果一个工具不可用（如 Docker 源断开），立刻尝试替代方案（如通过远程服务器 ssh 执行 docker 命令，或查看本机日志）。
+3. **给出结论**：收集足够信息后，给出明确的诊断结论和可操作的建议，不要只说"让我看看"。
+4. **记住上下文**：结合对话历史中的巡检报告、分析结果继续深入，不要重复已经做过的事。
 
 ## ⚠️ 危险操作安全规则
 对**启动/停止/重启/删除容器、在容器或远程服务器执行命令**的操作：
-1. 先在回复中说清楚你要做什么、为什么
+1. 先说清楚你要做什么、为什么
 2. 明确说"确认执行吗？"等待用户同意
 3. 用户说"确认"/"好的"/"行"/"执行"后才调用工具
-4. 绝不在用户确认前调用 docker_start / docker_stop / docker_restart / docker_exec / remote_exec
 
 ## 📋 当前环境
 - Docker 源: ${enabledDocker.length > 0 ? enabledDocker.map(s => s.name).join('、') : '无'}
@@ -3098,20 +3105,23 @@ async function handleShellWebSocket(ws, serverId) {
 async function handleAIShellWebSocket(ws, serverId) {
   console.log(`AI Shell WebSocket connected for server: ${serverId}`);
 
-  const SYSTEM_PROMPT = `You are an expert shell command generator running on a remote Linux server. 
+  const SYSTEM_PROMPT = `You are an AI assistant on a remote Linux server (${serverId}). You have TWO modes:
 
-Given a natural language request from the user, generate a SINGLE concise shell command that accomplishes the task on the remote server.
+## Mode 1: Command (when the request involves checking system state, files, processes, logs, etc.)
+Output ONLY the shell command on a single line — no explanation, no markdown, no backticks.
+Rules for commands:
+- Use POSIX-compatible syntax
+- Never generate destructive commands (rm -rf, dd, mkfs, etc.) unless explicitly requested
+- For monitoring queries, prefer concise output (use head/tail/grep)
+- Multi-step operations should be joined with && or ;
+- Assume tools: grep, awk, sed, find, curl, ps, top, df, free, du, systemctl, journalctl, docker, kubectl, python3, nvidia-smi
 
-Rules:
-1. Output ONLY the command on a single line — no explanation, no markdown formatting, no code blocks, no backticks
-2. Use POSIX-compatible syntax (sh, not bash-specific unless necessary)
-3. Never generate destructive commands (rm -rf, dd, mkfs, chmod -R 777, etc.) unless the user explicitly requests them
-4. If the request is ambiguous, output the safest reasonable interpretation
-5. For monitoring/read-only queries, prefer concise output (use head/tail/grep)
-6. Multi-step operations should be joined with && or ;
-7. Assume common tools: grep, awk, sed, find, curl, wget, netstat, ss, ps, top, df, free, du, systemctl, journalctl, docker, kubectl, python3, nvidia-smi
-8. Output "NO_COMMAND" if the request cannot be reasonably converted to a shell command
-9. For Chinese input, interpret the request in Chinese context`;
+## Mode 2: Answer (when the request is a general question, explanation, or cannot be converted to a command)
+Prefix your response with "ANSWER:" followed by a helpful, concise answer in Chinese.
+Example: "ANSWER: Docker 是一种容器化平台，用于打包和运行应用。"
+
+Choose Mode 2 if the user is asking "是什么", "怎么做", "为什么", "能做什么" or any knowledge question.
+Choose Mode 1 for operational requests like "查看", "列出", "检查", "找出".`;
 
   ws.send(JSON.stringify({
     type: 'aishell_ready',
@@ -3126,8 +3136,25 @@ Rules:
       if (msg.type === 'natural_language' || msg.type === 'regenerate') {
         const requestId = msg.id;
         const text = msg.text;
+        const skillContent = msg.skillContent || '';
+        const skillName = msg.skillName || '';
+        const history = msg.history || [];
 
-        console.log(`[AIShell] 收到自然语言: "${text.slice(0, 80)}"`);
+        // 如果有技能上下文，构建增强 system prompt
+        let systemPrompt = SYSTEM_PROMPT;
+        if (skillContent) {
+          systemPrompt = `${SYSTEM_PROMPT}
+
+## 🎯 用户当前使用的技能: ${skillName}
+
+以下是该技能的标准操作流程，请严格遵循它来生成命令：
+
+${skillContent}
+
+重要：你的任务是根据上述技能规程，将用户的自然语言请求转换为 shell 命令。技能规程的 Workflow 章节提供了命令顺序，优先使用其中指定的命令和参数。`;
+        }
+
+        console.log(`[AIShell] 收到自然语言: "${text.slice(0, 80)}"${skillName ? ` (技能: ${skillName})` : ''}`);
 
         try {
           const apiKey = ensureSettings().openaiApiKey;
@@ -3153,15 +3180,29 @@ Rules:
           const response = await openai.chat.completions.create({
             model,
             messages: [
-              { role: 'system', content: SYSTEM_PROMPT },
+              { role: 'system', content: systemPrompt },
+              ...history.filter(h => h.role && h.content).map(h => ({ role: h.role, content: h.content })),
               { role: 'user', content: text }
             ],
             temperature: 0.2,
-            max_tokens: 200,
+            max_tokens: 800,
             timeout: 30_000
           });
 
-          let command = (response.choices[0].message.content || '').trim();
+          const rawOutput = (response.choices[0].message.content || '').trim();
+
+          // Check if it's a text answer (not a command)
+          if (rawOutput.startsWith('ANSWER:')) {
+            const answer = rawOutput.slice(7).trim();
+            ws.send(JSON.stringify({
+              type: 'assistant_answer',
+              id: requestId,
+              content: answer
+            }));
+            return;
+          }
+
+          let command = rawOutput;
 
           // 清理可能的 markdown 代码块标记
           command = command
@@ -3170,6 +3211,15 @@ Rules:
             .trim();
 
           console.log(`[AIShell] 生成命令: "${command}"`);
+
+          if (!command || command === 'NO_COMMAND') {
+            ws.send(JSON.stringify({
+              type: 'error',
+              id: requestId,
+              error: 'AI 无法将你的请求转换为命令。请尝试更具体的描述，或切换到命令模式手动输入。'
+            }));
+            return;
+          }
 
           ws.send(JSON.stringify({
             type: 'command_generated',

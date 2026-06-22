@@ -95,7 +95,8 @@ export default function Settings() {
     fetch('/api/settings')
       .then(r => r.json())
       .then(data => {
-        setSettings(data);
+        // merge with defaults so no field becomes undefined
+        setSettings(prev => ({ ...prev, ...data }));
         // Auto-detect provider from baseUrl
         const matched = providers.find(p => p.baseUrl && p.baseUrl === data.openaiBaseUrl);
         setProvider(matched?.id || 'custom');
