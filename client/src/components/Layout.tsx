@@ -15,6 +15,7 @@ import {
   History,
   MessageSquare,
   Boxes,
+  BookOpen,
 } from 'lucide-react';
 import clsx from 'clsx';
 import GlobalStatusBar from './GlobalStatusBar';
@@ -30,6 +31,7 @@ const navItems = [
   { path: '/analytics', icon: Brain, label: 'AI 分析' },
   { path: '/analysis-history', icon: History, label: '分析历史' },
   { path: '/assistant', icon: MessageSquare, label: '运维助手' },
+  { path: '/skills', icon: BookOpen, label: '技能管理' },
   { path: '/settings', icon: Settings, label: '设置' },
 ];
 

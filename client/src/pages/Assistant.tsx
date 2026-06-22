@@ -6,6 +6,7 @@ import {
   MessageSquare, Pencil, Sidebar, History, ArrowRight,
 } from 'lucide-react';
 import { useAssistantContext } from '../contexts/AssistantContext';
+import { marked } from 'marked';
 
 const QUICK_PROMPTS = [
   '如何排查 CPU 飙高问题？',
@@ -20,20 +21,7 @@ const QUICK_PROMPTS = [
 
 // ── Markdown 渲染（带代码高亮简化版）──
 function renderMarkdown(text: string): string {
-  let html = text
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  html = html
-    .replace(/```(\w*)\n?([\s\S]*?)```/g, '<pre><code class="language-$1">$2</code></pre>')
-    .replace(/`([^`]+)`/g, '<code>$1</code>')
-    .replace(/^### (.+)$/gm, '<h3>$1</h3>')
-    .replace(/^## (.+)$/gm, '<h2>$1</h2>')
-    .replace(/^# (.+)$/gm, '<h1>$1</h1>')
-    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-    .replace(/^\d+\.\s+(.+)$/gm, '<li>$1</li>')
-    .replace(/^[-*]\s+(.+)$/gm, '<li>$1</li>')
-    .replace(/(<li>.*<\/li>\n?)+/g, '<ul>$&</ul>')
-    .replace(/\n\n/g, '</p><p>').replace(/\n/g, '<br/>');
-  return `<p>${html}</p>`;
+  return marked.parse(text, { breaks: true }) as string;
 }
 
 // ── 对话列表项 ──
@@ -73,6 +61,8 @@ export default function Assistant() {
 
   const [searchParams, setSearchParams] = useSearchParams();
   const refParam = searchParams.get('ref');
+  const skillParam = searchParams.get('skill');
+  const cmdParam = searchParams.get('cmd');
 
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
@@ -134,6 +124,16 @@ export default function Assistant() {
       } catch {}
     })();
   }, [refParam]);
+
+  // 来自技能管理的快捷使用
+  useEffect(() => {
+    if (!skillParam || !cmdParam) return;
+    setSearchParams({}, { replace: true });
+    const msg = `[技能: ${skillParam}] ${cmdParam}`;
+    setInput(msg);
+    // 延迟自动发送（等待 input 状态同步）
+    setTimeout(() => sendMessage(msg), 100);
+  }, [skillParam, cmdParam]);
 
   // 输入变化处理 @
   const handleInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
@@ -233,10 +233,23 @@ export default function Assistant() {
     abortRef.current = new AbortController();
 
     try {
+      // 构建历史 — 包含工具调用信息
       const history = opsMessages
-        .filter(m => m.content && !m.streaming)
-        .slice(-8)
-        .map(m => ({ role: m.role, content: m.content }));
+        .filter(m => !m.streaming)
+        .slice(-12)
+        .map(m => {
+          const msg: any = { role: m.role, content: m.content };
+          // 传递工具调用状态给 AI 了解上下文
+          if ((m as any).toolCalls?.length > 0) {
+            msg.tool_calls = (m as any).toolCalls
+              .filter((tc: any) => tc.status === 'done')
+              .map((tc: any) => ({
+                name: tc.tool,
+                result: JSON.stringify(tc.result || {}).slice(0, 500)
+              }));
+          }
+          return msg;
+        });
       history.push({ role: 'user', content: displayContent });
 
       const res = await fetch('/api/chat', {

@@ -191,7 +191,7 @@ function FileEditor({
 }
 
 // 单个服务器卡片组件
-const ServerCard = ({ server, isActive, onConnect, onDisconnect, onEdit, onDelete, onShell, onAIShell, onSelect }: {
+const ServerCard = ({ server, isActive, onConnect, onDisconnect, onEdit, onDelete, onShell, onAIShell, onSelect, aiShellOpening }: {
   server: RemoteServer;
   isActive: boolean;
   onConnect: () => void;
@@ -202,6 +202,7 @@ const ServerCard = ({ server, isActive, onConnect, onDisconnect, onEdit, onDelet
   onAIShell: () => void;
   onSelect: () => void;
   onOpenEditor?: () => void;
+  aiShellOpening?: boolean;
 }) => (
   <div
     className={`glass rounded-xl p-3 transition-all group cursor-pointer ${isActive ? 'ring-2 ring-accent-500/60 bg-accent-500/5' : 'hover:bg-dark-800/40'}`}
@@ -236,8 +237,9 @@ const ServerCard = ({ server, isActive, onConnect, onDisconnect, onEdit, onDelet
         <button onClick={onShell} className="flex-1 px-2 py-1.5 text-xs rounded bg-green-500/20 text-green-400 hover:bg-green-500/30 transition-colors flex items-center justify-center gap-1">
           <Terminal className="w-3 h-3" /> Shell
         </button>
-        <button onClick={onAIShell} className="flex-1 px-2 py-1.5 text-xs rounded bg-purple-500/20 text-purple-400 hover:bg-purple-500/30 transition-colors flex items-center justify-center gap-1">
-          <Sparkles className="w-3 h-3" /> AI Shell
+        <button onClick={onAIShell} disabled={aiShellOpening} className={`flex-1 px-2 py-1.5 text-xs rounded bg-purple-500/20 text-purple-400 hover:bg-purple-500/30 transition-colors flex items-center justify-center gap-1 ${aiShellOpening ? 'opacity-60 cursor-wait' : ''}`}>
+          {aiShellOpening ? <Loader className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
+          {aiShellOpening ? '启动中...' : 'AI Shell'}
         </button>
       </div>
     ) : (
@@ -269,6 +271,7 @@ export default function Remote() {
   const [testResult, setTestResult] = useState<{ success: boolean; info?: any; error?: string } | null>(null);
   const [showShell, setShowShell] = useState(false);
   const [showAIShell, setShowAIShell] = useState(false);
+  const [aiShellOpening, setAiShellOpening] = useState(false);
   const [logLines, setLogLines] = useState(200);
   const [logSearch, setLogSearch] = useState('');
   const [showServerList, setShowServerList] = useState(true);
@@ -467,7 +470,8 @@ export default function Remote() {
                 onEdit={() => openEdit(server)}
                 onDelete={() => deleteServer(server)}
                 onShell={() => setShowShell(true)}
-                onAIShell={() => setShowAIShell(true)}
+                onAIShell={() => { setAiShellOpening(true); setShowAIShell(true); }}
+                aiShellOpening={aiShellOpening}
                 onSelect={() => {
                   if (server.status !== 'connected') {
                     setActiveServer(null); // 未连接 → 显示默认空白状态
@@ -767,7 +771,8 @@ export default function Remote() {
           <div className="w-full max-w-5xl mx-4 h-[640px]">
             <AIShellTerminal
               server={{ ...activeServer, name: activeServer.name, host: activeServer.host, port: activeServer.port, username: activeServer.username }}
-              onClose={() => setShowAIShell(false)}
+              onClose={() => { setShowAIShell(false); setAiShellOpening(false); }}
+              onReady={() => setAiShellOpening(false)}
             />
           </div>
         </div>
