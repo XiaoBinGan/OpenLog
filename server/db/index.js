@@ -424,6 +424,10 @@ export function upsertAlertConfig(config) {
   );
 }
 
+export function listAlertConfigs() {
+  return db.all(`SELECT * FROM alert_configs ORDER BY machine_id`);
+}
+
 export function closeDb() {
   if (rawDb) {
     try {

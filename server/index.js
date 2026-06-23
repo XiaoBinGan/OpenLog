@@ -14,7 +14,7 @@ import dotenv from 'dotenv';
 import * as remote from './remote.js';
 import * as docker from './docker.js';
 import * as gpu from './gpu.js';
-import { initDb, getDb, getKv, setKv, insertLogRecord, listLogRecords, listSkills, getSkill, createSkill, updateSkill, deleteSkill } from './db/index.js';
+import { initDb, getDb, getKv, setKv, insertLogRecord, listLogRecords, listSkills, getSkill, createSkill, updateSkill, deleteSkill, getAlertConfig, upsertAlertConfig, listAlertConfigs, listMachines } from './db/index.js';
 
 dotenv.config();
 
@@ -786,6 +786,9 @@ function restartDockerEventWatch() {
 let patrolTimer = null;
 let lastPatrolResults = [];
 
+// ─── 告警 Webhook 冷却状态 ───────────────────────────────
+const alertCooldowns = new Map(); // key: "machineId_containerName_errorSig", value: timestamp
+
 function startContainerPatrol() {
   if (patrolTimer) clearInterval(patrolTimer);
 
@@ -831,12 +834,120 @@ async function runPatrol(sources, levels) {
     // 只在有新结果时覆盖，避免空巡检冲掉上一次有效数据
     if (results.length > 0) {
       lastPatrolResults = results;
+      // 处理告警通知
+      for (const result of results) {
+        processAlertForResult(result);
+      }
     }
     if (results.length > 0) {
       broadcast({ type: 'container_patrol', data: { results, timestamp: new Date().toISOString() } });
     }
   } catch (err) {
     console.error('[Patrol] 巡检异常:', err.message);
+  }
+}
+
+// ─── 告警 Webhook 发送逻辑 ─────────────────────────────────
+
+/** 规范化错误签名用于冷却键 */
+function normalizeAlertSig(line) {
+  return (line || '')
+    .replace(/^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+\w+\s+\d+\s+\d{2}:\d{2}:\d{2}\s+\w+\s+\d{4}\s*-\s*/i, '')
+    .replace(/^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}[^\s]*\s*-?\s*/i, '')
+    .replace(/req_[a-f0-9]+/gi, 'req_XXX')
+    .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, 'UUID')
+    .trim()
+    .slice(0, 120);
+}
+
+/** 匹配关键词 patterns（逗号分隔，如 "ERROR,FATAL,Exception"）*/
+function matchAlertPatterns(content, patterns) {
+  if (!patterns) return true;
+  const keywords = patterns.split(',').map(k => k.trim().toUpperCase()).filter(Boolean);
+  if (keywords.length === 0) return true;
+  const upperContent = (content || '').toUpperCase();
+  return keywords.some(kw => upperContent.includes(kw));
+}
+
+/** 匹配 severity_filter（逗号分隔，如 "ERROR,FATAL"）*/
+function matchesSeverityFilter(lineLevel, severityFilter) {
+  if (!severityFilter) return true;
+  const levels = severityFilter.split(',').map(l => l.trim().toUpperCase()).filter(Boolean);
+  if (levels.length === 0) return true;
+  const lvl = (lineLevel || 'INFO').toUpperCase();
+  return levels.includes(lvl);
+}
+
+/** 处理单个巡检结果的告警通知 */
+async function processAlertForResult(result) {
+  try {
+    const config = getAlertConfig(result.sourceId);
+    if (!config || !config.enabled) return;
+
+    if (!config.webhook_url) {
+      return; // 未配置 webhook，静默跳过
+    }
+
+    const patterns = config.patterns || '';
+    const severityFilter = config.severity_filter || '';
+    const cooldownMinutes = config.cooldown_minutes || 5;
+
+    // 按 patterns 和 severity_filter 过滤日志行
+    const matchedLines = result.lines.filter(line => {
+      const content = line.content || line.line || '';
+      if (!matchAlertPatterns(content, patterns)) return false;
+      if (!matchesSeverityFilter(line.level, severityFilter)) return false;
+      return true;
+    });
+
+    if (matchedLines.length === 0) return;
+
+    // 冷却时间控制
+    const now = Date.now();
+    const cooldownMs = cooldownMinutes * 60 * 1000;
+    const newErrors = [];
+
+    for (const line of matchedLines) {
+      const errorSig = normalizeAlertSig(line.content || line.line || '');
+      const cooldownKey = `${result.sourceId}_${result.containerName}_${errorSig}`;
+      const lastSent = alertCooldowns.get(cooldownKey);
+      if (lastSent && (now - lastSent) < cooldownMs) continue;
+      alertCooldowns.set(cooldownKey, now);
+      newErrors.push(line);
+    }
+
+    if (newErrors.length === 0) return;
+
+    // 构建 webhook payload
+    const payload = {
+      text: `🔴 容器日志告警 — ${result.sourceName}/${result.containerName}`,
+      server: result.sourceName,
+      container: result.containerName,
+      image: result.image,
+      errors: newErrors.map(l => ({
+        level: l.level,
+        content: l.content || l.line,
+        timestamp: l.timestamp,
+      })),
+      time: new Date().toISOString(),
+    };
+
+    // 发送 POST 到 webhook_url
+    console.log(`[Alert] 发送 Webhook 到 ${config.webhook_url} (${newErrors.length}/${matchedLines.length} 条异常)`);
+    const response = await fetch(config.webhook_url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(10000), // 10s 超时
+    });
+
+    if (!response.ok) {
+      console.error(`[Alert] Webhook 发送失败: HTTP ${response.status} ${response.statusText}`);
+    } else {
+      console.log(`[Alert] ✅ Webhook 发送成功 (${newErrors.length} 条通知到 ${result.sourceName}/${result.containerName})`);
+    }
+  } catch (err) {
+    console.error(`[Alert] 处理告警异常 (${result.sourceName}/${result.containerName}):`, err.message);
   }
 }
 
@@ -1296,6 +1407,53 @@ app.delete('/api/skills/:id', (req, res) => {
 
     deleteSkill(req.params.id);
     res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================================================
+// 机器列表 & 告警配置 API
+// ============================================================
+
+// 获取所有机器列表
+app.get('/api/machines', (req, res) => {
+  try {
+    const machines = listMachines();
+    res.json({ machines });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 获取所有告警配置
+app.get('/api/alerts', (req, res) => {
+  try {
+    const configs = listAlertConfigs();
+    res.json({ configs });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 保存/更新告警配置
+app.put('/api/alerts', (req, res) => {
+  const { machine_id, enabled, patterns, severity_filter, cooldown_minutes, webhook_url } = req.body;
+  if (!machine_id) return res.status(400).json({ error: 'machine_id is required' });
+
+  try {
+    const existing = getAlertConfig(machine_id);
+    const config = {
+      id: existing?.id || uuidv4(),
+      machine_id,
+      enabled: enabled !== undefined ? enabled : true,
+      patterns: patterns || '',
+      severity_filter: severity_filter || 'ERROR',
+      cooldown_minutes: cooldown_minutes !== undefined ? cooldown_minutes : 5,
+      webhook_url: webhook_url || '',
+    };
+    upsertAlertConfig(config);
+    res.json({ success: true, config });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -3033,6 +3191,18 @@ server.on('upgrade', (request, socket, head) => {
     wss.handleUpgrade(request, socket, head, (ws) => {
       handleAIShellWebSocket(ws, serverId);
     });
+  } else if (pathname.startsWith('/ws/docker/logs/')) {
+    // Docker 实时日志流端点: /ws/docker/logs/:sourceId/:containerId
+    const parts = pathname.split('/');
+    const sourceId = parts[4];
+    const containerId = parts[5];
+    if (!sourceId || !containerId) {
+      socket.destroy();
+      return;
+    }
+    wss.handleUpgrade(request, socket, head, (ws) => {
+      handleDockerLogStream(ws, sourceId, containerId);
+    });
   } else if (pathname === '/ws') {
     // 原有的主 WebSocket 连接
     wss.handleUpgrade(request, socket, head, (ws) => {
@@ -3308,6 +3478,144 @@ ${skillContent}
   });
 }
 
+// Docker 实时日志流 WebSocket 处理器
+async function handleDockerLogStream(ws, sourceId, containerId) {
+  console.log(`Docker log stream WebSocket connected for source: ${sourceId}, container: ${containerId}`);
+
+  let logStream = null;
+
+  try {
+    const source = (ensureSettings().dockerSources || []).find(s => s.id === sourceId);
+    const config = source ? {
+      socketPath: source.socketPath || undefined,
+      host: source.socketPath ? undefined : (source.host || 'localhost'),
+      port: source.socketPath ? undefined : (source.port || 2375),
+      tls: source.tls,
+      ca: source.ca, cert: source.cert, key: source.key,
+    } : {};
+
+    const dockerInstance = docker.getDocker(sourceId, config);
+    const container = dockerInstance.getContainer(containerId);
+
+    // 获取实时日志流
+    logStream = await container.logs({
+      follow: true,
+      stdout: true,
+      stderr: true,
+      tail: 100,
+      timestamps: true,
+    });
+
+    // 通知客户端流已就绪
+    ws.send(JSON.stringify({ type: 'stream_ready', sourceId, containerId }));
+
+    // 解析 Docker 多路复用流格式：[8字节头][数据]...
+    // 字节 0: stream type (1=stdout, 2=stderr)
+    // 字节 4-7: 数据长度 (大端序)
+    let buffer = Buffer.alloc(0);
+
+    const onData = (chunk) => {
+      buffer = Buffer.concat([buffer, chunk]);
+
+      while (buffer.length >= 8) {
+        // 读取 8 字节头：stream type (1 byte) + 3 字节填充 + size (4 bytes)
+        const size = buffer.readUInt32BE(4);
+        if (size <= 0 || buffer.length < 8 + size) break;
+
+        const data = buffer.slice(8, 8 + size).toString('utf8');
+        buffer = buffer.slice(8 + size);
+
+        // 解析时间戳
+        const parts = data.match(/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z?)\s*(.*)/);
+        let timestamp, line;
+        if (parts) {
+          timestamp = parts[1];
+          line = parts[2];
+        } else {
+          timestamp = new Date().toISOString();
+          line = data.trim();
+        }
+
+        // 解析日志等级
+        let level = 'INFO';
+        let content = line;
+        const levelMatch = line.match(/^\s*\[(FATAL|ERROR|WARN|WARNING|INFO|DEBUG|TRACE)\]\s*/i);
+        if (levelMatch) {
+          level = levelMatch[1].toUpperCase() === 'WARNING' ? 'WARN' : levelMatch[1].toUpperCase();
+          content = line.substring(levelMatch[0].length);
+        }
+
+        if (ws.readyState === ws.OPEN) {
+          ws.send(JSON.stringify({
+            type: 'log',
+            timestamp,
+            line,
+            level,
+            content,
+          }));
+        }
+      }
+    };
+
+    const onError = (err) => {
+      console.error(`Docker log stream error for ${containerId}:`, err.message);
+      if (ws.readyState === ws.OPEN) {
+        ws.send(JSON.stringify({ type: 'stream_error', error: err.message }));
+        ws.close();
+      }
+    };
+
+    const onEnd = () => {
+      console.log(`Docker log stream ended for ${containerId}`);
+      if (ws.readyState === ws.OPEN) {
+        ws.send(JSON.stringify({ type: 'stream_end' }));
+        ws.close();
+      }
+    };
+
+    logStream.on('data', onData);
+    logStream.on('error', onError);
+    logStream.on('end', onEnd);
+
+    // 客户端断开时停止 stream
+    ws.on('close', () => {
+      console.log(`Docker log stream WebSocket closed for ${containerId}`);
+      if (logStream) {
+        logStream.removeListener('data', onData);
+        logStream.removeListener('error', onError);
+        logStream.removeListener('end', onEnd);
+        logStream.destroy();
+        logStream = null;
+      }
+    });
+
+    ws.on('error', (err) => {
+      console.error(`Docker log stream WS error for ${containerId}:`, err.message);
+      if (logStream) {
+        logStream.destroy();
+        logStream = null;
+      }
+    });
+
+    // 处理客户端消息（暂停/继续）
+    ws.on('message', (data) => {
+      try {
+        const msg = JSON.parse(data.toString());
+        if (msg.type === 'pause' && logStream) {
+          logStream.pause();
+        } else if (msg.type === 'resume' && logStream) {
+          logStream.resume();
+        }
+      } catch {}
+    });
+
+  } catch (err) {
+    console.error(`Failed to create Docker log stream for ${containerId}:`, err.message);
+    ws.send(JSON.stringify({ type: 'stream_error', error: err.message }));
+    ws.close();
+  }
+}
+
 // Start server
 // 先初始化数据库
 await initDatabase();
@@ -3352,7 +3660,49 @@ app.get('/api/gpu/local', async (req, res) => {
   }
 });
 
-// 获取 GPU 列表（远程）
+// 获取 GPU 列表（远程）— 通过已连接的远程服务器
+app.get('/api/gpu/remote-server/:serverId', async (req, res) => {
+  try {
+    const { serverId } = req.params;
+    // 获取 GPU 基本状态
+    const result = await remote.execRemoteCommand(serverId, 'nvidia-smi --query-gpu=index,name,utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader,nounits 2>&1');
+    if (result.error) throw new Error(result.error);
+    const lines = (result.stdout || '').trim().split('\n').filter(l => l.trim());
+
+    // 获取进程信息
+    const procResult = await remote.execRemoteCommand(serverId, 'nvidia-smi --query-compute-apps=pid,gpu_index,process_name,used_memory --format=csv,noheader,nounits 2>&1');
+    const procLines = (procResult.stdout || '').trim().split('\n').filter(l => l.trim());
+    const processesByGpu = {};
+    for (const pline of procLines) {
+      const pparts = pline.split(',').map(s => s.trim());
+      const gpuIdx = parseInt(pparts[1]) || 0;
+      if (!processesByGpu[gpuIdx]) processesByGpu[gpuIdx] = [];
+      processesByGpu[gpuIdx].push({
+        pid: parseInt(pparts[0]) || 0,
+        name: pparts[2] || 'unknown',
+        usedMemory: parseInt(pparts[3]) || 0,
+      });
+    }
+
+    const devices = lines.map(line => {
+      const parts = line.split(',').map(s => s.trim());
+      const idx = parseInt(parts[0]) || 0;
+      return {
+        index: idx,
+        name: parts[1] || 'Unknown',
+        util: parseFloat(parts[2]) || 0,
+        memUsed: parseInt(parts[3]) || 0,
+        memTotal: parseInt(parts[4]) || 0,
+        temp: parseFloat(parts[5]) || 0,
+        processes: processesByGpu[idx] || [],
+      };
+    });
+    const summary = gpu.getGPUSummary(devices);
+    res.json({ devices, summary });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 app.get('/api/gpu/remote', async (req, res) => {
   try {
     const { host, sshUser, sshPassword, sshKeyPath, sshPort } = req.query;

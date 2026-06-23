@@ -1,9 +1,10 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Plus, Pencil, Trash2, Sparkles, ArrowRight,
   X, Check, BookOpen, ChevronDown, ChevronUp,
   Info, FileText, Target, ListChecks, Ban, FileOutput,
+  Download, Upload,
 } from 'lucide-react';
 
 interface Skill {
@@ -87,6 +88,104 @@ export default function Skills() {
   const [formError, setFormError] = useState('');
 
   const navigate = useNavigate();
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // 导入结果状态
+  const [importResult, setImportResult] = useState<{ success: number; skipped: number; failed: number; errors: string[] } | null>(null);
+
+  // 导出技能
+  const handleExport = async () => {
+    try {
+      const res = await fetch('/api/skills');
+      if (!res.ok) throw new Error('加载技能失败');
+      const data = await res.json();
+      const skills = data.skills || [];
+      const exportData = JSON.stringify(skills, null, 2);
+      const blob = new Blob([exportData], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `openlog-skills-${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (e: any) {
+      setError('导出失败: ' + e.message);
+    }
+  };
+
+  // 导入技能
+  const handleImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    try {
+      const text = await file.text();
+      let skills: Skill[];
+      try {
+        skills = JSON.parse(text);
+        if (!Array.isArray(skills)) throw new Error('JSON 格式不正确，应为技能数组');
+      } catch (parseErr: any) {
+        setError('导入失败: 文件格式不正确，请选择有效的 JSON 文件');
+        return;
+      }
+
+      let success = 0;
+      let skipped = 0;
+      let failed = 0;
+      const errors: string[] = [];
+
+      for (const s of skills) {
+        // 跳过内置技能
+        if (s.is_default === 1) {
+          skipped++;
+          continue;
+        }
+
+        try {
+          const body = {
+            name: s.name || '',
+            command: s.command || '',
+            description: s.description || '',
+            content: s.content || '',
+            category: s.category || '通用',
+          };
+
+          if (!body.name.trim() || !body.command.trim()) {
+            failed++;
+            errors.push(`「${s.name || '(无名)'}」: 名称或任务简述为空`);
+            continue;
+          }
+
+          const res = await fetch('/api/skills', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+          });
+
+          if (res.ok) {
+            success++;
+          } else {
+            const errData = await res.json().catch(() => ({}));
+            failed++;
+            errors.push(`「${body.name}」: ${errData.error || '创建失败'}`);
+          }
+        } catch (fetchErr: any) {
+          failed++;
+          errors.push(`「${s.name || '(无名)'}」: ${fetchErr.message}`);
+        }
+      }
+
+      setImportResult({ success, skipped, failed, errors });
+      await loadSkills();
+    } catch (e: any) {
+      setError('导入失败: ' + e.message);
+    } finally {
+      // 重置 file input，允许重复导入同一文件
+      e.target.value = '';
+    }
+  };
 
   const loadSkills = async () => {
     try {
@@ -204,13 +303,36 @@ export default function Skills() {
             </p>
           </div>
         </div>
-        <button
-          onClick={openCreate}
-          className="flex items-center gap-2 px-4 py-2 bg-accent-500 hover:bg-accent-600 text-white rounded-lg text-sm font-medium transition-colors"
-        >
-          <Plus className="w-4 h-4" />
-          新建技能
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={handleExport}
+            className="flex items-center gap-1.5 px-3 py-2 border border-dark-700 hover:bg-dark-800 text-dark-300 rounded-lg text-sm font-medium transition-colors"
+          >
+            <Download className="w-4 h-4" />
+            导出
+          </button>
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            className="flex items-center gap-1.5 px-3 py-2 border border-dark-700 hover:bg-dark-800 text-dark-300 rounded-lg text-sm font-medium transition-colors"
+          >
+            <Upload className="w-4 h-4" />
+            导入
+          </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".json"
+            onChange={handleImport}
+            className="hidden"
+          />
+          <button
+            onClick={openCreate}
+            className="flex items-center gap-2 px-4 py-2 bg-accent-500 hover:bg-accent-600 text-white rounded-lg text-sm font-medium transition-colors"
+          >
+            <Plus className="w-4 h-4" />
+            新建技能
+          </button>
+        </div>
       </div>
 
       {error && (
@@ -467,6 +589,50 @@ export default function Skills() {
               <button onClick={() => setDeleteTarget(null)} className="flex-1 px-4 py-2 border border-dark-700 rounded-lg text-sm text-dark-300 hover:bg-dark-800 transition-colors">取消</button>
               <button onClick={() => handleDelete(deleteTarget)} className="flex-1 px-4 py-2 bg-red-500 hover:bg-red-600 rounded-lg text-sm font-medium text-white transition-colors">删除</button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* 导入结果弹窗 */}
+      {importResult && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setImportResult(null)}>
+          <div className="bg-dark-900 border border-dark-800 rounded-xl w-full max-w-md mx-4 p-6" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-lg font-semibold text-dark-100">导入结果</h2>
+              <button onClick={() => setImportResult(null)} className="text-dark-400 hover:text-dark-200">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="space-y-2 mb-4">
+              <div className="flex items-center justify-between p-2.5 bg-green-500/10 border border-green-500/20 rounded-lg">
+                <span className="text-sm text-dark-300">成功导入</span>
+                <span className="text-sm font-semibold text-green-400">{importResult.success} 个</span>
+              </div>
+              <div className="flex items-center justify-between p-2.5 bg-yellow-500/10 border border-yellow-500/20 rounded-lg">
+                <span className="text-sm text-dark-300">跳过（内置技能）</span>
+                <span className="text-sm font-semibold text-yellow-400">{importResult.skipped} 个</span>
+              </div>
+              {importResult.failed > 0 && (
+                <div className="flex items-center justify-between p-2.5 bg-red-500/10 border border-red-500/20 rounded-lg">
+                  <span className="text-sm text-dark-300">导入失败</span>
+                  <span className="text-sm font-semibold text-red-400">{importResult.failed} 个</span>
+                </div>
+              )}
+            </div>
+            {importResult.errors.length > 0 && (
+              <div className="mb-4 p-3 bg-dark-950 border border-dark-800 rounded-lg max-h-40 overflow-y-auto">
+                <p className="text-xs text-dark-400 mb-2 font-medium">失败详情：</p>
+                {importResult.errors.map((err, i) => (
+                  <p key={i} className="text-xs text-red-400 leading-relaxed">{err}</p>
+                ))}
+              </div>
+            )}
+            <button
+              onClick={() => setImportResult(null)}
+              className="w-full px-4 py-2 bg-accent-500 hover:bg-accent-600 rounded-lg text-sm font-medium text-white transition-colors"
+            >
+              确定
+            </button>
           </div>
         </div>
       )}

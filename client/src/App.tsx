@@ -10,6 +10,7 @@ import Docker from './pages/Docker';
 import Settings from './pages/Settings';
 import Remote from './pages/Remote';
 import Skills from './pages/Skills';
+import GPU from './pages/GPU';
 import { RemoteProvider } from './contexts/RemoteContext';
 import { DeviceProvider } from './contexts/DeviceContext';
 import { ToastProvider } from './contexts/ToastContext';
@@ -32,6 +33,7 @@ function App() {
                 <Route path="assistant" element={<Assistant />} />
                 <Route path="skills" element={<Skills />} />
                 <Route path="monitor" element={<Monitor />} />
+                <Route path="gpu" element={<GPU />} />
                 <Route path="settings" element={<Settings />} />
               </Route>
             </Routes>

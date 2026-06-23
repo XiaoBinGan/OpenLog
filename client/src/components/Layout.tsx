@@ -16,6 +16,7 @@ import {
   MessageSquare,
   Boxes,
   BookOpen,
+  Cpu,
 } from 'lucide-react';
 import clsx from 'clsx';
 import GlobalStatusBar from './GlobalStatusBar';
@@ -23,6 +24,7 @@ import AIAnalysisToast from './AIAnalysisToast';
 
 const navItems = [
   { path: '/monitor', icon: Activity, label: '系统监控' },
+  { path: '/gpu', icon: Cpu, label: '算力监控' },
   { path: '/dashboard', icon: LayoutDashboard, label: '仪表盘' },
   { path: '/logs', icon: FileText, label: '日志流' },
   { path: '/remote', icon: Server, label: '远程服务器' },

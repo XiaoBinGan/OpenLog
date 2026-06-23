@@ -4,7 +4,7 @@ import {
   Container, Boxes, Activity, Search, Filter, RefreshCw,
   ChevronDown, ChevronRight, Terminal, AlertCircle, CheckCircle,
   Clock, Server, X, Loader, ArrowRightLeft, Zap, Trash2,
-  Play, Pause, RotateCcw
+  Play, Pause, RotateCcw, StopCircle, Square
 } from 'lucide-react';
 
 interface ContainerInfo {
@@ -62,6 +62,13 @@ export default function Docker() {
 
   // 操作中状态
   const [opLoading, setOpLoading] = useState<Set<string>>(new Set());
+
+  // 实时日志流
+  const [liveLogKey, setLiveLogKey] = useState<string | null>(null);
+  const [liveLogLines, setLiveLogLines] = useState<Record<string, { timestamp: string; line: string; level: string; content: string }[]>>({});
+  const [liveLogPaused, setLiveLogPaused] = useState<Record<string, boolean>>({});
+  const [liveLogConnecting, setLiveLogConnecting] = useState<Set<string>>(new Set());
+  const liveLogWsRef = useRef<Record<string, WebSocket>>({});
 
   const toggleTerminal = (key: string) => {
     setTerminalOpen(prev => {
@@ -173,6 +180,91 @@ export default function Docker() {
       } catch {}
       setLoadingLogs(prev => { const s = new Set(prev); s.delete(key); return s; });
     }
+  };
+
+  const toggleLiveLog = (sourceId: string, containerId: string) => {
+    const key = `${sourceId}:${containerId}`;
+    if (liveLogKey === key) {
+      // 关闭实时日志
+      const ws = liveLogWsRef.current[key];
+      if (ws) { ws.close(); delete liveLogWsRef.current[key]; }
+      setLiveLogKey(null);
+      setLiveLogPaused(prev => { const s = { ...prev }; delete s[key]; return s; });
+      return;
+    }
+
+    // 如果之前有其他的 ws，先关闭
+    if (liveLogKey) {
+      const oldWs = liveLogWsRef.current[liveLogKey];
+      if (oldWs) { oldWs.close(); delete liveLogWsRef.current[liveLogKey]; }
+    }
+
+    setLiveLogKey(key);
+    setLiveLogLines(prev => ({ ...prev, [key]: [] }));
+    setLiveLogConnecting(prev => new Set([...prev, key]));
+
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsHost = window.location.host;
+    const wsUrl = `${protocol}//${wsHost}/ws/docker/logs/${sourceId}/${containerId}`;
+    const ws = new WebSocket(wsUrl);
+    liveLogWsRef.current[key] = ws;
+
+    ws.onopen = () => {
+      setLiveLogConnecting(prev => { const s = new Set(prev); s.delete(key); return s; });
+    };
+
+    ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.type === 'log') {
+          setLiveLogLines(prev => {
+            const lines = [...(prev[key] || []), data];
+            // 限制最多保留 5000 条
+            return { ...prev, [key]: lines.length > 5000 ? lines.slice(-5000) : lines };
+          });
+        } else if (data.type === 'stream_error') {
+          setLiveLogLines(prev => ({
+            ...prev, [key]: [...(prev[key] || []), { timestamp: new Date().toISOString(), line: `⚠️ 错误: ${data.error}`, level: 'ERROR', content: `错误: ${data.error}` }]
+          }));
+        } else if (data.type === 'stream_end') {
+          setLiveLogLines(prev => ({
+            ...prev, [key]: [...(prev[key] || []), { timestamp: new Date().toISOString(), line: '── 日志流结束 ──', level: 'INFO', content: '日志流结束' }]
+          }));
+        }
+      } catch {}
+    };
+
+    ws.onerror = () => {
+      setLiveLogConnecting(prev => { const s = new Set(prev); s.delete(key); return s; });
+      setLiveLogLines(prev => ({
+        ...prev, [key]: [...(prev[key] || []), { timestamp: new Date().toISOString(), line: '⚠️ WebSocket 连接失败', level: 'ERROR', content: 'WebSocket 连接失败' }]
+      }));
+    };
+
+    ws.onclose = () => {
+      setLiveLogConnecting(prev => { const s = new Set(prev); s.delete(key); return s; });
+      delete liveLogWsRef.current[key];
+    };
+  };
+
+  const pauseLiveLog = (key: string) => {
+    const ws = liveLogWsRef.current[key];
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'pause' }));
+    }
+    setLiveLogPaused(prev => ({ ...prev, [key]: true }));
+  };
+
+  const resumeLiveLog = (key: string) => {
+    const ws = liveLogWsRef.current[key];
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'resume' }));
+    }
+    setLiveLogPaused(prev => ({ ...prev, [key]: false }));
+  };
+
+  const clearLiveLog = (key: string) => {
+    setLiveLogLines(prev => ({ ...prev, [key]: [] }));
   };
 
   const toggleSelect = (sourceId: string, container: ContainerInfo) => {
@@ -482,6 +574,15 @@ export default function Docker() {
                       {traceLoading_ ? <Loader className="w-4 h-4 animate-spin" /> : <ArrowRightLeft className="w-4 h-4" />}
                     </button>
 
+                    {/* 实时日志 */}
+                    <button
+                      onClick={() => toggleLiveLog(c._sourceId, c.id)}
+                      className={`p-1.5 rounded-lg transition-colors ${liveLogKey === key ? 'bg-green-500/15 text-green-400' : 'hover:bg-dark-700 text-dark-500 hover:text-green-400'}`}
+                      title="实时日志流"
+                    >
+                      {liveLogConnecting.has(key) ? <Loader className="w-4 h-4 animate-spin" /> : <StopCircle className="w-4 h-4" />}
+                    </button>
+
                     {/* 展开日志 */}
                     <button
                       onClick={() => toggleExpand(c._sourceId, c)}
@@ -491,6 +592,21 @@ export default function Docker() {
                     </button>
                   </div>
                 </div>
+
+                {/* 实时日志流面板 */}
+                {liveLogKey === key && (
+                  <LiveLogPanel
+                    panelKey={key}
+                    containerName={c.names[0] || c.shortId}
+                    lines={liveLogLines[key] || []}
+                    paused={liveLogPaused[key] || false}
+                    connecting={liveLogConnecting.has(key)}
+                    onPause={() => pauseLiveLog(key)}
+                    onResume={() => resumeLiveLog(key)}
+                    onClear={() => clearLiveLog(key)}
+                    onClose={() => toggleLiveLog(c._sourceId, c.id)}
+                  />
+                )}
 
                 {/* 终端面板 */}
                 {terminalOpen.has(`${c._sourceId}:${c.id}`) && (() => {
@@ -656,6 +772,143 @@ function TerminalPanel({ panelKey, containerName, cmds, cmdInput, setCmdInput, o
           className="flex-1 bg-transparent text-dark-200 text-sm font-mono placeholder-dark-700 focus:outline-none"
         />
         {execLoading && <Loader className="w-3.5 h-3.5 animate-spin text-dark-500" />}
+      </div>
+    </div>
+  );
+}
+
+// ─── 实时日志流面板组件 ─────────────────────────────────────────────
+interface LiveLogLine {
+  timestamp: string;
+  line: string;
+  level: string;
+  content: string;
+}
+
+interface LiveLogPanelProps {
+  panelKey: string;
+  containerName: string;
+  lines: LiveLogLine[];
+  paused: boolean;
+  connecting: boolean;
+  onPause: () => void;
+  onResume: () => void;
+  onClear: () => void;
+  onClose: () => void;
+}
+
+const LEVEL_COLORS: Record<string, string> = {
+  'FATAL': 'text-red-300',
+  'ERROR': 'text-red-400',
+  'WARN': 'text-yellow-400',
+  'WARNING': 'text-yellow-400',
+  'INFO': 'text-dark-200',
+  'DEBUG': 'text-dark-500',
+  'TRACE': 'text-dark-600',
+};
+
+function LiveLogPanel({ panelKey, containerName, lines, paused, connecting, onPause, onResume, onClear, onClose }: LiveLogPanelProps) {
+  const bottomRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [autoScroll, setAutoScroll] = useState(true);
+
+  // 自动滚动到底部（仅在未暂停且自动滚动开启时）
+  useEffect(() => {
+    if (!paused && autoScroll && bottomRef.current) {
+      bottomRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [lines, paused, autoScroll]);
+
+  // 检测用户手动滚动
+  const handleScroll = () => {
+    if (scrollRef.current) {
+      const { scrollTop, scrollHeight, clientHeight } = scrollRef.current;
+      setAutoScroll(scrollHeight - scrollTop - clientHeight < 50);
+    }
+  };
+
+  return (
+    <div className="border-t border-dark-800 bg-[#0d1117]">
+      {/* 标题栏 */}
+      <div className="px-4 py-2 border-b border-dark-800 flex items-center gap-2 bg-dark-900/50">
+        <StopCircle className="w-3.5 h-3.5 text-green-400" />
+        <span className="text-xs font-mono text-green-400">{containerName}</span>
+        <span className="text-xs text-dark-600">
+          实时日志流
+          {connecting && <Loader className="w-3 h-3 animate-spin inline ml-1" />}
+          {!connecting && !paused && <span className="text-green-500 ml-1">● LIVE</span>}
+          {paused && <span className="text-yellow-500 ml-1">⏸ 已暂停</span>}
+        </span>
+        <span className="text-xs text-dark-700 ml-2">{lines.length} 条</span>
+        <div className="ml-auto flex gap-1">
+          {paused ? (
+            <button
+              onClick={onResume}
+              className="text-xs px-2 py-0.5 rounded text-green-400 hover:text-green-300 border border-green-500/30 hover:border-green-500/50 transition-colors"
+              title="继续"
+            >
+              ▶ 继续
+            </button>
+          ) : (
+            <button
+              onClick={onPause}
+              className="text-xs px-2 py-0.5 rounded text-yellow-400 hover:text-yellow-300 border border-yellow-500/30 hover:border-yellow-500/50 transition-colors"
+              title="暂停"
+            >
+              ⏸ 暂停
+            </button>
+          )}
+          <button
+            onClick={onClear}
+            className="text-xs px-2 py-0.5 rounded text-dark-600 hover:text-dark-400 border border-dark-800 hover:border-dark-700 transition-colors"
+            title="清空"
+          >
+            清空
+          </button>
+          <button
+            onClick={onClose}
+            className="text-xs px-2 py-0.5 rounded text-dark-500 hover:text-red-400 border border-dark-800 hover:border-red-500/30 transition-colors"
+            title="关闭日志流"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      </div>
+
+      {/* 日志输出区 - 暗色终端风格 */}
+      <div
+        ref={scrollRef}
+        onScroll={handleScroll}
+        className="h-80 overflow-y-auto px-4 py-2 font-mono text-xs leading-relaxed"
+      >
+        {connecting && lines.length === 0 ? (
+          <div className="flex items-center justify-center py-8 text-dark-600">
+            <Loader className="w-4 h-4 animate-spin mr-2" /> 连接中...
+          </div>
+        ) : lines.length === 0 ? (
+          <div className="text-dark-600 py-8 text-center">等待日志...</div>
+        ) : (
+          lines.map((l, i) => (
+            <div key={i} className={`flex gap-2 py-px hover:bg-dark-800/30 ${LEVEL_COLORS[l.level] || 'text-dark-300'}`}>
+              <span className="text-dark-700 flex-shrink-0 w-44 select-none">
+                {l.timestamp?.slice(0, 23) || l.timestamp?.slice(0, 19) || '-'}
+              </span>
+              <span className="flex-shrink-0 w-12 font-semibold">
+                [{l.level}]
+              </span>
+              <span className="break-all">{l.content || l.line}</span>
+            </div>
+          ))
+        )}
+        <div ref={bottomRef} />
+        {!autoScroll && !paused && (
+          <button
+            onClick={() => { setAutoScroll(true); bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }}
+            className="sticky bottom-2 mx-auto block text-xs px-3 py-1 rounded bg-dark-700 text-dark-300 hover:bg-dark-600 border border-dark-600 transition-colors"
+          >
+            ↓ 跟随最新日志
+          </button>
+        )}
       </div>
     </div>
   );
