@@ -143,7 +143,7 @@ async function scanContainerFileLogs(docker, containerId, logPaths, sinceCheckpo
 // Docker 连接池（每个 sourceId 一个实例）
 export const dockerInstances = new Map();
 
-function getDocker(sourceId, config = {}) {
+export function getDocker(sourceId, config = {}) {
   let docker;
 
   // 已存在的连接直接复用
