@@ -76,25 +76,28 @@ export default function ShellTerminal({ server, onClose }: ShellTerminalProps) {
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 
-    ws.onopen = () => {
-      setOutput(prev => [...prev, '\x1b[90m正在连接到 ' + server.host + '...\x1b[0m']);
-    };
+    let manualClose = false;
 
-    ws.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        if (data.type === 'shell_ready') {
-          setConnecting(false);
-          setConnected(true);
-          setError(null);
-          setOutput(prev => [
-            ...prev,
-            '\x1b[1;32m✓ 已连接到 ' + server.host + '\x1b[0m',
-            '\x1b[90m输入命令后按回车执行，Ctrl+C 中断，Ctrl+D 退出\x1b[0m',
-            '',
-          ]);
-          inputRef.current?.focus();
-        } else if (data.type === 'shell_output') {
+        ws.onopen = () => {
+          // 不在 onopen 显示连接信息，等 shell_ready 后统一显示
+        };
+
+        ws.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data);
+            if (data.type === 'shell_ready') {
+              setConnecting(false);
+              setConnected(true);
+              setError(null);
+              setOutput(prev => [
+                ...prev,
+                '\x1b[1;32m✓ 已连接到 ' + server.host + '\x1b[0m',
+                '\x1b[90m输入命令后按回车执行，Ctrl+C 中断，Ctrl+D 退出\x1b[0m',
+                '\x1b[90m' + server.host + ' login: ' + new Date().toLocaleString() + '\x1b[0m',
+                '',
+              ]);
+              inputRef.current?.focus();
+            } else if (data.type === 'shell_output') {
           setOutput(prev => [...prev, data.data]);
         } else if (data.type === 'shell_error') {
           setOutput(prev => [...prev, '\x1b[31m错误: ' + data.error + '\x1b[0m']);
@@ -109,17 +112,17 @@ export default function ShellTerminal({ server, onClose }: ShellTerminalProps) {
     };
 
     ws.onerror = () => {
-      setError('WebSocket 连接失败');
-      setConnecting(false);
-      setOutput(prev => [...prev, '\x1b[31m✗ WebSocket 连接失败\x1b[0m']);
+      // 不立即报错，等 onclose 判断最终状态（Shell 连接可能因 SSH 握手产生瞬时错误）
     };
 
     ws.onclose = () => {
-      setConnected(false);
-      setConnecting(false);
-    };
+          if (manualClose) return;
+          setOutput(prev => [...prev, '\x1b[31m✗ 连接已断开\x1b[0m']);
+          setConnected(false);
+          setConnecting(false);
+        };
 
-    return () => { ws.close(); };
+        return () => { manualClose = true; ws.close(); };
   }, [server.id, server.host]);
 
   // 自动滚动

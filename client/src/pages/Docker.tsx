@@ -4,8 +4,11 @@ import {
   Container, Boxes, Activity, Search, Filter, RefreshCw,
   ChevronDown, ChevronRight, Terminal, AlertCircle, CheckCircle,
   Clock, Server, X, Loader, ArrowRightLeft, Zap, Trash2,
-  Play, Pause, RotateCcw, StopCircle, Square
+  Play, Pause, RotateCcw, StopCircle, Square,
+  Stethoscope, Copy, Check
 } from 'lucide-react';
+import { useDevice } from '../contexts/DeviceContext';
+import DeviceSelector from '../components/DeviceSelector';
 
 interface ContainerInfo {
   id: string;
@@ -25,6 +28,7 @@ interface ContainerInfo {
 interface ContainerSource {
   sourceId: string;
   sourceName: string;
+  host?: string;
   containers: ContainerInfo[];
   error?: string;
 }
@@ -38,6 +42,7 @@ interface TraceResult {
 }
 
 export default function Docker() {
+  const { selectedDevice, isRemote } = useDevice();
   const [sources, setSources] = useState<ContainerSource[]>([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState('');
@@ -53,6 +58,13 @@ export default function Docker() {
   const [batchResult, setBatchResult] = useState<any>(null);
   const [batchLogs, setBatchLogs] = useState<any[]>([]);
   const [batchAnalyzing, setBatchAnalyzing] = useState(false);
+
+  // AI 诊断（单容器）
+  const [diagnoseKey, setDiagnoseKey] = useState<string | null>(null);
+  const [diagnoseContainerName, setDiagnoseContainerName] = useState('');
+  const [diagnoseLoading, setDiagnoseLoading] = useState(false);
+  const [diagnoseText, setDiagnoseText] = useState('');
+  const [diagnoseCopied, setDiagnoseCopied] = useState(false);
 
   // 终端执行
   const [terminalOpen, setTerminalOpen] = useState<Set<string>>(new Set());
@@ -111,12 +123,19 @@ export default function Docker() {
     try {
       const res = await fetch('/api/docker/containers');
       const data = await res.json();
-      setSources(data.sources || []);
+      let sources = data.sources || [];
+
+      // 远程设备：按 host 地址过滤 Docker 源
+      if (isRemote && (selectedDevice as any).host) {
+        const remoteHost = (selectedDevice as any).host;
+        sources = sources.filter((s: any) => s.host === remoteHost);
+      }
+      setSources(sources);
     } catch (err) {
       console.error(err);
     }
     setLoading(false);
-  }, []);
+  }, [isRemote, selectedDevice.id]);
 
   useEffect(() => { fetchContainers(); }, [fetchContainers]);
 
@@ -222,6 +241,10 @@ export default function Docker() {
             // 限制最多保留 5000 条
             return { ...prev, [key]: lines.length > 5000 ? lines.slice(-5000) : lines };
           });
+        } else if (data.type === 'paused') {
+          setLiveLogPaused(prev => ({ ...prev, [key]: true }));
+        } else if (data.type === 'resumed') {
+          setLiveLogPaused(prev => ({ ...prev, [key]: false }));
         } else if (data.type === 'stream_error') {
           setLiveLogLines(prev => ({
             ...prev, [key]: [...(prev[key] || []), { timestamp: new Date().toISOString(), line: `⚠️ 错误: ${data.error}`, level: 'ERROR', content: `错误: ${data.error}` }]
@@ -279,6 +302,8 @@ export default function Docker() {
 
   const loadTrace = async (sourceId: string, container: ContainerInfo) => {
     const key = `${sourceId}:${container.id}`;
+    // 先展开行，这样 trace 结果面板可见
+    setExpanded(prev => new Set([...prev, key]));
     if (traceResults[key]) return;
     setTraceLoading(prev => new Set([...prev, key]));
     try {
@@ -287,6 +312,66 @@ export default function Docker() {
       setTraceResults(prev => ({ ...prev, [key]: data }));
     } catch {}
     setTraceLoading(prev => { const s = new Set(prev); s.delete(key); return s; });
+  };
+
+  const diagnoseContainer = async (sourceId: string, containerId: string, containerName: string) => {
+    const key = `${sourceId}:${containerId}`;
+    setDiagnoseKey(key);
+    setDiagnoseContainerName(containerName);
+    setDiagnoseLoading(true);
+    setDiagnoseText('');
+    setDiagnoseCopied(false);
+
+    try {
+      const res = await fetch(`/api/docker/container/${encodeURIComponent(sourceId)}/${encodeURIComponent(containerId)}/diagnose`, {
+        method: 'POST',
+      });
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        setDiagnoseText(`❌ 诊断失败: ${errData.error || res.statusText}`);
+        setDiagnoseLoading(false);
+        return;
+      }
+
+      const reader = res.body?.getReader();
+      if (!reader) {
+        setDiagnoseText('❌ 无法读取响应流');
+        setDiagnoseLoading(false);
+        return;
+      }
+
+      const decoder = new TextDecoder();
+      let buffer = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            const payload = line.slice(6);
+            if (payload === '[DONE]') continue;
+            try {
+              const j = JSON.parse(payload);
+              if (j.content) setDiagnoseText(prev => prev + j.content);
+              if (j.error) setDiagnoseText(prev => prev + `\n\n❌ ${j.error}`);
+            } catch {}
+          }
+        }
+      }
+    } catch (err: any) {
+      setDiagnoseText(`❌ 诊断请求失败: ${err.message}`);
+    }
+    setDiagnoseLoading(false);
+  };
+
+  const closeDiagnose = () => {
+    setDiagnoseKey(null);
+    setDiagnoseContainerName('');
+    setDiagnoseText('');
+    setDiagnoseCopied(false);
   };
 
   const runBatchAnalysis = async () => {
@@ -353,6 +438,7 @@ export default function Docker() {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          <DeviceSelector />
           {selected.length > 0 && (
             <button
               onClick={runBatchAnalysis}
@@ -479,7 +565,7 @@ export default function Docker() {
                 <div className="flex items-center gap-3 px-4 py-3">
                   {/* Select */}
                   <button
-                    onClick={() => toggleSelect(c._sourceId, c)}
+                    onClick={(e) => { e.preventDefault(); e.stopPropagation(); toggleSelect(c._sourceId, c); }}
                     className={`w-5 h-5 rounded border flex-shrink-0 flex items-center justify-center transition-colors ${
                       isSelected
                         ? 'bg-accent-500 border-accent-500 text-white'
@@ -526,7 +612,7 @@ export default function Docker() {
                   <div className="flex items-center gap-1 flex-shrink-0">
                     {/* 终端 */}
                     <button
-                      onClick={() => toggleTerminal(`${c._sourceId}:${c.id}`)}
+                      onClick={(e) => { e.preventDefault(); e.stopPropagation(); toggleTerminal(`${c._sourceId}:${c.id}`); }}
                       className={`p-1.5 rounded-lg transition-colors ${terminalOpen.has(`${c._sourceId}:${c.id}`) ? 'bg-accent-500/15 text-accent-400' : 'hover:bg-dark-700 text-dark-500 hover:text-accent-400'}`}
                       title="进入容器"
                     >
@@ -536,7 +622,7 @@ export default function Docker() {
                     {/* 启停 */}
                     {c.state === 'running' ? (
                       <button
-                        onClick={() => doOp(c._sourceId, c.id, 'stop', `${c._sourceId}:${c.id}:stop`)}
+                        onClick={(e) => { e.preventDefault(); e.stopPropagation(); doOp(c._sourceId, c.id, 'stop', `${c._sourceId}:${c.id}:stop`); }}
                         disabled={opLoading.has(`${c._sourceId}:${c.id}:stop`)}
                         className="p-1.5 rounded-lg hover:bg-dark-700 text-dark-500 hover:text-yellow-400 transition-colors"
                         title="停止"
@@ -545,7 +631,7 @@ export default function Docker() {
                       </button>
                     ) : (
                       <button
-                        onClick={() => doOp(c._sourceId, c.id, 'start', `${c._sourceId}:${c.id}:start`)}
+                        onClick={(e) => { e.preventDefault(); e.stopPropagation(); doOp(c._sourceId, c.id, 'start', `${c._sourceId}:${c.id}:start`); }}
                         disabled={opLoading.has(`${c._sourceId}:${c.id}:start`)}
                         className="p-1.5 rounded-lg hover:bg-dark-700 text-dark-500 hover:text-green-400 transition-colors"
                         title="启动"
@@ -556,7 +642,7 @@ export default function Docker() {
 
                     {/* 重启 */}
                     <button
-                      onClick={() => doOp(c._sourceId, c.id, 'restart', `${c._sourceId}:${c.id}:restart`)}
+                      onClick={(e) => { e.preventDefault(); e.stopPropagation(); doOp(c._sourceId, c.id, 'restart', `${c._sourceId}:${c.id}:restart`); }}
                       disabled={opLoading.has(`${c._sourceId}:${c.id}:restart`)}
                       className="p-1.5 rounded-lg hover:bg-dark-700 text-dark-500 hover:text-blue-400 transition-colors"
                       title="重启"
@@ -566,7 +652,7 @@ export default function Docker() {
 
                     {/* 链路追踪 */}
                     <button
-                      onClick={() => loadTrace(c._sourceId, c)}
+                      onClick={(e) => { e.preventDefault(); e.stopPropagation(); loadTrace(c._sourceId, c); }}
                       disabled={traceLoading_}
                       className="p-1.5 rounded-lg hover:bg-dark-700 text-dark-500 hover:text-purple-400 transition-colors"
                       title="上下游链路追踪"
@@ -574,9 +660,18 @@ export default function Docker() {
                       {traceLoading_ ? <Loader className="w-4 h-4 animate-spin" /> : <ArrowRightLeft className="w-4 h-4" />}
                     </button>
 
+                    {/* AI 诊断 */}
+                    <button
+                      onClick={(e) => { e.preventDefault(); e.stopPropagation(); diagnoseContainer(c._sourceId, c.id, c.names[0] || c.shortId); }}
+                      className={`p-1.5 rounded-lg transition-colors ${diagnoseKey === key ? 'bg-accent-500/15 text-accent-400' : 'hover:bg-dark-700 text-dark-500 hover:text-accent-400'}`}
+                      title="AI 诊断"
+                    >
+                      <Stethoscope className="w-4 h-4" />
+                    </button>
+
                     {/* 实时日志 */}
                     <button
-                      onClick={() => toggleLiveLog(c._sourceId, c.id)}
+                      onClick={(e) => { e.preventDefault(); e.stopPropagation(); toggleLiveLog(c._sourceId, c.id); }}
                       className={`p-1.5 rounded-lg transition-colors ${liveLogKey === key ? 'bg-green-500/15 text-green-400' : 'hover:bg-dark-700 text-dark-500 hover:text-green-400'}`}
                       title="实时日志流"
                     >
@@ -585,7 +680,7 @@ export default function Docker() {
 
                     {/* 展开日志 */}
                     <button
-                      onClick={() => toggleExpand(c._sourceId, c)}
+                      onClick={(e) => { e.preventDefault(); e.stopPropagation(); toggleExpand(c._sourceId, c); }}
                       className="p-1.5 rounded-lg hover:bg-dark-700 text-dark-500 hover:text-dark-200 transition-colors"
                     >
                       {isExpanded ? <ChevronDown className="w-4 h-4" /> : <Activity className="w-4 h-4" />}
@@ -625,6 +720,25 @@ export default function Docker() {
                   );
                 })()}
 
+                {/* AI 诊断面板 */}
+                {diagnoseKey === key && (
+                  <DiagnosisPanel
+                    panelKey={key}
+                    containerName={diagnoseContainerName || c.names[0] || c.shortId}
+                    loading={diagnoseLoading}
+                    text={diagnoseText}
+                    copied={diagnoseCopied}
+                    onCopy={() => {
+                      if (diagnoseText) {
+                        navigator.clipboard.writeText(diagnoseText);
+                        setDiagnoseCopied(true);
+                        setTimeout(() => setDiagnoseCopied(false), 2000);
+                      }
+                    }}
+                    onClose={closeDiagnose}
+                  />
+                )}
+
                 {/* Expanded: logs + trace */}
                 {isExpanded && (
                   <div className="border-t border-dark-800">
@@ -640,7 +754,7 @@ export default function Docker() {
                               <span className="text-xs text-dark-600">上游:</span>
                               {(trace.upstream || []).map(u => (
                                 <span key={u.id} className="text-xs px-2 py-0.5 rounded bg-blue-500/15 text-blue-400 border border-blue-500/20">
-                                  {u.name}
+                                  {u.names?.[0] || u.shortId || u.id?.slice(0, 12)}
                                 </span>
                               ))}
                             </div>
@@ -650,7 +764,7 @@ export default function Docker() {
                               <span className="text-xs text-dark-600">下游:</span>
                               {(trace.downstream || []).map(u => (
                                 <span key={u.id} className="text-xs px-2 py-0.5 rounded bg-purple-500/15 text-purple-400 border border-purple-500/20">
-                                  {u.name}
+                                  {u.names?.[0] || u.shortId || u.id?.slice(0, 12)}
                                 </span>
                               ))}
                             </div>
@@ -660,7 +774,7 @@ export default function Docker() {
                               <span className="text-xs text-dark-600">同网:</span>
                               {(trace.networkPeers || []).slice(0, 5).map(u => (
                                 <span key={u.id} className="text-xs px-2 py-0.5 rounded bg-dark-800 text-dark-400">
-                                  {u.name}
+                                  {u.names?.[0] || u.shortId || u.id?.slice(0, 12)}
                                 </span>
                               ))}
                             </div>
@@ -723,7 +837,7 @@ interface TermPanelProps {
 
 function TerminalPanel({ panelKey, containerName, cmds, cmdInput, setCmdInput, onRun, onClear, execLoading }: TermPanelProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
-  useEffect(() => { bottomRef.current?.scrollIntoView(); }, [cmds]);
+  useEffect(() => { bottomRef.current?.scrollIntoView({ block: 'nearest' }); }, [cmds]);
 
   return (
     <div className="border-t border-dark-800 bg-[#0d1117]">
@@ -734,7 +848,7 @@ function TerminalPanel({ panelKey, containerName, cmds, cmdInput, setCmdInput, o
         <span className="text-xs text-dark-600">容器内执行命令</span>
         <div className="ml-auto flex gap-1">
           <button
-            onClick={onClear}
+            onClick={(e) => { e.preventDefault(); e.stopPropagation(); onClear(); }}
             className="text-xs px-2 py-0.5 rounded text-dark-600 hover:text-dark-400 border border-dark-800 hover:border-dark-700 transition-colors"
           >清空</button>
         </div>
@@ -815,7 +929,7 @@ function LiveLogPanel({ panelKey, containerName, lines, paused, connecting, onPa
   // 自动滚动到底部（仅在未暂停且自动滚动开启时）
   useEffect(() => {
     if (!paused && autoScroll && bottomRef.current) {
-      bottomRef.current.scrollIntoView({ behavior: 'smooth' });
+      bottomRef.current.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     }
   }, [lines, paused, autoScroll]);
 
@@ -843,7 +957,7 @@ function LiveLogPanel({ panelKey, containerName, lines, paused, connecting, onPa
         <div className="ml-auto flex gap-1">
           {paused ? (
             <button
-              onClick={onResume}
+              onClick={(e) => { e.preventDefault(); e.stopPropagation(); onResume(); }}
               className="text-xs px-2 py-0.5 rounded text-green-400 hover:text-green-300 border border-green-500/30 hover:border-green-500/50 transition-colors"
               title="继续"
             >
@@ -851,7 +965,7 @@ function LiveLogPanel({ panelKey, containerName, lines, paused, connecting, onPa
             </button>
           ) : (
             <button
-              onClick={onPause}
+              onClick={(e) => { e.preventDefault(); e.stopPropagation(); onPause(); }}
               className="text-xs px-2 py-0.5 rounded text-yellow-400 hover:text-yellow-300 border border-yellow-500/30 hover:border-yellow-500/50 transition-colors"
               title="暂停"
             >
@@ -859,14 +973,14 @@ function LiveLogPanel({ panelKey, containerName, lines, paused, connecting, onPa
             </button>
           )}
           <button
-            onClick={onClear}
+            onClick={(e) => { e.preventDefault(); e.stopPropagation(); onClear(); }}
             className="text-xs px-2 py-0.5 rounded text-dark-600 hover:text-dark-400 border border-dark-800 hover:border-dark-700 transition-colors"
             title="清空"
           >
             清空
           </button>
           <button
-            onClick={onClose}
+            onClick={(e) => { e.preventDefault(); e.stopPropagation(); onClose(); }}
             className="text-xs px-2 py-0.5 rounded text-dark-500 hover:text-red-400 border border-dark-800 hover:border-red-500/30 transition-colors"
             title="关闭日志流"
           >
@@ -903,11 +1017,94 @@ function LiveLogPanel({ panelKey, containerName, lines, paused, connecting, onPa
         <div ref={bottomRef} />
         {!autoScroll && !paused && (
           <button
-            onClick={() => { setAutoScroll(true); bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }}
+            onClick={(e) => { e.preventDefault(); setAutoScroll(true); bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); }}
             className="sticky bottom-2 mx-auto block text-xs px-3 py-1 rounded bg-dark-700 text-dark-300 hover:bg-dark-600 border border-dark-600 transition-colors"
           >
             ↓ 跟随最新日志
           </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── AI 诊断面板组件 ─────────────────────────────────────────────
+interface DiagnosisPanelProps {
+  panelKey: string;
+  containerName: string;
+  loading: boolean;
+  text: string;
+  copied: boolean;
+  onCopy: () => void;
+  onClose: () => void;
+}
+
+function DiagnosisPanel({ panelKey, containerName, loading, text, copied, onCopy, onClose }: DiagnosisPanelProps) {
+  const contentRef = useRef<HTMLDivElement>(null);
+
+  // Auto-scroll 内容区底部（流式输出时）
+  useEffect(() => {
+    if (contentRef.current && text) {
+      contentRef.current.scrollTop = contentRef.current.scrollHeight;
+    }
+  }, [text]);
+
+  return (
+    <div className="border-t border-accent-500/30 bg-[#0d1117]">
+      {/* 标题栏 */}
+      <div className="px-4 py-2 border-b border-accent-500/20 flex items-center gap-2 bg-accent-500/5">
+        <Stethoscope className="w-3.5 h-3.5 text-accent-400" />
+        <span className="text-xs font-mono text-accent-400">{containerName}</span>
+        <span className="text-xs text-accent-500/70">
+          AI 诊断
+          {loading && <Loader className="w-3 h-3 animate-spin inline ml-1 text-accent-400" />}
+          {!loading && text && <CheckCircle className="w-3 h-3 inline ml-1 text-green-400" />}
+        </span>
+        <div className="ml-auto flex gap-1">
+          {text && !loading && (
+            <button
+              onClick={(e) => { e.preventDefault(); e.stopPropagation(); onCopy(); }}
+              className="text-xs px-2 py-0.5 rounded text-dark-400 hover:text-dark-200 border border-dark-700 hover:border-dark-500 transition-colors flex items-center gap-1"
+              title="复制诊断结果"
+            >
+              {copied ? <Check className="w-3 h-3 text-green-400" /> : <Copy className="w-3 h-3" />}
+              {copied ? '已复制' : '复制'}
+            </button>
+          )}
+          <button
+            onClick={(e) => { e.preventDefault(); e.stopPropagation(); onClose(); }}
+            className="text-xs px-2 py-0.5 rounded text-dark-500 hover:text-red-400 border border-dark-800 hover:border-red-500/30 transition-colors"
+            title="关闭诊断面板"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      </div>
+
+      {/* 诊断内容区 */}
+      <div className="h-80 overflow-y-auto px-4 py-3" ref={contentRef}>
+        {loading && !text ? (
+          <div className="flex flex-col items-center justify-center py-16 text-dark-500">
+            <Stethoscope className="w-10 h-10 mb-3 animate-pulse text-accent-500/50" />
+            <p className="text-sm">正在拉取容器日志并进行分析...</p>
+            <p className="text-xs mt-1 text-dark-600">AI 正在诊断 {containerName}</p>
+          </div>
+        ) : !text ? (
+          <div className="text-dark-600 py-8 text-center text-sm">
+            诊断未开始
+          </div>
+        ) : (
+          <div
+            className="text-sm text-dark-200 leading-relaxed prose-invert
+              [&_h1]:text-base [&_h2]:text-sm [&_h3]:text-xs [&_h1_h2_h3]:font-bold [&_h1_h2_h3]:mt-3 [&_h1_h2_h3]:mb-1
+              [&_code]:bg-dark-800 [&_code]:px-1 [&_code]:py-0.5 [&_code]:rounded [&_code]:text-xs
+              [&_ul]:list-disc [&_ul]:ml-4 [&_ol]:list-decimal [&_ol]:ml-4
+              [&_li]:text-xs [&_li]:my-0.5
+              [&_pre]:bg-dark-900 [&_pre]:p-2 [&_pre]:rounded [&_pre]:text-xs [&_pre]:overflow-x-auto
+              [&_strong]:text-dark-100
+              [&_blockquote]:border-l-2 [&_blockquote]:border-accent-500/30 [&_blockquote]:pl-3 [&_blockquote]:text-dark-400"
+            dangerouslySetInnerHTML={{ __html: renderMarkdown(text) }}
+          />
         )}
       </div>
     </div>

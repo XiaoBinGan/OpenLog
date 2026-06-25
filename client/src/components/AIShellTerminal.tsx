@@ -81,10 +81,11 @@ export default function AIShellTerminal({ server, onClose, onReady }: AIShellTer
       .catch(() => {});
   }, []);
 
-  // 连接 WebSocket — dev 模式直接连后端
+  // 连接 WebSocket — localhost 直连 3001，LAN 走 Vite 代理
   useEffect(() => {
     const isDev = import.meta.env.DEV;
-    const wsHost = isDev ? 'localhost:3001' : window.location.host;
+    const hostname = window.location.hostname;
+    const wsHost = (isDev && hostname === 'localhost') ? 'localhost:3001' : window.location.host;
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = `${protocol}//${wsHost}/ws/aishell/${server.id}`;
     setConnecting(true);
@@ -93,6 +94,8 @@ export default function AIShellTerminal({ server, onClose, onReady }: AIShellTer
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 
+    let ready = false;
+
     ws.onopen = () => {};
 
     ws.onmessage = (event) => {
@@ -100,6 +103,7 @@ export default function AIShellTerminal({ server, onClose, onReady }: AIShellTer
         const data = JSON.parse(event.data);
 
         if (data.type === 'aishell_ready') {
+          ready = true;
           setConnecting(false);
           setConnected(true);
           setError(null);
@@ -147,13 +151,13 @@ export default function AIShellTerminal({ server, onClose, onReady }: AIShellTer
     };
 
     ws.onerror = () => {
-      setError('WebSocket 连接失败');
-      setConnecting(false);
+      // 不立即报错（SSH 握手可能产生瞬时错误），等 onclose 处理
     };
 
     ws.onclose = () => {
       setConnected(false);
       setConnecting(false);
+      if (!ready) onReady?.();
     };
 
     return () => { ws.close(); };

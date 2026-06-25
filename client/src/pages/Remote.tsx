@@ -191,7 +191,7 @@ function FileEditor({
 }
 
 // 单个服务器卡片组件
-const ServerCard = ({ server, isActive, onConnect, onDisconnect, onEdit, onDelete, onShell, onAIShell, onSelect, aiShellOpening }: {
+const ServerCard = ({ server, isActive, onConnect, onDisconnect, onEdit, onDelete, onShell, onAIShell, onSelect, aiShellOpening, connecting }: {
   server: RemoteServer;
   isActive: boolean;
   onConnect: () => void;
@@ -203,6 +203,7 @@ const ServerCard = ({ server, isActive, onConnect, onDisconnect, onEdit, onDelet
   onSelect: () => void;
   onOpenEditor?: () => void;
   aiShellOpening?: boolean;
+  connecting: boolean;
 }) => (
   <div
     className={`glass rounded-xl p-3 transition-all group cursor-pointer ${isActive ? 'ring-2 ring-accent-500/60 bg-accent-500/5' : 'hover:bg-dark-800/40'}`}
@@ -243,8 +244,11 @@ const ServerCard = ({ server, isActive, onConnect, onDisconnect, onEdit, onDelet
         </button>
       </div>
     ) : (
-      <button onClick={onConnect} className="w-full px-2 py-1.5 text-xs rounded bg-green-500/20 text-green-400 hover:bg-green-500/30 transition-colors flex items-center justify-center gap-1">
-        <Wifi className="w-3 h-3" /> 连接
+      <button onClick={onConnect} disabled={connecting} className={`w-full px-2 py-1.5 text-xs rounded transition-colors flex items-center justify-center gap-1 ${
+        connecting ? 'bg-green-500/10 text-green-400/50 cursor-wait' : 'bg-green-500/20 text-green-400 hover:bg-green-500/30'
+      }`}>
+        {connecting ? <Loader className="w-3 h-3 animate-spin" /> : <Wifi className="w-3 h-3" />}
+        {connecting ? '连接中...' : '连接'}
       </button>
     )}
   </div>
@@ -272,6 +276,7 @@ export default function Remote() {
   const [showShell, setShowShell] = useState(false);
   const [showAIShell, setShowAIShell] = useState(false);
   const [aiShellOpening, setAiShellOpening] = useState(false);
+  const [connectingId, setConnectingId] = useState<string | null>(null);
   const [logLines, setLogLines] = useState(200);
   const [logSearch, setLogSearch] = useState('');
   const [showServerList, setShowServerList] = useState(true);
@@ -414,12 +419,15 @@ export default function Remote() {
 
   // 连接：直接调用 context 的 connect
   const handleConnect = async (server: RemoteServer) => {
+    if (connectingId) return; // 已有连接进行中
+    setConnectingId(server.id);
     try {
       await connect(server);
-      loadedRef.current = null; // 重置，允许新服务器加载文件
+      loadedRef.current = null;
     } catch {
       // connect 内部已处理 toast
     }
+    setConnectingId(null);
   };
 
   return (
@@ -469,8 +477,9 @@ export default function Remote() {
                 onDisconnect={() => disconnect(server.id)}
                 onEdit={() => openEdit(server)}
                 onDelete={() => deleteServer(server)}
-                onShell={() => setShowShell(true)}
-                onAIShell={() => { setAiShellOpening(true); setShowAIShell(true); }}
+                onShell={() => { selectServer(server); setShowShell(true); }}
+                onAIShell={() => { selectServer(server); setAiShellOpening(true); setShowAIShell(true); }}
+                connecting={connectingId === server.id}
                 aiShellOpening={aiShellOpening}
                 onSelect={() => {
                   if (server.status !== 'connected') {

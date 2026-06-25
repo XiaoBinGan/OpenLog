@@ -233,23 +233,36 @@ export default function Assistant() {
     abortRef.current = new AbortController();
 
     try {
-      // 构建历史 — 包含工具调用信息
-      const history = opsMessages
-        .filter(m => !m.streaming)
-        .slice(-12)
-        .map(m => {
-          const msg: any = { role: m.role, content: m.content };
-          // 传递工具调用状态给 AI 了解上下文
-          if ((m as any).toolCalls?.length > 0) {
-            msg.tool_calls = (m as any).toolCalls
-              .filter((tc: any) => tc.status === 'done')
-              .map((tc: any) => ({
-                name: tc.tool,
-                result: JSON.stringify(tc.result || {}).slice(0, 500)
-              }));
+      // 构建历史 — 包含工具调用信息（OpenAI 格式）
+      const history: any[] = [];
+      const recentMsgs = opsMessages.filter(m => !m.streaming).slice(-12);
+      for (const m of recentMsgs) {
+        if (m.role === 'assistant' && (m as any).toolCalls?.length > 0) {
+          // Assistant 消息 + tool_calls
+          const assistantMsg: any = { role: 'assistant', content: m.content || null };
+          if ((m as any).reasoning_content) assistantMsg.reasoning_content = (m as any).reasoning_content;
+          assistantMsg.tool_calls = (m as any).toolCalls
+            .filter((tc: any) => tc.status === 'done')
+            .map((tc: any) => ({
+              id: `call_${tc.tool}_${Date.now()}`,
+              type: 'function',
+              function: { name: tc.tool, arguments: JSON.stringify(tc.args || {}) }
+            }));
+          history.push(assistantMsg);
+          // 每个 tool_call 后跟 tool 消息
+          for (const tc of (m as any).toolCalls.filter((t: any) => t.status === 'done')) {
+            history.push({
+              role: 'tool',
+              tool_call_id: assistantMsg.tool_calls.find((t: any) => t.function.name === tc.tool)?.id || '',
+              content: JSON.stringify(tc.result || {}).slice(0, 1000)
+            });
           }
-          return msg;
-        });
+        } else {
+          const msg: any = { role: m.role, content: m.content };
+          if ((m as any).reasoning_content) msg.reasoning_content = (m as any).reasoning_content;
+          history.push(msg);
+        }
+      }
       history.push({ role: 'user', content: displayContent });
 
       const res = await fetch('/api/chat', {
@@ -286,6 +299,8 @@ export default function Assistant() {
                 } : m));
               } else if (p.content) {
                 acc += p.content;
+              } else if (p.reasoning_content) {
+                setOpsMessages(prev => prev.map((m, i) => i === prev.length - 1 ? { ...m, reasoning_content: p.reasoning_content } : m));
               }
             } catch {}
           }
@@ -409,13 +424,13 @@ export default function Assistant() {
                 <Trash2 className="w-3.5 h-3.5" /> 清空
               </button>
             )}
-            <button onClick={() => setMemoryPanelOpen(v => !v)}
+            {/* <button onClick={() => setMemoryPanelOpen(v => !v)}
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs border transition-colors ${
                 memoryPanelOpen ? 'text-accent-400 bg-accent-500/10 border-accent-500/30' : 'text-dark-400 hover:text-accent-400 hover:bg-accent-500/10 border-dark-800'
               }`}>
               <BookOpen className="w-3.5 h-3.5" /> 知识库
               {memoryFiles.length > 0 && <span className="ml-1 px-1.5 py-0.5 rounded-full bg-accent-500/20 text-accent-400 text-xs">{memoryFiles.length}</span>}
-            </button>
+            </button> */}
           </div>
         </div>
 
@@ -556,7 +571,7 @@ export default function Assistant() {
       {memoryPanelOpen && (
         <div className="w-80 flex-shrink-0 flex flex-col bg-dark-900 border border-dark-800 rounded-xl overflow-hidden animate-scale-in">
           <div className="flex items-center justify-between px-4 py-3 border-b border-dark-800">
-            <div className="flex items-center gap-2"><BookOpen className="w-4 h-4 text-accent-400" /><span className="text-sm font-semibold text-dark-100">知识库</span></div>
+            {/* <div className="flex items-center gap-2"><BookOpen className="w-4 h-4 text-accent-400" /><span className="text-sm font-semibold text-dark-100">知识库</span></div> */}
             <div className="flex items-center gap-1">
               <button onClick={() => { setShowNewForm(v => !v); setEditingFile(null); setEditContent(''); }}
                 className="p-1.5 rounded-lg hover:bg-dark-800 text-dark-400 hover:text-accent-400 transition-colors"><Plus className="w-4 h-4" /></button>

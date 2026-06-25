@@ -18,6 +18,30 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = join(__dirname, '..', 'data');
 const DB_PATH = join(DATA_DIR, 'openlog.db');
 
+// ─── 检查 better-sqlite3 兼容性 ──────────────────────────────────────────
+try {
+  const testDb = new Database(':memory:');
+  testDb.close();
+} catch (err) {
+  console.error('\n❌ better-sqlite3 原生模块加载失败！');
+  console.error('   错误详情:', err.message);
+  if (err.code === 'ERR_DLOPEN_FAILED' || err.message.includes('NODE_MODULE_VERSION') || err.message.includes('node')) {
+    console.error('\n🔧 Node.js 版本与 better-sqlite3 编译版本不匹配。');
+    console.error('   项目要求 Node v20（详见项目根目录 .nvmrc 文件）。');
+    console.error('');
+    console.error('   📋 请按以下步骤修复：');
+    console.error('');
+    console.error('      1. 切换 Node 版本:      nvm use 20');
+    console.error('      2. 重建 native 模块:    npm rebuild better-sqlite3');
+    console.error('      3. 重新运行:            npm run init-db');
+    console.error('');
+  } else {
+    console.error('\n🔧 请尝试运行以下命令修复：');
+    console.error('   npm rebuild better-sqlite3');
+  }
+  process.exit(1);
+}
+
 // ─── 确保目录存在 ───────────────────────────────────────────────────
 if (!existsSync(DATA_DIR)) {
   mkdirSync(DATA_DIR, { recursive: true });

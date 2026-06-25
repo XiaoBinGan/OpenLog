@@ -519,6 +519,19 @@ const DEBOUNCE_MS = 30_000;
 const analysisHistory = [];
 const MAX_ANALYSIS_HISTORY = 500;
 
+/** 添加分析记录（自动去重相同类型+名称 5 秒内的重复条目） */
+function addAnalysisRecord(record) {
+  const existing = analysisHistory.find(r =>
+    r.type === record.type &&
+    r.sourceName === record.sourceName &&
+    r.status === record.status &&
+    Math.abs(new Date(r.timestamp).getTime() - new Date(record.timestamp || Date.now()).getTime()) < 5000
+  );
+  if (existing) return; // 跳过重复
+  analysisHistory.unshift(record);
+  if (analysisHistory.length > MAX_ANALYSIS_HISTORY) analysisHistory.pop();
+}
+
 function getQueue(sourceId) {
   if (!analysisQueues.has(sourceId)) {
     analysisQueues.set(sourceId, { running: false, pending: [] });
@@ -671,8 +684,7 @@ async function runAnalysis(errorLog, source) {
       status: 'done',
       model
     };
-    analysisHistory.unshift(record);
-    if (analysisHistory.length > MAX_ANALYSIS_HISTORY) analysisHistory.pop();
+    addAnalysisRecord(record);
 
     broadcast({
       type: 'ai_analysis',
@@ -697,8 +709,7 @@ async function runAnalysis(errorLog, source) {
       error: err.message,
       model
     };
-    analysisHistory.unshift(record);
-    if (analysisHistory.length > MAX_ANALYSIS_HISTORY) analysisHistory.pop();
+    addAnalysisRecord(record);
 
     broadcast({
       type: 'ai_analysis',
@@ -850,7 +861,7 @@ async function runPatrol(sources, levels) {
 // ─── 告警 Webhook 发送逻辑 ─────────────────────────────────
 
 /** 规范化错误签名用于冷却键 */
-function normalizeAlertSig(line) {
+export function normalizeAlertSig(line) {
   return (line || '')
     .replace(/^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+\w+\s+\d+\s+\d{2}:\d{2}:\d{2}\s+\w+\s+\d{4}\s*-\s*/i, '')
     .replace(/^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}[^\s]*\s*-?\s*/i, '')
@@ -861,7 +872,7 @@ function normalizeAlertSig(line) {
 }
 
 /** 匹配关键词 patterns（逗号分隔，如 "ERROR,FATAL,Exception"）*/
-function matchAlertPatterns(content, patterns) {
+export function matchAlertPatterns(content, patterns) {
   if (!patterns) return true;
   const keywords = patterns.split(',').map(k => k.trim().toUpperCase()).filter(Boolean);
   if (keywords.length === 0) return true;
@@ -870,7 +881,7 @@ function matchAlertPatterns(content, patterns) {
 }
 
 /** 匹配 severity_filter（逗号分隔，如 "ERROR,FATAL"）*/
-function matchesSeverityFilter(lineLevel, severityFilter) {
+export function matchesSeverityFilter(lineLevel, severityFilter) {
   if (!severityFilter) return true;
   const levels = severityFilter.split(',').map(l => l.trim().toUpperCase()).filter(Boolean);
   if (levels.length === 0) return true;
@@ -1589,22 +1600,11 @@ app.delete('/api/assistant/memory/:name', (req, res) => {
 // ============================================================
 
 function buildAssistantContext() {
-  const parts = [];
   if (lastPatrolResults.length > 0) {
-    const lines = lastPatrolResults.map(r => `- ${r.containerName}(${r.image}): ${r.uniqueCount || r.matchCount} 种异常`).join('\n');
-    if (lines) parts.push(`### 最近巡检\n${lines}`);
+    const lines = lastPatrolResults.slice(0, 3).map(r => `${r.containerName}: ${r.uniqueCount || r.matchCount}种异常`).join(', ');
+    return `巡检: ${lines}`;
   }
-  const recent = analysisHistory.filter(r => r.status === 'done').slice(0, 5);
-  if (recent.length > 0) {
-    const lines = recent.map(a => {
-      const typeLabel = a.type === 'patrol' ? '巡检' : a.type === 'health' ? '诊断' : '日志';
-      const summary = (a.summary || '').slice(0, 200).replace(/\n/g, ' · ');
-      const analysisBrief = (a.analysis || '').slice(0, 200).replace(/\n/g, ' · ');
-      return `- [${typeLabel}] ${a.sourceName}\n  摘要: ${summary}${analysisBrief ? '\n  结论: ' + analysisBrief : ''}`;
-    }).join('\n');
-    if (lines) parts.push(`### 最近分析\n${lines}`);
-  }
-  return parts.length > 0 ? parts.join('\n\n') : '暂无。';
+  return '暂无。';
 }
 
 // ─── 运维助手 Tool Calling ──────────────────────────────────────────
@@ -1873,7 +1873,7 @@ ${buildAssistantContext()}`
     // 消息历史（会在 tool calling 循环中更新）
     const allMessages = [
       systemPrompt,
-      ...messages.filter(m => m.role === 'user' || m.role === 'assistant')
+      ...messages.filter(m => m.role === 'user' || m.role === 'assistant' || m.role === 'tool')
     ];
 
     // ── Tool Calling 循环（最多 5 轮）──
@@ -2084,12 +2084,14 @@ app.get('/api/docker/containers', async (req, res) => {
         allContainers.push({
           sourceId: source.id,
           sourceName: source.name,
+          host: source.host || '',
           containers,
         });
       } catch (err) {
         allContainers.push({
           sourceId: source.id,
           sourceName: source.name,
+          host: source.host || '',
           error: err.message,
           containers: [],
         });
@@ -2380,7 +2382,7 @@ ${problemText}
     res.write('data: [DONE]\n\n');
     res.end();
 
-    analysisHistory.unshift({
+    addAnalysisRecord({
       id: uuidv4(),
       timestamp: new Date().toISOString(),
       type: 'health',
@@ -2390,13 +2392,12 @@ ${problemText}
       status: 'done',
       model
     });
-    if (analysisHistory.length > MAX_ANALYSIS_HISTORY) analysisHistory.pop();
   } catch (err) {
     console.error('[health-check/analyze]', err.message);
     if (!res.headersSent) res.status(500).json({ error: err.message });
     else { res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`); res.end(); }
 
-    analysisHistory.unshift({
+    addAnalysisRecord({
       id: uuidv4(),
       timestamp: new Date().toISOString(),
       type: 'health',
@@ -2407,7 +2408,6 @@ ${problemText}
       error: err.message,
       model: ensureSettings().model
     });
-    if (analysisHistory.length > MAX_ANALYSIS_HISTORY) analysisHistory.pop();
   }
 });
 
@@ -2510,7 +2510,7 @@ ${containerText}
     res.end();
 
     // 保存分析历史
-    analysisHistory.unshift({
+    addAnalysisRecord({
       id: uuidv4(),
       timestamp: new Date().toISOString(),
       type: 'patrol',
@@ -2520,13 +2520,12 @@ ${containerText}
       status: 'done',
       model
     });
-    if (analysisHistory.length > MAX_ANALYSIS_HISTORY) analysisHistory.pop();
   } catch (err) {
     console.error('[patrol/analyze]', err.message);
     if (!res.headersSent) res.status(500).json({ error: err.message });
     else { res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`); res.end(); }
 
-    analysisHistory.unshift({
+    addAnalysisRecord({
       id: uuidv4(),
       timestamp: new Date().toISOString(),
       type: 'patrol',
@@ -2537,7 +2536,6 @@ ${containerText}
       error: err.message,
       model: ensureSettings().model
     });
-    if (analysisHistory.length > MAX_ANALYSIS_HISTORY) analysisHistory.pop();
   }
 });
 
@@ -2609,7 +2607,7 @@ ${containerText}
     res.write('data: [DONE]\n\n');
     res.end();
 
-    analysisHistory.unshift({
+    addAnalysisRecord({
       id: uuidv4(),
       timestamp: new Date().toISOString(),
       type: 'health',
@@ -2619,13 +2617,12 @@ ${containerText}
       status: 'done',
       model
     });
-    if (analysisHistory.length > MAX_ANALYSIS_HISTORY) analysisHistory.pop();
   } catch (err) {
     console.error('[container/analyze]', err.message);
     if (!res.headersSent) res.status(500).json({ error: err.message });
     else { res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`); res.end(); }
 
-    analysisHistory.unshift({
+    addAnalysisRecord({
       id: uuidv4(),
       timestamp: new Date().toISOString(),
       type: 'health',
@@ -2636,7 +2633,6 @@ ${containerText}
       error: err.message,
       model: ensureSettings().model
     });
-    if (analysisHistory.length > MAX_ANALYSIS_HISTORY) analysisHistory.pop();
   }
 });
 
