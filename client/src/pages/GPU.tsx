@@ -79,10 +79,16 @@ export default function GPU() {
       setServerGPUs([]);
       return;
     }
-    setGlobalLoading(true);
+    // 只在首次加载（无已有数据）时显示 loading，后续刷新静默更新
+    const isFirstLoad = serverGPUs.length === 0;
+    if (isFirstLoad) {
+      setGlobalLoading(true);
+    }
     const results = await Promise.all(connectedServers.map(s => fetchServerGPU(s)));
     setServerGPUs(results);
-    setGlobalLoading(false);
+    if (isFirstLoad) {
+      setGlobalLoading(false);
+    }
     setLastRefresh(new Date());
   }, [connectedServers, fetchServerGPU]);
 

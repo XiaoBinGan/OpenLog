@@ -11,12 +11,151 @@ import {
   Monitor,
   Server,
   ChevronDown,
-  Loader
+  Loader,
+  RotateCcw
 } from 'lucide-react';
 import { LineChart, Line, AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
 import { useDevice } from '../contexts/DeviceContext';
 
 import type { MonitorStats, MonitorHistory, Log, RemoteServer } from '../types';
+
+// ─── Panel drag-and-drop system ───────────────────────────────────────────
+
+type PanelId =
+  | 'stats-cards'
+  | 'gpu-cards'
+  | 'cpu-memory-chart'
+  | 'network-chart'
+  | 'recent-logs'
+  | 'quick-stats';
+
+const DEFAULT_PANEL_ORDER: PanelId[] = [
+  'stats-cards',
+  'gpu-cards',
+  'cpu-memory-chart',
+  'network-chart',
+  'recent-logs',
+  'quick-stats',
+];
+
+const PANEL_STORAGE_KEY = 'openlog-dashboard-panel-order';
+
+function loadPanelOrder(): PanelId[] {
+  try {
+    const raw = localStorage.getItem(PANEL_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length === DEFAULT_PANEL_ORDER.length) {
+        // Validate that all expected IDs are present
+        const set = new Set(parsed);
+        if (DEFAULT_PANEL_ORDER.every(id => set.has(id))) {
+          return parsed as PanelId[];
+        }
+      }
+    }
+  } catch { /* ignore */ }
+  return [...DEFAULT_PANEL_ORDER];
+}
+
+function savePanelOrder(order: PanelId[]) {
+  localStorage.setItem(PANEL_STORAGE_KEY, JSON.stringify(order));
+}
+
+// ─── Drag handle icon (6-dot grip) ───────────────────────────────────────
+
+function GripIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      width="16"
+      height="16"
+      viewBox="0 0 16 16"
+      fill="currentColor"
+      aria-hidden="true"
+    >
+      <circle cx="4" cy="3" r="1.2" />
+      <circle cx="8" cy="3" r="1.2" />
+      <circle cx="12" cy="3" r="1.2" />
+      <circle cx="4" cy="8" r="1.2" />
+      <circle cx="8" cy="8" r="1.2" />
+      <circle cx="12" cy="8" r="1.2" />
+      <circle cx="4" cy="13" r="1.2" />
+      <circle cx="8" cy="13" r="1.2" />
+      <circle cx="12" cy="13" r="1.2" />
+    </svg>
+  );
+}
+
+// ─── Draggable panel wrapper ─────────────────────────────────────────────
+
+function DraggablePanel({
+  panelId,
+  index,
+  length,
+  dragState,
+  onDragStart,
+  onDragOver,
+  onDrop,
+  onDragEnd,
+  title,
+  titleIcon,
+  children,
+}: {
+  panelId: PanelId;
+  index: number;
+  length: number;
+  dragState: { draggedIndex: number | null; overIndex: number | null };
+  onDragStart: (e: React.DragEvent, index: number) => void;
+  onDragOver: (e: React.DragEvent, index: number) => void;
+  onDrop: (e: React.DragEvent, index: number) => void;
+  onDragEnd: () => void;
+  title?: string;
+  titleIcon?: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  const isDragging = dragState.draggedIndex === index;
+  const isDragOver = dragState.overIndex === index && dragState.draggedIndex !== index;
+
+  return (
+    <div
+      draggable
+      onDragStart={(e) => onDragStart(e, index)}
+      onDragOver={(e) => onDragOver(e, index)}
+      onDrop={(e) => onDrop(e, index)}
+      onDragEnd={onDragEnd}
+      className={`relative transition-all duration-200 ${
+        isDragging
+          ? 'opacity-40 ring-2 ring-dashed ring-accent-500 rounded-xl'
+          : 'opacity-100'
+      } ${
+        isDragOver ? 'scale-[1.02]' : ''
+      }`}
+    >
+      {/* Drag handle — visible on hover */}
+      {title && (
+        <div className="flex items-center gap-2 mb-2 group/drag">
+          <div
+            className="cursor-grab active:cursor-grabbing p-1 -ml-1 rounded opacity-0 group-hover/drag:opacity-100 transition-opacity text-dark-500 hover:text-dark-300"
+            title="拖拽排序"
+          >
+            <GripIcon />
+          </div>
+          {titleIcon}
+          <h3 className="text-lg font-semibold">{title}</h3>
+        </div>
+      )}
+
+      {/* Drop indicator line */}
+      {isDragOver && !isDragging && (
+        <div className="absolute -top-1 left-0 right-0 h-0.5 bg-accent-500 rounded-full shadow-lg shadow-accent-500/50 z-10" />
+      )}
+
+      {children}
+    </div>
+  );
+}
+
+// ─── Main Dashboard component ─────────────────────────────────────────────
 
 export default function Dashboard() {
   const { selectedDevice, isRemote } = useDevice();
@@ -26,6 +165,63 @@ export default function Dashboard() {
   const [recentLogs, setRecentLogs] = useState<Log[]>([]);
   const [loading, setLoading] = useState(false);
   const [logWs, setLogWs] = useState<WebSocket | null>(null);
+
+  // Panel order state
+  const [panelOrder, setPanelOrder] = useState<PanelId[]>(loadPanelOrder);
+  const [dragState, setDragState] = useState<{ draggedIndex: number | null; overIndex: number | null }>({
+    draggedIndex: null,
+    overIndex: null,
+  });
+
+  // Persist order changes
+  useEffect(() => {
+    savePanelOrder(panelOrder);
+  }, [panelOrder]);
+
+  // Drag handlers
+  const handleDragStart = useCallback((e: React.DragEvent, index: number) => {
+    setDragState({ draggedIndex: index, overIndex: null });
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', String(index));
+    // Make drag image semi-transparent
+    if (e.currentTarget instanceof HTMLElement) {
+      e.dataTransfer.setDragImage(e.currentTarget, 0, 0);
+    }
+  }, []);
+
+  const handleDragOver = useCallback((e: React.DragEvent, index: number) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    setDragState(prev => {
+      if (prev.overIndex === index) return prev;
+      return { ...prev, overIndex: index };
+    });
+  }, []);
+
+  const handleDrop = useCallback((e: React.DragEvent, index: number) => {
+    e.preventDefault();
+    setDragState(prev => {
+      if (prev.draggedIndex === null || prev.draggedIndex === index) {
+        return { draggedIndex: null, overIndex: null };
+      }
+      const from = prev.draggedIndex;
+      setPanelOrder(current => {
+        const next = [...current];
+        const [moved] = next.splice(from, 1);
+        next.splice(index, 0, moved);
+        return next;
+      });
+      return { draggedIndex: null, overIndex: null };
+    });
+  }, []);
+
+  const handleDragEnd = useCallback(() => {
+    setDragState({ draggedIndex: null, overIndex: null });
+  }, []);
+
+  const handleResetLayout = useCallback(() => {
+    setPanelOrder([...DEFAULT_PANEL_ORDER]);
+  }, []);
 
   // 设备切换时重新加载数据
   useEffect(() => {
@@ -59,7 +255,6 @@ export default function Dashboard() {
           ]);
           
           // 解析远程统计数据为统一格式
-          // statsData 已经是结构化对象：{ cpu: {load, cores}, memory: {used,total,free}, disk: [{name,used,total,usePercent}], gpus: [{index,name,util,memUsed,memTotal,temp}] }
           const remoteStats: MonitorStats & { gpus?: { index: number; name: string; util: number; memUsed: number; memTotal: number; temp: number }[] } = {
             cpu: { load: 0, cores: [] },
             memory: { used: 0, total: 1, free: 0 },
@@ -190,6 +385,339 @@ export default function Dashboard() {
     return 'text-blue-400';
   };
 
+  // ─── Render individual panels ──────────────────────────────────────────
+
+  const renderPanel = (panelId: PanelId) => {
+    switch (panelId) {
+      // ── Stats Cards ────────────────────────────────────────────────
+      case 'stats-cards':
+        return (
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            {/* CPU */}
+            <div className="glass rounded-xl p-4">
+              <div className="flex items-center justify-between mb-2">
+                <Cpu className="w-5 h-5 text-accent-500" />
+                <span className="text-xs text-dark-400">CPU</span>
+              </div>
+              <div className="text-2xl font-bold">
+                {formatPercent(stats?.cpu?.load)}%
+              </div>
+              <div className="mt-2 h-1 bg-dark-800 rounded-full overflow-hidden">
+                <div 
+                  className={`h-full transition-all duration-500 ${
+                    (stats?.cpu?.load ?? 0) > 80 ? 'bg-red-500' : 
+                    (stats?.cpu?.load ?? 0) > 50 ? 'bg-yellow-500' : 
+                    'bg-gradient-to-r from-accent-500 to-accent-400'
+                  }`}
+                  style={{ width: `${stats?.cpu?.load ?? 0}%` }}
+                />
+              </div>
+            </div>
+
+            {/* Memory */}
+            <div className="glass rounded-xl p-4">
+              <div className="flex items-center justify-between mb-2">
+                <Activity className="w-5 h-5 text-purple-500" />
+                <span className="text-xs text-dark-400">内存</span>
+              </div>
+              <div className="text-2xl font-bold">
+                {formatPercent(stats?.memory ? (stats.memory.used / (stats.memory.total || 1)) * 100 : null)}%
+              </div>
+              <div className="mt-2 h-1 bg-dark-800 rounded-full overflow-hidden">
+                <div 
+                  className={`h-full transition-all duration-500 ${
+                    (stats?.memory ? (stats.memory.used / (stats.memory.total || 1)) * 100 : 0) > 80 ? 'bg-red-500' : 
+                    (stats?.memory ? (stats.memory.used / (stats.memory.total || 1)) * 100 : 0) > 50 ? 'bg-yellow-500' : 
+                    'bg-gradient-to-r from-purple-500 to-purple-400'
+                  }`}
+                  style={{ width: `${stats?.memory ? (stats.memory.used / (stats.memory.total || 1)) * 100 : 0}%` }}
+                />
+              </div>
+            </div>
+
+            {/* Disk */}
+            <div className="glass rounded-xl p-4">
+              <div className="flex items-center justify-between mb-2">
+                <HardDrive className="w-5 h-5 text-orange-500" />
+                <span className="text-xs text-dark-400">磁盘</span>
+              </div>
+              <div className="text-2xl font-bold">
+                {(() => {
+                  const pcts = stats?.disk?.map(d => d.usePercent) || [];
+                  return pcts.length > 0
+                    ? (pcts.reduce((a, b) => a + b, 0) / pcts.length).toFixed(1)
+                    : 0;
+                })()}%
+              </div>
+              <div className="text-xs text-dark-500 mt-0.5">
+                {stats && stats.disk.length > 0
+                  ? stats.disk.map(d => `${d.name} ${d.usePercent}%`).join(' / ')
+                  : '无数据'}
+              </div>
+              <div className="mt-2 h-1 bg-dark-800 rounded-full overflow-hidden">
+                <div
+                  className={`h-full transition-all duration-500 ${
+                    (() => { const p=stats?.disk?.map(d=>d.usePercent)||[]; return p.length>0?p.reduce((a,b)=>a+b,0)/p.length:0; })() > 90 ? 'bg-red-500' :
+                    (() => { const p=stats?.disk?.map(d=>d.usePercent)||[]; return p.length>0?p.reduce((a,b)=>a+b,0)/p.length:0; })() > 70 ? 'bg-yellow-500' :
+                    'bg-gradient-to-r from-orange-500 to-orange-400'
+                  }`}
+                  style={{ width: `${(() => { const p=stats?.disk?.map(d=>d.usePercent)||[]; return p.length>0?p.reduce((a,b)=>a+b,0)/p.length:0; })()}%` }}
+                />
+              </div>
+              {stats?.disk && stats.disk.length > 0 ? (() => {
+                // macOS APFS 卷共享同一个物理磁盘，total 值相同，需要去重
+                const uniqueTotals = [...new Set(stats.disk.map(d => d.total))];
+                const totalAll = uniqueTotals.length === 1 
+                  ? uniqueTotals[0]  // APFS 单物理磁盘
+                  : stats.disk.reduce((s, d) => s + (d.total || 0), 0);  // 多物理磁盘
+                const totalUsed = uniqueTotals.length === 1
+                  ? stats.disk.reduce((s, d) => s + (d.used || 0), 0)  // APFS：累加所有卷的使用量
+                  : stats.disk.reduce((s, d) => s + (d.used || 0), 0);  // 多磁盘
+                const totalPct = totalAll > 0 ? (totalUsed / totalAll) * 100 : 0;
+                return (
+                  <>
+                    <div className="text-2xl font-bold">{formatBytes(totalAll)}</div>
+                    <div className="text-xs text-dark-400 mt-1">
+                      已用 {formatBytes(totalUsed)} ({totalPct.toFixed(1)}%) · {stats.disk.length} 个分区
+                    </div>
+                    <div className="mt-2 h-1.5 bg-dark-800 rounded-full overflow-hidden">
+                      <div
+                        className={`h-full transition-all duration-500 ${
+                          totalPct > 90 ? 'bg-red-500' :
+                          totalPct > 70 ? 'bg-yellow-500' :
+                          'bg-gradient-to-r from-orange-500 to-orange-400'
+                        }`}
+                        style={{ width: `${Math.min(totalPct, 100)}%` }}
+                      />
+                    </div>
+                  </>
+                );
+              })() : (
+                <div className="text-2xl font-bold">-</div>
+              )}
+            </div>
+
+            {/* Network */}
+            <div className="glass rounded-xl p-4">
+              <div className="flex items-center justify-between mb-2">
+                <Network className="w-5 h-5 text-green-500" />
+                <span className="text-xs text-dark-400">网络</span>
+              </div>
+              <div className="text-2xl font-bold">
+                {stats?.network?.[0] 
+                  ? formatBytes(stats.network[0].rx + stats.network[0].tx) + '/s'
+                  : isRemote ? 'N/A' : '0 B/s'}
+              </div>
+              {!isRemote && (
+                <div className="mt-2 text-xs text-dark-500">
+                  ↑ {stats?.network?.[0] ? formatBytes(stats.network[0].tx) + '/s' : '0 B/s'}
+                </div>
+              )}
+            </div>
+          </div>
+        );
+
+      // ── GPU Cards ───────────────────────────────────────────────────
+      case 'gpu-cards':
+        if (!stats?.gpus || stats.gpus.length === 0) return null;
+        return (
+          <div className="glass rounded-xl p-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {stats.gpus.map((gpu) => (
+                <div key={gpu.index} className="bg-dark-900/50 rounded-lg p-4 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div className="font-medium text-sm truncate flex-1">{gpu.name}</div>
+                    <span className={`text-xs font-medium ml-2 ${
+                      gpu.temp > 80 ? 'text-red-400' : gpu.temp > 60 ? 'text-yellow-400' : 'text-emerald-400'
+                    }`}>
+                      {gpu.temp}°C
+                    </span>
+                  </div>
+
+                  {/* GPU Util */}
+                  <div>
+                    <div className="flex justify-between text-xs text-dark-400 mb-1">
+                      <span>GPU 利用率</span>
+                      <span>{gpu.util}%</span>
+                    </div>
+                    <div className="h-2 bg-dark-800 rounded-full overflow-hidden">
+                      <div
+                        className={`h-full transition-all duration-500 ${
+                          gpu.util > 90 ? 'bg-red-500' : gpu.util > 70 ? 'bg-yellow-500' : 'bg-emerald-500'
+                        }`}
+                        style={{ width: `${gpu.util}%` }}
+                      />
+                    </div>
+                  </div>
+
+                  {/* GPU Memory */}
+                  <div>
+                    <div className="flex justify-between text-xs text-dark-400 mb-1">
+                      <span>显存</span>
+                      <span>{gpu.memUsed} / {gpu.memTotal} MB</span>
+                    </div>
+                    <div className="h-2 bg-dark-800 rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-gradient-to-r from-cyan-500 to-cyan-400 transition-all duration-500"
+                        style={{ width: `${Math.min((gpu.memUsed / gpu.memTotal) * 100, 100)}%` }}
+                      />
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+
+      // ── CPU & Memory Chart ─────────────────────────────────────────
+      case 'cpu-memory-chart':
+        return (
+          <div className="glass rounded-xl p-4">
+            <div className="h-64">
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={history}>
+                  <defs>
+                    <linearGradient id="cpuGradient" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#0ea5e9" stopOpacity={0.3}/>
+                      <stop offset="95%" stopColor="#0ea5e9" stopOpacity={0}/>
+                    </linearGradient>
+                    <linearGradient id="memGradient" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#a855f7" stopOpacity={0.3}/>
+                      <stop offset="95%" stopColor="#a855f7" stopOpacity={0}/>
+                    </linearGradient>
+                  </defs>
+                  <XAxis dataKey="timestamp" hide />
+                  <YAxis domain={[0, 100]} tickFormatter={(v) => `${v}%`} stroke="#5c5c66" fontSize={12} />
+                  <Tooltip 
+                    contentStyle={{ background: '#1e1e26', border: '1px solid #32323a', borderRadius: '8px' }}
+                    labelFormatter={(v) => new Date(v).toLocaleTimeString()}
+                    formatter={(v: number) => [`${v.toFixed(1)}%`]}
+                  />
+                  <Area type="monotone" dataKey="cpu" stroke="#0ea5e9" fill="url(#cpuGradient)" strokeWidth={2} name="CPU" />
+                  <Area type="monotone" dataKey="memory" stroke="#a855f7" fill="url(#memGradient)" strokeWidth={2} name="内存" />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        );
+
+      // ── Network Chart ──────────────────────────────────────────────
+      case 'network-chart':
+        return (
+          <div className="glass rounded-xl p-4">
+            <div className="h-64">
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={history}>
+                  <XAxis dataKey="timestamp" hide />
+                  <YAxis tickFormatter={(v) => formatBytes(v)} stroke="#5c5c66" fontSize={12} />
+                  <Tooltip 
+                    contentStyle={{ background: '#1e1e26', border: '1px solid #32323a', borderRadius: '8px' }}
+                    labelFormatter={(v) => new Date(v).toLocaleTimeString()}
+                    formatter={(v: number) => [formatBytes(v) + '/s']}
+                  />
+                  <Line type="monotone" dataKey="network" stroke="#22c55e" strokeWidth={2} dot={false} name="流量" />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        );
+
+      // ── Recent Logs ────────────────────────────────────────────────
+      case 'recent-logs':
+        return (
+          <div className="glass rounded-xl p-4">
+            <div className="space-y-2 max-h-64 overflow-y-auto">
+              {recentLogs.length === 0 ? (
+                <div className="text-center py-8 text-dark-500">
+                  暂无日志数据
+                </div>
+              ) : (
+                recentLogs.slice(0, 10).map((log) => (
+                  <div 
+                    key={log.id}
+                    className="flex items-start gap-3 p-2 rounded-lg bg-dark-900/50 hover:bg-dark-800/50 transition-colors font-mono text-sm"
+                  >
+                    <span className="text-dark-500 text-xs whitespace-nowrap">
+                      {new Date(log.timestamp).toLocaleTimeString()}
+                    </span>
+                    <span className={`text-xs font-semibold ${getLevelColor(log.level)}`}>
+                      {log.level}
+                    </span>
+                    <span className="text-dark-300 flex-1 truncate">
+                      {log.message}
+                    </span>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        );
+
+      // ── Quick Stats ────────────────────────────────────────────────
+      case 'quick-stats':
+        return (
+          <div className="grid md:grid-cols-3 gap-4">
+            <div className="glass rounded-xl p-4 flex items-center gap-4">
+              <div className="p-3 rounded-lg bg-red-500/20">
+                <AlertTriangle className="w-6 h-6 text-red-500" />
+              </div>
+              <div>
+                <div className="text-2xl font-bold">
+                  {recentLogs.filter(l => l.level === 'ERROR').length}
+                </div>
+                <div className="text-sm text-dark-400">错误日志</div>
+              </div>
+            </div>
+            
+            <div className="glass rounded-xl p-4 flex items-center gap-4">
+              <div className="p-3 rounded-lg bg-yellow-500/20">
+                <AlertTriangle className="w-6 h-6 text-yellow-500" />
+              </div>
+              <div>
+                <div className="text-2xl font-bold">
+                  {recentLogs.filter(l => l.level === 'WARN' || l.level === 'WARNING').length}
+                </div>
+                <div className="text-sm text-dark-400">警告日志</div>
+              </div>
+            </div>
+            
+            <div className="glass rounded-xl p-4 flex items-center gap-4">
+              <div className="p-3 rounded-lg bg-green-500/20">
+                <CheckCircle className="w-6 h-6 text-green-500" />
+              </div>
+              <div>
+                <div className="text-2xl font-bold">
+                  {recentLogs.filter(l => l.level === 'INFO').length}
+                </div>
+                <div className="text-sm text-dark-400">正常日志</div>
+              </div>
+            </div>
+          </div>
+        );
+
+      default:
+        return null;
+    }
+  };
+
+  // Panel title/icon metadata
+  const panelMeta: Record<PanelId, { title: string; icon: React.ReactNode }> = {
+    'stats-cards': { title: '系统资源', icon: <Monitor className="w-5 h-5 text-accent-500" /> },
+    'gpu-cards': { title: 'GPU 监控', icon: <Cpu className="w-5 h-5 text-emerald-500" /> },
+    'cpu-memory-chart': { title: 'CPU & 内存使用率', icon: <Zap className="w-5 h-5 text-accent-500" /> },
+    'network-chart': { title: '网络流量', icon: <Network className="w-5 h-5 text-green-500" /> },
+    'recent-logs': { title: '最近日志', icon: <Clock className="w-5 h-5 text-blue-500" /> },
+    'quick-stats': { title: '日志统计', icon: <Activity className="w-5 h-5 text-purple-500" /> },
+  };
+
+  // Filter out GPU panel if no GPUs
+  const visiblePanels = panelOrder.filter(id => {
+    if (id === 'gpu-cards') {
+      return stats?.gpus && stats.gpus.length > 0;
+    }
+    return true;
+  });
+
   return (
     <div className="space-y-6 animate-fade-in">
       {/* Header */}
@@ -201,330 +729,51 @@ export default function Dashboard() {
           </p>
         </div>
         
-        {/* 状态指示 */}
-        {loading ? (
-          <span className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-yellow-500/20 text-yellow-400 text-sm">
-            <Loader className="w-3 h-3 animate-spin" />
-            加载中
-          </span>
-        ) : (
-          <span className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-green-500/20 text-green-400 text-sm">
-            <span className="w-2 h-2 rounded-full bg-green-400 animate-pulse" />
-            {isRemote ? '远程已连接' : '系统正常'}
-          </span>
-        )}
-      </div>
+        <div className="flex items-center gap-3">
+          {/* Reset layout button */}
+          <button
+            onClick={handleResetLayout}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm text-dark-400 hover:text-dark-200 hover:bg-dark-800/50 transition-colors"
+            title="重置布局"
+          >
+            <RotateCcw className="w-4 h-4" />
+            重置布局
+          </button>
 
-      {/* Stats Cards */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        {/* CPU */}
-        <div className="glass rounded-xl p-4">
-          <div className="flex items-center justify-between mb-2">
-            <Cpu className="w-5 h-5 text-accent-500" />
-            <span className="text-xs text-dark-400">CPU</span>
-          </div>
-          <div className="text-2xl font-bold">
-            {formatPercent(stats?.cpu?.load)}%
-          </div>
-          <div className="mt-2 h-1 bg-dark-800 rounded-full overflow-hidden">
-            <div 
-              className={`h-full transition-all duration-500 ${
-                (stats?.cpu?.load ?? 0) > 80 ? 'bg-red-500' : 
-                (stats?.cpu?.load ?? 0) > 50 ? 'bg-yellow-500' : 
-                'bg-gradient-to-r from-accent-500 to-accent-400'
-              }`}
-              style={{ width: `${stats?.cpu?.load ?? 0}%` }}
-            />
-          </div>
-        </div>
-
-        {/* Memory */}
-        <div className="glass rounded-xl p-4">
-          <div className="flex items-center justify-between mb-2">
-            <Activity className="w-5 h-5 text-purple-500" />
-            <span className="text-xs text-dark-400">内存</span>
-          </div>
-          <div className="text-2xl font-bold">
-            {formatPercent(stats?.memory ? (stats.memory.used / (stats.memory.total || 1)) * 100 : null)}%
-          </div>
-          <div className="mt-2 h-1 bg-dark-800 rounded-full overflow-hidden">
-            <div 
-              className={`h-full transition-all duration-500 ${
-                (stats?.memory ? (stats.memory.used / (stats.memory.total || 1)) * 100 : 0) > 80 ? 'bg-red-500' : 
-                (stats?.memory ? (stats.memory.used / (stats.memory.total || 1)) * 100 : 0) > 50 ? 'bg-yellow-500' : 
-                'bg-gradient-to-r from-purple-500 to-purple-400'
-              }`}
-              style={{ width: `${stats?.memory ? (stats.memory.used / (stats.memory.total || 1)) * 100 : 0}%` }}
-            />
-          </div>
-        </div>
-
-        {/* Disk */}
-        <div className="glass rounded-xl p-4">
-          <div className="flex items-center justify-between mb-2">
-            <HardDrive className="w-5 h-5 text-orange-500" />
-            <span className="text-xs text-dark-400">磁盘</span>
-          </div>
-          <div className="text-2xl font-bold">
-            {(() => {
-              const pcts = stats?.disk?.map(d => d.usePercent) || [];
-              return pcts.length > 0
-                ? (pcts.reduce((a, b) => a + b, 0) / pcts.length).toFixed(1)
-                : 0;
-            })()}%
-          </div>
-          <div className="text-xs text-dark-500 mt-0.5">
-            {stats?.disk?.length > 0
-              ? stats.disk.map(d => `${d.name} ${d.usePercent}%`).join(' / ')
-              : '无数据'}
-          </div>
-          <div className="mt-2 h-1 bg-dark-800 rounded-full overflow-hidden">
-            <div
-              className={`h-full transition-all duration-500 ${
-                (() => { const p=stats?.disk?.map(d=>d.usePercent)||[]; return p.length>0?p.reduce((a,b)=>a+b,0)/p.length:0; })() > 90 ? 'bg-red-500' :
-                (() => { const p=stats?.disk?.map(d=>d.usePercent)||[]; return p.length>0?p.reduce((a,b)=>a+b,0)/p.length:0; })() > 70 ? 'bg-yellow-500' :
-                'bg-gradient-to-r from-orange-500 to-orange-400'
-              }`}
-              style={{ width: `${(() => { const p=stats?.disk?.map(d=>d.usePercent)||[]; return p.length>0?p.reduce((a,b)=>a+b,0)/p.length:0; })()}%` }}
-            />
-          </div>
-          {stats?.disk && stats.disk.length > 0 ? (() => {
-            // macOS APFS 卷共享同一个物理磁盘，total 值相同，需要去重
-            const uniqueTotals = [...new Set(stats.disk.map(d => d.total))];
-            const totalAll = uniqueTotals.length === 1 
-              ? uniqueTotals[0]  // APFS 单物理磁盘
-              : stats.disk.reduce((s, d) => s + (d.total || 0), 0);  // 多物理磁盘
-            const totalUsed = uniqueTotals.length === 1
-              ? stats.disk.reduce((s, d) => s + (d.used || 0), 0)  // APFS：累加所有卷的使用量
-              : stats.disk.reduce((s, d) => s + (d.used || 0), 0);  // 多磁盘
-            const totalPct = totalAll > 0 ? (totalUsed / totalAll) * 100 : 0;
-            return (
-              <>
-                <div className="text-2xl font-bold">{formatBytes(totalAll)}</div>
-                <div className="text-xs text-dark-400 mt-1">
-                  已用 {formatBytes(totalUsed)} ({totalPct.toFixed(1)}%) · {stats.disk.length} 个分区
-                </div>
-                <div className="mt-2 h-1.5 bg-dark-800 rounded-full overflow-hidden">
-                  <div
-                    className={`h-full transition-all duration-500 ${
-                      totalPct > 90 ? 'bg-red-500' :
-                      totalPct > 70 ? 'bg-yellow-500' :
-                      'bg-gradient-to-r from-orange-500 to-orange-400'
-                    }`}
-                    style={{ width: `${Math.min(totalPct, 100)}%` }}
-                  />
-                </div>
-              </>
-            );
-          })() : (
-            <div className="text-2xl font-bold">-</div>
-          )}
-        </div>
-
-        {/* Network */}
-        <div className="glass rounded-xl p-4">
-          <div className="flex items-center justify-between mb-2">
-            <Network className="w-5 h-5 text-green-500" />
-            <span className="text-xs text-dark-400">网络</span>
-          </div>
-          <div className="text-2xl font-bold">
-            {stats?.network?.[0] 
-              ? formatBytes(stats.network[0].rx + stats.network[0].tx) + '/s'
-              : isRemote ? 'N/A' : '0 B/s'}
-          </div>
-          {!isRemote && (
-            <div className="mt-2 text-xs text-dark-500">
-              ↑ {stats?.network?.[0] ? formatBytes(stats.network[0].tx) + '/s' : '0 B/s'}
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* GPU Cards */}
-      {stats?.gpus && stats.gpus.length > 0 && (
-        <div className="glass rounded-xl p-4">
-          <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
-            <Cpu className="w-5 h-5 text-emerald-500" />
-            GPU 监控
-          </h3>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {stats.gpus.map((gpu) => (
-              <div key={gpu.index} className="bg-dark-900/50 rounded-lg p-4 space-y-3">
-                <div className="flex items-center justify-between">
-                  <div className="font-medium text-sm truncate flex-1">{gpu.name}</div>
-                  <span className={`text-xs font-medium ml-2 ${
-                    gpu.temp > 80 ? 'text-red-400' : gpu.temp > 60 ? 'text-yellow-400' : 'text-emerald-400'
-                  }`}>
-                    {gpu.temp}°C
-                  </span>
-                </div>
-
-                {/* GPU Util */}
-                <div>
-                  <div className="flex justify-between text-xs text-dark-400 mb-1">
-                    <span>GPU 利用率</span>
-                    <span>{gpu.util}%</span>
-                  </div>
-                  <div className="h-2 bg-dark-800 rounded-full overflow-hidden">
-                    <div
-                      className={`h-full transition-all duration-500 ${
-                        gpu.util > 90 ? 'bg-red-500' : gpu.util > 70 ? 'bg-yellow-500' : 'bg-emerald-500'
-                      }`}
-                      style={{ width: `${gpu.util}%` }}
-                    />
-                  </div>
-                </div>
-
-                {/* GPU Memory */}
-                <div>
-                  <div className="flex justify-between text-xs text-dark-400 mb-1">
-                    <span>显存</span>
-                    <span>{gpu.memUsed} / {gpu.memTotal} MB</span>
-                  </div>
-                  <div className="h-2 bg-dark-800 rounded-full overflow-hidden">
-                    <div
-                      className="h-full bg-gradient-to-r from-cyan-500 to-cyan-400 transition-all duration-500"
-                      style={{ width: `${Math.min((gpu.memUsed / gpu.memTotal) * 100, 100)}%` }}
-                    />
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Charts */}
-      <div className="grid md:grid-cols-2 gap-6">
-        {/* CPU & Memory Chart */}
-        <div className="glass rounded-xl p-4">
-          <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
-            <Zap className="w-5 h-5 text-accent-500" />
-            CPU & 内存使用率
-          </h3>
-          <div className="h-64">
-            <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={history}>
-                <defs>
-                  <linearGradient id="cpuGradient" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#0ea5e9" stopOpacity={0.3}/>
-                    <stop offset="95%" stopColor="#0ea5e9" stopOpacity={0}/>
-                  </linearGradient>
-                  <linearGradient id="memGradient" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#a855f7" stopOpacity={0.3}/>
-                    <stop offset="95%" stopColor="#a855f7" stopOpacity={0}/>
-                  </linearGradient>
-                </defs>
-                <XAxis dataKey="timestamp" hide />
-                <YAxis domain={[0, 100]} tickFormatter={(v) => `${v}%`} stroke="#5c5c66" fontSize={12} />
-                <Tooltip 
-                  contentStyle={{ background: '#1e1e26', border: '1px solid #32323a', borderRadius: '8px' }}
-                  labelFormatter={(v) => new Date(v).toLocaleTimeString()}
-                  formatter={(v: number) => [`${v.toFixed(1)}%`]}
-                />
-                <Area type="monotone" dataKey="cpu" stroke="#0ea5e9" fill="url(#cpuGradient)" strokeWidth={2} name="CPU" />
-                <Area type="monotone" dataKey="memory" stroke="#a855f7" fill="url(#memGradient)" strokeWidth={2} name="内存" />
-              </AreaChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
-
-        {/* Network Chart */}
-        <div className="glass rounded-xl p-4">
-          <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
-            <Network className="w-5 h-5 text-green-500" />
-            网络流量
-          </h3>
-          <div className="h-64">
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={history}>
-                <XAxis dataKey="timestamp" hide />
-                <YAxis tickFormatter={(v) => formatBytes(v)} stroke="#5c5c66" fontSize={12} />
-                <Tooltip 
-                  contentStyle={{ background: '#1e1e26', border: '1px solid #32323a', borderRadius: '8px' }}
-                  labelFormatter={(v) => new Date(v).toLocaleTimeString()}
-                  formatter={(v: number) => [formatBytes(v) + '/s']}
-                />
-                <Line type="monotone" dataKey="network" stroke="#22c55e" strokeWidth={2} dot={false} name="流量" />
-              </LineChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
-      </div>
-
-      {/* Recent Logs */}
-      <div className="glass rounded-xl p-4">
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="text-lg font-semibold flex items-center gap-2">
-            <Clock className="w-5 h-5 text-blue-500" />
-            最近日志
-          </h3>
-          <a href="/logs" className="text-sm text-accent-500 hover:text-accent-400">查看全部 →</a>
-        </div>
-        
-        <div className="space-y-2 max-h-64 overflow-y-auto">
-          {recentLogs.length === 0 ? (
-            <div className="text-center py-8 text-dark-500">
-              暂无日志数据
-            </div>
+          {/* 状态指示 */}
+          {loading ? (
+            <span className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-yellow-500/20 text-yellow-400 text-sm">
+              <Loader className="w-3 h-3 animate-spin" />
+              加载中
+            </span>
           ) : (
-            recentLogs.slice(0, 10).map((log) => (
-              <div 
-                key={log.id}
-                className="flex items-start gap-3 p-2 rounded-lg bg-dark-900/50 hover:bg-dark-800/50 transition-colors font-mono text-sm"
-              >
-                <span className="text-dark-500 text-xs whitespace-nowrap">
-                  {new Date(log.timestamp).toLocaleTimeString()}
-                </span>
-                <span className={`text-xs font-semibold ${getLevelColor(log.level)}`}>
-                  {log.level}
-                </span>
-                <span className="text-dark-300 flex-1 truncate">
-                  {log.message}
-                </span>
-              </div>
-            ))
+            <span className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-green-500/20 text-green-400 text-sm">
+              <span className="w-2 h-2 rounded-full bg-green-400 animate-pulse" />
+              {isRemote ? '远程已连接' : '系统正常'}
+            </span>
           )}
         </div>
       </div>
 
-      {/* Quick Stats */}
-      <div className="grid md:grid-cols-3 gap-4">
-        <div className="glass rounded-xl p-4 flex items-center gap-4">
-          <div className="p-3 rounded-lg bg-red-500/20">
-            <AlertTriangle className="w-6 h-6 text-red-500" />
-          </div>
-          <div>
-            <div className="text-2xl font-bold">
-              {recentLogs.filter(l => l.level === 'ERROR').length}
-            </div>
-            <div className="text-sm text-dark-400">错误日志</div>
-          </div>
-        </div>
-        
-        <div className="glass rounded-xl p-4 flex items-center gap-4">
-          <div className="p-3 rounded-lg bg-yellow-500/20">
-            <AlertTriangle className="w-6 h-6 text-yellow-500" />
-          </div>
-          <div>
-            <div className="text-2xl font-bold">
-              {recentLogs.filter(l => l.level === 'WARN' || l.level === 'WARNING').length}
-            </div>
-            <div className="text-sm text-dark-400">警告日志</div>
-          </div>
-        </div>
-        
-        <div className="glass rounded-xl p-4 flex items-center gap-4">
-          <div className="p-3 rounded-lg bg-green-500/20">
-            <CheckCircle className="w-6 h-6 text-green-500" />
-          </div>
-          <div>
-            <div className="text-2xl font-bold">
-              {recentLogs.filter(l => l.level === 'INFO').length}
-            </div>
-            <div className="text-sm text-dark-400">正常日志</div>
-          </div>
-        </div>
+      {/* Draggable Panels */}
+      <div className="space-y-6">
+        {visiblePanels.map((panelId, index) => (
+          <DraggablePanel
+            key={panelId}
+            panelId={panelId}
+            index={index}
+            length={visiblePanels.length}
+            dragState={dragState}
+            onDragStart={handleDragStart}
+            onDragOver={handleDragOver}
+            onDrop={handleDrop}
+            onDragEnd={handleDragEnd}
+            title={panelMeta[panelId].title}
+            titleIcon={panelMeta[panelId].icon}
+          >
+            {renderPanel(panelId)}
+          </DraggablePanel>
+        ))}
       </div>
     </div>
   );

@@ -14,6 +14,7 @@ import GPU from './pages/GPU';
 import { RemoteProvider } from './contexts/RemoteContext';
 import { DeviceProvider } from './contexts/DeviceContext';
 import { ToastProvider } from './contexts/ToastContext';
+import { AnalysisProvider } from './contexts/AnalysisContext';
 
 function App() {
   return (
@@ -21,22 +22,24 @@ function App() {
       <ToastProvider>
         <DeviceProvider>
           <RemoteProvider>
-            <Routes>
-              <Route path="/" element={<Layout />}>
-                <Route index element={<Navigate to="/monitor" replace />} />
-                <Route path="dashboard" element={<Dashboard />} />
-                <Route path="logs" element={<Logs />} />
-                <Route path="remote" element={<Remote />} />
-                <Route path="docker" element={<Docker />} />
-                <Route path="analytics" element={<Analytics />} />
-                <Route path="analysis-history" element={<AnalysisHistory />} />
-                <Route path="assistant" element={<Assistant />} />
-                <Route path="skills" element={<Skills />} />
-                <Route path="monitor" element={<Monitor />} />
-                <Route path="gpu" element={<GPU />} />
-                <Route path="settings" element={<Settings />} />
-              </Route>
-            </Routes>
+            <AnalysisProvider>
+              <Routes>
+                <Route path="/" element={<Layout />}>
+                  <Route index element={<Navigate to="/monitor" replace />} />
+                  <Route path="dashboard" element={<Dashboard />} />
+                  <Route path="logs" element={<Logs />} />
+                  <Route path="remote" element={<Remote />} />
+                  <Route path="docker" element={<Docker />} />
+                  <Route path="analytics" element={<Analytics />} />
+                  <Route path="analysis-history" element={<AnalysisHistory />} />
+                  <Route path="assistant" element={<Assistant />} />
+                  <Route path="skills" element={<Skills />} />
+                  <Route path="monitor" element={<Monitor />} />
+                  <Route path="gpu" element={<GPU />} />
+                  <Route path="settings" element={<Settings />} />
+                </Route>
+              </Routes>
+            </AnalysisProvider>
           </RemoteProvider>
         </DeviceProvider>
       </ToastProvider>

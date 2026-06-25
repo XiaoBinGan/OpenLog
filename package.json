@@ -4,11 +4,13 @@
   "description": "智能日志分析与监控系统 - AI-Powered Log Analysis & Monitoring",
   "type": "module",
   "scripts": {
+    "postinstall": "npm rebuild better-sqlite3",
     "init-db": "node scripts/init-db.js",
     "dev": "npm run init-db && concurrently \"npm run server\" \"npm run client\"",
     "client": "npm run dev --prefix client",
     "server": "npm run init-db && node server/index.js",
     "build": "npm run build --prefix client",
+    "test": "vitest run",
     "start": "npm run init-db && NODE_ENV=production node server/index.js"
   },
   "dependencies": {
@@ -27,6 +29,8 @@
     "ws": "^8.16.0"
   },
   "devDependencies": {
-    "concurrently": "^8.2.2"
+    "@vitest/coverage-v8": "^4.1.9",
+    "concurrently": "^8.2.2",
+    "vitest": "^3.1.1"
   }
 }

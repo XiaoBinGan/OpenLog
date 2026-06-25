@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { 
   Cpu, 
   HardDrive, 
@@ -6,7 +6,8 @@ import {
   Server, 
   RefreshCw,
   MemoryStick,
-  AlertCircle
+  AlertCircle,
+  RotateCcw
 } from 'lucide-react';
 import { 
   LineChart, 
@@ -21,12 +22,205 @@ import {
 import { useDevice } from '../contexts/DeviceContext';
 import type { MonitorStats, MonitorHistory, RemoteServer } from '../types';
 
+// ─── Panel drag-and-drop system ───────────────────────────────────────────
+
+type PanelId =
+  | 'cpu-section'
+  | 'gpu-section'
+  | 'memory-section'
+  | 'disk-section'
+  | 'network-section'
+  | 'processes-section';
+
+const DEFAULT_PANEL_ORDER: PanelId[] = [
+  'cpu-section',
+  'gpu-section',
+  'memory-section',
+  'disk-section',
+  'network-section',
+  'processes-section',
+];
+
+const PANEL_STORAGE_KEY = 'openlog-monitor-panel-order';
+
+function loadPanelOrder(): PanelId[] {
+  try {
+    const raw = localStorage.getItem(PANEL_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length === DEFAULT_PANEL_ORDER.length) {
+        const set = new Set(parsed);
+        if (DEFAULT_PANEL_ORDER.every(id => set.has(id))) {
+          return parsed as PanelId[];
+        }
+      }
+    }
+  } catch { /* ignore */ }
+  return [...DEFAULT_PANEL_ORDER];
+}
+
+function savePanelOrder(order: PanelId[]) {
+  localStorage.setItem(PANEL_STORAGE_KEY, JSON.stringify(order));
+}
+
+// ─── Drag handle icon (6-dot grip) ───────────────────────────────────────
+
+function GripIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      width="16"
+      height="16"
+      viewBox="0 0 16 16"
+      fill="currentColor"
+      aria-hidden="true"
+    >
+      <circle cx="4" cy="3" r="1.2" />
+      <circle cx="8" cy="3" r="1.2" />
+      <circle cx="12" cy="3" r="1.2" />
+      <circle cx="4" cy="8" r="1.2" />
+      <circle cx="8" cy="8" r="1.2" />
+      <circle cx="12" cy="8" r="1.2" />
+      <circle cx="4" cy="13" r="1.2" />
+      <circle cx="8" cy="13" r="1.2" />
+      <circle cx="12" cy="13" r="1.2" />
+    </svg>
+  );
+}
+
+// ─── Draggable panel wrapper ─────────────────────────────────────────────
+
+function DraggablePanel({
+  panelId,
+  index,
+  length,
+  dragState,
+  onDragStart,
+  onDragOver,
+  onDrop,
+  onDragEnd,
+  title,
+  titleIcon,
+  children,
+}: {
+  panelId: PanelId;
+  index: number;
+  length: number;
+  dragState: { draggedIndex: number | null; overIndex: number | null };
+  onDragStart: (e: React.DragEvent, index: number) => void;
+  onDragOver: (e: React.DragEvent, index: number) => void;
+  onDrop: (e: React.DragEvent, index: number) => void;
+  onDragEnd: () => void;
+  title?: string;
+  titleIcon?: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  const isDragging = dragState.draggedIndex === index;
+  const isDragOver = dragState.overIndex === index && dragState.draggedIndex !== index;
+
+  return (
+    <div
+      draggable
+      onDragStart={(e) => onDragStart(e, index)}
+      onDragOver={(e) => onDragOver(e, index)}
+      onDrop={(e) => onDrop(e, index)}
+      onDragEnd={onDragEnd}
+      className={`relative transition-all duration-200 ${
+        isDragging
+          ? 'opacity-40 ring-2 ring-dashed ring-accent-500 rounded-xl'
+          : 'opacity-100'
+      } ${
+        isDragOver ? 'scale-[1.02]' : ''
+      }`}
+    >
+      {/* Drag handle — visible on hover */}
+      {title && (
+        <div className="flex items-center gap-2 mb-2 group/drag">
+          <div
+            className="cursor-grab active:cursor-grabbing p-1 -ml-1 rounded opacity-0 group-hover/drag:opacity-100 transition-opacity text-dark-500 hover:text-dark-300"
+            title="拖拽排序"
+          >
+            <GripIcon />
+          </div>
+          {titleIcon}
+          <h3 className="text-lg font-semibold">{title}</h3>
+        </div>
+      )}
+
+      {/* Drop indicator line */}
+      {isDragOver && !isDragging && (
+        <div className="absolute -top-1 left-0 right-0 h-0.5 bg-accent-500 rounded-full shadow-lg shadow-accent-500/50 z-10" />
+      )}
+
+      {children}
+    </div>
+  );
+}
+
+// ─── Main Monitor component ───────────────────────────────────────────────
+
 export default function Monitor() {
   const { selectedDevice, isRemote } = useDevice();
   const [stats, setStats] = useState<MonitorStats | null>(null);
   const [history, setHistory] = useState<MonitorHistory[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  // Panel order state
+  const [panelOrder, setPanelOrder] = useState<PanelId[]>(loadPanelOrder);
+  const [dragState, setDragState] = useState<{ draggedIndex: number | null; overIndex: number | null }>({
+    draggedIndex: null,
+    overIndex: null,
+  });
+
+  // Persist order changes
+  useEffect(() => {
+    savePanelOrder(panelOrder);
+  }, [panelOrder]);
+
+  // Drag handlers
+  const handleDragStart = useCallback((e: React.DragEvent, index: number) => {
+    setDragState({ draggedIndex: index, overIndex: null });
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', String(index));
+    if (e.currentTarget instanceof HTMLElement) {
+      e.dataTransfer.setDragImage(e.currentTarget, 0, 0);
+    }
+  }, []);
+
+  const handleDragOver = useCallback((e: React.DragEvent, index: number) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    setDragState(prev => {
+      if (prev.overIndex === index) return prev;
+      return { ...prev, overIndex: index };
+    });
+  }, []);
+
+  const handleDrop = useCallback((e: React.DragEvent, index: number) => {
+    e.preventDefault();
+    setDragState(prev => {
+      if (prev.draggedIndex === null || prev.draggedIndex === index) {
+        return { draggedIndex: null, overIndex: null };
+      }
+      const from = prev.draggedIndex;
+      setPanelOrder(current => {
+        const next = [...current];
+        const [moved] = next.splice(from, 1);
+        next.splice(index, 0, moved);
+        return next;
+      });
+      return { draggedIndex: null, overIndex: null };
+    });
+  }, []);
+
+  const handleDragEnd = useCallback(() => {
+    setDragState({ draggedIndex: null, overIndex: null });
+  }, []);
+
+  const handleResetLayout = useCallback(() => {
+    setPanelOrder([...DEFAULT_PANEL_ORDER]);
+  }, []);
 
   useEffect(() => {
     const fetchData = async () => {
@@ -56,7 +250,6 @@ export default function Monitor() {
           const now = Date.now();
           const memPct = data.memory ? (data.memory.used / (data.memory.total || 1)) * 100 : 0;
           const gpuUtil = Array.isArray(data.gpus) && data.gpus.length > 0 ? (data.gpus[0].util ?? 0) : 0;
-          const last = history[history.length - 1];
           setHistory(prev => {
             const next = [...prev, {
               id: Date.now(),
@@ -134,172 +327,153 @@ export default function Monitor() {
     );
   }
 
-  return (
-    <div className="space-y-6 animate-fade-in">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold flex items-center gap-3">
-            <Server className="w-7 h-7 text-accent-500" />
-            系统监控
-          </h1>
-          <p className="text-dark-400">
-            {isRemote ? `远程服务器: ${selectedDevice.name}` : '本地设备实时资源使用情况'}
-          </p>
-        </div>
-        <div className="flex items-center gap-2 text-sm text-dark-400">
-          <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
-          实时更新中
-        </div>
-      </div>
+  // ─── Render individual panels ──────────────────────────────────────────
 
-      {/* CPU Section */}
-      <div className="glass rounded-xl p-4">
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-lg font-semibold flex items-center gap-2">
-            <Cpu className="w-5 h-5 text-accent-500" />
-            CPU 使用率
-          </h2>
-          <span className="text-2xl font-bold text-accent-400">
-            {stats?.cpu?.load?.toFixed(1) || 0}%
-          </span>
-        </div>
-        
-        {/* CPU Cores - only for local */}
-        {!isRemote && stats?.cpu?.cores && stats.cpu.cores.length > 0 && (
-          <div className="grid grid-cols-4 md:grid-cols-8 gap-2 mb-4">
-            {stats.cpu.cores.map((load, idx) => (
-              <div key={idx} className="text-center">
-                <div className="h-16 bg-dark-900 rounded-lg relative overflow-hidden">
-                  <div 
-                    className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-accent-600 to-accent-400 transition-all duration-500"
-                    style={{ height: `${load}%` }}
-                  />
-                </div>
-                <div className="text-xs text-dark-500 mt-1">#{idx + 1}</div>
-                <div className="text-xs font-medium">{load.toFixed(0)}%</div>
-              </div>
-            ))}
-          </div>
-        )}
-        
-        {/* CPU History Chart */}
-        <div className="h-40">
-          <ResponsiveContainer width="100%" height="100%">
-            <AreaChart data={history}>
-              <defs>
-                <linearGradient id="cpuGrad" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="#0ea5e9" stopOpacity={0.3}/>
-                  <stop offset="95%" stopColor="#0ea5e9" stopOpacity={0}/>
-                </linearGradient>
-              </defs>
-              <XAxis dataKey="timestamp" hide />
-              <YAxis domain={[0, 100]} tickFormatter={(v) => `${v}%`} stroke="#5c5c66" fontSize={12} />
-              <Tooltip 
-                contentStyle={{ background: '#1e1e26', border: '1px solid #32323a', borderRadius: '8px' }}
-                labelFormatter={(v) => new Date(v).toLocaleTimeString()}
-                formatter={(v: number) => [`${v.toFixed(1)}%`, 'CPU']}
-              />
-              <Area type="monotone" dataKey="cpu" stroke="#0ea5e9" fill="url(#cpuGrad)" strokeWidth={2} />
-            </AreaChart>
-          </ResponsiveContainer>
-        </div>
-      </div>
-
-      {/* GPU Section */}
-      {stats?.gpus && stats.gpus.length > 0 && (
-        <div className="glass rounded-xl p-4">
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-lg font-semibold flex items-center gap-2">
-              <Cpu className="w-5 h-5 text-emerald-500" />
-              GPU 监控
-            </h2>
-            <span className="text-sm text-dark-400">
-              {stats.gpus.length} 张显卡
-            </span>
-          </div>
-
-          {/* GPU Cards */}
-          <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {stats.gpus.map((gpu) => {
-              const memPct = gpu.memTotal > 0 ? (gpu.memUsed / gpu.memTotal) * 100 : 0;
-              return (
-                <div key={gpu.index} className="bg-dark-900/60 rounded-xl p-4 space-y-4">
-                  {/* GPU Name & Temp */}
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <div className="w-2 h-2 rounded-full bg-emerald-500" />
-                      <span className="font-medium text-sm truncate max-w-[180px]">{gpu.name}</span>
-                    </div>
-                    <span className={`text-sm font-bold ${
-                      gpu.temp > 80 ? 'text-red-400' : gpu.temp > 60 ? 'text-yellow-400' : 'text-emerald-400'
-                    }`}>
-                      {gpu.temp}°C
-                    </span>
-                  </div>
-
-                  {/* GPU Util */}
-                  <div>
-                    <div className="flex justify-between text-xs text-dark-400 mb-1.5">
-                      <span>算力占用</span>
-                      <span className="font-medium text-dark-200">{gpu.util.toFixed(1)}%</span>
-                    </div>
-                    <div className="h-3 bg-dark-800 rounded-full overflow-hidden">
-                      <div
-                        className={`h-full transition-all duration-500 ${
-                          gpu.util > 90 ? 'bg-red-500' : gpu.util > 70 ? 'bg-yellow-500' : 'bg-emerald-500'
-                        }`}
-                        style={{ width: `${gpu.util}%` }}
+  const renderPanel = (panelId: PanelId) => {
+    switch (panelId) {
+      // ── CPU Section ─────────────────────────────────────────────────
+      case 'cpu-section':
+        return (
+          <div className="glass rounded-xl p-4">
+            <div className="flex items-center justify-between mb-4">
+              <span className="text-2xl font-bold text-accent-400">
+                {stats?.cpu?.load?.toFixed(1) || 0}%
+              </span>
+            </div>
+            
+            {/* CPU Cores - only for local */}
+            {!isRemote && stats?.cpu?.cores && stats.cpu.cores.length > 0 && (
+              <div className="grid grid-cols-4 md:grid-cols-8 gap-2 mb-4">
+                {stats.cpu.cores.map((load, idx) => (
+                  <div key={idx} className="text-center">
+                    <div className="h-16 bg-dark-900 rounded-lg relative overflow-hidden">
+                      <div 
+                        className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-accent-600 to-accent-400 transition-all duration-500"
+                        style={{ height: `${load}%` }}
                       />
                     </div>
+                    <div className="text-xs text-dark-500 mt-1">#{idx + 1}</div>
+                    <div className="text-xs font-medium">{load.toFixed(0)}%</div>
                   </div>
+                ))}
+              </div>
+            )}
+            
+            {/* CPU History Chart */}
+            <div className="h-40">
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={history}>
+                  <defs>
+                    <linearGradient id="cpuGrad" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#0ea5e9" stopOpacity={0.3}/>
+                      <stop offset="95%" stopColor="#0ea5e9" stopOpacity={0}/>
+                    </linearGradient>
+                  </defs>
+                  <XAxis dataKey="timestamp" hide />
+                  <YAxis domain={[0, 100]} tickFormatter={(v) => `${v}%`} stroke="#5c5c66" fontSize={12} />
+                  <Tooltip 
+                    contentStyle={{ background: '#1e1e26', border: '1px solid #32323a', borderRadius: '8px' }}
+                    labelFormatter={(v) => new Date(v).toLocaleTimeString()}
+                    formatter={(v: number) => [`${v.toFixed(1)}%`, 'CPU']}
+                  />
+                  <Area type="monotone" dataKey="cpu" stroke="#0ea5e9" fill="url(#cpuGrad)" strokeWidth={2} />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        );
 
-                  {/* GPU Memory */}
-                  <div>
-                    <div className="flex justify-between text-xs text-dark-400 mb-1.5">
-                      <span>显存占用</span>
-                      <span className="font-medium text-dark-200">
-                        {gpu.memUsed.toFixed(0)} / {gpu.memTotal.toFixed(0)} MB
+      // ── GPU Section ─────────────────────────────────────────────────
+      case 'gpu-section':
+        if (!stats?.gpus || stats.gpus.length === 0) return null;
+        return (
+          <div className="glass rounded-xl p-4">
+            <div className="flex items-center justify-between mb-4">
+              <span className="text-sm text-dark-400">
+                {stats.gpus.length} 张显卡
+              </span>
+            </div>
+
+            {/* GPU Cards */}
+            <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {stats.gpus.map((gpu) => {
+                const memPct = gpu.memTotal > 0 ? (gpu.memUsed / gpu.memTotal) * 100 : 0;
+                return (
+                  <div key={gpu.index} className="bg-dark-900/60 rounded-xl p-4 space-y-4">
+                    {/* GPU Name & Temp */}
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <div className="w-2 h-2 rounded-full bg-emerald-500" />
+                        <span className="font-medium text-sm truncate max-w-[180px]">{gpu.name}</span>
+                      </div>
+                      <span className={`text-sm font-bold ${
+                        gpu.temp > 80 ? 'text-red-400' : gpu.temp > 60 ? 'text-yellow-400' : 'text-emerald-400'
+                      }`}>
+                        {gpu.temp}°C
                       </span>
                     </div>
-                    <div className="h-3 bg-dark-800 rounded-full overflow-hidden">
-                      <div
-                        className={`h-full transition-all duration-500 ${
-                          memPct > 90 ? 'bg-red-500' : memPct > 70 ? 'bg-yellow-500' : 'bg-cyan-500'
-                        }`}
-                        style={{ width: `${memPct}%` }}
-                      />
-                    </div>
-                    <div className="flex justify-between mt-1">
-                      <span className="text-xs text-cyan-400">{memPct.toFixed(1)}% 已用</span>
-                      <span className="text-xs text-dark-500">{gpu.memUsed.toFixed(0)} MB</span>
-                    </div>
-                  </div>
 
-                  {/* GPU Processes */}
-                  {gpu.processes && gpu.processes.length > 0 && (
-                    <div className="border-t border-dark-800 pt-3">
-                      <div className="text-xs text-dark-400 mb-2">GPU 进程 ({gpu.processes.length})</div>
-                      <div className="space-y-1.5">
-                        {gpu.processes.map((proc) => (
-                          <div key={proc.pid} className="flex items-center justify-between text-xs">
-                            <div className="flex items-center gap-2 min-w-0">
-                              <span className="text-dark-500 font-mono shrink-0">{proc.pid}</span>
-                              <span className="text-dark-300 truncate" title={proc.name}>{proc.name}</span>
-                            </div>
-                            <span className="text-cyan-400 shrink-0 ml-2">{proc.usedMemory} MiB</span>
-                          </div>
-                        ))}
+                    {/* GPU Util */}
+                    <div>
+                      <div className="flex justify-between text-xs text-dark-400 mb-1.5">
+                        <span>算力占用</span>
+                        <span className="font-medium text-dark-200">{gpu.util.toFixed(1)}%</span>
+                      </div>
+                      <div className="h-3 bg-dark-800 rounded-full overflow-hidden">
+                        <div
+                          className={`h-full transition-all duration-500 ${
+                            gpu.util > 90 ? 'bg-red-500' : gpu.util > 70 ? 'bg-yellow-500' : 'bg-emerald-500'
+                          }`}
+                          style={{ width: `${gpu.util}%` }}
+                        />
                       </div>
                     </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
 
-          {/* GPU History Chart (uses first GPU util) */}
-          {stats.gpus.length > 0 && (
+                    {/* GPU Memory */}
+                    <div>
+                      <div className="flex justify-between text-xs text-dark-400 mb-1.5">
+                        <span>显存占用</span>
+                        <span className="font-medium text-dark-200">
+                          {gpu.memUsed.toFixed(0)} / {gpu.memTotal.toFixed(0)} MB
+                        </span>
+                      </div>
+                      <div className="h-3 bg-dark-800 rounded-full overflow-hidden">
+                        <div
+                          className={`h-full transition-all duration-500 ${
+                            memPct > 90 ? 'bg-red-500' : memPct > 70 ? 'bg-yellow-500' : 'bg-cyan-500'
+                          }`}
+                          style={{ width: `${memPct}%` }}
+                        />
+                      </div>
+                      <div className="flex justify-between mt-1">
+                        <span className="text-xs text-cyan-400">{memPct.toFixed(1)}% 已用</span>
+                        <span className="text-xs text-dark-500">{gpu.memUsed.toFixed(0)} MB</span>
+                      </div>
+                    </div>
+
+                    {/* GPU Processes */}
+                    {gpu.processes && gpu.processes.length > 0 && (
+                      <div className="border-t border-dark-800 pt-3">
+                        <div className="text-xs text-dark-400 mb-2">GPU 进程 ({gpu.processes.length})</div>
+                        <div className="space-y-1.5">
+                          {gpu.processes.map((proc) => (
+                            <div key={proc.pid} className="flex items-center justify-between text-xs">
+                              <div className="flex items-center gap-2 min-w-0">
+                                <span className="text-dark-500 font-mono shrink-0">{proc.pid}</span>
+                                <span className="text-dark-300 truncate" title={proc.name}>{proc.name}</span>
+                              </div>
+                              <span className="text-cyan-400 shrink-0 ml-2">{proc.usedMemory} MiB</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* GPU History Chart (uses first GPU util) */}
             <div className="h-40 mt-4">
               <ResponsiveContainer width="100%" height="100%">
                 <AreaChart data={history}>
@@ -320,190 +494,250 @@ export default function Monitor() {
                 </AreaChart>
               </ResponsiveContainer>
             </div>
-          )}
-        </div>
-      )}
+          </div>
+        );
 
-      {/* Memory & Disk */}
-      <div className="grid md:grid-cols-2 gap-6">
-        {/* Memory */}
-        <div className="glass rounded-xl p-4">
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-lg font-semibold flex items-center gap-2">
-              <MemoryStick className="w-5 h-5 text-purple-500" />
-              内存使用
-            </h2>
-            <span className="text-2xl font-bold text-purple-400">
-              {formatPercent(stats?.memory ? (stats.memory.used / (stats.memory.total || 1)) * 100 : null)}%
-            </span>
-          </div>
-          
-          <div className="mb-4">
-            <div className="h-4 bg-dark-900 rounded-full overflow-hidden">
-              <div 
-                className="h-full bg-gradient-to-r from-purple-600 to-purple-400 transition-all duration-500"
-                style={{ width: `${stats?.memory ? (stats.memory.used / (stats.memory.total || 1)) * 100 : 0}%` }}
-              />
+      // ── Memory Section ──────────────────────────────────────────────
+      case 'memory-section':
+        return (
+          <div className="glass rounded-xl p-4">
+            <div className="flex items-center justify-between mb-4">
+              <span className="text-2xl font-bold text-purple-400">
+                {formatPercent(stats?.memory ? (stats.memory.used / (stats.memory.total || 1)) * 100 : null)}%
+              </span>
             </div>
-            <div className="flex justify-between mt-2 text-sm text-dark-400">
-              <span>已用: {stats?.memory ? formatBytes(stats.memory.used ?? 0) : '0 B'}</span>
-              <span>总计: {stats?.memory ? formatBytes(stats.memory.total ?? 1) : '0 B'}</span>
-            </div>
-          </div>
-          
-          {/* Memory History */}
-          <div className="h-40">
-            <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={history}>
-                <defs>
-                  <linearGradient id="memGrad" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#a855f7" stopOpacity={0.3}/>
-                    <stop offset="95%" stopColor="#a855f7" stopOpacity={0}/>
-                  </linearGradient>
-                </defs>
-                <XAxis dataKey="timestamp" hide />
-                <YAxis domain={[0, 100]} tickFormatter={(v) => `${v}%`} stroke="#5c5c66" fontSize={12} />
-                <Tooltip 
-                  contentStyle={{ background: '#1e1e26', border: '1px solid #32323a', borderRadius: '8px' }}
-                  labelFormatter={(v) => new Date(v).toLocaleTimeString()}
-                  formatter={(v: number) => [`${v.toFixed(1)}%`, '内存']}
-                />
-                <Area type="monotone" dataKey="memory" stroke="#a855f7" fill="url(#memGrad)" strokeWidth={2} />
-              </AreaChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
-
-        {/* Disk */}
-        <div className="glass rounded-xl p-4">
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-lg font-semibold flex items-center gap-2">
-              <HardDrive className="w-5 h-5 text-orange-500" />
-              磁盘使用
-            </h2>
-          </div>
-          
-          <div className="space-y-3">
-            {stats?.disk?.map((disk, idx) => (
-              <div key={idx}>
-                <div className="flex justify-between text-sm mb-1">
-                  <span className="text-dark-300">{disk.name}</span>
-                  <span className="text-dark-400">
-                    {formatBytes(disk.used)} / {formatBytes(disk.total)}
-                  </span>
-                </div>
-                <div className="h-2 bg-dark-900 rounded-full overflow-hidden">
-                  <div 
-                    className={`h-full transition-all duration-500 ${
-                      disk.usePercent > 90 ? 'bg-red-500' : 
-                      disk.usePercent > 70 ? 'bg-yellow-500' : 
-                      'bg-gradient-to-r from-orange-500 to-orange-400'
-                    }`}
-                    style={{ width: `${disk.usePercent}%` }}
-                  />
-                </div>
-              </div>
-            ))}
             
-            {(!stats?.disk || stats.disk.length === 0) && (
-              <div className="text-center py-8 text-dark-500">
-                暂无磁盘数据
+            <div className="mb-4">
+              <div className="h-4 bg-dark-900 rounded-full overflow-hidden">
+                <div 
+                  className="h-full bg-gradient-to-r from-purple-600 to-purple-400 transition-all duration-500"
+                  style={{ width: `${stats?.memory ? (stats.memory.used / (stats.memory.total || 1)) * 100 : 0}%` }}
+                />
               </div>
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* Network */}
-      <div className="glass rounded-xl p-4">
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-lg font-semibold flex items-center gap-2">
-            <Network className="w-5 h-5 text-green-500" />
-            网络流量
-          </h2>
-        </div>
-
-        <div className="grid md:grid-cols-2 gap-6">
-          {stats?.network?.slice(0, 2).map((net, idx) => (
-            <div key={idx} className="bg-dark-900 rounded-lg p-3">
-              <div className="text-sm text-dark-400 mb-2">{net.iface}</div>
-              <div className="flex justify-between">
-                <div>
-                  <div className="text-xs text-dark-500">下载</div>
-                  <div className="text-lg font-semibold text-green-400">
-                    {formatBytes(net.rx)}/s
-                  </div>
-                </div>
-                <div>
-                  <div className="text-xs text-dark-500">上传</div>
-                  <div className="text-lg font-semibold text-blue-400">
-                    {formatBytes(net.tx)}/s
-                  </div>
-                </div>
+              <div className="flex justify-between mt-2 text-sm text-dark-400">
+                <span>已用: {stats?.memory ? formatBytes(stats.memory.used ?? 0) : '0 B'}</span>
+                <span>总计: {stats?.memory ? formatBytes(stats.memory.total ?? 1) : '0 B'}</span>
               </div>
             </div>
-          ))}
-        </div>
+            
+            {/* Memory History */}
+            <div className="h-40">
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={history}>
+                  <defs>
+                    <linearGradient id="memGrad" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#a855f7" stopOpacity={0.3}/>
+                      <stop offset="95%" stopColor="#a855f7" stopOpacity={0}/>
+                    </linearGradient>
+                  </defs>
+                  <XAxis dataKey="timestamp" hide />
+                  <YAxis domain={[0, 100]} tickFormatter={(v) => `${v}%`} stroke="#5c5c66" fontSize={12} />
+                  <Tooltip 
+                    contentStyle={{ background: '#1e1e26', border: '1px solid #32323a', borderRadius: '8px' }}
+                    labelFormatter={(v) => new Date(v).toLocaleTimeString()}
+                    formatter={(v: number) => [`${v.toFixed(1)}%`, '内存']}
+                  />
+                  <Area type="monotone" dataKey="memory" stroke="#a855f7" fill="url(#memGrad)" strokeWidth={2} />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        );
 
-        {/* Network History */}
-        <div className="h-40 mt-4">
-          <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={history}>
-              <XAxis dataKey="timestamp" hide />
-              <YAxis tickFormatter={formatNumber} stroke="#5c5c66" fontSize={12} />
-              <Tooltip
-                contentStyle={{ background: '#1e1e26', border: '1px solid #32323a', borderRadius: '8px' }}
-                labelFormatter={(v) => new Date(v).toLocaleTimeString()}
-                formatter={(v: number) => [formatBytes(v) + '/s', '流量']}
-              />
-              <Line type="monotone" dataKey="network" stroke="#22c55e" strokeWidth={2} dot={false} />
-            </LineChart>
-          </ResponsiveContainer>
+      // ── Disk Section ────────────────────────────────────────────────
+      case 'disk-section':
+        return (
+          <div className="glass rounded-xl p-4">
+            <div className="space-y-3">
+              {stats?.disk?.map((disk, idx) => (
+                <div key={idx}>
+                  <div className="flex justify-between text-sm mb-1">
+                    <span className="text-dark-300">{disk.name}</span>
+                    <span className="text-dark-400">
+                      {formatBytes(disk.used)} / {formatBytes(disk.total)}
+                    </span>
+                  </div>
+                  <div className="h-2 bg-dark-900 rounded-full overflow-hidden">
+                    <div 
+                      className={`h-full transition-all duration-500 ${
+                        disk.usePercent > 90 ? 'bg-red-500' : 
+                        disk.usePercent > 70 ? 'bg-yellow-500' : 
+                        'bg-gradient-to-r from-orange-500 to-orange-400'
+                      }`}
+                      style={{ width: `${disk.usePercent}%` }}
+                    />
+                  </div>
+                </div>
+              ))}
+              
+              {(!stats?.disk || stats.disk.length === 0) && (
+                <div className="text-center py-8 text-dark-500">
+                  暂无磁盘数据
+                </div>
+              )}
+            </div>
+          </div>
+        );
+
+      // ── Network Section ─────────────────────────────────────────────
+      case 'network-section':
+        return (
+          <div className="glass rounded-xl p-4">
+            <div className="grid md:grid-cols-2 gap-6 mb-4">
+              {stats?.network?.slice(0, 2).map((net, idx) => (
+                <div key={idx} className="bg-dark-900 rounded-lg p-3">
+                  <div className="text-sm text-dark-400 mb-2">{net.iface}</div>
+                  <div className="flex justify-between">
+                    <div>
+                      <div className="text-xs text-dark-500">下载</div>
+                      <div className="text-lg font-semibold text-green-400">
+                        {formatBytes(net.rx)}/s
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-xs text-dark-500">上传</div>
+                      <div className="text-lg font-semibold text-blue-400">
+                        {formatBytes(net.tx)}/s
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* Network History */}
+            <div className="h-40">
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={history}>
+                  <XAxis dataKey="timestamp" hide />
+                  <YAxis tickFormatter={formatNumber} stroke="#5c5c66" fontSize={12} />
+                  <Tooltip
+                    contentStyle={{ background: '#1e1e26', border: '1px solid #32323a', borderRadius: '8px' }}
+                    labelFormatter={(v) => new Date(v).toLocaleTimeString()}
+                    formatter={(v: number) => [formatBytes(v) + '/s', '流量']}
+                  />
+                  <Line type="monotone" dataKey="network" stroke="#22c55e" strokeWidth={2} dot={false} />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        );
+
+      // ── Processes Section ───────────────────────────────────────────
+      case 'processes-section':
+        if (!stats?.processes || stats.processes.length === 0) return null;
+        return (
+          <div className="glass rounded-xl p-4">
+            <div className="overflow-x-auto">
+              <table className="w-full">
+                <thead>
+                  <tr className="text-left text-xs text-dark-400 border-b border-dark-800">
+                    <th className="pb-2 font-medium">PID</th>
+                    <th className="pb-2 font-medium">进程名</th>
+                    <th className="pb-2 font-medium text-right">CPU %</th>
+                    <th className="pb-2 font-medium text-right">内存 %</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-dark-800/50">
+                  {stats.processes.map((proc) => (
+                    <tr key={proc.pid} className="hover:bg-dark-800/30">
+                      <td className="py-2 text-dark-500 font-mono">{proc.pid}</td>
+                      <td className="py-2 text-dark-300">{proc.name}</td>
+                      <td className="py-2 text-right">
+                        <span className={proc.cpu > 50 ? 'text-red-400' : proc.cpu > 20 ? 'text-yellow-400' : 'text-dark-300'}>
+                          {proc.cpu.toFixed(1)}%
+                        </span>
+                      </td>
+                      <td className="py-2 text-right">
+                        <span className={proc.mem > 50 ? 'text-red-400' : proc.mem > 20 ? 'text-yellow-400' : 'text-dark-300'}>
+                          {proc.mem.toFixed(1)}%
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        );
+
+      default:
+        return null;
+    }
+  };
+
+  // Panel title/icon metadata
+  const panelMeta: Record<PanelId, { title: string; icon: React.ReactNode }> = {
+    'cpu-section': { title: 'CPU 使用率', icon: <Cpu className="w-5 h-5 text-accent-500" /> },
+    'gpu-section': { title: 'GPU 监控', icon: <Cpu className="w-5 h-5 text-emerald-500" /> },
+    'memory-section': { title: '内存使用', icon: <MemoryStick className="w-5 h-5 text-purple-500" /> },
+    'disk-section': { title: '磁盘使用', icon: <HardDrive className="w-5 h-5 text-orange-500" /> },
+    'network-section': { title: '网络流量', icon: <Network className="w-5 h-5 text-green-500" /> },
+    'processes-section': { title: 'Top 进程', icon: <Server className="w-5 h-5 text-pink-500" /> },
+  };
+
+  // Filter out conditional panels when no data
+  const visiblePanels = panelOrder.filter(id => {
+    if (id === 'gpu-section') {
+      return stats?.gpus && stats.gpus.length > 0;
+    }
+    if (id === 'processes-section') {
+      return stats?.processes && stats.processes.length > 0;
+    }
+    return true;
+  });
+
+  return (
+    <div className="space-y-6 animate-fade-in">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold flex items-center gap-3">
+            <Server className="w-7 h-7 text-accent-500" />
+            系统监控
+          </h1>
+          <p className="text-dark-400">
+            {isRemote ? `远程服务器: ${selectedDevice.name}` : '本地设备实时资源使用情况'}
+          </p>
+        </div>
+        <div className="flex items-center gap-3">
+          {/* Reset layout button */}
+          <button
+            onClick={handleResetLayout}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm text-dark-400 hover:text-dark-200 hover:bg-dark-800/50 transition-colors"
+            title="重置布局"
+          >
+            <RotateCcw className="w-4 h-4" />
+            重置布局
+          </button>
+
+          <div className="flex items-center gap-2 text-sm text-dark-400">
+            <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
+            实时更新中
+          </div>
         </div>
       </div>
 
-      {/* Top Processes */}
-      {stats?.processes && stats.processes.length > 0 && (
-        <div className="glass rounded-xl p-4">
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-lg font-semibold flex items-center gap-2">
-              <Server className="w-5 h-5 text-pink-500" />
-              Top 进程
-            </h2>
-          </div>
-          
-          <div className="overflow-x-auto">
-            <table className="w-full">
-              <thead>
-                <tr className="text-left text-xs text-dark-400 border-b border-dark-800">
-                  <th className="pb-2 font-medium">PID</th>
-                  <th className="pb-2 font-medium">进程名</th>
-                  <th className="pb-2 font-medium text-right">CPU %</th>
-                  <th className="pb-2 font-medium text-right">内存 %</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-dark-800/50">
-                {stats.processes.map((proc) => (
-                  <tr key={proc.pid} className="hover:bg-dark-800/30">
-                    <td className="py-2 text-dark-500 font-mono">{proc.pid}</td>
-                    <td className="py-2 text-dark-300">{proc.name}</td>
-                    <td className="py-2 text-right">
-                      <span className={proc.cpu > 50 ? 'text-red-400' : proc.cpu > 20 ? 'text-yellow-400' : 'text-dark-300'}>
-                        {proc.cpu.toFixed(1)}%
-                      </span>
-                    </td>
-                    <td className="py-2 text-right">
-                      <span className={proc.mem > 50 ? 'text-red-400' : proc.mem > 20 ? 'text-yellow-400' : 'text-dark-300'}>
-                        {proc.mem.toFixed(1)}%
-                      </span>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
+      {/* Draggable Panels */}
+      <div className="space-y-6">
+        {visiblePanels.map((panelId, index) => (
+          <DraggablePanel
+            key={panelId}
+            panelId={panelId}
+            index={index}
+            length={visiblePanels.length}
+            dragState={dragState}
+            onDragStart={handleDragStart}
+            onDragOver={handleDragOver}
+            onDrop={handleDrop}
+            onDragEnd={handleDragEnd}
+            title={panelMeta[panelId].title}
+            titleIcon={panelMeta[panelId].icon}
+          >
+            {renderPanel(panelId)}
+          </DraggablePanel>
+        ))}
+      </div>
     </div>
   );
 }
