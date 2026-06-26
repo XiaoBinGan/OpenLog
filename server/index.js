@@ -166,10 +166,21 @@ const PORT = process.env.PORT || 3001;
 
 // Middleware
 app.use(cors({
-  origin: [/^https?:\/\/localhost(:\d+)?$/, /^https?:\/\/127\.0\.0\.1(:\d+)?$/],
+  origin: [/^https?:\/\/localhost(:\d+)?$/, /^https?:\/\/127\.0\.0\.1(:\d+)?$/, /^https?:\/\/.*/],
   credentials: true,
 }));
 app.use(express.json({ limit: '10mb' }));
+
+// 生产模式：托管前端静态文件
+if (process.env.NODE_ENV === 'production') {
+  const clientDist = path.join(__dirname, '..', 'client', 'dist');
+  app.use(express.static(clientDist));
+  // SPA fallback — 所有非 API 路由返回 index.html
+  app.get('*', (req, res, next) => {
+    if (req.path.startsWith('/api/') || req.path.startsWith('/ws/')) return next();
+    res.sendFile(path.join(clientDist, 'index.html'));
+  });
+}
 
 // 简易 Rate Limiter（每 IP 每分钟 120 次）
 const rateLimitMap = new Map();
