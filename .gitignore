@@ -31,3 +31,4 @@ server_go/
 .vscode/
 .idea/
 __pycache__/
+coverage/
