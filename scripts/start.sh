@@ -30,9 +30,7 @@ else
   npm rebuild better-sqlite3 2>/dev/null || true
 fi
 
-# 3. 初始化数据库
-echo "🗄️  初始化数据库..."
-npm run init-db 2>/dev/null || echo "⚠️  DB 初始化跳过（可能已存在）"
+# 3. 启动服务（数据库由 server/index.js 自动初始化）
 
 # 4. 启动服务
 echo ""

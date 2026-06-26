@@ -392,7 +392,7 @@ export default function Analytics() {
             ) : (
               <>
                 <Monitor className="w-4 h-4 text-accent-500" />
-                本地设备
+                本机设备
               </>
             )}
           </p>
@@ -576,7 +576,7 @@ export default function Analytics() {
           <li>建议先筛选错误日志进行分析，可获得更精准的结果</li>
           <li>可使用自定义提示词指定分析重点</li>
           <li>分析结果仅供参考，实际问题需要人工确认</li>
-          <li>当前分析{isRemote ? '远程服务器' : '本地设备'}的日志</li>
+          <li>当前分析{isRemote ? '远程服务器' : '本机设备'}的日志</li>
         </ul>
       </div>
 

@@ -35,7 +35,7 @@ export default function Logs() {
   const { selectedDevice, isRemote } = useDevice();
   const { activeServer, loadFiles, navigateDir, goUp, loadLogs } = useRemote();
 
-  // ── 本地设备状态 ──
+  // ── 本机设备状态 ──
   const [localLogs, setLocalLogs] = useState<Log[]>([]);
   const [localTotal, setLocalTotal] = useState(0);
   const [localLoading, setLocalLoading] = useState(false);
@@ -230,7 +230,7 @@ export default function Logs() {
             ) : (
               <>
                 <Monitor className="w-4 h-4 text-accent-500" />
-                本地设备
+                本机设备
               </>
             )}
             <span className="text-xs ml-2">共 {total} 条日志</span>

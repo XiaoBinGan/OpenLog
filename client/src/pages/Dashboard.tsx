@@ -239,7 +239,7 @@ export default function Dashboard() {
     const fetchDeviceData = async () => {
       try {
         if (!isRemote) {
-          // 本地设备 - 使用 HTTP 轮询，与 GlobalStatusBar 保持一致
+          // 本机设备 - 使用 HTTP 轮询，与 GlobalStatusBar 保持一致
           const [statsData, historyData, logsData] = await Promise.all([
             fetch('/api/monitor/stats').then(r => r.json()),
             fetch('/api/monitor/history?limit=30').then(r => r.json()),
@@ -725,7 +725,7 @@ export default function Dashboard() {
         <div>
           <h1 className="text-2xl font-bold">仪表盘</h1>
           <p className="text-dark-400">
-            {isRemote ? `远程服务器: ${selectedDevice.name}` : '本地设备实时状态概览'}
+            {isRemote ? `远程服务器: ${selectedDevice.name}` : '本机设备实时状态概览'}
           </p>
         </div>
         
