@@ -83,7 +83,7 @@ export default function AIShellTerminal({ server, onClose, onReady }: AIShellTer
 
   // 连接 WebSocket — localhost 直连 3001，LAN 走 Vite 代理
   useEffect(() => {
-    const isDev = import.meta.env.DEV;
+    const isDev = (import.meta as any).env?.DEV;
     const hostname = window.location.hostname;
     const wsHost = (isDev && hostname === 'localhost') ? 'localhost:3001' : window.location.host;
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
