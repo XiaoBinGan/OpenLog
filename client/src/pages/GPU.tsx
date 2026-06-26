@@ -1,8 +1,9 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   Cpu, MemoryStick, Thermometer, RefreshCw, Wifi, AlertCircle, Loader, Server, Monitor,
 } from 'lucide-react';
 import { useRemote } from '../contexts/RemoteContext';
+import { useDevice } from '../contexts/DeviceContext';
 
 interface GPUDevice {
   index: number;
@@ -32,9 +33,15 @@ export default function GPU() {
     [remoteServers]
   );
 
+  // 从 DeviceContext 获取当前选中设备
+  const { selectedDevice, isRemote } = useDevice();
+
   const [serverGPUs, setServerGPUs] = useState<ServerGPU[]>([]);
   const [globalLoading, setGlobalLoading] = useState(true);
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
+
+  // 追踪是否已经尝试过本机 GPU 回退，避免反复 fetch
+  const localFallbackTriedRef = useRef(false);
 
   const fetchServerGPU = useCallback(async (server: typeof connectedServers[0]): Promise<ServerGPU> => {
     try {
@@ -73,24 +80,100 @@ export default function GPU() {
     }
   }, []);
 
-  const fetchAllGPUs = useCallback(async () => {
-    if (connectedServers.length === 0) {
-      setGlobalLoading(false);
-      setServerGPUs([]);
-      return;
+  // 本机 GPU 获取：先尝试本地 /api/monitor/stats，无 GPU 时回退到同 host 远程连接
+  const fetchLocalGPU = useCallback(async (): Promise<ServerGPU | null> => {
+    try {
+      // 1) 尝试本机 monitor API
+      const res = await fetch('/api/monitor/stats');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      const gpus: GPUDevice[] = (data.gpus || []).map((g: any) => ({
+        index: g.index ?? 0,
+        name: g.name || 'GPU',
+        util: Number(g.util) || 0,
+        memUsed: Number(g.memUsed) || 0,
+        memTotal: Number(g.memTotal) || 0,
+        temp: Number(g.temp) || 0,
+        processes: g.processes || [],
+      }));
+
+      if (gpus.length > 0) {
+        // 本机有 GPU，直接返回
+        const summary = {
+          total: gpus.length,
+          utilAvg: gpus.reduce((s, g) => s + g.util, 0) / gpus.length,
+          memUsedAvg: gpus.reduce((s, g) => s + g.memUsed, 0) / gpus.length,
+          memTotalAvg: gpus.reduce((s, g) => s + g.memTotal, 0) / gpus.length,
+          tempAvg: gpus.reduce((s, g) => s + g.temp, 0) / gpus.length,
+        };
+        return {
+          serverId: 'local',
+          serverName: '本机设备',
+          serverHost: 'localhost',
+          devices: gpus,
+          summary,
+          loading: false,
+        };
+      }
+
+      // 2) 本机无 GPU → 从 connectedServers 中找 host 为 localhost 的服务器
+      const localhostServers = connectedServers.filter(
+        s => s.host === 'localhost' || s.host === '127.0.0.1' || s.host === '::1'
+      );
+
+      if (localhostServers.length > 0 && !localFallbackTriedRef.current) {
+        localFallbackTriedRef.current = true;
+        // 取第一个 localhost 服务器获取 GPU 数据
+        const fallbackServer = localhostServers[0];
+        const remoteGPU = await fetchServerGPU(fallbackServer);
+        if (remoteGPU.devices.length > 0) {
+          // 用本机设备的名义展示远程 GPU 数据
+          return {
+            ...remoteGPU,
+            serverId: 'local',
+            serverName: `本机设备 (via ${fallbackServer.name})`,
+            serverHost: 'localhost',
+          };
+        }
+      }
+
+      return null;
+    } catch (err) {
+      console.error('[GPU] 本机 GPU 获取失败:', err);
+      return null;
     }
-    // 只在首次加载（无已有数据）时显示 loading，后续刷新静默更新
+  }, [connectedServers, fetchServerGPU]);
+
+  const fetchAllGPUs = useCallback(async () => {
+    // 构建要查询的源：远程服务器列表 + 本机（如果选中）
     const isFirstLoad = serverGPUs.length === 0;
+
     if (isFirstLoad) {
       setGlobalLoading(true);
     }
-    const results = await Promise.all(connectedServers.map(s => fetchServerGPU(s)));
+
+    const results: ServerGPU[] = [];
+
+    // 本机设备
+    if (!isRemote) {
+      const localGPU = await fetchLocalGPU();
+      if (localGPU && localGPU.devices.length > 0) {
+        results.push(localGPU);
+      }
+    }
+
+    // 远程服务器
+    if (connectedServers.length > 0) {
+      const remoteResults = await Promise.all(connectedServers.map(s => fetchServerGPU(s)));
+      results.push(...remoteResults.filter(r => r.devices.length > 0 || r.error));
+    }
+
     setServerGPUs(results);
     if (isFirstLoad) {
       setGlobalLoading(false);
     }
     setLastRefresh(new Date());
-  }, [connectedServers, fetchServerGPU]);
+  }, [connectedServers, fetchServerGPU, fetchLocalGPU, isRemote]);
 
   useEffect(() => {
     fetchAllGPUs();
@@ -114,7 +197,9 @@ export default function GPU() {
           <div>
             <h1 className="text-xl font-semibold text-dark-100">算力监控</h1>
             <p className="text-xs text-dark-400 mt-0.5">
-              {connectedServers.length} 台服务器 · {totalGPUs} 张 GPU
+              {serverGPUs.length > 0
+                ? `${serverGPUs.length} 台设备 · ${totalGPUs} 张 GPU`
+                : '等待 GPU 数据...'}
             </p>
           </div>
         </div>
@@ -134,12 +219,16 @@ export default function GPU() {
         </div>
       </div>
 
-      {/* No connected servers */}
-      {connectedServers.length === 0 && !globalLoading && (
+      {/* No GPU data at all */}
+      {serverGPUs.length === 0 && !globalLoading && (
         <div className="glass rounded-xl p-12 text-center">
           <Server className="w-12 h-12 mx-auto mb-3 text-dark-600" />
-          <p className="text-dark-400">没有已连接的远程服务器</p>
-          <p className="text-xs text-dark-500 mt-1">请先在「远程服务器」页面连接服务器</p>
+          <p className="text-dark-400">没有检测到 GPU 数据</p>
+          <p className="text-xs text-dark-500 mt-1">
+            {isRemote
+              ? '请检查远程服务器是否配置了 NVIDIA 驱动'
+              : '本机未检测到 GPU。如有已连接的远程服务器，请切换到远程设备查看'}
+          </p>
         </div>
       )}
 
@@ -160,8 +249,8 @@ export default function GPU() {
             <div className="text-xs text-dark-500">/ {totalMemTotal.toFixed(0)} MB</div>
           </div>
           <div className="glass rounded-xl p-4">
-            <div className="text-xs text-dark-400 mb-1">服务器数</div>
-            <div className="text-2xl font-bold text-purple-400">{connectedServers.length}</div>
+            <div className="text-xs text-dark-400 mb-1">设备数</div>
+            <div className="text-2xl font-bold text-purple-400">{serverGPUs.length}</div>
           </div>
         </div>
       )}
@@ -170,7 +259,7 @@ export default function GPU() {
       {globalLoading && (
         <div className="flex items-center justify-center h-64">
           <Loader className="w-6 h-6 animate-spin text-emerald-400" />
-          <span className="ml-2 text-dark-400">正在查询 {connectedServers.length} 台服务器...</span>
+          <span className="ml-2 text-dark-400">正在查询 GPU 数据...</span>
         </div>
       )}
 
@@ -179,7 +268,11 @@ export default function GPU() {
         <div key={sv.serverId} className="mb-6">
           <div className="flex items-center gap-2 mb-3">
             <div className="flex items-center gap-1.5 px-2.5 py-1 bg-dark-800 rounded-lg">
-              <Wifi className="w-3.5 h-3.5 text-green-400" />
+              {sv.serverId === 'local' ? (
+                <Monitor className="w-3.5 h-3.5 text-accent-500" />
+              ) : (
+                <Wifi className="w-3.5 h-3.5 text-green-400" />
+              )}
               <span className="text-sm font-medium text-dark-200">{sv.serverName}</span>
               <span className="text-xs text-dark-500">{sv.serverHost}</span>
             </div>
@@ -199,7 +292,7 @@ export default function GPU() {
             </div>
           ) : sv.devices.length === 0 ? (
             <div className="glass rounded-xl p-6 text-center text-dark-500 text-sm">
-              该服务器未检测到 GPU
+              该设备未检测到 GPU
             </div>
           ) : (
             <div className="grid md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">

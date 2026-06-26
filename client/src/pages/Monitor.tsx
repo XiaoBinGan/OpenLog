@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { 
   Cpu, 
   HardDrive, 
@@ -20,6 +20,7 @@ import {
   ResponsiveContainer
 } from 'recharts';
 import { useDevice } from '../contexts/DeviceContext';
+import { useRemote } from '../contexts/RemoteContext';
 import type { MonitorStats, MonitorHistory, RemoteServer } from '../types';
 
 // ─── Panel drag-and-drop system ───────────────────────────────────────────
@@ -161,6 +162,11 @@ function DraggablePanel({
 
 export default function Monitor() {
   const { selectedDevice, isRemote } = useDevice();
+  const { servers: remoteServers } = useRemote();
+  const connectedServers = useMemo(
+    () => remoteServers.filter(s => s.status === 'connected'),
+    [remoteServers]
+  );
   const [stats, setStats] = useState<MonitorStats | null>(null);
   const [history, setHistory] = useState<MonitorHistory[]>([]);
   const [loading, setLoading] = useState(true);
@@ -264,12 +270,32 @@ export default function Monitor() {
           });
           
         } else {
-          // 本地设备
+          // 本机设备
           const [statsData, historyData] = await Promise.all([
             fetch('/api/monitor/stats').then(r => r.json()),
             fetch('/api/monitor/history?limit=60').then(r => r.json())
           ]);
-          
+
+          // 本机无 GPU 时，回退到同 host 的远程连接获取 GPU 数据
+          if (!statsData.gpus || statsData.gpus.length === 0) {
+            const localhostServers = connectedServers.filter(
+              s => s.host === 'localhost' || s.host === '127.0.0.1' || s.host === '::1'
+            );
+            if (localhostServers.length > 0) {
+              try {
+                const remoteRes = await fetch(`/api/remote/servers/${localhostServers[0].id}/stats`);
+                if (remoteRes.ok) {
+                  const remoteData = await remoteRes.json();
+                  if (remoteData.gpus && remoteData.gpus.length > 0) {
+                    statsData.gpus = remoteData.gpus;
+                  }
+                }
+              } catch {
+                // 静默失败，不阻塞主流程
+              }
+            }
+          }
+
           setStats(statsData);
           setHistory(historyData);
         }
@@ -287,7 +313,7 @@ export default function Monitor() {
     const interval = setInterval(fetchData, 5000);
     
     return () => clearInterval(interval);
-  }, [selectedDevice.id, isRemote]);
+  }, [selectedDevice.id, isRemote, connectedServers]);
 
   const formatBytes = (bytes: number) => {
     if (!bytes || bytes === 0 || isNaN(bytes)) return '0 B';
@@ -697,7 +723,7 @@ export default function Monitor() {
             系统监控
           </h1>
           <p className="text-dark-400">
-            {isRemote ? `远程服务器: ${selectedDevice.name}` : '本地设备实时资源使用情况'}
+            {isRemote ? `远程服务器: ${selectedDevice.name}` : '本机设备实时资源使用情况'}
           </p>
         </div>
         <div className="flex items-center gap-3">
