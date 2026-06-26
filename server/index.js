@@ -39,9 +39,10 @@ function loadOrCreateToken() {
 }
 
 function authMiddleware(req, res, next) {
+  if (process.env.NODE_ENV === 'production') return next();
   const ip = (req.ip || req.connection?.remoteAddress || '').replace('::ffff:', '');
-  // localhost / Vite proxy / 生产模式（前端同源）免鉴权
-  if (ip === '127.0.0.1' || ip === '::1' || ip === 'localhost' || process.env.NODE_ENV === 'production') return next();
+  // localhost / Vite proxy 免鉴权
+  if (ip === '127.0.0.1' || ip === '::1' || ip === 'localhost') return next();
   const auth = req.headers.authorization;
   const token = auth?.startsWith('Bearer ') ? auth.slice(7) : req.query.token;
   if (token === AUTH_TOKEN) return next();
@@ -166,8 +167,7 @@ const PORT = process.env.PORT || 3001;
 
 // Middleware
 app.use(cors({
-  origin: [/^https?:\/\/localhost(:\d+)?$/, /^https?:\/\/127\.0\.0\.1(:\d+)?$/, /^https?:\/\/.*/],
-  credentials: true,
+  origin: '*',
 }));
 app.use(express.json({ limit: '10mb' }));
 
