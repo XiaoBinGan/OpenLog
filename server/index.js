@@ -2106,6 +2106,31 @@ app.post('/api/docker/ping', async (req, res) => {
   res.json(result);
 });
 
+// Docker 容器操作（stop/start/restart/remove）
+app.post('/api/docker/:sourceId/:containerId/:op', async (req, res) => {
+  try {
+    const { sourceId, containerId, op } = req.params;
+    const source = (ensureSettings().dockerSources || []).find(s => s.id === sourceId);
+    const config = source ? {
+      socketPath: source.socketPath || undefined,
+      host: source.socketPath ? undefined : (source.host || 'localhost'),
+      port: source.socketPath ? undefined : (source.port || 2375),
+      tls: source.tls, ca: source.ca, cert: source.cert, key: source.key,
+    } : {};
+    let result;
+    switch (op) {
+      case 'start': result = await docker.startContainer(sourceId, containerId, config); break;
+      case 'stop': result = await docker.stopContainer(sourceId, containerId, config); break;
+      case 'restart': result = await docker.restartContainer(sourceId, containerId, config); break;
+      case 'remove': result = await docker.removeContainer(sourceId, containerId, config); break;
+      default: return res.status(400).json({ error: '不支持的操作: ' + op });
+    }
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // 获取所有 Docker 配置的容器列表
 app.get('/api/docker/containers', async (req, res) => {
   try {
