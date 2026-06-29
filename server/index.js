@@ -2853,7 +2853,7 @@ app.post('/api/remote/import', async (req, res) => {
           name: config.name || config.host,
           host: config.host,
           port: config.port || 22,
-          username: config.user_name || 'root',
+          username: config.user_name || config.username || 'root',
           password: config.password || '',
         };
 
