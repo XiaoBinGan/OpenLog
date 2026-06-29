@@ -563,6 +563,20 @@ export default function Dashboard() {
                       />
                     </div>
                   </div>
+
+                  {/* GPU Processes */}
+                  {(gpu as any).processes && (gpu as any).processes.length > 0 && (
+                    <div className="pt-2 border-t border-dark-800">
+                      <div className="text-[10px] text-dark-500 mb-1">进程</div>
+                      {(gpu as any).processes.slice(0, 4).map((p: any, i: number) => (
+                        <div key={i} className="flex items-center justify-between text-[11px]">
+                          <span className="text-dark-500 w-16 flex-shrink-0">PID {p.pid}</span>
+                          <span className="text-dark-300 truncate">{p.name}</span>
+                          <span className="text-dark-500 ml-auto">{p.usedMemory || p.memory} MB</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
