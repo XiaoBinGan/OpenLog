@@ -2704,6 +2704,12 @@ ${containerText}
   }
 });
 
+// 别名：/diagnose → /analyze（兼容前端 Docker 诊断按钮）
+app.post('/api/docker/container/:sourceId/:containerId/diagnose', async (req, res) => {
+  req.url = req.url.replace('/diagnose', '/analyze');
+  app.handle(req, res);
+});
+
 // ────────────────────────────────────────
 // Docker 容器操作
 // ────────────────────────────────────────
