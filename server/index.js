@@ -1305,11 +1305,26 @@ app.get('/api/monitor/stats', async (req, res) => {
           { timeout: 5000, encoding: 'utf8' }
         ).trim();
         if (out) {
+          // 并行查询进程信息
+          let procOut = '';
+          try {
+            procOut = execSync(
+              'sshpass -p Supremind0717- ssh -o StrictHostKeyChecking=no -o ConnectTimeout=3 -p 40022 smai@127.0.0.1 "nvidia-smi --query-compute-apps=pid,gpu_index,process_name,used_gpu_memory --format=csv,noheader,nounits 2>/dev/null"',
+              { timeout: 5000, encoding: 'utf8' }
+            ).trim();
+          } catch {}
+          const procMap = new Map();
+          procOut.split('\n').filter(Boolean).forEach(line => {
+            const parts = line.split(',').map(s => s.trim());
+            const [pid, gpuIdx, name, mem] = parts.length >= 4 ? parts : [parts[1], parts[0], parts[2], parts[3]];
+            if (!procMap.has(gpuIdx)) procMap.set(gpuIdx, []);
+            procMap.get(gpuIdx).push({ pid: parseInt(pid)||0, name: name||'', usedMemory: parseInt(mem)||0 });
+          });
           gpus = out.split('\n').filter(Boolean).map(line => {
             const [idx, name, util, memUsed, memTotal, temp] = line.split(',').map(s => s.trim());
             return { index: parseInt(idx)||0, name, util: parseFloat(util)||0,
               memUsed: parseInt(memUsed)||0, memTotal: parseInt(memTotal)||0,
-              temp: parseFloat(temp)||0, processes: [] };
+              temp: parseFloat(temp)||0, processes: procMap.get(idx) || [] };
           });
         }
       } catch {}
@@ -3688,11 +3703,27 @@ app.get('/api/gpu/local', async (req, res) => {
           { timeout: 5000, encoding: 'utf8' }
         ).trim();
         if (out) {
+          // 并行查询进程信息
+          let procOut = '';
+          try {
+            procOut = execSync(
+              'sshpass -p Supremind0717- ssh -o StrictHostKeyChecking=no -o ConnectTimeout=3 -p 40022 smai@127.0.0.1 "nvidia-smi --query-compute-apps=pid,gpu_index,process_name,used_gpu_memory --format=csv,noheader,nounits 2>/dev/null; nvidia-smi --query-gpu=index,process_name,pid,used_memory --format=csv,noheader 2>/dev/null"',
+              { timeout: 5000, encoding: 'utf8' }
+            ).trim();
+          } catch {}
+          // 解析进程信息，按 gpu_index 分组
+          const procMap = new Map();
+          procOut.split('\n').filter(Boolean).forEach(line => {
+            const parts = line.split(',').map(s => s.trim());
+            const [pid, gpuIdx, name, mem] = parts.length >= 4 ? parts : [parts[1], parts[0], parts[2], parts[3]];
+            if (!procMap.has(gpuIdx)) procMap.set(gpuIdx, []);
+            procMap.get(gpuIdx).push({ pid: parseInt(pid)||0, name: name||'', usedMemory: parseInt(mem)||0 });
+          });
           devices = out.split('\n').filter(Boolean).map(line => {
             const [idx, name, util, memUsed, memTotal, temp] = line.split(',').map(s => s.trim());
             return { index: parseInt(idx) || 0, name, util: parseFloat(util) || 0,
               memUsed: parseInt(memUsed) || 0, memTotal: parseInt(memTotal) || 0,
-              temp: parseFloat(temp) || 0, processes: [] };
+              temp: parseFloat(temp) || 0, processes: procMap.get(idx) || [] };
           });
         }
       } catch {}
