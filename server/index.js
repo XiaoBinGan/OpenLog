@@ -1301,7 +1301,7 @@ app.get('/api/monitor/stats', async (req, res) => {
       try {
         const { execSync } = await import('child_process');
         const out = execSync(
-          'ssh -o StrictHostKeyChecking=no -o ConnectTimeout=3 -p 40022 smai@127.0.0.1 "nvidia-smi --query-gpu=index,name,utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader,nounits" 2>/dev/null',
+          'sshpass -p Supremind0717- ssh -o StrictHostKeyChecking=no -o ConnectTimeout=3 -p 40022 smai@127.0.0.1 "nvidia-smi --query-gpu=index,name,utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader,nounits" 2>/dev/null',
           { timeout: 5000, encoding: 'utf8' }
         ).trim();
         if (out) {
@@ -3684,7 +3684,7 @@ app.get('/api/gpu/local', async (req, res) => {
       try {
         const { execSync } = await import('child_process');
         const out = execSync(
-          'ssh -o StrictHostKeyChecking=no -o ConnectTimeout=3 -p 40022 smai@127.0.0.1 "nvidia-smi --query-gpu=index,name,utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader,nounits" 2>/dev/null',
+          'sshpass -p Supremind0717- ssh -o StrictHostKeyChecking=no -o ConnectTimeout=3 -p 40022 smai@127.0.0.1 "nvidia-smi --query-gpu=index,name,utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader,nounits" 2>/dev/null',
           { timeout: 5000, encoding: 'utf8' }
         ).trim();
         if (out) {
