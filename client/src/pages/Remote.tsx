@@ -349,8 +349,10 @@ export default function Remote() {
       try {
         const text = await file.text();
         const json = JSON.parse(text);
-        // FinalShell 格式
-        if (json.host) {
+        // 支持 OpenLog 格式（数组）和 FinalShell 格式（单个对象）
+        if (Array.isArray(json)) {
+          json.forEach(item => { if (item.host) configs.push(item); });
+        } else if (json.host) {
           configs.push(json);
         }
       } catch (e) {
