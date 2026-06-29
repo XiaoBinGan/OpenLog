@@ -257,8 +257,8 @@ const ServerCard = ({ server, isActive, onConnect, onDisconnect, onEdit, onDelet
 
 // 主组件
 export default function Remote() {
-  const { toast } = useToast();
-  const showToast = (msg: string, type: string) => toast(type as any, msg);
+  const _toastCtx = useToast();
+  const showToast = (msg: string, type: string) => _toastCtx.toast(type as any, msg);
   const {
     servers, activeServer, setActiveServer, selectServer, connect, disconnect, refreshServers,
     loadFiles, navigateDir, goUp,
