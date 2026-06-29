@@ -17,7 +17,7 @@ ARG CACHE_BUST=1
 WORKDIR /app
 
 # 安装系统依赖（better-sqlite3 需要编译工具）
-RUN echo "Cache bust: ${CACHE_BUST}" && apk add --no-cache python3 make g++
+RUN echo "Cache bust: ${CACHE_BUST}" && apk add --no-cache python3 make g++ openssh sshpass
 
 # 复制后端依赖
 COPY package*.json ./
