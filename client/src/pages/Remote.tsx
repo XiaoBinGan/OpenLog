@@ -462,18 +462,16 @@ export default function Remote() {
             <label htmlFor="import-finalshell" className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-purple-500/20 text-purple-400 text-xs hover:bg-purple-500/30 transition-colors cursor-pointer">
               <FileJson className="w-3.5 h-3.5" /> 导入
             </label>
-            <button onClick={() => {
-              const data = servers.map(s => ({
-                name: s.name, host: s.host, port: s.port,
-                username: s.username, logPath: s.logPath, watchFiles: s.watchFiles,
-              }));
-              const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-              const url = URL.createObjectURL(blob);
-              const a = document.createElement('a');
-              a.href = url; a.download = `openlog-servers-${new Date().toISOString().slice(0,10)}.json`;
-              a.click(); URL.revokeObjectURL(url);
-              showToast('服务器配置已导出', 'success');
-            }} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-500/20 text-blue-400 text-xs hover:bg-blue-500/30 transition-colors">
+            <button onClick={async () => {
+                            const res = await fetch('/api/remote/export');
+                            const data = await res.json();
+                            const blob = new Blob([JSON.stringify(data.servers, null, 2)], { type: 'application/json' });
+                            const url = URL.createObjectURL(blob);
+                            const a = document.createElement('a');
+                            a.href = url; a.download = `openlog-servers-${new Date().toISOString().slice(0,10)}.json`;
+                            a.click(); URL.revokeObjectURL(url);
+                            showToast(`${data.servers.length} 台服务器配置已导出`, 'success');
+                          }} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-500/20 text-blue-400 text-xs hover:bg-blue-500/30 transition-colors">
               <Download className="w-3.5 h-3.5" /> 导出
             </button>
             <button onClick={() => { resetForm(); setShowAddModal(true); }} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-accent-500/20 text-accent-400 text-xs hover:bg-accent-500/30 transition-colors">

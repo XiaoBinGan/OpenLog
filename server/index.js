@@ -2857,12 +2857,16 @@ app.post('/api/remote/import', async (req, res) => {
           password: config.password || '',
         };
 
-        // 尝试解密 FinalShell 密码
+        // 尝试解密密码（FinalShell 格式）
         if (serverData.password && serverData.password.length > 0) {
-          const decrypted = decryptFinalShellPassword(serverData.password);
-          if (decrypted && decrypted.length > 0 && /^[\x20-\x7E]+$/.test(decrypted)) {
-            serverData.password = decrypted;
+          // 如果不是 OpenLog 格式 (iv:authTag:cipher)，尝试 FinalShell 解密
+          if (!serverData.password.includes(':')) {
+            const decrypted = decryptFinalShellPassword(serverData.password);
+            if (decrypted && decrypted.length > 0 && /^[\x20-\x7E]+$/.test(decrypted)) {
+              serverData.password = decrypted;
+            }
           }
+          // OpenLog 加密格式密码直接传给 addServer（会再次加密存储，解出明文使用）
         }
 
         // 添加服务器（自动去重）
@@ -2889,6 +2893,16 @@ app.get('/api/remote/servers/:id/password', (req, res) => {
     const pw = remote.getServerPassword(req.params.id);
     if (pw === null) return res.status(404).json({ error: '服务器不存在' });
     res.json({ password: pw });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 导出服务器配置（含加密密码，用于备份恢复）
+app.get('/api/remote/export', async (req, res) => {
+  try {
+    const servers = remote.getServersWithEncryptedPasswords();
+    res.json({ servers });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
