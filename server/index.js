@@ -3702,9 +3702,17 @@ server.listen(PORT, '0.0.0.0', async () => {
 
 // ─── GPU 监控路由 ─────────────────────────────────────────────────────────
 
+// 本地 GPU 缓存（避免每次请求都 SSH）
+let gpuCache = { devices: [], summary: null, time: 0 };
+const GPU_CACHE_TTL = 10000; // 10 秒缓存
+
 // 获取 GPU 列表（本地）
 app.get('/api/gpu/local', async (req, res) => {
   try {
+    // 返回缓存（10 秒内）
+    if (Date.now() - gpuCache.time < GPU_CACHE_TTL && gpuCache.devices.length > 0) {
+      return res.json({ devices: gpuCache.devices, summary: gpuCache.summary });
+    }
     let devices = await gpu.getLocalGPUs();
     // Docker容器内 nvidia-smi 不可用，尝试 SSH localhost/
     if (devices.length === 0 && process.env.NODE_ENV === 'production') {
@@ -3739,6 +3747,7 @@ app.get('/api/gpu/local', async (req, res) => {
       } catch {}
     }
     const summary = gpu.getGPUSummary(devices);
+    gpuCache = { devices, summary, time: Date.now() };
     res.json({ devices, summary });
   } catch (err) {
     res.status(500).json({ error: err.message });
