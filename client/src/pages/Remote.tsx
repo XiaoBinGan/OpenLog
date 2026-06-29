@@ -3,6 +3,7 @@
  * 修复：编辑按钮不显示、文件列表点击触发上传、状态切换竞态
  */
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { useToast } from '../contexts/ToastContext';
 import {
   Server, Plus, Trash2, RefreshCw, Folder, FileText, ChevronRight,
   ChevronLeft, Search, Terminal, Check, X, AlertCircle, Loader,
@@ -256,6 +257,7 @@ const ServerCard = ({ server, isActive, onConnect, onDisconnect, onEdit, onDelet
 
 // 主组件
 export default function Remote() {
+  const { showToast } = useToast();
   const {
     servers, activeServer, setActiveServer, selectServer, connect, disconnect, refreshServers,
     loadFiles, navigateDir, goUp,
