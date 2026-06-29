@@ -1296,6 +1296,20 @@ app.get('/api/monitor/stats', async (req, res) => {
       });
     } catch {}
 
+    // 容器内 nvidia-smi 不可用时，回退到远程服务器连接
+    if (gpus.length === 0) {
+      const servers = remote.getServers();
+      const connected = servers.filter(s => s.status === 'connected');
+      const local = connected.find(s => ['127.0.0.1', '::1', 'localhost'].includes(s.host));
+      const fallback = local || connected[0];
+      if (fallback) {
+        try {
+          const stats = await remote.getRemoteSystemStats(fallback.id);
+          if (stats.gpus?.length > 0) gpus = stats.gpus;
+        } catch {}
+      }
+    }
+
     res.json({
       cpu: { load: cpu.currentLoad || 0, cores: cpu.cpus.map(c => c.load) },
       memory: { used: mem.used || 0, total: mem.total || 1, free: mem.free || 0 },
@@ -3659,7 +3673,24 @@ server.listen(PORT, '0.0.0.0', async () => {
 // 获取 GPU 列表（本地）
 app.get('/api/gpu/local', async (req, res) => {
   try {
-    const devices = await gpu.getLocalGPUs();
+    let devices = await gpu.getLocalGPUs();
+    // 容器内无法访问 GPU 时，回退到远程服务器连接
+    if (devices.length === 0) {
+      const servers = remote.getServers();
+      const localIps = ['127.0.0.1', '::1', 'localhost'];
+      const connected = servers.filter(s => s.status === 'connected');
+      // 优先找 localhost 连接的服务器
+      const local = connected.find(s => localIps.includes(s.host));
+      const fallback = local || connected[0];
+      if (fallback) {
+        try {
+          const stats = await remote.getRemoteSystemStats(fallback.id);
+          if (stats.gpus?.length > 0) {
+            devices = stats.gpus;
+          }
+        } catch {}
+      }
+    }
     const summary = gpu.getGPUSummary(devices);
     res.json({ devices, summary });
   } catch (err) {
