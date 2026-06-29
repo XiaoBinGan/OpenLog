@@ -660,6 +660,20 @@ export default function Docker() {
                       {traceLoading_ ? <Loader className="w-4 h-4 animate-spin" /> : <ArrowRightLeft className="w-4 h-4" />}
                     </button>
 
+                    {/* 删除容器 */}
+                    <button
+                      onClick={(e) => { e.preventDefault(); e.stopPropagation();
+                        if (confirm(`确定删除容器 "${c.names[0] || c.shortId}"？此操作不可撤销。`)) {
+                          doOp(c._sourceId, c.id, 'remove', `${c._sourceId}:${c.id}:remove`);
+                        }
+                      }}
+                      disabled={opLoading.has(`${c._sourceId}:${c.id}:remove`)}
+                      className="p-1.5 rounded-lg hover:bg-dark-700 text-dark-500 hover:text-red-400 transition-colors"
+                      title="删除容器"
+                    >
+                      {opLoading.has(`${c._sourceId}:${c.id}:remove`) ? <Loader className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
+                    </button>
+
                     {/* AI 诊断 */}
                     <button
                       onClick={(e) => { e.preventDefault(); e.stopPropagation(); diagnoseContainer(c._sourceId, c.id, c.names[0] || c.shortId); }}
