@@ -143,6 +143,17 @@ export function getServers() {
   }));
 }
 
+/** 获取所有服务器配置（含明文密码，用于导出备份） */
+export function getServersWithEncryptedPasswords() {
+  return servers.map(s => ({
+    id: s.id, name: s.name, host: s.host, port: s.port,
+    username: s.username,
+    password: s.password, // 直接返回内存中的明文
+    logPath: s.logPath, watchFiles: s.watchFiles,
+    lastConnected: s.lastConnected, status: s.status,
+  }));
+}
+
 /**
  * 添加服务器
  */
@@ -1001,6 +1012,7 @@ export async function searchRemoteLogs(id, search, options = {}) {
 export default {
   loadServers,
   getServers,
+  getServersWithEncryptedPasswords,
   getServerPassword,
   addServer,
   updateServer,
