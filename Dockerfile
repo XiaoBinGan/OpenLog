@@ -5,7 +5,7 @@
 FROM node:20-alpine AS client-builder
 WORKDIR /app/client
 COPY client/package*.json ./
-RUN npm ci
+RUN npm install --legacy-peer-deps
 COPY client/ ./
 RUN npx vite build
 
@@ -21,7 +21,7 @@ RUN echo "Cache bust: ${CACHE_BUST}" && apk add --no-cache python3 make g++ open
 
 # 复制后端依赖
 COPY package*.json ./
-RUN echo "Cache bust: ${CACHE_BUST}" && npm ci --omit=dev && npm rebuild better-sqlite3
+RUN echo "Cache bust: ${CACHE_BUST}" && npm install --omit=dev --legacy-peer-deps && npm rebuild better-sqlite3
 
 # 复制后端源码
 COPY server/ ./server/
