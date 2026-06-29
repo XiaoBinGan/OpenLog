@@ -7,7 +7,7 @@ WORKDIR /app/client
 COPY client/package*.json ./
 RUN npm ci
 COPY client/ ./
-RUN npm run build
+RUN npx vite build
 
 # ── Stage 2: 生产镜像 ──
 FROM node:20-alpine
