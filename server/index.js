@@ -1296,18 +1296,23 @@ app.get('/api/monitor/stats', async (req, res) => {
       });
     } catch {}
 
-    // 容器内 nvidia-smi 不可用时，回退到远程服务器连接
-    if (gpus.length === 0) {
-      const servers = remote.getServers();
-      const connected = servers.filter(s => s.status === 'connected');
-      const local = connected.find(s => ['127.0.0.1', '::1', 'localhost'].includes(s.host));
-      const fallback = local || connected[0];
-      if (fallback) {
-        try {
-          const stats = await remote.getRemoteSystemStats(fallback.id);
-          if (stats.gpus?.length > 0) gpus = stats.gpus;
-        } catch {}
-      }
+    // 容器内 nvidia-smi 不可用，SSH 到宿主机查询
+    if (gpus.length === 0 && process.env.NODE_ENV === 'production') {
+      try {
+        const { execSync } = await import('child_process');
+        const out = execSync(
+          'ssh -o StrictHostKeyChecking=no -o ConnectTimeout=3 -p 40022 smai@127.0.0.1 "nvidia-smi --query-gpu=index,name,utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader,nounits" 2>/dev/null',
+          { timeout: 5000, encoding: 'utf8' }
+        ).trim();
+        if (out) {
+          gpus = out.split('\n').filter(Boolean).map(line => {
+            const [idx, name, util, memUsed, memTotal, temp] = line.split(',').map(s => s.trim());
+            return { index: parseInt(idx)||0, name, util: parseFloat(util)||0,
+              memUsed: parseInt(memUsed)||0, memTotal: parseInt(memTotal)||0,
+              temp: parseFloat(temp)||0, processes: [] };
+          });
+        }
+      } catch {}
     }
 
     res.json({
@@ -3674,22 +3679,23 @@ server.listen(PORT, '0.0.0.0', async () => {
 app.get('/api/gpu/local', async (req, res) => {
   try {
     let devices = await gpu.getLocalGPUs();
-    // 容器内无法访问 GPU 时，回退到远程服务器连接
-    if (devices.length === 0) {
-      const servers = remote.getServers();
-      const localIps = ['127.0.0.1', '::1', 'localhost'];
-      const connected = servers.filter(s => s.status === 'connected');
-      // 优先找 localhost 连接的服务器
-      const local = connected.find(s => localIps.includes(s.host));
-      const fallback = local || connected[0];
-      if (fallback) {
-        try {
-          const stats = await remote.getRemoteSystemStats(fallback.id);
-          if (stats.gpus?.length > 0) {
-            devices = stats.gpus;
-          }
-        } catch {}
-      }
+    // Docker容器内 nvidia-smi 不可用，尝试 SSH localhost/
+    if (devices.length === 0 && process.env.NODE_ENV === 'production') {
+      try {
+        const { execSync } = await import('child_process');
+        const out = execSync(
+          'ssh -o StrictHostKeyChecking=no -o ConnectTimeout=3 -p 40022 smai@127.0.0.1 "nvidia-smi --query-gpu=index,name,utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader,nounits" 2>/dev/null',
+          { timeout: 5000, encoding: 'utf8' }
+        ).trim();
+        if (out) {
+          devices = out.split('\n').filter(Boolean).map(line => {
+            const [idx, name, util, memUsed, memTotal, temp] = line.split(',').map(s => s.trim());
+            return { index: parseInt(idx) || 0, name, util: parseFloat(util) || 0,
+              memUsed: parseInt(memUsed) || 0, memTotal: parseInt(memTotal) || 0,
+              temp: parseFloat(temp) || 0, processes: [] };
+          });
+        }
+      } catch {}
     }
     const summary = gpu.getGPUSummary(devices);
     res.json({ devices, summary });
