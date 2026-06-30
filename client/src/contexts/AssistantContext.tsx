@@ -6,6 +6,7 @@ export interface AssistantMessage {
   content: string;
   ts: number;
   streaming?: boolean;
+  toolCalls?: { tool: string; args: any; status: string; result: any }[];
 }
 
 export interface AssistantConversation {

@@ -5,7 +5,7 @@ import {
   ChevronDown, ChevronRight, Terminal, AlertCircle, CheckCircle,
   Clock, Server, X, Loader, ArrowRightLeft, Zap, Trash2,
   Play, Pause, RotateCcw, StopCircle, Square,
-  Stethoscope, Copy, Check
+  Stethoscope, Copy, Check, GripVertical
 } from 'lucide-react';
 import { useDevice } from '../contexts/DeviceContext';
 import DeviceSelector from '../components/DeviceSelector';
@@ -58,6 +58,16 @@ export default function Docker() {
   const [batchResult, setBatchResult] = useState<any>(null);
   const [batchLogs, setBatchLogs] = useState<any[]>([]);
   const [batchAnalyzing, setBatchAnalyzing] = useState(false);
+
+  // 拖拽排序
+  const [containerOrder, setContainerOrder] = useState<string[]>(() => {
+    try {
+      const stored = localStorage.getItem('docker-container-order');
+      return stored ? JSON.parse(stored) : [];
+    } catch { return []; }
+  });
+  const [dragKey, setDragKey] = useState<string | null>(null);
+  const [dragOverKey, setDragOverKey] = useState<string | null>(null);
 
   // AI 诊断（单容器）
   const [diagnoseKey, setDiagnoseKey] = useState<string | null>(null);
@@ -141,7 +151,86 @@ export default function Docker() {
 
   const allContainers = sources.flatMap(s => s.containers.map(c => ({ ...c, _sourceId: s.sourceId, _sourceName: s.sourceName })));
 
-  const filtered = allContainers.filter(c => {
+  // 按自定义顺序排序（localStorage），新容器自动追加到末尾
+  const sortContainers = (containers: typeof allContainers) => {
+    return [...containers].sort((a, b) => {
+      const keyA = `${a._sourceId}:${a.id}`;
+      const keyB = `${b._sourceId}:${b.id}`;
+      const idxA = containerOrder.indexOf(keyA);
+      const idxB = containerOrder.indexOf(keyB);
+      if (idxA === -1 && idxB === -1) return 0;
+      if (idxA === -1) return 1;
+      if (idxB === -1) return -1;
+      return idxA - idxB;
+    });
+  };
+
+  const sortedContainers = sortContainers(allContainers);
+
+  // ─── 拖拽处理器 ─────────────────────────────────────────────
+  const handleDragStart = (e: React.DragEvent, key: string) => {
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', key);
+    setDragKey(key);
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+  };
+
+  const handleDragEnter = (e: React.DragEvent, key: string) => {
+    e.preventDefault();
+    if (key !== dragKey) {
+      setDragOverKey(key);
+    }
+  };
+
+  const handleDragLeave = () => {
+    setDragOverKey(null);
+  };
+
+  const handleDrop = (e: React.DragEvent, targetKey: string) => {
+    e.preventDefault();
+    const sourceKey = e.dataTransfer.getData('text/plain');
+    if (!sourceKey || sourceKey === targetKey) {
+      setDragKey(null);
+      setDragOverKey(null);
+      return;
+    }
+
+    const newOrder = containerOrder.includes(sourceKey)
+      ? [...containerOrder]
+      : [...containerOrder, sourceKey];
+
+    const sourceIdx = newOrder.indexOf(sourceKey);
+    let targetIdx = newOrder.indexOf(targetKey);
+    if (targetIdx === -1) {
+      targetIdx = newOrder.length;
+    }
+
+    newOrder.splice(sourceIdx, 1);
+    // 调整插入位置（如果目标在源之后且源已移除）
+    const insertIdx = targetIdx > sourceIdx ? targetIdx - 1 : targetIdx;
+    newOrder.splice(insertIdx, 0, sourceKey);
+
+    setContainerOrder(newOrder);
+    localStorage.setItem('docker-container-order', JSON.stringify(newOrder));
+    setDragKey(null);
+    setDragOverKey(null);
+  };
+
+  const handleDragEnd = () => {
+    setDragKey(null);
+    setDragOverKey(null);
+  };
+
+  const resetOrder = () => {
+    localStorage.removeItem('docker-container-order');
+    setContainerOrder([]);
+  };
+
+  const filtered = sortedContainers.filter(c => {
     const q = filter.toLowerCase();
     return (
       (!q || c.names.some(n => n.toLowerCase().includes(q)) || c.image.toLowerCase().includes(q) || c.id.toLowerCase().includes(q)) &&
@@ -519,6 +608,14 @@ export default function Docker() {
             {s === 'all' ? '全部' : s}
           </button>
         ))}
+        <button
+          onClick={resetOrder}
+          className="px-3 py-1.5 rounded-lg text-xs font-medium bg-dark-900 text-dark-500 border border-dark-800 hover:border-dark-600 hover:text-dark-300 transition-colors"
+          title="重置为默认排序"
+        >
+          <GripVertical className="w-3 h-3 inline mr-1" />
+          重置排序
+        </button>
         <div className="ml-auto text-xs text-dark-600">
           {sources.length > 0 && sources.map(s => (
             s.error
@@ -555,14 +652,33 @@ export default function Docker() {
             const uniqueErrorSet = new Set(errorLogs.map(l => normalize(l.content || l.line)));
 
             return (
-              <div key={key} className={`glass rounded-xl border transition-all overflow-hidden ${
-                isSelected ? 'border-accent-500/50 bg-accent-500/5' :
-                c.exitType === 'oom' ? 'border-red-500/30 border-l-2 bg-red-500/5' :
-                c.exitType === 'error' || c.exitType === 'segfault' ? 'border-orange-500/20 border-l-2 bg-orange-500/3' :
-                'border-dark-800 hover:border-dark-700'
-              }`}>
+              <div
+                key={key}
+                draggable
+                onDragStart={(e) => handleDragStart(e, key)}
+                onDragOver={handleDragOver}
+                onDragEnter={(e) => handleDragEnter(e, key)}
+                onDragLeave={handleDragLeave}
+                onDrop={(e) => handleDrop(e, key)}
+                onDragEnd={handleDragEnd}
+                className={`group glass rounded-xl border transition-all overflow-hidden ${
+                  dragKey === key ? 'opacity-50 border-2 border-dashed border-blue-400' :
+                  isSelected ? 'border-accent-500/50 bg-accent-500/5' :
+                  c.exitType === 'oom' ? 'border-red-500/30 border-l-2 bg-red-500/5' :
+                  c.exitType === 'error' || c.exitType === 'segfault' ? 'border-orange-500/20 border-l-2 bg-orange-500/3' :
+                  'border-dark-800 hover:border-dark-700'
+                } ${dragOverKey === key ? 'border-blue-400/50 bg-blue-500/5' : ''}`}
+              >
                 {/* Container row */}
                 <div className="flex items-center gap-3 px-4 py-3">
+                  {/* Drag handle */}
+                  <div
+                    className="flex-shrink-0 text-dark-700 opacity-0 group-hover:opacity-100 hover:text-dark-300 cursor-grab active:cursor-grabbing transition-opacity"
+                    onMouseDown={(e) => e.stopPropagation()}
+                  >
+                    <GripVertical className="w-4 h-4" />
+                  </div>
+
                   {/* Select */}
                   <button
                     onClick={(e) => { e.preventDefault(); e.stopPropagation(); toggleSelect(c._sourceId, c); }}
