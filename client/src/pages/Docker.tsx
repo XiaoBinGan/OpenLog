@@ -67,7 +67,6 @@ export default function Docker() {
     } catch { return []; }
   });
   const [dragKey, setDragKey] = useState<string | null>(null);
-  const [dragOverKey, setDragOverKey] = useState<string | null>(null);
 
   // AI 诊断（单容器）
   const [diagnoseKey, setDiagnoseKey] = useState<string | null>(null);
@@ -179,15 +178,13 @@ export default function Docker() {
     e.dataTransfer.dropEffect = 'move';
   };
 
-  const handleDragEnter = (e: React.DragEvent, key: string) => {
+  const handleDragEnter = (e: React.DragEvent) => {
     e.preventDefault();
-    if (key !== dragKey) {
-      setDragOverKey(key);
-    }
+    (e.currentTarget as HTMLElement).classList.add('ring-1', 'ring-blue-400/30');
   };
 
-  const handleDragLeave = () => {
-    setDragOverKey(null);
+  const handleDragLeave = (e: React.DragEvent) => {
+    (e.currentTarget as HTMLElement).classList.remove('ring-1', 'ring-blue-400/30');
   };
 
   const handleDrop = (e: React.DragEvent, targetKey: string) => {
@@ -195,29 +192,31 @@ export default function Docker() {
     const sourceKey = e.dataTransfer.getData('text/plain');
     if (!sourceKey || sourceKey === targetKey) {
       setDragKey(null);
-      setDragOverKey(null);
       return;
     }
+
+    // 用 allContainers 的真实顺序计算插入位置（不受 containerOrder 影响）
+    const allKeys = allContainers.map(c => `${c._sourceId}:${c.id}`);
+    const sourceIdx = allKeys.indexOf(sourceKey);
+    const targetIdx = allKeys.indexOf(targetKey);
+    if (sourceIdx === -1 || targetIdx === -1) return;
 
     const newOrder = containerOrder.includes(sourceKey)
       ? [...containerOrder]
       : [...containerOrder, sourceKey];
 
-    const sourceIdx = newOrder.indexOf(sourceKey);
-    let targetIdx = newOrder.indexOf(targetKey);
-    if (targetIdx === -1) {
-      targetIdx = newOrder.length;
-    }
+    // 从当前顺序中移除源
+    const orderSourceIdx = newOrder.indexOf(sourceKey);
+    if (orderSourceIdx !== -1) newOrder.splice(orderSourceIdx, 1);
 
-    newOrder.splice(sourceIdx, 1);
-    // 调整插入位置（如果目标在源之后且源已移除）
-    const insertIdx = targetIdx > sourceIdx ? targetIdx - 1 : targetIdx;
+    // 找到目标在当前 newOrder 中的位置来插入
+    const orderTargetIdx = newOrder.indexOf(targetKey);
+    const insertIdx = orderTargetIdx === -1 ? newOrder.length : orderTargetIdx;
     newOrder.splice(insertIdx, 0, sourceKey);
 
     setContainerOrder(newOrder);
     localStorage.setItem('docker-container-order', JSON.stringify(newOrder));
     setDragKey(null);
-    setDragOverKey(null);
   };
 
   const handleDragEnd = () => {
@@ -657,7 +656,7 @@ export default function Docker() {
                 draggable
                 onDragStart={(e) => handleDragStart(e, key)}
                 onDragOver={handleDragOver}
-                onDragEnter={(e) => handleDragEnter(e, key)}
+                onDragEnter={handleDragEnter}
                 onDragLeave={handleDragLeave}
                 onDrop={(e) => handleDrop(e, key)}
                 onDragEnd={handleDragEnd}
@@ -667,7 +666,7 @@ export default function Docker() {
                   c.exitType === 'oom' ? 'border-red-500/30 border-l-2 bg-red-500/5' :
                   c.exitType === 'error' || c.exitType === 'segfault' ? 'border-orange-500/20 border-l-2 bg-orange-500/3' :
                   'border-dark-800 hover:border-dark-700'
-                } ${dragOverKey === key ? 'border-blue-400/50 bg-blue-500/5' : ''}`}
+                } `}
               >
                 {/* Container row */}
                 <div className="flex items-center gap-3 px-4 py-3">
