@@ -221,7 +221,6 @@ export default function Docker() {
 
   const handleDragEnd = () => {
     setDragKey(null);
-    setDragOverKey(null);
   };
 
   const resetOrder = () => {
