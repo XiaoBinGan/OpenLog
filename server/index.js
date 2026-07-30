@@ -126,6 +126,8 @@ function saveSettings(data) {
   if (db) {
     try {
       setKv('app_settings', data);
+      // 刷新内存缓存，确保后续 ensureSettings() 返回最新值
+      settings = { ...defaultSettings, ...data };
       return true;
     } catch (e) {
       console.warn('[Settings] 保存到 DB 失败:', e.message);
@@ -140,6 +142,8 @@ function saveSettings(data) {
       if (fileData[key]) fileData[key] = encryptField(fileData[key]);
     }
     fs.writeFileSync(SETTINGS_FILE, JSON.stringify(fileData, null, 2), 'utf8');
+    // 刷新内存缓存
+    settings = { ...defaultSettings, ...data };
     return true;
   } catch (e2) {
     console.error('[Settings] 保存到文件失败:', e2.message);
@@ -163,7 +167,7 @@ const app = express();
 const server = createServer(app);
 const wss = new WebSocketServer({ noServer: true }); // 关键：使用 noServer: true，避免自动处理升级
 
-const PORT = process.env.PORT || 3001;
+const PORT = process.env.PORT || 3011;
 
 // Middleware
 app.use(cors({

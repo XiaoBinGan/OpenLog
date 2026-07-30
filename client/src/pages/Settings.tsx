@@ -359,6 +359,22 @@ export default function Settings() {
     setTestResult(null);
 
     try {
+      // 先保存当前配置，确保测试用的是页面上的最新值
+      const saveRes = await fetch('/api/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          openaiApiKey: settings.openaiApiKey,
+          openaiBaseUrl: settings.openaiBaseUrl,
+          model: settings.model,
+        })
+      });
+      if (!saveRes.ok) {
+        setTestResult({ success: false, message: '保存配置失败，无法测试' });
+        setTesting(false);
+        return;
+      }
+
       const res = await fetch('/api/logs/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
