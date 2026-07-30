@@ -15,12 +15,12 @@ export default defineConfig({
     proxy: {
       // OpenLog 后端
       '/api': {
-        target: 'http://localhost:3001',
+        target: 'http://localhost:3011',
         changeOrigin: true,
       },
       // WebSocket
       '/ws': {
-        target: 'ws://localhost:3001',
+        target: 'ws://localhost:3011',
         ws: true,
         changeOrigin: true,
       },

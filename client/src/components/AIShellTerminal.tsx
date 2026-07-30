@@ -81,12 +81,14 @@ export default function AIShellTerminal({ server, onClose, onReady }: AIShellTer
       .catch(() => {});
   }, []);
 
-  // 连接 WebSocket — localhost 直连 3001，LAN 走 Vite 代理
+  // 连接 WebSocket — localhost 直连 3011，LAN 走 Vite 代理
+  // 端口与后端 server/index.js 保持一致
+  const BACKEND_PORT = 3011;
   useEffect(() => {
     // @ts-ignore
     const isDev = import.meta.env?.DEV || false;
     const hostname = window.location.hostname;
-    const wsHost = (isDev && hostname === 'localhost') ? 'localhost:3001' : window.location.host;
+    const wsHost = (isDev && hostname === 'localhost') ? `localhost:${BACKEND_PORT}` : window.location.host;
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = `${protocol}//${wsHost}/ws/aishell/${server.id}`;
     setConnecting(true);
