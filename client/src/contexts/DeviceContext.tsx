@@ -1,5 +1,6 @@
 import { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import type { RemoteServer } from '../types';
+import { apiFetch } from '../api/client';
 
 // 本机设备
 const LOCAL_DEVICE = { 
@@ -66,12 +67,7 @@ export function DeviceProvider({ children }: { children: React.ReactNode }) {
   // 刷新设备列表
   const refreshDevices = useCallback(async () => {
     try {
-      const res = await fetch('/api/remote/servers');
-      if (!res.ok) {
-        console.error('Failed to fetch remote servers:', res.status);
-        return;
-      }
-      const data = await res.json();
+      const data = await apiFetch<{ servers?: RemoteServer[] }>('/api/remote/servers');
       const connectedServers = (data.servers || []).filter(
         (s: RemoteServer) => s.status === 'connected'
       );

@@ -1,13 +1,22 @@
 import { NodeSSH } from 'node-ssh';
+import { errorMessage } from './errors.js';
+import { guardSshConnection } from './ssh-guard.js';
 import { v4 as uuidv4 } from 'uuid';
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { getKv, setKv, getDb } from './db/index.js';
 
-// AES-256-GCM 加密密钥（32 字节，从固定种子派生）
-const ENC_KEY = crypto.scryptSync('openlog-remote-secret-salt-v2', 'openlog', 32);
+// AES-256-GCM 加密密钥（32 字节）
+// 优先从 OPENLOG_SECRET_KEY 派生；未设置时回退到源码内置种子（兼容旧数据）
+const LEGACY_ENC_KEY = crypto.scryptSync('openlog-remote-secret-salt-v2', 'openlog', 32);
+const ENC_KEY = process.env.OPENLOG_SECRET_KEY
+  ? crypto.scryptSync(process.env.OPENLOG_SECRET_KEY, 'openlog-remote-secret-salt-v2', 32)
+  : LEGACY_ENC_KEY;
 const ALGORITHM = 'aes-256-gcm';
+
+// 旧密钥解密成功后需要立即用新密钥重新加密并落盘
+let needsReencrypt = false;
 
 /**
  * 远程服务器日志管理模块
@@ -39,11 +48,12 @@ export function loadServers() {
           ...s,
           password: s.password ? decryptPassword(s.password) : undefined,
         }));
+        persistKeyMigration();
         console.log('[Remote] 从 SQLite 加载了', servers.length, '台服务器');
         return servers;
       }
     } catch (err) {
-      console.warn('[Remote] 从 DB 加载失败，回退到文件:', err.message);
+      console.warn('[Remote] 从 DB 加载失败，回退到文件:', errorMessage(err));
     }
   }
 
@@ -58,9 +68,10 @@ export function loadServers() {
       }));
     }
   } catch (err) {
-    console.error('Failed to load remote servers config:', err.message);
+    console.error('Failed to load remote servers config:', errorMessage(err));
     servers = [];
   }
+  persistKeyMigration();
   return servers;
 }
 
@@ -83,7 +94,7 @@ function saveServers() {
       setKv('remote_servers', dataToSave);
       return;
     } catch (err) {
-      console.warn('[Remote] 保存到 DB 失败，回退到文件:', err.message);
+      console.warn('[Remote] 保存到 DB 失败，回退到文件:', errorMessage(err));
     }
   }
 
@@ -91,7 +102,7 @@ function saveServers() {
   try {
     fs.writeFileSync(CONFIG_PATH, JSON.stringify(dataToSave, null, 2));
   } catch (err) {
-    console.error('Failed to save remote servers config:', err.message);
+    console.error('Failed to save remote servers config:', errorMessage(err));
   }
 }
 
@@ -107,23 +118,43 @@ function encryptPassword(password) {
   return iv.toString('hex') + ':' + authTag.toString('hex') + ':' + encrypted.toString('hex');
 }
 
+function decryptWithKey(encrypted, key) {
+  const [ivHex, authTagHex, cipherHex] = encrypted.split(':');
+  const iv = Buffer.from(ivHex, 'hex');
+  const authTag = Buffer.from(authTagHex, 'hex');
+  const decipher = crypto.createDecipheriv(ALGORITHM, key, iv);
+  decipher.setAuthTag(authTag);
+  const decrypted = Buffer.concat([decipher.update(Buffer.from(cipherHex, 'hex')), decipher.final()]);
+  return decrypted.toString('utf8');
+}
+
 function decryptPassword(encrypted) {
-  try {
-    // 兼容旧 Base64 格式（无冒号分隔）
-    if (!encrypted.includes(':')) {
-      return Buffer.from(encrypted, 'base64').toString('utf-8');
-    }
-    const [ivHex, authTagHex, cipherHex] = encrypted.split(':');
-    const iv = Buffer.from(ivHex, 'hex');
-    const authTag = Buffer.from(authTagHex, 'hex');
-    const decipher = crypto.createDecipheriv(ALGORITHM, ENC_KEY, iv);
-    decipher.setAuthTag(authTag);
-    const decrypted = Buffer.concat([decipher.update(Buffer.from(cipherHex, 'hex')), decipher.final()]);
-    return decrypted.toString('utf8');
-  } catch {
-    // 解密失败，返回原值（可能已是明文）
-    return encrypted;
+  // 兼容旧 Base64 格式（无冒号分隔）
+  if (!encrypted.includes(':')) {
+    return Buffer.from(encrypted, 'base64').toString('utf-8');
   }
+  // 优先使用新密钥（OPENLOG_SECRET_KEY 派生）
+  try {
+    return decryptWithKey(encrypted, ENC_KEY);
+  } catch {}
+  // 新密钥失败则回退旧密钥；成功后标记迁移，加载完成后用新密钥重新加密并落盘
+  if (ENC_KEY !== LEGACY_ENC_KEY) {
+    try {
+      const decrypted = decryptWithKey(encrypted, LEGACY_ENC_KEY);
+      needsReencrypt = true;
+      return decrypted;
+    } catch {}
+  }
+  // 解密失败，返回原值（可能已是明文）
+  return encrypted;
+}
+
+// 旧密钥数据迁移：加载完成后用新密钥重新加密并持久化
+function persistKeyMigration() {
+  if (!needsReencrypt) return;
+  needsReencrypt = false;
+  saveServers();
+  console.log('[Remote] 已使用新密钥重新加密存储的 SSH 密码');
 }
 
 /**
@@ -176,15 +207,6 @@ export function addServer(config) {
   servers.push(server);
   saveServers();
   return server;
-}
-
-/**
- * 获取服务器解密后的密码（编辑弹窗用）
- */
-export function getServerPassword(id) {
-  const server = servers.find(s => s.id === id);
-  if (!server) return null;
-  return server.password || null;
 }
 
 /**
@@ -261,6 +283,8 @@ export async function testConnection(config) {
     }
     
     await ssh.connect(sshConfig);
+    // 短连接同样要挂：connect 返回后到 dispose 之间 socket 仍可能出错
+    guardSshConnection(ssh, `测试连接 ${config.host}`);
     
     // 获取系统信息
     const result = await ssh.execCommand('uname -a && echo "---SEPARATOR---" && df -h / | tail -1 && echo "---SEPARATOR---" && free -m | grep Mem');
@@ -276,7 +300,7 @@ export async function testConnection(config) {
     
     return { success: true, info };
   } catch (err) {
-    return { success: false, error: err.message };
+    return { success: false, error: errorMessage(err) };
   }
 }
 
@@ -301,6 +325,11 @@ export async function connectServer(id) {
       host: server.host,
       port: server.port,
       username: server.username,
+      // 半开连接防护：网络变化后 TCP 层可能已断但 SSH 层无感知，
+      // 连接会静默变成僵尸（此前没有这项，P0-12 的 read ETIMEDOUT 崩溃
+      // 正是这一类问题）。keepalive 每 15s 探测一次，3 次无响应即判定断开。
+      keepaliveInterval: 15000,
+      keepaliveCountMax: 3,
     };
     
     if (server.privateKey) {
@@ -314,6 +343,17 @@ export async function connectServer(id) {
     }
     
     await ssh.connect(sshConfig);
+    
+    // 必须挂：node-ssh 在 'ready' 之后移除了它唯一的 error 监听者，
+    // 不挂的话这个连接后续任何 socket 错误都会升级成 uncaughtException 并终止进程。
+    guardSshConnection(ssh, `服务器 ${server.name || id}`, () => {
+      // 连接已不可用：从连接表摘除，让上层按「未连接」处理（UI 会提示重连）
+      if (sshConnections.get(id) === ssh) {
+        sshConnections.delete(id);
+        const srv = servers.find(x => x.id === id);
+        if (srv) { srv.status = 'disconnected'; saveServers(); }
+      }
+    });
     
     sshConnections.set(id, ssh);
     server.status = 'connected';
@@ -331,6 +371,25 @@ export async function connectServer(id) {
 /**
  * 断开服务器连接
  */
+/**
+ * 取得一台服务器的**活跃** SSH 连接，没有就按需建立。
+ *
+ * Docker-over-SSH 桥接层依赖它：桥不自己管理连接生命周期，而是复用这个池，
+ * 于是「按需连接、断连守卫、自动重连」在整个进程里只有一份实现。
+ */
+export async function ensureSshConnection(id) {
+  const existing = sshConnections.get(id);
+  if (existing && existing.isConnected()) return existing;
+
+  await connectServer(id);
+
+  const ssh = sshConnections.get(id);
+  if (!ssh || !ssh.isConnected()) {
+    throw new Error(`服务器 ${id} 的 SSH 连接未能建立`);
+  }
+  return ssh;
+}
+
 export async function disconnectServer(id) {
   const ssh = sshConnections.get(id);
   if (ssh) {
@@ -343,6 +402,18 @@ export async function disconnectServer(id) {
     server.status = 'disconnected';
     saveServers();
   }
+}
+
+/**
+ * 关闭全部 SSH 连接（进程退出时调用）。
+ * 不逐个走 disconnectServer()，避免退出路径上反复 saveServers() 写库。
+ */
+export async function disconnectAll() {
+  const entries = [...sshConnections.entries()];
+  sshConnections.clear();
+  await Promise.allSettled(entries.map(([, ssh]) => ssh.dispose()));
+  for (const s of servers) s.status = 'disconnected';
+  return entries.length;
 }
 
 /**
@@ -364,7 +435,7 @@ export async function execShellCommand(id, command, timeout = 30000) {
       signal: result.signal,
     };
   } catch (err) {
-    throw new Error(`命令执行失败: ${err.message}`);
+    throw new Error(`命令执行失败: ${errorMessage(err)}`);
   }
 }
 
@@ -412,7 +483,7 @@ export async function createShellSession(id, ws) {
     
     shellStream.on('error', (err) => {
       if (ws.readyState === ws.OPEN) {
-        ws.send(JSON.stringify({ type: 'shell_error', error: err.message }));
+        ws.send(JSON.stringify({ type: 'shell_error', error: errorMessage(err) }));
       }
     });
     
@@ -422,7 +493,7 @@ export async function createShellSession(id, ws) {
       close: () => shellStream.end(),
     };
   } catch (err) {
-    throw new Error(`创建 Shell 会话失败: ${err.message}`);
+    throw new Error(`创建 Shell 会话失败: ${errorMessage(err)}`);
   }
 }
 
@@ -483,7 +554,7 @@ export async function listRemoteFiles(id, subPath = '') {
 
     return { files, dirs, currentPath: basePath };
   } catch (err) {
-    return { files: [], dirs: [], error: err.message };
+    return { files: [], dirs: [], error: errorMessage(err) };
   }
 }
 
@@ -502,7 +573,7 @@ export async function readRemoteFileRaw(id, filePath) {
     }
     return { content: result.stdout };
   } catch (err) {
-    return { error: err.message };
+    return { error: errorMessage(err) };
   }
 }
 
@@ -527,7 +598,7 @@ export async function writeRemoteFile(id, filePath, content) {
     }
     return { success: true };
   } catch (err) {
-    return { error: err.message };
+    return { error: errorMessage(err) };
   }
 }
 
@@ -550,7 +621,7 @@ export async function uploadRemoteFile(id, localFileBuffer, remotePath) {
     }
     return { success: true, remotePath };
   } catch (err) {
-    return { error: err.message };
+    return { error: errorMessage(err) };
   }
 }
 
@@ -581,7 +652,7 @@ export async function initChunkedUpload(id, remotePath, fileSize) {
     });
     return { uploadId, chunkSize: CHUNK_SIZE, totalChunks: Math.ceil(fileSize / CHUNK_SIZE) };
   } catch (err) {
-    return { error: err.message };
+    return { error: errorMessage(err) };
   }
 }
 
@@ -608,7 +679,7 @@ export async function uploadChunk(id, uploadId, chunkIndex, base64Data) {
     session.receivedChunks.add(chunkIndex);
     return { success: true, chunkIndex, received: session.receivedChunks.size };
   } catch (err) {
-    return { error: err.message };
+    return { error: errorMessage(err) };
   }
 }
 
@@ -647,7 +718,7 @@ export async function completeChunkedUpload(id, uploadId, totalChunks) {
 
     return { success: true, remotePath: session.remotePath, size: actualSize };
   } catch (err) {
-    return { error: err.message };
+    return { error: errorMessage(err) };
   }
 }
 
@@ -727,7 +798,7 @@ export async function readRemoteFile(id, filePath, options = {}) {
       totalLines: logLines.length,
     };
   } catch (err) {
-    return { logs: [], error: err.message };
+    return { logs: [], error: errorMessage(err) };
   }
 }
 
@@ -778,7 +849,7 @@ export async function execRemoteCommand(id, command) {
       exitCode: result.code,
     };
   } catch (err) {
-    return { success: false, error: err.message };
+    return { success: false, error: errorMessage(err) };
   }
 }
 
@@ -837,9 +908,13 @@ export async function getRemoteSystemStats(id) {
       nvidia-smi --query-gpu=index,name,utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader,nounits 2>/dev/null | \
         awk -F', ' '{gsub(/%/,"",$3); gsub(/MiB|MB/,"",$4); gsub(/MiB|MB/,"",$5); gsub(/°C/,"",$6); print "GPU:" $1 ":" $2 ":" $3 ":" $4 ":" $5 ":" $6}'
 
-      # GPU 占用进程信息（兼容逗号/逗号空格两种CSV格式）
-      nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv,noheader,nounits 2>/dev/null | \
-        awk '{gsub(/,[[:space:]]*/, "|"); gsub(/MiB|MB/, "", $3); print "GPUPROC:" $1 "|" $2 "|" $3}'
+      # GPU 与 PCI Bus 映射（用于将进程准确归属到对应 GPU）
+      nvidia-smi --query-gpu=index,gpu_bus_id --format=csv,noheader,nounits 2>/dev/null | \
+        awk -F', ' '{print "GPUBUS:" $1 "|" $2}'
+
+      # GPU 占用进程信息：带 gpu_bus_id，避免把所有进程重复显示到每张卡
+      nvidia-smi --query-compute-apps=gpu_bus_id,pid,process_name,used_memory --format=csv,noheader,nounits 2>/dev/null | \
+        awk -F', ' '{gsub(/MiB|MB/, "", $4); print "GPUPROC:" $1 "|" $2 "|" $3 "|" $4}'
     `);
     
     if (result.stderr && result.stderr.includes('Permission denied')) {
@@ -917,28 +992,38 @@ export async function getRemoteSystemStats(id) {
 
     // 解析 GPU 信息
     const gpuLines = lines.filter(l => l.startsWith('GPU:'));
+    const gpuBusLines = lines.filter(l => l.startsWith('GPUBUS:'));
     const gpuProcLines = lines.filter(l => l.startsWith('GPUPROC:'));
-    
-    // 解析 GPU 进程
+
+    // 将 PCI Bus ID 映射为 GPU index，进程才能准确归属到对应显卡
+    const gpuBusToIndex = {};
+    gpuBusLines.forEach(l => {
+      const [idx, busId] = l.replace('GPUBUS:', '').split('|');
+      if (busId) gpuBusToIndex[busId.trim()] = String(parseInt(idx, 10) || 0);
+    });
+
     const gpuProcesses = gpuProcLines.map(l => {
       const parts = l.replace('GPUPROC:', '').split('|');
+      const busId = (parts[0] || '').trim();
       return {
-        pid: parseInt(parts[0]) || 0,
-        name: parts[1] || 'unknown',
-        usedMemory: parseFloat(parts[2]) || 0,
+        gpuId: gpuBusToIndex[busId] ?? busId,
+        pid: parseInt(parts[1]) || 0,
+        name: parts[2] || 'unknown',
+        usedMemory: parseFloat(parts[3]) || 0,
       };
     });
-    
+
     const gpus = gpuLines.map(l => {
       const parts = l.replace('GPU:', '').split(':');
+      const index = parseInt(parts[0], 10) || 0;
       return {
-        index: parseInt(parts[0]) || 0,
+        index,
         name: parts[1] || '',
         util: parseFloat(parts[2]) || 0,
         memUsed: parseFloat(parts[3]) || 0,
         memTotal: parseFloat(parts[4]) || 1,
         temp: parseFloat(parts[5]) || 0,
-        processes: gpuProcesses, // 所有进程都附加到每个 GPU
+        processes: gpuProcesses.filter(p => String(p.gpuId) === String(index)),
       };
     });
 
@@ -951,7 +1036,7 @@ export async function getRemoteSystemStats(id) {
       gpus,
     };
   } catch (err) {
-    return { error: err.message };
+    return { error: errorMessage(err) };
   }
 }
 
@@ -1002,7 +1087,7 @@ export async function searchRemoteLogs(id, search, options = {}) {
     
     return { results, files, total: results.length };
   } catch (err) {
-    return { results: [], error: err.message };
+    return { results: [], error: errorMessage(err) };
   }
 }
 
@@ -1013,7 +1098,6 @@ export default {
   loadServers,
   getServers,
   getServersWithEncryptedPasswords,
-  getServerPassword,
   addServer,
   updateServer,
   deleteServer,

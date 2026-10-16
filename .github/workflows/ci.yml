@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [node, main]
+  pull_request:
+    branches: [node, main]
+  workflow_dispatch:
+
+# 同一分支的新推送取消旧的进行中任务
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Lint · Test · Build
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            client/package-lock.json
+
+      # better-sqlite3 是原生模块，postinstall 会执行 npm rebuild
+      - name: Install server dependencies
+        run: npm ci
+
+      - name: Install client dependencies
+        run: npm ci --prefix client
+
+      - name: Lint (server)
+        run: npm run lint
+
+      - name: Lint (client)
+        run: npm run lint:client
+
+      - name: Typecheck + build client
+        run: npm run build
+
+      # 测试覆盖：API 冒烟、数据库 CRUD、告警、Docker WS、安全回归
+      # 服务端子进程由测试自行拉起，无需外部 SSH/Docker 依赖
+      - name: Test
+        run: npm test
+
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage/
+          if-no-files-found: ignore
+          retention-days: 7

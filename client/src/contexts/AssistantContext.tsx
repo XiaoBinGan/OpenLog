@@ -1,5 +1,6 @@
 import { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { useLocation } from 'react-router-dom';
+import { apiFetch, apiJson } from '../api/client';
 
 export interface AssistantMessage {
   role: 'user' | 'assistant' | 'system';
@@ -144,19 +145,19 @@ export function AssistantProvider({ children }: { children: React.ReactNode }) {
   // 知识库
   const reloadMemory = useCallback(async () => {
     try {
-      const res = await fetch('/api/assistant/memory');
-      if (res.ok) setMemoryFiles((await res.json()).files || []);
+      const data = await apiFetch<{ files?: MemoryFile[] }>('/api/assistant/memory');
+      setMemoryFiles(data.files || []);
     } catch {}
   }, []);
   useEffect(() => { reloadMemory(); }, [reloadMemory]);
 
   const deleteMemory = useCallback(async (name: string) => {
-    try { await fetch(`/api/assistant/memory/${encodeURIComponent(name)}`, { method: 'DELETE' }); await reloadMemory(); } catch {}
+    try { await apiFetch(`/api/assistant/memory/${encodeURIComponent(name)}`, { method: 'DELETE' }); await reloadMemory(); } catch {}
   }, [reloadMemory]);
 
   const saveMemory = useCallback(async (name: string, content: string) => {
     try {
-      await fetch('/api/assistant/memory', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, content }) });
+      await apiJson('/api/assistant/memory', 'POST', { name, content });
       await reloadMemory();
     } catch {}
   }, [reloadMemory]);

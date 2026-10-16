@@ -6,6 +6,7 @@ import {
   Info, FileText, Target, ListChecks, Ban, FileOutput,
   Download, Upload,
 } from 'lucide-react';
+import { apiFetch, apiJson } from '../api/client';
 
 interface Skill {
   id: string;
@@ -96,9 +97,7 @@ export default function Skills() {
   // 导出技能
   const handleExport = async () => {
     try {
-      const res = await fetch('/api/skills');
-      if (!res.ok) throw new Error('加载技能失败');
-      const data = await res.json();
+      const data = await apiFetch<{ skills: Skill[] }>('/api/skills');
       const skills = data.skills || [];
       const exportData = JSON.stringify(skills, null, 2);
       const blob = new Blob([exportData], { type: 'application/json' });
@@ -158,19 +157,8 @@ export default function Skills() {
             continue;
           }
 
-          const res = await fetch('/api/skills', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(body),
-          });
-
-          if (res.ok) {
-            success++;
-          } else {
-            const errData = await res.json().catch(() => ({}));
-            failed++;
-            errors.push(`「${body.name}」: ${errData.error || '创建失败'}`);
-          }
+          await apiJson('/api/skills', 'POST', body);
+          success++;
         } catch (fetchErr: any) {
           failed++;
           errors.push(`「${s.name || '(无名)'}」: ${fetchErr.message}`);
@@ -189,9 +177,7 @@ export default function Skills() {
 
   const loadSkills = async () => {
     try {
-      const res = await fetch('/api/skills');
-      if (!res.ok) throw new Error('加载失败');
-      const data = await res.json();
+      const data = await apiFetch<{ skills: Skill[] }>('/api/skills');
       setSkills(data.skills || []);
     } catch (e: any) {
       setError(e.message);
@@ -251,8 +237,7 @@ export default function Skills() {
         content: formContent.trim(),
         category: formCat,
       };
-      const res = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-      if (!res.ok) throw new Error('保存失败');
+      await apiJson(url, method, body);
       await loadSkills();
       setShowModal(false);
     } catch (e: any) {
@@ -264,8 +249,7 @@ export default function Skills() {
 
   const handleDelete = async (s: Skill) => {
     try {
-      const res = await fetch(`/api/skills/${s.id}`, { method: 'DELETE' });
-      if (!res.ok) throw new Error('删除失败');
+      await apiFetch(`/api/skills/${s.id}`, { method: 'DELETE' });
       setDeleteTarget(null);
       await loadSkills();
     } catch (e: any) {

@@ -38,6 +38,28 @@ afterAll(() => {
   closeDb();
 });
 
+// ─── 连接生命周期 ────────────────────────────────────────────
+// 从已合并的 server/__tests__/db.test.js 保留：那里唯一不被本文件覆盖的部分。
+describe('Database init', () => {
+  it('initDb() returns a usable db handle', async () => {
+    const db = await initDb();
+    expect(db).toBeDefined();
+    expect(typeof db.run).toBe('function');
+    expect(typeof db.get).toBe('function');
+    expect(typeof db.all).toBe('function');
+  });
+
+  it('initDb() is idempotent — repeated calls return the same instance', async () => {
+    const db1 = await initDb();
+    const db2 = await initDb();
+    expect(db1).toBe(db2);
+  });
+
+  it('getDb() returns the initialised instance', () => {
+    expect(getDb()).toBeDefined();
+  });
+});
+
 // ─── Machines CRUD ──────────────────────────────────────────
 describe('Machines CRUD', () => {
   const machineId = uuidv4();

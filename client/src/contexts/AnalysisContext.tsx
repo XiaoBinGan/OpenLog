@@ -1,6 +1,7 @@
 import { createContext, useContext, useState, useCallback, useRef, useEffect } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useToast } from './ToastContext';
+import { apiFetch, apiJson } from '../api/client';
 
 // ── Types ──────────────────────────────────────────────
 
@@ -40,7 +41,8 @@ interface AnalysisContextValue extends AnalysisState {
   // 巡检 + AI 分析
   startPatrol: () => Promise<void>;
   startPatrolAnalysis: (results?: any[]) => Promise<void>;
-  refreshPatrol: () => Promise<void>;
+  // 返回巡检结果；请求失败时返回 null（调用方 startPatrol 只 await 不取值）
+  refreshPatrol: () => Promise<{ results?: any[] } | null>;
 
   // 单容器诊断
   startContainerDiagnosis: (sourceId: string, containerId: string, containerName: string, exitData: {
@@ -151,17 +153,12 @@ export function AnalysisProvider({ children }: { children: React.ReactNode }) {
     setLogAnalysis(null);
     setLogError(null);
     try {
-      const res = await fetch('/api/logs/analyze', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ logs, prompt: customPrompt || undefined, deviceId: deviceId || 'local', deviceName }),
-      });
-      const data = await res.json();
+      const data = await apiJson<{ error?: string; analysis?: string }>('/api/logs/analyze', 'POST', { logs, prompt: customPrompt || undefined, deviceId: deviceId || 'local', deviceName });
       if (data.error) {
         setLogError(data.error);
         setLogAnalysis(`❌ 错误: ${data.error}\n\n请检查设置中的 API Key 配置。`);
       } else {
-        setLogAnalysis(data.analysis);
+        setLogAnalysis(data.analysis ?? '');
         if (!isOnAnalyticsPage) {
           toast.success('日志分析完成', {
             action: { label: '查看 →', onClick: () => navigate('/analytics') },
@@ -191,8 +188,7 @@ export function AnalysisProvider({ children }: { children: React.ReactNode }) {
     setHealthError(null);
 
     try {
-      const reportRes = await fetch('/api/docker/health-check');
-      const report = await reportRes.json();
+      const report = await apiFetch<{ problems?: unknown[]; analysis?: string }>('/api/docker/health-check');
       if (controller.signal.aborted) return;
       setHealthReport(report);
 
@@ -253,8 +249,7 @@ export function AnalysisProvider({ children }: { children: React.ReactNode }) {
   // ── 巡检 ──
   const refreshPatrol = useCallback(async () => {
     try {
-      const res = await fetch('/api/docker/patrol/now', { method: 'POST' });
-      const data = await res.json();
+      const data = await apiFetch<{ results?: any[] }>('/api/docker/patrol/now', { method: 'POST' });
       if (data.results) {
         setPatrolResults(data.results);
         setPatrolTimestamp(new Date().toISOString());
@@ -298,10 +293,11 @@ export function AnalysisProvider({ children }: { children: React.ReactNode }) {
       if (!res.ok) {
         if (controller.signal.aborted) return;
         setPatrolAnalysis('🕐 暂无新异常日志，尝试分析历史数据...');
-        const last = await fetch('/api/docker/patrol/last').then(r => r.json());
-        if (last.results?.length > 0) {
-          setPatrolResults(last.results);
-          setPatrolTimestamp(last.timestamp);
+        const last = await apiFetch<{ results?: any[]; timestamp?: string }>('/api/docker/patrol/last');
+        const lastResults = last.results ?? [];
+        if (lastResults.length > 0) {
+          setPatrolResults(lastResults);
+          setPatrolTimestamp(last.timestamp ?? new Date().toISOString());
           setPatrolAnalysis('✅ 上次巡检无新增异常。以下为已记录的异常：');
         } else {
           setPatrolAnalysis('✨ 所有容器运行正常，未发现任何异常日志。');
@@ -435,17 +431,18 @@ export function AnalysisProvider({ children }: { children: React.ReactNode }) {
   const runAutoPatrol = useCallback(async () => {
     // Step 1: 触发巡检
     try {
-      const patrolRes = await fetch('/api/docker/patrol/now', { method: 'POST' });
-      const patrolData = await patrolRes.json();
-      if (patrolData.results?.length > 0) {
-        setPatrolResults(patrolData.results);
+      const patrolData = await apiFetch<{ results?: any[] }>('/api/docker/patrol/now', { method: 'POST' });
+      const patrolResults = patrolData.results ?? [];
+      if (patrolResults.length > 0) {
+        setPatrolResults(patrolResults);
         setPatrolTimestamp(new Date().toISOString());
       } else {
         try {
-          const last = await fetch('/api/docker/patrol/last').then(r => r.json());
-          if (last.results?.length > 0) {
-            setPatrolResults(last.results);
-            setPatrolTimestamp(last.timestamp);
+          const last = await apiFetch<{ results?: any[]; timestamp?: string }>('/api/docker/patrol/last');
+          const lastResults = last.results ?? [];
+          if (lastResults.length > 0) {
+            setPatrolResults(lastResults);
+            setPatrolTimestamp(last.timestamp ?? new Date().toISOString());
           }
         } catch { /* ignore */ }
       }

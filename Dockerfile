@@ -7,7 +7,8 @@ WORKDIR /app/client
 COPY client/package*.json ./
 RUN npm install --legacy-peer-deps
 COPY client/ ./
-RUN npx vite build
+# 用 npm run build 而不是 npx vite build，让 tsc -b 的类型错误能中断镜像构建
+RUN npm run build
 
 # ── Stage 2: 生产镜像 ──
 FROM node:20-alpine
@@ -36,8 +37,12 @@ RUN rm -rf /root/.npm
 # 数据持久化目录
 VOLUME ["/app/data", "/app/logs"]
 
-EXPOSE 3001
+# 端口必须与 server/index.js 的 PORT 默认值一致，否则容器内无人监听、端口映射打空
+EXPOSE 3011
 ENV NODE_ENV=production
+# 容器内必须绑 0.0.0.0：server 默认只绑 127.0.0.1，会导宿主机端口映射不可达
+ENV PORT=3011
+ENV HOST=0.0.0.0
 
 # 数据库在容器启动时由 server/index.js 自动初始化
 CMD ["node", "server/index.js"]

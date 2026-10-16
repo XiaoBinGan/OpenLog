@@ -44,7 +44,7 @@ function encryptPassword(password) {
 }
 
 // 导入单个服务器到数据库
-function importToDatabase(server) {
+async function importToDatabase(server) {
   const db = await import('better-sqlite3').then(m => m.default(DB_PATH));
   
   // 检查是否已存在

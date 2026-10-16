@@ -1,6 +1,18 @@
 import { WebSocket } from 'ws';
 
-const ws = new WebSocket('ws://localhost:3001/ws/docker/logs/local/3651649eef2137d2b637bf1f4be6e173da964887550326d94263804199e92195');
+// WebSocket 现在强制鉴权：OPENLOG_TOKEN=<token> node scripts/test-docker-ws.js <sourceId> <containerId>
+const PORT = process.env.PORT || 3011;
+const TOKEN = process.env.OPENLOG_TOKEN || '';
+const q = TOKEN ? `?token=${encodeURIComponent(TOKEN)}` : '';
+const [sourceId = 'local', containerId = ''] = process.argv.slice(2);
+
+if (!TOKEN) console.warn('⚠️  未设置 OPENLOG_TOKEN，连接将返回 401');
+if (!containerId) {
+  console.error('用法: OPENLOG_TOKEN=<token> node scripts/test-docker-ws.js <sourceId> <containerId>');
+  process.exit(1);
+}
+
+const ws = new WebSocket(`ws://localhost:${PORT}/ws/docker/logs/${sourceId}/${containerId}${q}`);
 
 let count = 0;
 ws.on('open', () => console.log('WS connected'));

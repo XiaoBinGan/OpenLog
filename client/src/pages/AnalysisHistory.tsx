@@ -1,6 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { marked } from 'marked';
+import { sanitizeHtml } from '../utils/sanitize';
+import { apiFetch } from '../api/client';
 import {
   History,
   Brain,
@@ -47,8 +49,7 @@ export default function AnalysisHistory() {
       if (filter.status) params.set('status', filter.status);
       params.set('limit', '100');
 
-      const res = await fetch(`/api/analysis/history?${params}`);
-      const data = await res.json();
+      const data = await apiFetch<{ records?: AnalysisRecord[]; total?: number }>(`/api/analysis/history?${params}`);
       let result = data.records || [];
       if (search) {
         const q = search.toLowerCase();
@@ -60,7 +61,7 @@ export default function AnalysisHistory() {
         );
       }
       setRecords(result);
-      setTotal(data.total);
+      setTotal(data.total ?? 0);
     } catch (err) {
       console.error('Failed to load history:', err);
     }
@@ -70,14 +71,22 @@ export default function AnalysisHistory() {
   useEffect(() => { loadHistory(); }, [filter]);
 
   const deleteRecord = async (id: string) => {
-    await fetch(`/api/analysis/history/${id}`, { method: 'DELETE' });
-    loadHistory();
+    try {
+      await apiFetch(`/api/analysis/history/${id}`, { method: 'DELETE' });
+      loadHistory();
+    } catch (err) {
+      console.error('Failed to delete analysis record:', err);
+    }
   };
 
   const clearAll = async () => {
     if (!confirm('确认清空所有分析历史？')) return;
-    await fetch('/api/analysis/history', { method: 'DELETE' });
-    loadHistory();
+    try {
+      await apiFetch('/api/analysis/history', { method: 'DELETE' });
+      loadHistory();
+    } catch (err) {
+      console.error('Failed to clear analysis history:', err);
+    }
   };
 
   const statusIcon = (status: string) => {
@@ -269,5 +278,5 @@ export default function AnalysisHistory() {
 }
 
 function simpleMarkdown(md: string): string {
-  return marked.parse(md, { breaks: true }) as string;
+  return sanitizeHtml(marked.parse(md, { breaks: true }) as string);
 }

@@ -1,5 +1,10 @@
 import { defineConfig } from 'vitest/config';
 
+// 测试隔离：默认情况下 api.test.js 会用 cwd=PROJECT_ROOT 启动服务，直接读写
+// 生产库 data/openlog.db、settings.json、remote-servers.json。
+// 这里统一改指 /tmp 下的隔离目录（与全量测试一致），避免测试污染真实数据。
+const TEST_TMP = '/tmp/openlog-vitest';
+
 export default defineConfig({
   test: {
     globals: true,
@@ -8,6 +13,9 @@ export default defineConfig({
     hookTimeout: 10000,
     env: {
       PORT: '30999',
+      OPENLOG_DATA_DIR: `${TEST_TMP}/data`,
+      OPENLOG_SETTINGS_PATH: `${TEST_TMP}/settings.json`,
+      REMOTE_CONFIG_PATH: `${TEST_TMP}/remote-servers.json`,
     },
   },
 });

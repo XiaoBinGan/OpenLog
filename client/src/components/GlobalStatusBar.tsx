@@ -1,11 +1,32 @@
 import { Monitor, Server, Activity, HardDrive, Cpu, ChevronDown } from 'lucide-react';
 import { useDevice } from '../contexts/DeviceContext';
+import { apiFetch } from '../api/client';
 import { useState, useEffect } from 'react';
 
 interface QuickStats {
   cpu: number;
   memory: number;
   disk: number;
+}
+
+/**
+ * /api/monitor/stats（本机）—— 服务端始终返回结构化格式。
+ */
+interface MonitorStatsResponse {
+  cpu?: { load?: number; cores?: number[] };
+  memory?: { used: number; total?: number };
+  disk?: { name?: string; used?: number; total?: number; usePercent?: number }[];
+}
+
+/**
+ * /api/remote/servers/:id/stats（远程）—— 历史上输出过两种格式，
+ * 所以每个字段都可能是对象或字符串。
+ */
+interface RemoteStatsResponse {
+  offline?: boolean;
+  cpu?: number | string | { load?: number };
+  memory?: number | string | { used: number; total?: number };
+  disk?: number | string | { used?: number; total?: number }[];
 }
 
 export default function GlobalStatusBar() {
@@ -18,9 +39,7 @@ export default function GlobalStatusBar() {
     const fetchStats = async () => {
       try {
         if (isRemote) {
-          const res = await fetch(`/api/remote/servers/${selectedDevice.id}/stats`);
-          if (!res.ok) return; // 静默跳过，不打印错误
-          const data = await res.json();
+          const data = await apiFetch<RemoteStatsResponse>(`/api/remote/servers/${selectedDevice.id}/stats`);
           if (data.offline) return; // 未连接，静默跳过
 
           // 解析远程统计 - 新结构化格式
@@ -28,7 +47,7 @@ export default function GlobalStatusBar() {
 
           if (data.cpu) {
             // 新格式: {load: 0.2, cores: []} 或旧格式: "0.1"
-            cpu = typeof data.cpu === 'object' ? data.cpu.load : parseFloat(String(data.cpu).match(/([\d.]+)/)?.[1] || '0');
+            cpu = typeof data.cpu === 'object' ? data.cpu.load ?? 0 : parseFloat(String(data.cpu).match(/([\d.]+)/)?.[1] || '0');
           }
 
           if (data.memory) {
@@ -59,22 +78,23 @@ export default function GlobalStatusBar() {
 
           setStats({ cpu, memory, disk });
         } else {
-          const res = await fetch('/api/monitor/stats');
-          if (!res.ok) {
-            console.error('Monitor stats request failed:', res.status);
-            return;
-          }
-          const data = await res.json();
+          // 轮询失败时静默跳过（保留原有的诊断日志），不抛到外层
+          const data = await apiFetch<MonitorStatsResponse>('/api/monitor/stats').catch((err: unknown) => {
+            console.error('Monitor stats request failed:', (err as Error).message);
+            return null;
+          });
+          if (!data) return;
+          const disks = data.disk ?? [];
           setStats({
             cpu: data.cpu?.load || 0,
             memory: data.memory ? (data.memory.used / (data.memory.total || 1)) * 100 : 0,
-            disk: data.disk?.length > 0 ? (() => {
+            disk: disks.length > 0 ? (() => {
               // macOS APFS 卷共享同一个物理磁盘，total 值相同，需要去重
-              const uniqueTotals = [...new Set(data.disk.map((d: any) => d.total))];
-              const totalAll = uniqueTotals.length === 1 
-                ? uniqueTotals[0]  // APFS 单物理磁盘
-                : data.disk.reduce((s: any, d: any) => s + (d.total || 0), 0);  // 多物理磁盘
-              const totalUsed = data.disk.reduce((s: any, d: any) => s + (d.used || 0), 0);
+              const uniqueTotals = [...new Set(disks.map((d) => d.total))];
+              const totalAll = uniqueTotals.length === 1
+                ? uniqueTotals[0] ?? 0  // APFS 单物理磁盘
+                : disks.reduce((s, d) => s + (d.total || 0), 0);  // 多物理磁盘
+              const totalUsed = disks.reduce((s, d) => s + (d.used || 0), 0);
               return totalAll > 0 ? (totalUsed / totalAll) * 100 : 0;
             })() : 0,
           });

@@ -5,16 +5,40 @@ services:
     build: .
     container_name: openlog
     ports:
-      - "3001:3001"
+      # 与 server/index.js 的 PORT、Dockerfile 的 EXPOSE 保持一致
+      - "3011:3011"
     volumes:
       - openlog_data:/app/data
       - ./logs:/app/logs:ro
     environment:
       - NODE_ENV=production
+      # 容器内必须绑 0.0.0.0，否则宿主机的端口映射无法到达
+      - PORT=3011
+      - HOST=0.0.0.0
+      # 生产模式强制鉴权，必须提供 token，否则所有 /api 与 /ws 请求都会 401
+      - OPENLOG_TOKEN=${OPENLOG_TOKEN:?必须设置 OPENLOG_TOKEN（生产模式强制鉴权）}
+      # 凭据加密密钥。不设置则回退到源码内置密钥（等于没有加密），强烈建议设置。
+      # 注意：从「未设置」切到「已设置」是单向迁移，设置后不要再取消。
+      - OPENLOG_SECRET_KEY=${OPENLOG_SECRET_KEY:-}
+      # 浏览器访问面板的来源白名单（逗号分隔）。不设置则只允许 localhost。
+      - OPENLOG_ALLOWED_ORIGINS=${OPENLOG_ALLOWED_ORIGINS:-}
+      # REST 远程命令执行端点开关。留空 = 关闭（推荐）。
+      # 白名单不是安全边界，仅在确有外部脚本需要时才设为 1。
+      - OPENLOG_ENABLE_REMOTE_EXEC=${OPENLOG_ENABLE_REMOTE_EXEC:-}
+      # 日志监控目录（容器内路径），需与 logs 挂载点对应
+      - LOG_PATH=${LOG_PATH:-/app/logs}
+      # 以下三项由 server/index.js 在首次启动、数据库尚无配置时作为默认值写入。
+      # 若数据库中已存在 app_settings，则以数据库为准，这里的值不会覆盖。
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - OPENAI_BASE_URL=${OPENAI_BASE_URL:-}
       - MODEL=${MODEL:-gpt-4o-mini}
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('net').connect(process.env.PORT||3011,'127.0.0.1').on('connect',()=>process.exit(0)).on('error',()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
 
 volumes:
   openlog_data:

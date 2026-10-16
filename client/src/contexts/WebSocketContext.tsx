@@ -1,4 +1,5 @@
 import { createContext, useContext, useEffect, useRef, useState, ReactNode } from 'react';
+import { withWsToken, whenTokenReady } from '../api/auth';
 
 interface WebSocketContextValue {
   ws: WebSocket | null;
@@ -12,19 +13,56 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
   const [isConnected, setIsConnected] = useState(false);
 
   useEffect(() => {
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsInstance = new WebSocket(`${protocol}//${window.location.host}/ws`);
+    // Per-invocation state. Do NOT hoist these into refs: React StrictMode runs
+    // this effect twice, and a shared flag would let the first invocation's
+    // pending `await` resume after cleanup and open a second socket.
+    let cancelled = false;
+    let socket: WebSocket | null = null;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let attempt = 0;
 
-    wsInstance.onopen = () => setIsConnected(true);
-    wsInstance.onclose = () => {
-      setIsConnected(false);
-      // Auto reconnect after 3s
-      setTimeout(() => setWs(null), 3000);
+    const connect = async () => {
+      if (cancelled) return;
+
+      // Wait for the token before opening. withWsToken() is synchronous and
+      // returns the URL unchanged while the token is still unresolved, which
+      // would make the server answer 401.
+      try {
+        await whenTokenReady();
+      } catch {
+        // Fall through: connect without a token and let onclose retry.
+      }
+      if (cancelled) return;
+
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      socket = new WebSocket(withWsToken(`${protocol}//${window.location.host}/ws`));
+
+      socket.onopen = () => {
+        attempt = 0;
+        setIsConnected(true);
+      };
+      socket.onerror = () => setIsConnected(false);
+      socket.onclose = () => {
+        setIsConnected(false);
+        if (cancelled) return;
+        // Exponential backoff, capped. The previous implementation called
+        // setWs(null) with an empty dependency array, so the effect never
+        // re-ran and a single failed handshake killed /ws for the whole session.
+        const delay = Math.min(1000 * 2 ** attempt, 15000);
+        attempt += 1;
+        timer = setTimeout(connect, delay);
+      };
+
+      setWs(socket);
     };
-    wsInstance.onerror = () => setIsConnected(false);
 
-    setWs(wsInstance);
-    return () => wsInstance.close();
+    void connect();
+
+    return () => {
+      cancelled = true;
+      if (timer !== null) clearTimeout(timer);
+      socket?.close();
+    };
   }, []);
 
   return (

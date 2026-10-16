@@ -5,6 +5,8 @@ import {
   Download, Info, Keyboard, Command
 } from 'lucide-react';
 import type { RemoteServer } from '../types';
+import { withWsToken } from '../api/auth';
+import { sanitizeHtml } from '../utils/sanitize';
 
 interface ShellTerminalProps {
   server: RemoteServer;
@@ -32,9 +34,9 @@ const SHORTCUTS = [
   { keys: 'Ctrl+L', desc: '清屏' },
 ];
 
-// 简单的 ANSI 颜色渲染
+// 简单的 ANSI 颜色渲染（始终经过 sanitizeHtml，终端输出属于不可信输入）
 function ansiToHtml(text: string): string {
-  return text
+  return sanitizeHtml(text
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     .replace(/\x1b\[90m/g, '<span class="text-gray-500">')
     .replace(/\x1b\[32m/g, '<span class="text-green-400">')
@@ -45,7 +47,7 @@ function ansiToHtml(text: string): string {
     .replace(/\x1b\[1;32m/g, '<span class="text-green-300 font-bold">')
     .replace(/\x1b\[1m/g, '<span class="font-bold">')
     .replace(/\x1b\[0m/g, '</span>')
-    .replace(/\x1b\[[0-9;]*m/g, '');
+    .replace(/\x1b\[[0-9;]*m/g, ''));
 }
 
 export default function ShellTerminal({ server, onClose }: ShellTerminalProps) {
@@ -73,7 +75,7 @@ export default function ShellTerminal({ server, onClose }: ShellTerminalProps) {
     setConnecting(true);
     setError(null);
 
-    const ws = new WebSocket(wsUrl);
+    const ws = new WebSocket(withWsToken(wsUrl));
     wsRef.current = ws;
 
     let manualClose = false;

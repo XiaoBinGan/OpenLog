@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { marked } from 'marked';
+import { withWsToken } from '../api/auth';
+import { sanitizeHtml } from '../utils/sanitize';
 import {
   Container, Boxes, Activity, Search, Filter, RefreshCw,
   ChevronDown, ChevronRight, Terminal, AlertCircle, CheckCircle,
@@ -8,7 +10,9 @@ import {
   Stethoscope, Copy, Check, GripVertical
 } from 'lucide-react';
 import { useDevice } from '../contexts/DeviceContext';
+import { useToast } from '../contexts/ToastContext';
 import DeviceSelector from '../components/DeviceSelector';
+import { apiFetch, apiJson } from '../api/client';
 
 interface ContainerInfo {
   id: string;
@@ -43,6 +47,7 @@ interface TraceResult {
 
 export default function Docker() {
   const { selectedDevice, isRemote } = useDevice();
+  const toast = useToast();
   const [sources, setSources] = useState<ContainerSource[]>([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState('');
@@ -104,12 +109,7 @@ export default function Docker() {
     setExecLoading(prev => new Set([...prev, key]));
     const hist = terminalCmds[key] || [];
     try {
-      const res = await fetch(`/api/docker/${sourceId}/${containerId}/exec`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ command: cmd.trim() }),
-      });
-      const data = await res.json();
+      const data = await apiJson<{ output?: string; error?: string }>(`/api/docker/${sourceId}/${containerId}/exec`, 'POST', { command: cmd.trim() });
       setTerminalCmds(prev => ({ ...prev, [key]: [...(prev[key] || []), { cmd, output: data.output || data.error || '', time: Date.now() }] }));
     } catch (e: any) {
       setTerminalCmds(prev => ({ ...prev, [key]: [...(prev[key] || []), { cmd, output: 'Error: ' + e.message, time: Date.now() }] }));
@@ -121,29 +121,47 @@ export default function Docker() {
   const doOp = async (sourceId: string, containerId: string, op: string, key: string) => {
     setOpLoading(prev => new Set([...prev, key]));
     try {
-      await fetch(`/api/docker/${sourceId}/${containerId}/${op}`, { method: 'POST' });
-    } catch {}
+      await apiFetch(`/api/docker/${sourceId}/${containerId}/${op}`, { method: 'POST' });
+      // 只同步数据，不整页刷新 —— 见 fetchContainers 的 silent 说明。
+      // await：让这一行的「执行中」一直转到数据真正更新，反馈才连贯。
+      await fetchContainers({ silent: true });
+    } catch (e: any) {
+      // 原实现是 `catch {}` —— 操作失败时界面毫无反应，用户只会反复点。
+      toast.error(`操作失败：${e?.message || '未知错误'}`);
+    }
     setOpLoading(prev => { const s = new Set(prev); s.delete(key); return s; });
-    fetchContainers();
   };
 
-  const fetchContainers = useCallback(async () => {
-    setLoading(true);
+  /**
+   * 拉取容器列表。
+   *
+   * silent=true 用于「操作后的数据同步」：不置 loading，因此不会把整张
+   * 列表替换成「加载中…」再重建（停一个容器导致整页闪一下，很不安）。
+   * 列表行的 key 是稳定的 `sourceId:containerId`，React 会原地复用 DOM，
+   * 只有真正变化的那一行更新，滚动位置也不丢。数据仍然来自服务端，
+   * 不做本地近似回填（status / exitType 这些字段派生自 Docker 原始状态）。
+   */
+  const fetchContainers = useCallback(async (opts?: { silent?: boolean }) => {
+    const silent = opts?.silent === true;
+    if (!silent) setLoading(true);
     try {
-      const res = await fetch('/api/docker/containers');
-      const data = await res.json();
+      const data = await apiFetch<{ sources?: any[] }>('/api/docker/containers');
       let sources = data.sources || [];
 
-      // 远程设备：按 host 地址过滤 Docker 源
-      if (isRemote && (selectedDevice as any).host) {
-        const remoteHost = (selectedDevice as any).host;
-        sources = sources.filter((s: any) => s.host === remoteHost);
+      // 远程设备：只显示属于该设备的 Docker 源。
+      // TCP/Socket 源按 host 匹配；via(SSH) 源自身没有 host，
+      // 按被桥接的 serverId 匹配更稳（同一 host 可能配了多台服务器）。
+      const device = selectedDevice as { id?: string; host?: string };
+      if (isRemote && device.host) {
+        const remoteHost = device.host;
+        sources = sources.filter((s: any) =>
+          s.host === remoteHost || (s.serverId && s.serverId === device.id));
       }
       setSources(sources);
     } catch (err) {
       console.error(err);
     }
-    setLoading(false);
+    if (!silent) setLoading(false);
   }, [isRemote, selectedDevice.id]);
 
   useEffect(() => { fetchContainers(); }, [fetchContainers]);
@@ -280,8 +298,7 @@ export default function Docker() {
     if (!containerLogs[key]) {
       setLoadingLogs(prev => new Set([...prev, key]));
       try {
-        const res = await fetch(`/api/docker/containers/${sourceId}/${container.id}/logs?tail=50`);
-        const data = await res.json();
+        const data = await apiFetch<{ logs?: any[] }>(`/api/docker/containers/${sourceId}/${container.id}/logs?tail=50`);
         setContainerLogs(prev => ({ ...prev, [key]: data.logs || [] }));
       } catch {}
       setLoadingLogs(prev => { const s = new Set(prev); s.delete(key); return s; });
@@ -312,7 +329,7 @@ export default function Docker() {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsHost = window.location.host;
     const wsUrl = `${protocol}//${wsHost}/ws/docker/logs/${sourceId}/${containerId}`;
-    const ws = new WebSocket(wsUrl);
+    const ws = new WebSocket(withWsToken(wsUrl));
     liveLogWsRef.current[key] = ws;
 
     ws.onopen = () => {
@@ -394,8 +411,7 @@ export default function Docker() {
     if (traceResults[key]) return;
     setTraceLoading(prev => new Set([...prev, key]));
     try {
-      const res = await fetch(`/api/docker/trace/${sourceId}/${container.id}`);
-      const data = await res.json();
+      const data = await apiFetch<TraceResult>(`/api/docker/trace/${sourceId}/${container.id}`);
       setTraceResults(prev => ({ ...prev, [key]: data }));
     } catch {}
     setTraceLoading(prev => { const s = new Set(prev); s.delete(key); return s; });
@@ -468,18 +484,13 @@ export default function Docker() {
     setBatchLogs([]);
 
     try {
-      const res = await fetch('/api/docker/analyze/batch', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          containers: selected.map(s => ({
-            sourceId: s.sourceId,
-            containerId: s.container.id,
-            name: s.container.names[0] || s.container.shortId
-          }))
-        })
+      const data = await apiJson<{ logs?: any[] }>('/api/docker/analyze/batch', 'POST', {
+        containers: selected.map(s => ({
+          sourceId: s.sourceId,
+          containerId: s.container.id,
+          name: s.container.names[0] || s.container.shortId
+        }))
       });
-      const data = await res.json();
       setBatchLogs(data.logs || []);
       // 轮询分析结果（WS推送也可以）
       pollAnalysis();
@@ -488,7 +499,7 @@ export default function Docker() {
   };
 
   const pollAnalysis = () => {
-    const ws = new WebSocket(`ws://${window.location.host}/ws`);
+    const ws = new WebSocket(withWsToken(`ws://${window.location.host}/ws`));
     ws.onmessage = (e) => {
       const data = JSON.parse(e.data);
       if (data.type === 'docker_batch_analysis') {
@@ -510,7 +521,7 @@ export default function Docker() {
   };
 
   return (
-    <div className="space-y-4 animate-fade-in">
+    <div className="space-y-4 animate-fade-in min-w-0 max-w-full overflow-x-hidden">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
@@ -537,7 +548,7 @@ export default function Docker() {
             </button>
           )}
           <button
-            onClick={fetchContainers}
+            onClick={() => fetchContainers()}
             disabled={loading}
             className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-dark-800 text-dark-300 hover:bg-dark-700 transition-colors"
           >
@@ -635,7 +646,7 @@ export default function Docker() {
           <p className="text-xs mt-1 text-dark-600">请检查设置中的 Docker 配置</p>
         </div>
       ) : (
-        <div className="space-y-2">
+        <div className="space-y-2 min-w-0 max-w-full">
           {filtered.map(c => {
             const key = `${c._sourceId}:${c.id}`;
             const isExpanded = expanded.has(key);
@@ -659,7 +670,7 @@ export default function Docker() {
                 onDragLeave={handleDragLeave}
                 onDrop={(e) => handleDrop(e, key)}
                 onDragEnd={handleDragEnd}
-                className={`group glass rounded-xl border transition-all overflow-hidden ${
+                className={`group glass rounded-xl border transition-all w-full max-w-full overflow-hidden ${
                   dragKey === key ? 'opacity-50 border-2 border-dashed border-blue-400' :
                   isSelected ? 'border-accent-500/50 bg-accent-500/5' :
                   c.exitType === 'oom' ? 'border-red-500/30 border-l-2 bg-red-500/5' :
@@ -668,7 +679,7 @@ export default function Docker() {
                 } `}
               >
                 {/* Container row */}
-                <div className="flex items-center gap-3 px-4 py-3">
+                <div className="flex items-center gap-3 px-4 py-3 min-w-0">
                   {/* Drag handle */}
                   <div
                     className="flex-shrink-0 text-dark-700 opacity-0 group-hover:opacity-100 hover:text-dark-300 cursor-grab active:cursor-grabbing transition-opacity"
@@ -723,14 +734,18 @@ export default function Docker() {
                   </div>
 
                   {/* Actions */}
-                  <div className="flex items-center gap-1 flex-shrink-0">
+                  <div className="flex items-center gap-1.5 flex-shrink-0">
                     {/* 终端 */}
                     <button
                       onClick={(e) => { e.preventDefault(); e.stopPropagation(); toggleTerminal(`${c._sourceId}:${c.id}`); }}
-                      className={`p-1.5 rounded-lg transition-colors ${terminalOpen.has(`${c._sourceId}:${c.id}`) ? 'bg-accent-500/15 text-accent-400' : 'hover:bg-dark-700 text-dark-500 hover:text-accent-400'}`}
-                      title="进入容器"
+                      className={`group/btn relative p-1.5 rounded-lg transition-colors ${terminalOpen.has(`${c._sourceId}:${c.id}`) ? 'bg-accent-500/15 text-accent-400' : 'hover:bg-dark-700 text-dark-500 hover:text-accent-400'}`}
+                      title="进入容器终端"
+                      aria-label="进入容器终端"
                     >
                       <Terminal className="w-4 h-4" />
+                      <span className="pointer-events-none absolute top-full mt-1.5 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-md bg-dark-900/95 px-2 py-1 text-[11px] leading-none text-dark-100 opacity-0 shadow-xl border border-dark-700 transition-opacity duration-150 group-hover/btn:opacity-100 z-30 pointer-events-none">
+                        进入终端
+                      </span>
                     </button>
 
                     {/* 启停 */}
@@ -738,19 +753,27 @@ export default function Docker() {
                       <button
                         onClick={(e) => { e.preventDefault(); e.stopPropagation(); doOp(c._sourceId, c.id, 'stop', `${c._sourceId}:${c.id}:stop`); }}
                         disabled={opLoading.has(`${c._sourceId}:${c.id}:stop`)}
-                        className="p-1.5 rounded-lg hover:bg-dark-700 text-dark-500 hover:text-yellow-400 transition-colors"
-                        title="停止"
+                        className="group/btn relative p-1.5 rounded-lg hover:bg-dark-700 text-dark-500 hover:text-yellow-400 transition-colors"
+                        title="停止容器"
+                        aria-label="停止容器"
                       >
                         {opLoading.has(`${c._sourceId}:${c.id}:stop`) ? <Loader className="w-4 h-4 animate-spin" /> : <Pause className="w-4 h-4" />}
+                        <span className="pointer-events-none absolute top-full mt-1.5 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-md bg-dark-900/95 px-2 py-1 text-[11px] leading-none text-dark-100 opacity-0 shadow-xl border border-dark-700 transition-opacity duration-150 group-hover/btn:opacity-100 z-30 pointer-events-none">
+                          停止容器
+                        </span>
                       </button>
                     ) : (
                       <button
                         onClick={(e) => { e.preventDefault(); e.stopPropagation(); doOp(c._sourceId, c.id, 'start', `${c._sourceId}:${c.id}:start`); }}
                         disabled={opLoading.has(`${c._sourceId}:${c.id}:start`)}
-                        className="p-1.5 rounded-lg hover:bg-dark-700 text-dark-500 hover:text-green-400 transition-colors"
-                        title="启动"
+                        className="group/btn relative p-1.5 rounded-lg hover:bg-dark-700 text-dark-500 hover:text-green-400 transition-colors"
+                        title="启动容器"
+                        aria-label="启动容器"
                       >
                         {opLoading.has(`${c._sourceId}:${c.id}:start`) ? <Loader className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
+                        <span className="pointer-events-none absolute top-full mt-1.5 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-md bg-dark-900/95 px-2 py-1 text-[11px] leading-none text-dark-100 opacity-0 shadow-xl border border-dark-700 transition-opacity duration-150 group-hover/btn:opacity-100 z-30 pointer-events-none">
+                          启动容器
+                        </span>
                       </button>
                     )}
 
@@ -758,20 +781,28 @@ export default function Docker() {
                     <button
                       onClick={(e) => { e.preventDefault(); e.stopPropagation(); doOp(c._sourceId, c.id, 'restart', `${c._sourceId}:${c.id}:restart`); }}
                       disabled={opLoading.has(`${c._sourceId}:${c.id}:restart`)}
-                      className="p-1.5 rounded-lg hover:bg-dark-700 text-dark-500 hover:text-blue-400 transition-colors"
-                      title="重启"
+                      className="group/btn relative p-1.5 rounded-lg hover:bg-dark-700 text-dark-500 hover:text-blue-400 transition-colors"
+                      title="重启容器"
+                      aria-label="重启容器"
                     >
                       {opLoading.has(`${c._sourceId}:${c.id}:restart`) ? <Loader className="w-4 h-4 animate-spin" /> : <RotateCcw className="w-4 h-4" />}
+                      <span className="pointer-events-none absolute top-full mt-1.5 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-md bg-dark-900/95 px-2 py-1 text-[11px] leading-none text-dark-100 opacity-0 shadow-xl border border-dark-700 transition-opacity duration-150 group-hover/btn:opacity-100 z-30 pointer-events-none">
+                        重启容器
+                      </span>
                     </button>
 
                     {/* 链路追踪 */}
                     <button
                       onClick={(e) => { e.preventDefault(); e.stopPropagation(); loadTrace(c._sourceId, c); }}
                       disabled={traceLoading_}
-                      className="p-1.5 rounded-lg hover:bg-dark-700 text-dark-500 hover:text-purple-400 transition-colors"
+                      className={`group/btn relative p-1.5 rounded-lg hover:bg-dark-700 text-dark-500 hover:text-purple-400 transition-colors ${trace ? 'text-purple-400 bg-purple-500/10' : ''}`}
                       title="上下游链路追踪"
+                      aria-label="上下游链路追踪"
                     >
                       {traceLoading_ ? <Loader className="w-4 h-4 animate-spin" /> : <ArrowRightLeft className="w-4 h-4" />}
+                      <span className="pointer-events-none absolute top-full mt-1.5 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-md bg-dark-900/95 px-2 py-1 text-[11px] leading-none text-dark-100 opacity-0 shadow-xl border border-dark-700 transition-opacity duration-150 group-hover/btn:opacity-100 z-30 pointer-events-none">
+                        上下游链路
+                      </span>
                     </button>
 
                     {/* 删除容器 */}
@@ -782,36 +813,53 @@ export default function Docker() {
                         }
                       }}
                       disabled={opLoading.has(`${c._sourceId}:${c.id}:remove`)}
-                      className="p-1.5 rounded-lg hover:bg-dark-700 text-dark-500 hover:text-red-400 transition-colors"
+                      className="group/btn relative p-1.5 rounded-lg hover:bg-dark-700 text-dark-500 hover:text-red-400 transition-colors"
                       title="删除容器"
+                      aria-label="删除容器"
                     >
                       {opLoading.has(`${c._sourceId}:${c.id}:remove`) ? <Loader className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
+                      <span className="pointer-events-none absolute top-full mt-1.5 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-md bg-dark-900/95 px-2 py-1 text-[11px] leading-none text-dark-100 opacity-0 shadow-xl border border-dark-700 transition-opacity duration-150 group-hover/btn:opacity-100 z-30 pointer-events-none">
+                        删除容器
+                      </span>
                     </button>
 
                     {/* AI 诊断 */}
                     <button
                       onClick={(e) => { e.preventDefault(); e.stopPropagation(); diagnoseContainer(c._sourceId, c.id, c.names[0] || c.shortId); }}
-                      className={`p-1.5 rounded-lg transition-colors ${diagnoseKey === key ? 'bg-accent-500/15 text-accent-400' : 'hover:bg-dark-700 text-dark-500 hover:text-accent-400'}`}
-                      title="AI 诊断"
+                      className={`group/btn relative p-1.5 rounded-lg transition-colors ${diagnoseKey === key ? 'bg-accent-500/15 text-accent-400' : 'hover:bg-dark-700 text-dark-500 hover:text-accent-400'}`}
+                      title="AI 智能诊断"
+                      aria-label="AI 智能诊断"
                     >
                       <Stethoscope className="w-4 h-4" />
+                      <span className="pointer-events-none absolute top-full mt-1.5 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-md bg-dark-900/95 px-2 py-1 text-[11px] leading-none text-dark-100 opacity-0 shadow-xl border border-dark-700 transition-opacity duration-150 group-hover/btn:opacity-100 z-30 pointer-events-none">
+                        AI 智能诊断
+                      </span>
                     </button>
 
                     {/* 实时日志 */}
                     <button
                       onClick={(e) => { e.preventDefault(); e.stopPropagation(); toggleLiveLog(c._sourceId, c.id); }}
-                      className={`p-1.5 rounded-lg transition-colors ${liveLogKey === key ? 'bg-green-500/15 text-green-400' : 'hover:bg-dark-700 text-dark-500 hover:text-green-400'}`}
+                      className={`group/btn relative p-1.5 rounded-lg transition-colors ${liveLogKey === key ? 'bg-green-500/15 text-green-400' : 'hover:bg-dark-700 text-dark-500 hover:text-green-400'}`}
                       title="实时日志流"
+                      aria-label="实时日志流"
                     >
                       {liveLogConnecting.has(key) ? <Loader className="w-4 h-4 animate-spin" /> : <StopCircle className="w-4 h-4" />}
+                      <span className="pointer-events-none absolute top-full mt-1.5 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-md bg-dark-900/95 px-2 py-1 text-[11px] leading-none text-dark-100 opacity-0 shadow-xl border border-dark-700 transition-opacity duration-150 group-hover/btn:opacity-100 z-30 pointer-events-none">
+                        实时日志流
+                      </span>
                     </button>
 
-                    {/* 展开日志 */}
+                    {/* 展开/收起日志 */}
                     <button
                       onClick={(e) => { e.preventDefault(); e.stopPropagation(); toggleExpand(c._sourceId, c); }}
-                      className="p-1.5 rounded-lg hover:bg-dark-700 text-dark-500 hover:text-dark-200 transition-colors"
+                      className="group/btn relative p-1.5 rounded-lg hover:bg-dark-700 text-dark-500 hover:text-dark-200 transition-colors"
+                      title={isExpanded ? "收起日志详情" : "查看最近日志"}
+                      aria-label={isExpanded ? "收起日志详情" : "查看最近日志"}
                     >
                       {isExpanded ? <ChevronDown className="w-4 h-4" /> : <Activity className="w-4 h-4" />}
+                      <span className="pointer-events-none absolute top-full mt-1.5 right-0 whitespace-nowrap rounded-md bg-dark-900/95 px-2 py-1 text-[11px] leading-none text-dark-100 opacity-0 shadow-xl border border-dark-700 transition-opacity duration-150 group-hover/btn:opacity-100 z-30 pointer-events-none">
+                        {isExpanded ? "收起日志" : "查看日志"}
+                      </span>
                     </button>
                   </div>
                 </div>
@@ -869,39 +917,39 @@ export default function Docker() {
 
                 {/* Expanded: logs + trace */}
                 {isExpanded && (
-                  <div className="border-t border-dark-800">
+                  <div className="border-t border-dark-800 w-full max-w-full overflow-hidden">
                     {/* Trace */}
                     {trace && (
-                      <div className="px-4 py-3 bg-dark-900/50 border-b border-dark-800">
+                      <div className="px-4 py-3 bg-dark-900/50 border-b border-dark-800 w-full max-w-full overflow-hidden">
                         <p className="text-xs font-medium text-dark-400 mb-2 flex items-center gap-1">
                           <ArrowRightLeft className="w-3 h-3" /> 上下游链路 — {trace.serviceName}
                         </p>
-                        <div className="flex flex-wrap gap-2">
+                        <div className="flex flex-wrap gap-2 max-w-full">
                           {(trace.upstream || []).length > 0 && (
-                            <div className="flex items-center gap-1">
-                              <span className="text-xs text-dark-600">上游:</span>
+                            <div className="flex flex-wrap items-center gap-1 max-w-full">
+                              <span className="text-xs text-dark-600 flex-shrink-0">上游:</span>
                               {(trace.upstream || []).map(u => (
-                                <span key={u.id} className="text-xs px-2 py-0.5 rounded bg-blue-500/15 text-blue-400 border border-blue-500/20">
+                                <span key={u.id} className="text-xs px-2 py-0.5 rounded bg-blue-500/15 text-blue-400 border border-blue-500/20 truncate max-w-[200px]" title={u.names?.[0] || u.shortId || u.id}>
                                   {u.names?.[0] || u.shortId || u.id?.slice(0, 12)}
                                 </span>
                               ))}
                             </div>
                           )}
                           {(trace.downstream || []).length > 0 && (
-                            <div className="flex items-center gap-1">
-                              <span className="text-xs text-dark-600">下游:</span>
+                            <div className="flex flex-wrap items-center gap-1 max-w-full">
+                              <span className="text-xs text-dark-600 flex-shrink-0">下游:</span>
                               {(trace.downstream || []).map(u => (
-                                <span key={u.id} className="text-xs px-2 py-0.5 rounded bg-purple-500/15 text-purple-400 border border-purple-500/20">
+                                <span key={u.id} className="text-xs px-2 py-0.5 rounded bg-purple-500/15 text-purple-400 border border-purple-500/20 truncate max-w-[200px]" title={u.names?.[0] || u.shortId || u.id}>
                                   {u.names?.[0] || u.shortId || u.id?.slice(0, 12)}
                                 </span>
                               ))}
                             </div>
                           )}
                           {(trace.networkPeers || []).length > 0 && (
-                            <div className="flex items-center gap-1">
-                              <span className="text-xs text-dark-600">同网:</span>
+                            <div className="flex flex-wrap items-center gap-1 max-w-full">
+                              <span className="text-xs text-dark-600 flex-shrink-0">同网:</span>
                               {(trace.networkPeers || []).slice(0, 5).map(u => (
-                                <span key={u.id} className="text-xs px-2 py-0.5 rounded bg-dark-800 text-dark-400">
+                                <span key={u.id} className="text-xs px-2 py-0.5 rounded bg-dark-800 text-dark-400 truncate max-w-[180px]" title={u.names?.[0] || u.shortId || u.id}>
                                   {u.names?.[0] || u.shortId || u.id?.slice(0, 12)}
                                 </span>
                               ))}
@@ -915,21 +963,21 @@ export default function Docker() {
                     )}
 
                     {/* Logs */}
-                    <div className="px-4 py-2">
+                    <div className="px-4 py-2 w-full max-w-full overflow-hidden">
                       <p className="text-xs text-dark-600 mb-2 flex items-center gap-1">
                         <Terminal className="w-3 h-3" /> 最近日志
                         {logsLoading && <Loader className="w-3 h-3 animate-spin ml-1" />}
                       </p>
-                      <div className="max-h-60 overflow-y-auto space-y-0.5">
+                      <div className="max-h-60 overflow-y-auto space-y-0.5 overflow-x-hidden w-full max-w-full">
                         {logsLoading ? (
                           <div className="text-xs text-dark-600 py-2">加载中...</div>
                         ) : logs.length === 0 ? (
                           <div className="text-xs text-dark-600 py-2">无日志</div>
                         ) : logs.slice(-30).map((l, i) => (
-                          <div key={i} className="flex gap-2 text-xs font-mono py-0.5">
-                            <span className="text-dark-700 flex-shrink-0 w-36">{l.timestamp?.slice(0, 19) || '-'}</span>
-                            <span className={`flex-shrink-0 w-12 ${logLevelColor(l.level)}`}>[{l.level}]</span>
-                            <span className="text-dark-300 truncate">{l.content}</span>
+                          <div key={i} className="flex items-center gap-2 text-xs font-mono py-0.5 w-full max-w-full min-w-0 overflow-hidden">
+                            <span className="text-dark-700 flex-shrink-0 w-36 select-none">{l.timestamp?.slice(0, 19) || '-'}</span>
+                            <span className={`flex-shrink-0 w-12 font-medium ${logLevelColor(l.level)}`}>[{l.level}]</span>
+                            <span className="text-dark-300 truncate flex-1 min-w-0 block" title={l.content || l.line}>{l.content || l.line}</span>
                           </div>
                         ))}
                       </div>
@@ -946,7 +994,9 @@ export default function Docker() {
 }
 
 function renderMarkdown(md: string): string {
-  return marked.parse(md, { breaks: true }) as string;
+  // DOMPurify runs at the source so every dangerouslySetInnerHTML in this page
+  // (batch analysis + fix suggestions) is already sanitized.
+  return sanitizeHtml(marked.parse(md, { breaks: true }) as string);
 }
 
 // ─── 终端面板组件 ─────────────────────────────────────────────
@@ -968,7 +1018,7 @@ function TerminalPanel({ panelKey, containerName, cmds, cmdInput, setCmdInput, o
   useEffect(() => { bottomRef.current?.scrollIntoView({ block: 'nearest' }); }, [cmds]);
 
   return (
-    <div className="border-t border-dark-800 bg-[#0d1117]">
+    <div className="border-t border-dark-800 bg-[#0d1117] w-full max-w-full min-w-0 overflow-hidden">
       {/* 标题栏 */}
       <div className="px-4 py-2 border-b border-dark-800 flex items-center gap-2 bg-dark-900/50">
         <Terminal className="w-3.5 h-3.5 text-accent-400" />
@@ -1070,11 +1120,11 @@ function LiveLogPanel({ panelKey, containerName, lines, paused, connecting, onPa
   };
 
   return (
-    <div className="border-t border-dark-800 bg-[#0d1117]">
+    <div className="border-t border-dark-800 bg-[#0d1117] w-full max-w-full min-w-0 overflow-hidden">
       {/* 标题栏 */}
-      <div className="px-4 py-2 border-b border-dark-800 flex items-center gap-2 bg-dark-900/50">
+      <div className="px-4 py-2 border-b border-dark-800 flex flex-wrap items-center gap-2 min-w-0 max-w-full overflow-hidden bg-dark-900/50">
         <StopCircle className="w-3.5 h-3.5 text-green-400" />
-        <span className="text-xs font-mono text-green-400">{containerName}</span>
+        <span className="text-xs font-mono text-green-400 min-w-0 max-w-[35%] truncate" title={containerName}>{containerName}</span>
         <span className="text-xs text-dark-600">
           实时日志流
           {connecting && <Loader className="w-3 h-3 animate-spin inline ml-1" />}
@@ -1082,7 +1132,7 @@ function LiveLogPanel({ panelKey, containerName, lines, paused, connecting, onPa
           {paused && <span className="text-yellow-500 ml-1">⏸ 已暂停</span>}
         </span>
         <span className="text-xs text-dark-700 ml-2">{lines.length} 条</span>
-        <div className="ml-auto flex gap-1">
+        <div className="ml-auto flex flex-wrap items-center justify-end gap-1 min-w-0">
           {paused ? (
             <button
               onClick={(e) => { e.preventDefault(); e.stopPropagation(); onResume(); }}
@@ -1121,7 +1171,7 @@ function LiveLogPanel({ panelKey, containerName, lines, paused, connecting, onPa
       <div
         ref={scrollRef}
         onScroll={handleScroll}
-        className="h-80 overflow-y-auto px-4 py-2 font-mono text-xs leading-relaxed"
+        className="h-80 overflow-y-auto overflow-x-hidden px-4 py-2 font-mono text-xs leading-relaxed min-w-0 max-w-full"
       >
         {connecting && lines.length === 0 ? (
           <div className="flex items-center justify-center py-8 text-dark-600">
@@ -1131,14 +1181,14 @@ function LiveLogPanel({ panelKey, containerName, lines, paused, connecting, onPa
           <div className="text-dark-600 py-8 text-center">等待日志...</div>
         ) : (
           lines.map((l, i) => (
-            <div key={i} className={`flex gap-2 py-px hover:bg-dark-800/30 ${LEVEL_COLORS[l.level] || 'text-dark-300'}`}>
+            <div key={i} className={`flex gap-2 py-px min-w-0 max-w-full overflow-hidden hover:bg-dark-800/30 ${LEVEL_COLORS[l.level] || 'text-dark-300'}`}>
               <span className="text-dark-700 flex-shrink-0 w-44 select-none">
                 {l.timestamp?.slice(0, 23) || l.timestamp?.slice(0, 19) || '-'}
               </span>
               <span className="flex-shrink-0 w-12 font-semibold">
                 [{l.level}]
               </span>
-              <span className="break-all">{l.content || l.line}</span>
+              <span className="min-w-0 flex-1 break-all whitespace-pre-wrap overflow-hidden">{l.content || l.line}</span>
             </div>
           ))
         )}

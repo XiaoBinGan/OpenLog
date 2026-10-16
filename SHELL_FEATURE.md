@@ -65,16 +65,20 @@
 ### 2. 通过 API 测试
 
 ```bash
-# 执行单条命令
-curl -X POST http://localhost:3001/api/remote/servers/<server-id>/shell \
+# 注意：REST 命令执行端点默认【关闭】，需设置 OPENLOG_ENABLE_REMOTE_EXEC=1 后重启。
+# 白名单 + 元字符过滤不构成安全边界，仅在确有外部脚本需要时开启。
+# 执行单条命令（生产模式需要 Bearer token）
+curl -X POST http://localhost:3011/api/remote/servers/<server-id>/shell \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $OPENLOG_TOKEN" \
   -d '{"command":"ls -la"}'
 ```
 
 ### 3. WebSocket 连接（浏览器控制台）
 
 ```javascript
-const ws = new WebSocket('ws://localhost:3001/ws/shell/<server-id>');
+// WebSocket 强制鉴权，token 放在查询参数里
+const ws = new WebSocket('ws://localhost:3011/ws/shell/<server-id>?token=' + encodeURIComponent(OPENLOG_TOKEN));
 
 ws.onmessage = (event) => {
   console.log('Output:', JSON.parse(event.data));

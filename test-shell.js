@@ -5,12 +5,14 @@
 
 import fetch from 'node-fetch';
 
-const BASE_URL = 'http://localhost:3001';
+const BASE_URL = `http://localhost:${process.env.PORT || 3011}`;
+// 生产模式强制鉴权；本地开发（回环 + 非 production）可留空
+const AUTH = process.env.OPENLOG_TOKEN ? { Authorization: `Bearer ${process.env.OPENLOG_TOKEN}` } : {};
 
 async function testShell() {
   try {
     // 1. 获取服务器列表
-    const serversRes = await fetch(`${BASE_URL}/api/remote/servers`);
+    const serversRes = await fetch(`${BASE_URL}/api/remote/servers`, { headers: AUTH });
     const { servers } = await serversRes.json();
     
     console.log('📡 找到服务器:', servers.length);
@@ -28,7 +30,7 @@ async function testShell() {
     
     const shellRes = await fetch(`${BASE_URL}/api/remote/servers/${server.id}/shell`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...AUTH },
       body: JSON.stringify({ command: 'ls -la' })
     });
     
@@ -51,7 +53,7 @@ async function testShell() {
       console.log(`\n🔧 执行: ${cmd}`);
       const res = await fetch(`${BASE_URL}/api/remote/servers/${server.id}/shell`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...AUTH },
         body: JSON.stringify({ command: cmd })
       });
       
@@ -63,7 +65,7 @@ async function testShell() {
     
     console.log('\n✅ Shell 功能测试完成！');
     console.log('\n💡 提示: 前端 Web Shell 终端通过 WebSocket 实现交互式终端');
-    console.log('   WebSocket 端点: ws://localhost:3001/ws/shell/:serverId');
+    console.log(`   WebSocket 端点: ws://localhost:${process.env.PORT || 3011}/ws/shell/:serverId?token=<token>`);
     
   } catch (err) {
     console.error('❌ 测试失败:', err.message);

@@ -7,6 +7,8 @@ import {
 } from 'lucide-react';
 import { useAssistantContext } from '../contexts/AssistantContext';
 import { marked } from 'marked';
+import { sanitizeHtml } from '../utils/sanitize';
+import { apiFetch } from '../api/client';
 
 const QUICK_PROMPTS = [
   '如何排查 CPU 飙高问题？',
@@ -20,8 +22,9 @@ const QUICK_PROMPTS = [
 ];
 
 // ── Markdown 渲染（带代码高亮简化版）──
+// LLM 输出是不可信文本：解析后立即用 DOMPurify 白名单净化。
 function renderMarkdown(text: string): string {
-  return marked.parse(text, { breaks: true }) as string;
+  return sanitizeHtml(marked.parse(text, { breaks: true }) as string);
 }
 
 // ── 对话列表项 ──
@@ -95,8 +98,7 @@ export default function Assistant() {
   // 加载分析历史摘要（@ 提及用）
   const loadBrief = useCallback(async () => {
     try {
-      const res = await fetch('/api/analysis/history/brief');
-      const data = await res.json();
+      const data = await apiFetch<{ records?: HistoryBrief[] }>('/api/analysis/history/brief');
       setAtItems(data.records || []);
     } catch {}
   }, []);
@@ -109,8 +111,7 @@ export default function Assistant() {
       try {
         // 加载上下文
         await loadBrief();
-        const res = await fetch('/api/analysis/history');
-        const data = await res.json();
+        const data = await apiFetch<{ records?: any[] }>('/api/analysis/history');
         const record = (data.records || []).find((r: any) => r.id === refParam);
         if (record) {
           const typeLabel = record.type === 'patrol' ? '巡检报告' : record.type === 'health' ? '健康诊断' : '日志分析';
@@ -208,8 +209,7 @@ export default function Assistant() {
     let contextBlock = '';
     if (atIds.size > 0) {
       try {
-        const histRes = await fetch('/api/analysis/history');
-        const histData = await histRes.json();
+        const histData = await apiFetch<{ records?: any[] }>('/api/analysis/history');
         const matched = (histData.records || []).filter((r: any) => atIds.has(r.id));
         if (matched.length > 0) {
           contextBlock = '\n\n---\n以下是从分析历史中引用的上下文：\n\n' +

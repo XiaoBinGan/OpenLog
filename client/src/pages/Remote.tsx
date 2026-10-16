@@ -12,6 +12,7 @@ import {
   PanelLeftOpen, ArrowUp, FileCode, FolderOpen, FileJson, Sparkles, Download,
 } from 'lucide-react';
 import { useRemote } from '../contexts/RemoteContext';
+import { apiFetch, apiJson } from '../api/client';
 import ShellTerminal from '../components/ShellTerminal';
 import AIShellTerminal from '../components/AIShellTerminal';
 import type { RemoteServer, RemoteServerConfig, RemoteServerState, RemoteFile, RemoteDir } from '../types';
@@ -97,7 +98,7 @@ function ServerModal({
             <label className="block text-xs text-dark-400 mb-1">密码</label>
             <div className="relative">
               <input type={showPw ? 'text' : 'password'} value={formData.password} onChange={e => setFormData({ ...formData, password: e.target.value })}
-                placeholder="SSH 密码" autoComplete="new-password" name={pwKey} className="w-full px-3 py-2 pr-10 bg-dark-900 border border-dark-700 rounded-lg text-sm focus:border-accent-500 focus:outline-none" />
+                placeholder={editingServer ? '留空则不修改密码' : 'SSH 密码'} autoComplete="new-password" name={pwKey} className="w-full px-3 py-2 pr-10 bg-dark-900 border border-dark-700 rounded-lg text-sm focus:border-accent-500 focus:outline-none" />
               <button type="button" onClick={() => setShowPw(v => !v)}
                 className="absolute right-2 top-1/2 -translate-y-1/2 text-dark-500 hover:text-dark-300">
                 {showPw ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
@@ -304,12 +305,7 @@ export default function Remote() {
       if (editingServer && !formData.password && !formData.privateKey) {
         body.serverId = editingServer.id;
       }
-      const res = await fetch('/api/remote/test', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-      setTestResult(await res.json());
+      setTestResult(await apiJson<{ success: boolean; info?: any; error?: string }>('/api/remote/test', 'POST', body));
     } catch (e: any) { setTestResult({ success: false, error: e.message }); }
     setTesting(false);
   };
@@ -319,9 +315,7 @@ export default function Remote() {
     try {
       const url = editingServer ? `/api/remote/servers/${editingServer.id}` : '/api/remote/servers';
       const method = editingServer ? 'PUT' : 'POST';
-      const res = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(formData) });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      const data = await apiJson<{ success?: boolean; error?: string }>(url, method, formData);
       if (data.success) {
         await refreshServers();
         setShowAddModal(false);
@@ -335,9 +329,13 @@ export default function Remote() {
   // 删除服务器
   const deleteServer = async (server: RemoteServer) => {
     if (!confirm(`确定删除 "${server.name}"？`)) return;
-    await fetch(`/api/remote/servers/${server.id}`, { method: 'DELETE' });
-    await refreshServers();
-    if (activeServer?.id === server.id) disconnect();
+    try {
+      await apiFetch(`/api/remote/servers/${server.id}`, { method: 'DELETE' });
+      await refreshServers();
+      if (activeServer?.id === server.id) disconnect();
+    } catch (e: any) {
+      showToast('删除失败: ' + e.message, 'error');
+    }
   };
 
   // 导入 FinalShell JSON 文件
@@ -366,12 +364,7 @@ export default function Remote() {
     }
     
     try {
-      const res = await fetch('/api/remote/import', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ configs }),
-      });
-      const data = await res.json();
+      const data = await apiJson<{ success?: boolean; imported?: number; skipped?: number; error?: string }>('/api/remote/import', 'POST', { configs });
       if (data.success) {
         showToast(`导入成功: ${data.imported} 个, 跳过: ${data.skipped} 个`, 'success');
         await refreshServers();
@@ -389,16 +382,8 @@ export default function Remote() {
     setPwKey(Math.random().toString(36).slice(2));
     setShowAddModal(true);
     
-    let password = '';
-    try {
-      const res = await fetch(`/api/remote/servers/${server.id}/password`);
-      if (res.ok) {
-        const data = await res.json();
-        password = data.password || '';
-      }
-    } catch {}
-    
-    setFormData({ name: server.name, host: server.host, port: server.port, username: server.username, password, logPath: server.logPath, watchFiles: server.watchFiles });
+    // 安全：不再从服务端回读明文密码。留空即表示不修改（后端 updateServer 会保留原密码）
+    setFormData({ name: server.name, host: server.host, port: server.port, username: server.username, password: '', logPath: server.logPath, watchFiles: server.watchFiles });
   };
 
   const resetForm = () => {
@@ -463,14 +448,18 @@ export default function Remote() {
               <FileJson className="w-3.5 h-3.5" /> 导入
             </label>
             <button onClick={async () => {
-                            const res = await fetch('/api/remote/export');
-                            const data = await res.json();
-                            const blob = new Blob([JSON.stringify(data.servers, null, 2)], { type: 'application/json' });
-                            const url = URL.createObjectURL(blob);
-                            const a = document.createElement('a');
-                            a.href = url; a.download = `openlog-servers-${new Date().toISOString().slice(0,10)}.json`;
-                            a.click(); URL.revokeObjectURL(url);
-                            showToast(`${data.servers.length} 台服务器配置已导出`, 'success');
+                            try {
+                              const data = await apiFetch<{ servers?: unknown[] }>('/api/remote/export');
+                              const servers = data.servers ?? [];
+                              const blob = new Blob([JSON.stringify(servers, null, 2)], { type: 'application/json' });
+                              const url = URL.createObjectURL(blob);
+                              const a = document.createElement('a');
+                              a.href = url; a.download = `openlog-servers-${new Date().toISOString().slice(0,10)}.json`;
+                              a.click(); URL.revokeObjectURL(url);
+                              showToast(`${servers.length} 台服务器配置已导出`, 'success');
+                            } catch (e: any) {
+                              showToast('导出失败: ' + e.message, 'error');
+                            }
                           }} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-500/20 text-blue-400 text-xs hover:bg-blue-500/30 transition-colors">
               <Download className="w-3.5 h-3.5" /> 导出
             </button>

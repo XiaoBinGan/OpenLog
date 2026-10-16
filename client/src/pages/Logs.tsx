@@ -19,6 +19,8 @@ import {
 import { useDevice } from '../contexts/DeviceContext';
 import { useRemote } from '../contexts/RemoteContext';
 import type { Log } from '../types';
+import { withWsToken } from '../api/auth';
+import { apiFetch } from '../api/client';
 
 const LEVELS = ['INFO', 'WARN', 'WARNING', 'ERROR', 'DEBUG', 'TRACE', 'FATAL'];
 const LEVEL_COLORS = {
@@ -82,7 +84,7 @@ export default function Logs() {
 
   const connectWebSocket = () => {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
+    const ws = new WebSocket(withWsToken(`${protocol}//${window.location.host}/ws`));
     ws.onmessage = (event) => {
       const data = JSON.parse(event.data);
       if (data.type === 'log') {
@@ -100,8 +102,7 @@ export default function Logs() {
       if (levelFilter) params.append('level', levelFilter);
       if (search) params.append('search', search);
       params.append('limit', '200');
-      const res = await fetch(`/api/logs?${params}`);
-      const data = await res.json();
+      const data = await apiFetch<{ logs?: Log[]; total?: number }>(`/api/logs?${params}`);
       setLocalLogs(data.logs || []);
       setLocalTotal(data.total || 0);
     } catch (err) {
@@ -112,9 +113,13 @@ export default function Logs() {
 
   const clearLocalLogs = async () => {
     if (confirm('确定要清空所有日志吗？')) {
-      await fetch('/api/logs', { method: 'DELETE' });
-      setLocalLogs([]);
-      setLocalTotal(0);
+      try {
+        await apiFetch('/api/logs', { method: 'DELETE' });
+        setLocalLogs([]);
+        setLocalTotal(0);
+      } catch (err) {
+        console.error('Failed to clear local logs:', err);
+      }
     }
   };
 

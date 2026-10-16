@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { marked } from 'marked';
+import { sanitizeHtml } from '../utils/sanitize';
 import { useToast } from '../contexts/ToastContext';
 import { 
   Brain, 
@@ -28,7 +29,8 @@ import {
 import { useDevice } from '../contexts/DeviceContext';
 import { useWsMessage } from '../contexts/WebSocketContext';
 import { useAnalysisContext } from '../contexts/AnalysisContext';
-import type { Log, RemoteServer } from '../types';
+import { apiFetch, apiJson } from '../api/client';
+import type { Log, RemoteFile, RemoteServer } from '../types';
 
 export default function Analytics() {
   const { selectedDevice, isRemote } = useDevice();
@@ -121,15 +123,13 @@ export default function Analytics() {
       if (isRemote) {
         // 远程服务器日志
         const remoteServer = selectedDevice as RemoteServer;
-        const filesRes = await fetch(`/api/remote/servers/${selectedDevice.id}/files?path=${encodeURIComponent(remoteServer.logPath || '/var/log')}`);
-        const filesData = await filesRes.json();
+        const filesData = await apiFetch<{ files?: RemoteFile[] }>(`/api/remote/servers/${selectedDevice.id}/files?path=${encodeURIComponent(remoteServer.logPath || '/var/log')}`);
         
         if (filesData.files && filesData.files.length > 0) {
           // 找第一个日志文件
-          const logFile = filesData.files.find((f: any) => f.isLog) || filesData.files[0];
+          const logFile = filesData.files.find((f) => f.isLog) || filesData.files[0];
           
-          const logsRes = await fetch(`/api/remote/servers/${selectedDevice.id}/logs?file=${encodeURIComponent(logFile.path)}&lines=100${errorLogsOnly ? '&level=ERROR' : ''}`);
-          const logsData = await logsRes.json();
+          const logsData = await apiFetch<{ logs?: Log[] }>(`/api/remote/servers/${selectedDevice.id}/logs?file=${encodeURIComponent(logFile.path)}&lines=100${errorLogsOnly ? '&level=ERROR' : ''}`);
           setLogs(logsData.logs || []);
         } else {
           setLogs([]);
@@ -140,8 +140,7 @@ export default function Analytics() {
           ? '/api/logs?level=ERROR&limit=100' 
           : '/api/logs?limit=100';
         
-        const res = await fetch(endpoint);
-        const data = await res.json();
+        const data = await apiFetch<{ logs?: Log[] }>(endpoint);
         setLogs(data.logs || []);
       }
     } catch (err) {
@@ -181,17 +180,12 @@ export default function Analytics() {
     
     setFixing(true);
     try {
-      const res = await fetch('/api/logs/fix', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          errorLog: `[${selectedLog.timestamp}] [${selectedLog.level}] ${selectedLog.message}`,
-          codeContext: codeContext || undefined,
-          filePath: undefined,
-          deviceId: isRemote ? selectedDevice.id : 'local'
-        })
+      const data = await apiJson<{ fix?: string; error?: string }>('/api/logs/fix', 'POST', {
+        errorLog: `[${selectedLog.timestamp}] [${selectedLog.level}] ${selectedLog.message}`,
+        codeContext: codeContext || undefined,
+        filePath: undefined,
+        deviceId: isRemote ? selectedDevice.id : 'local'
       });
-      const data = await res.json();
       if (data.fix) {
         setFixResult(data.fix);
       } else {
@@ -214,7 +208,7 @@ export default function Analytics() {
     setCodeContext('');
   };
 
-  const renderMarkdown = (text: string): string => marked.parse(text, { breaks: true }) as string;
+  const renderMarkdown = (text: string): string => sanitizeHtml(marked.parse(text, { breaks: true }) as string);
 
 
   const renderHealthPanel = () => {

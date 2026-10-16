@@ -21,6 +21,7 @@ import {
 } from 'recharts';
 import { useDevice } from '../contexts/DeviceContext';
 import { useRemote } from '../contexts/RemoteContext';
+import { apiFetch } from '../api/client';
 import type { MonitorStats, MonitorHistory, RemoteServer } from '../types';
 
 // ─── Panel drag-and-drop system ───────────────────────────────────────────
@@ -236,8 +237,7 @@ export default function Monitor() {
       try {
         if (isRemote) {
           // 远程服务器：API 直接返回 MonitorStats 结构
-          const res = await fetch(`/api/remote/servers/${selectedDevice.id}/stats`);
-          const data = await res.json();
+          const data = await apiFetch<Partial<MonitorStats> & { error?: string }>(`/api/remote/servers/${selectedDevice.id}/stats`);
           
           console.log('[Monitor] remote stats response:', JSON.stringify(data));
           
@@ -272,8 +272,8 @@ export default function Monitor() {
         } else {
           // 本机设备
           const [statsData, historyData] = await Promise.all([
-            fetch('/api/monitor/stats').then(r => r.json()),
-            fetch('/api/monitor/history?limit=60').then(r => r.json())
+            apiFetch<Partial<MonitorStats>>('/api/monitor/stats'),
+            apiFetch<MonitorHistory[]>('/api/monitor/history?limit=60'),
           ]);
 
           // 本机无 GPU 时，回退到同 host 的远程连接获取 GPU 数据
@@ -283,12 +283,9 @@ export default function Monitor() {
             );
             if (localhostServers.length > 0) {
               try {
-                const remoteRes = await fetch(`/api/remote/servers/${localhostServers[0].id}/stats`);
-                if (remoteRes.ok) {
-                  const remoteData = await remoteRes.json();
-                  if (remoteData.gpus && remoteData.gpus.length > 0) {
-                    statsData.gpus = remoteData.gpus;
-                  }
+                const remoteData = await apiFetch<Pick<MonitorStats, 'gpus'>>(`/api/remote/servers/${localhostServers[0].id}/stats`);
+                if (remoteData.gpus && remoteData.gpus.length > 0) {
+                  statsData.gpus = remoteData.gpus;
                 }
               } catch {
                 // 静默失败，不阻塞主流程
@@ -296,7 +293,7 @@ export default function Monitor() {
             }
           }
 
-          setStats(statsData);
+          setStats(statsData as MonitorStats);
           setHistory(historyData);
         }
       } catch (err) {

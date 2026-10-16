@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Brain, AlertTriangle, CheckCircle, XCircle, X, Loader, ChevronRight, Send, BookOpen } from 'lucide-react';
+import { sanitizeHtml } from '../utils/sanitize';
 
 interface AIAnalysisToastProps {
   wsRef: React.RefObject<WebSocket | null>;
@@ -194,7 +195,7 @@ export default function AIAnalysisToast({ wsRef, onViewLogs }: AIAnalysisToastPr
 }
 
 function toMarkdownHtml(md: string): string {
-  return md
+  const html = md
     .replace(/^##\s+(.+)$/gm, '<h2>$1</h2>')
     .replace(/^###\s+(.+)$/gm, '<h3>$1</h3>')
     .replace(/^\d+\.\s+(.+)$/gm, '<li>$1</li>')
@@ -205,4 +206,6 @@ function toMarkdownHtml(md: string): string {
     .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
     .replace(/^(?!<[hupul])/gm, '')
     .replace(/^(.+)$/gm, (line) => line.startsWith('<') ? line : `<p>${line}</p>`);
+  // LLM answer text is untrusted: sanitize before it reaches dangerouslySetInnerHTML.
+  return sanitizeHtml(html);
 }

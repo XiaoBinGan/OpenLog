@@ -4,6 +4,26 @@ import {
 } from 'lucide-react';
 import { useRemote } from '../contexts/RemoteContext';
 import { useDevice } from '../contexts/DeviceContext';
+import { apiFetch } from '../api/client';
+
+/** nvidia-smi 的数字字段在旧格式下可能是字符串，统一走 Number() 转换。 */
+type Numeric = number | string;
+
+interface GpuPayload {
+  index?: number;
+  name?: string;
+  util?: Numeric;
+  memUsed?: Numeric;
+  memTotal?: Numeric;
+  temp?: Numeric;
+  processes?: { pid: number; name: string; usedMemory: number }[];
+}
+
+interface RemoteGpuStats {
+  error?: string;
+  offline?: boolean;
+  gpus?: GPUDevice[];
+}
 
 interface GPUDevice {
   index: number;
@@ -45,9 +65,7 @@ export default function GPU() {
 
   const fetchServerGPU = useCallback(async (server: typeof connectedServers[0]): Promise<ServerGPU> => {
     try {
-      const res = await fetch(`/api/remote/servers/${server.id}/stats`);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
+      const data = await apiFetch<RemoteGpuStats>(`/api/remote/servers/${server.id}/stats`);
       if (data.error) throw new Error(data.error);
       if (data.offline) throw new Error('服务器未连接');
       // Monitor stats 已经包含 gpus 数组（含 processes）
@@ -84,10 +102,8 @@ export default function GPU() {
   const fetchLocalGPU = useCallback(async (): Promise<ServerGPU | null> => {
     try {
       // 1) 尝试本机 monitor API
-      const res = await fetch('/api/monitor/stats');
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      const gpus: GPUDevice[] = (data.gpus || []).map((g: any) => ({
+      const data = await apiFetch<{ gpus?: GpuPayload[] }>('/api/monitor/stats');
+      const gpus: GPUDevice[] = (data.gpus || []).map((g) => ({
         index: g.index ?? 0,
         name: g.name || 'GPU',
         util: Number(g.util) || 0,
@@ -154,13 +170,13 @@ export default function GPU() {
 
     const results: ServerGPU[] = [];
 
-    // 本机设备
-    if (!isRemote) {
-      const localGPU = await fetchLocalGPU();
-      if (localGPU && localGPU.devices.length > 0) {
-        results.push(localGPU);
-      }
-    }
+    // 本地算力暂不展示，也不参与统计；算力监控仅统计已连接的远程服务器。
+    // if (!isRemote) {
+    //   const localGPU = await fetchLocalGPU();
+    //   if (localGPU && localGPU.devices.length > 0) {
+    //     results.push(localGPU);
+    //   }
+    // }
 
     // 远程服务器
     if (connectedServers.length > 0) {

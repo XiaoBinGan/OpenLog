@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { Outlet, NavLink, useNavigate, useLocation } from 'react-router-dom';
 import { AssistantProvider } from '../contexts/AssistantContext';
 import { useToast } from '../contexts/ToastContext';
+import { apiFetch } from '../api/client';
 import {
   LayoutDashboard,
   FileText,
@@ -21,6 +22,7 @@ import {
 import clsx from 'clsx';
 import GlobalStatusBar from './GlobalStatusBar';
 import AIAnalysisToast from './AIAnalysisToast';
+import { withWsToken } from '../api/auth';
 
 const navItems = [
   { path: '/monitor', icon: Activity, label: '系统监控' },
@@ -52,17 +54,17 @@ function LayoutContent() {
   const connectWs = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) return;
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsInstance = new WebSocket(`${protocol}//${window.location.host}/ws`);
+    const wsInstance = new WebSocket(withWsToken(`${protocol}//${window.location.host}/ws`));
     wsRef.current = wsInstance;
 
     wsInstance.onopen = () => {
       console.log('[WS] Connected');
       // 重连后检查是否有遗漏的巡检/退出事件
-      fetch('/api/docker/patrol/last')
-        .then(r => r.json())
+      apiFetch<{ results?: { containerName?: string; containerId?: string; totalUnique?: number; uniqueCount?: number }[] }>('/api/docker/patrol/last')
         .then(data => {
-          if (data.results?.length > 0) {
-            for (const r of data.results) {
+          const results = data.results ?? [];
+          if (results.length > 0) {
+            for (const r of results) {
               const cName = r.containerName || r.containerId?.slice(0, 12);
               const count = r.totalUnique || r.uniqueCount;
               toast.warning(
@@ -273,7 +275,7 @@ function LayoutContent() {
 
       {/* Main Content */}
       <main className={clsx(
-        'flex-1 transition-all duration-300',
+        'flex-1 min-w-0 max-w-full overflow-x-hidden transition-all duration-300',
         sidebarOpen ? 'md:ml-64' : 'md:ml-16'
       )}>
         {/* Global Status Bar (desktop only) */}
@@ -291,7 +293,7 @@ function LayoutContent() {
         </header>
 
         {/* Page Content */}
-        <div className="p-4 md:p-6 md:mt-14">
+        <div className="p-4 md:p-6 md:mt-14 min-w-0 max-w-full overflow-x-hidden">
           <Outlet />
         </div>
       </main>

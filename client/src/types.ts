@@ -170,6 +170,20 @@ export interface DockerSource {
   key?: string;
   /** ✅ macOS Docker Desktop 推荐：Unix Socket 路径（优先于 TCP） */
   socketPath?: string;
+  /**
+   * SSH 桥模式：通过一台已配置的远程服务器访问它的 docker.sock。
+   *
+   * 相比 TCP 模式，不需要在远端暴露 2375（那是无鉴权的 Docker API，
+   * 且开启它要重启 dockerd → 所有容器一起重启）。服务端经 SSH 通道把远端
+   * docker.sock 桥成本地 socket，对 dockerode 完全透明。
+   * 设置此项时 socketPath / host / port / tls 均被忽略。
+   */
+  via?: {
+    /** 远程服务器 id（见「远程服务器」页） */
+    serverId: string;
+    /** 远端 docker socket 路径，默认 /var/run/docker.sock */
+    socketPath?: string;
+  };
   enabled: boolean;
   autoAnalysis: boolean;
   projects: string[];

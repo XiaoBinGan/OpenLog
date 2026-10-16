@@ -16,6 +16,8 @@ import {
 } from 'lucide-react';
 import { LineChart, Line, AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
 import { useDevice } from '../contexts/DeviceContext';
+import { withWsToken } from '../api/auth';
+import { apiFetch } from '../api/client';
 
 import type { MonitorStats, MonitorHistory, Log, RemoteServer } from '../types';
 
@@ -241,9 +243,9 @@ export default function Dashboard() {
         if (!isRemote) {
           // 本机设备 - 使用 HTTP 轮询，与 GlobalStatusBar 保持一致
           const [statsData, historyData, logsData] = await Promise.all([
-            fetch('/api/monitor/stats').then(r => r.json()),
-            fetch('/api/monitor/history?limit=30').then(r => r.json()),
-            fetch('/api/logs?limit=10').then(r => r.json())
+            apiFetch<MonitorStats>('/api/monitor/stats'),
+            apiFetch<MonitorHistory[]>('/api/monitor/history?limit=30'),
+            apiFetch<{ logs: Log[] }>('/api/logs?limit=10'),
           ]);
           setStats(statsData);
           setHistory(historyData);
@@ -251,7 +253,7 @@ export default function Dashboard() {
         } else {
           // 远程已连接，走 stats API
           const [statsData] = await Promise.all([
-            fetch(`/api/remote/servers/${selectedDevice.id}/stats`).then(r => r.json())
+            apiFetch<MonitorStats>(`/api/remote/servers/${selectedDevice.id}/stats`)
           ]);
           
           // 解析远程统计数据为统一格式
@@ -320,12 +322,14 @@ export default function Dashboard() {
           // 加载远程日志
           try {
             const remoteServer = selectedDevice as RemoteServer;
-            const res = await fetch(`/api/remote/servers/${selectedDevice.id}/files?path=${encodeURIComponent(remoteServer.logPath || '/var/log')}`);
-            const filesData = await res.json();
-            const logFile = filesData.files?.find((f: any) => f.isLog);
+            const filesData = await apiFetch<{ files?: { isLog?: boolean; path: string }[] }>(
+              `/api/remote/servers/${selectedDevice.id}/files?path=${encodeURIComponent(remoteServer.logPath || '/var/log')}`
+            );
+            const logFile = filesData.files?.find((f) => f.isLog);
             if (logFile) {
-              const logsRes = await fetch(`/api/remote/servers/${selectedDevice.id}/logs?file=${encodeURIComponent(logFile.path)}&lines=10`);
-              const logsData = await logsRes.json();
+              const logsData = await apiFetch<{ logs: Log[] }>(
+                `/api/remote/servers/${selectedDevice.id}/logs?file=${encodeURIComponent(logFile.path)}&lines=10`
+              );
               setRecentLogs(logsData.logs || []);
             }
           } catch (err) {
@@ -345,7 +349,7 @@ export default function Dashboard() {
     
     // 仅用于日志的 WebSocket（不包含监控数据）
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsInstance = new WebSocket(`${protocol}//${window.location.host}/ws`);
+    const wsInstance = new WebSocket(withWsToken(`${protocol}//${window.location.host}/ws`));
     
     wsInstance.onmessage = (event) => {
       const data = JSON.parse(event.data);

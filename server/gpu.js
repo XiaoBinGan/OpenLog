@@ -10,6 +10,8 @@
  */
 
 import { NodeSSH } from 'node-ssh';
+import { guardSshConnection } from './ssh-guard.js';
+import { errorMessage } from './errors.js';
 import { getKv, setKv } from './db/index.js';
 
 // ─── 类型定义 ──────────────────────────────────────────────────────────────
@@ -129,7 +131,7 @@ async function getNVIDIAGPUsLocal() {
     
     return devices;
   } catch (err) {
-    console.warn('[GPU] NVIDIA 检测失败:', err.message);
+    console.warn('[GPU] NVIDIA 检测失败:', errorMessage(err));
     return [];
   }
 }
@@ -228,7 +230,7 @@ async function getAMDGPUsLocal() {
     
     return devices;
   } catch (err) {
-    console.warn('[GPU] AMD 检测失败:', err.message);
+    console.warn('[GPU] AMD 检测失败:', errorMessage(err));
     return [];
   }
 }
@@ -292,7 +294,7 @@ async function getMOXIGPUsLocal() {
     
     return devices;
   } catch (err) {
-    console.warn('[GPU] 沐熙检测失败，尝试 muxiinfo:', err.message);
+    console.warn('[GPU] 沐熙检测失败，尝试 muxiinfo:', errorMessage(err));
     try {
       const output = await runCommand('muxiinfo --query-gpu=all --format=csv');
       return parseMOXIOutput(output);
@@ -351,7 +353,7 @@ async function getHuaweiGPUsLocal() {
     
     return devices;
   } catch (err) {
-    console.warn('[GPU] 华为昇腾检测失败，尝试 npuinfo64:', err.message);
+    console.warn('[GPU] 华为昇腾检测失败，尝试 npuinfo64:', errorMessage(err));
     try {
       const output = await runCommand('npuinfo64 --query-gpu=all --format=csv');
       return parseHuaweiOutput(output);
@@ -412,6 +414,9 @@ export async function getRemoteGPUs(host, sshUser, sshPassword, sshKeyPath, sshP
       privateKeyPath: sshKeyPath || undefined,
       timeout: 10000,
     });
+    // 同 remote.js：node-ssh 在 'ready' 后移除了唯一的 error 监听者，
+    // 不挂的话这个 socket 后续出错会升级成 uncaughtException 并终止整个进程。
+    guardSshConnection(ssh, `GPU 宿主机 ${host}`);
 
     const results = [];
 
@@ -528,7 +533,7 @@ function runCommand(cmd) {
         const out = execSync(cmd, { timeout: 8000, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
         resolve(out);
       } catch (err) {
-        reject(new Error(err.stderr || err.message));
+        reject(new Error(err.stderr || errorMessage(err)));
       }
     });
   });

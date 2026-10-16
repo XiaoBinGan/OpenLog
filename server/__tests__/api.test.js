@@ -270,3 +270,225 @@ describe('参数校验 400 测试', () => {
     expect(data.error).toBeDefined();
   });
 });
+
+describe('配置读写（GET/PUT /api/settings）', () => {
+  /**
+   * 事故背景：`PUT /api/settings` 原本以
+   *     res.json({ success: true, settings })
+   * 结尾，其中 `settings` 是 index.js 的模块级绑定（let settings = null）。
+   * 把这条路由搬到 routes/settings.js 后该绑定不复存在 —— 请求会走完所有副作用、
+   * 配置已经写入磁盘，然后在最后一行抛 ReferenceError，返回 500。
+   * 前端虽然会提示「保存失败」，配置其实已经改了。这类「副作用成功、响应失败」
+   * 的不一致最难排查，所以在这里钉死。
+   */
+  it('PUT 必须返回 200（副作用已生效，响应不能失败）', async () => {
+    const res = await put('/api/settings', { refreshInterval: '6000' });
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.success).toBe(true);
+  });
+
+  it('PUT 的修改真的落到后续 GET 上', async () => {
+    await put('/api/settings', { refreshInterval: '6300' });
+    const res = await get('/api/settings');
+    const data = await res.json();
+    expect(data.refreshInterval).toBe('6300');
+  });
+
+  /**
+   * GET 会脱敏 openaiApiKey，PUT 曾经原样回显整个对象（含明文 key）。
+   * 同一个字段在两条路由上两种表现，只要各写一遍脱敏逻辑就一定会再次分叉。
+   */
+  it('PUT 响应中的 openaiApiKey 必须与 GET 一样脱敏，不得回显明文', async () => {
+    const plaintext = 'sk-regression-abcdefghijklmnop';
+    const res = await put('/api/settings', { openaiApiKey: plaintext });
+    expect(res.status).toBe(200);
+
+    const raw = await res.text();
+    expect(raw).not.toContain(plaintext);
+
+    const data = JSON.parse(raw);
+    expect(data.settings.openaiApiKey).toContain('***');
+    expect(data.settings.openaiApiKey).toMatch(/^sk-r\*\*\*/);
+
+    // GET 也必须给同样的形态
+    const getRes = await get('/api/settings');
+    const getData = await getRes.json();
+    expect(getData.openaiApiKey).toBe(data.settings.openaiApiKey);
+  });
+
+  it('带 *** 占位符的敏感值不会被写回配置', async () => {
+    // 先放一个已知的真实 key
+    const real = 'sk-regression-abcdefghijklmnop';
+    await put('/api/settings', { openaiApiKey: real });
+    const sanitizedReal = (await (await get('/api/settings')).json()).openaiApiKey;
+    expect(sanitizedReal).toBe('sk-r***mnop');
+
+    // 再写回一个**不同**的脱敏字符串。
+    // 这里必须用一个与 sanitizedReal 不同的值 —— 否则无论守卫是否生效，
+    // 读回来的都是同一个字符串，测试就成了同义反复。
+    // （第一版正是用 sanitizedReal 自己写回，把守卫整个删掉它照样通过。）
+    await put('/api/settings', { openaiApiKey: 'sk-WRONG***ZZZZ' });
+
+    const after = (await (await get('/api/settings')).json()).openaiApiKey;
+    // 守卫生效时真实 key 原封不动，读回来仍是 sk-r***mnop
+    expect(after).toBe(sanitizedReal);
+    expect(after).not.toContain('WRONG');
+    expect(after).not.toContain('ZZZZ');
+  });
+});
+
+// ──────────────────────────────────────────────────────────────
+// API 的 HTTP 语义
+// ──────────────────────────────────────────────────────────────
+describe('API 的 HTTP 语义', () => {
+  describe('未匹配的 API 路径必须返回 JSON，而不是 HTML', () => {
+    // 背景：没有 JSON 404 中间件时，Express 默认处理器返回一份 HTML 错误页
+    // （<title>Error</title>）。前端 apiFetch 会去 JSON.parse 这段 HTML，
+    // 于是「路径写错了」被报成一句莫名其妙的解析错误。
+    const CASES = ['/api', '/api/', '/api/nonexistent', '/api/does/not/exist', '/ws', '/ws/'];
+
+    it.each(CASES)('%s 返回 404 + application/json', async (p) => {
+      const res = await get(p);
+      expect(res.status).toBe(404);
+      expect(res.headers.get('content-type')).toContain('application/json');
+      const body = await res.json(); // 解析失败会直接抛错，这本身就是断言
+      expect(body.error).toBeTruthy();
+      expect(body.error).toContain(p);
+    });
+
+    it('错误正文里带上了方法与路径，便于定位', async () => {
+      const body = await (await get('/api/nope')).json();
+      expect(body.error).toContain('GET');
+      expect(body.error).toContain('/api/nope');
+    });
+
+    it('不存在的 API 路径不会返回 HTML 文档', async () => {
+      const text = await (await get('/api/nope')).text();
+      expect(text.toLowerCase()).not.toContain('<!doctype html');
+      expect(text.toLowerCase()).not.toContain('<title>error</title>');
+    });
+  });
+
+  describe('/api 与 /ws 的边界（曾经漏掉不带尾斜杠的写法）', () => {
+    // 原实现的 SPA 守卫写的是 startsWith('/api/')，于是 `/api`（无尾斜杠）
+    // 不匹配，掉进 SPA 兜底返回 HTML 首页 —— 实测确认过。
+    // 现在两端共用 isApiPath()，这里钉住该函数不漏掉裸路径。
+
+    it('裸 /api 被判定为 API 路径', async () => {
+      const res = await get('/api');
+      expect(res.headers.get('content-type')).toContain('application/json');
+    });
+
+    it('裸 /ws 被判定为 API 路径', async () => {
+      const res = await get('/ws');
+      expect(res.headers.get('content-type')).toContain('application/json');
+    });
+
+    it('形近路径不被误判（/apifoo、/api-docs 应走默认处理）', async () => {
+      for (const p of ['/apifoo', '/api-docs']) {
+        const res = await get(p);
+        // 非 API 路径交由 Express 默认 404，正文不是我们那段中文提示
+        const text = await res.text();
+        expect(text, `${p} 不该被当成 API 路径`).not.toContain('接口不存在');
+      }
+    });
+
+    it('static: SPA 兜底与 JSON 404 共用 isApiPath，而不是各自内联判断', async () => {
+      const fs = await import('fs');
+      const src = fs.readFileSync(path.join(PROJECT_ROOT, 'server', 'index.js'), 'utf8');
+      // 两处都必须调用共享函数
+      const calls = src.match(/isApiPath\(req\.path\)/g) || [];
+      expect(calls.length, 'SPA 兜底与 JSON 404 都应使用 isApiPath').toBeGreaterThanOrEqual(2);
+      // 且不应再残留内联的 startsWith('/api/') 守卫
+      expect(src).not.toMatch(/startsWith\('\/api\/'\)\s*\|\|\s*req\.path\.startsWith/);
+    });
+  });
+
+  describe('docker sourceId 白名单', () => {
+    // 原实现找不到源时得到 config = {}，而 getDocker 对空配置默认
+    // host=localhost, port=2375 —— 未知 sourceId 会**静默连本机 Docker**。
+    it('未知 sourceId 返回 404，并说明是哪个源', async () => {
+      const res = await get('/api/docker/containers/__no_such_source__/abc/logs');
+      expect(res.status).toBe(404);
+      const body = await res.json();
+      expect(body.error).toContain('__no_such_source__');
+    });
+
+    it('未知 sourceId 不会再回落去连 localhost:2375', async () => {
+      const res = await get('/api/docker/containers/__no_such_source__/x');
+      expect(res.status).toBe(404);
+      const text = await res.text();
+      expect(text).not.toContain('ECONNREFUSED');
+      expect(text).not.toContain('2375');
+    });
+
+    it('未知 sourceId 在 trace 路由上也返回 404', async () => {
+      const res = await get('/api/docker/trace/__no_such_source__/x');
+      expect(res.status).toBe(404);
+    });
+
+    it('合法 sourceId（配置里真实存在的那个）不受影响', async () => {
+      // 注意：不能从 /api/docker/containers 取 —— 它只列 enabled 的源，
+      // 而测试环境的默认源 enabled: false，返回的是 {"sources":[]}。
+      // 白名单校验的是「源是否存在」，与 enabled 无关，所以看 settings。
+      const settings = await (await get('/api/settings')).json();
+      const realId = settings.dockerSources?.[0]?.id;
+      expect(realId, '测试环境应至少有一个 docker 源').toBeTruthy();
+      // 不该因为白名单而 404 —— 允许连不上（500），但不能是「源不存在」
+      const res = await get(`/api/docker/containers/${realId}/__no_container__`);
+      expect(res.status).not.toBe(404);
+    });
+
+    it('/api/docker/ping 仍可从 body 传任意 config（保存前试连用）', async () => {
+      // 这个端点刻意不做 sourceId 白名单，必须保留
+      const res = await post('/api/docker/ping', {
+        sourceId: '__no_such_source__',
+        config: { host: '127.0.0.1', port: 1 },
+      });
+      expect(res.status).toBe(200);
+    });
+  });
+});
+
+// ──────────────────────────────────────────────────────────────
+// 注册顺序回归
+// ──────────────────────────────────────────────────────────────
+describe('中间件注册顺序', () => {
+  /**
+   * 踩过的坑：JSON 404 最初被放在 createRemoteRouter 之后，
+   * 结果 /api/gpu/* 全部变成 404 —— GPU 路由是单独挂在文件末尾的
+   * （`app.use(gpuRouter)`，甚至在 server.listen 之后）。
+   *
+   * 「最后一个路由挂载」不能靠猜，所以直接静态断言。
+   */
+  it('JSON 404 中间件必须排在所有路由挂载之后', async () => {
+    const fs = await import('fs');
+    const src = fs.readFileSync(path.join(PROJECT_ROOT, 'server', 'index.js'), 'utf8');
+    const lines = src.split('\n');
+
+    const handlerAt = lines.findIndex((l) => l.includes('接口不存在: ${req.method}'));
+    expect(handlerAt, '未找到 JSON 404 中间件').toBeGreaterThan(-1);
+
+    // 所有路由挂载：app.use(xxxRouter) / app.use(gpuRouter) 等
+    const mounts = [];
+    lines.forEach((l, i) => {
+      if (/^app\.use\([A-Za-z_$][\w$]*[Rr]outer\b/.test(l.trim()) || /^app\.use\(create\w+Router\(/.test(l.trim())) {
+        mounts.push({ line: i, text: l.trim() });
+      }
+    });
+    expect(mounts.length, '应该找到多个路由挂载').toBeGreaterThan(5);
+
+    const after = mounts.filter((m) => m.line > handlerAt);
+    expect(
+      after.map((m) => `${m.line + 1}: ${m.text}`),
+      'JSON 404 之后仍有路由挂载，那些路由会被 404 吞掉'
+    ).toEqual([]);
+  });
+
+  it('/api/gpu/configs 没有被我挡住（实际请求验证）', async () => {
+    const res = await get('/api/gpu/configs');
+    expect(res.status).toBe(200);
+    expect((await res.json()).configs).toBeDefined();
+  });
+});

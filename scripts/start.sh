@@ -34,7 +34,7 @@ fi
 
 # 4. 启动服务
 echo ""
-echo "🔧 启动后端: http://localhost:3001"
+echo "🔧 启动后端: http://localhost:${PORT:-3011}"
 echo "🎨 启动前端: http://localhost:5173"
 echo ""
 

@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useToast } from '../contexts/ToastContext';
+import { apiFetch, apiJson } from '../api/client';
 import {
   Settings as SettingsIcon,
   Folder,
@@ -87,7 +88,7 @@ export default function Settings() {
   const [loadingModels, setLoadingModels] = useState(false);
   const [thinkingTestStatus, setThinkingTestStatus] = useState<'idle' | 'testing' | 'ok' | 'fail'>('idle');
   const [thinkingTestMsg, setThinkingTestMsg] = useState('');
-  const [remoteServers, setRemoteServers] = useState<{ host: string; name: string; port: number }[]>([]);
+  const [remoteServers, setRemoteServers] = useState<{ id: string; host: string; name: string; port: number }[]>([]);
   const [hostDropdownOpen, setHostDropdownOpen] = useState<Record<string, boolean>>({});
   const toast = useToast();
   const [machines, setMachines] = useState<any[]>([]);
@@ -97,8 +98,7 @@ export default function Settings() {
 
   useEffect(() => {
     // Load settings
-    fetch('/api/settings')
-      .then(r => r.json())
+    apiFetch<Partial<SettingsType>>('/api/settings')
       .then(data => {
         // merge with defaults so no field becomes undefined
         setSettings(prev => ({ ...prev, ...data }));
@@ -107,14 +107,14 @@ export default function Settings() {
         setProvider(matched?.id || 'custom');
         // If model not in preset list, set as custom
         const allModels = providers.flatMap(p => p.models);
-        if (!allModels.includes(data.model)) {
+        if (data.model && !allModels.includes(data.model)) {
           setCustomModel(data.model);
         }
-      });
+      })
+      .catch((err: unknown) => console.error('Failed to load settings:', err));
 
     // Load log files
-    fetch('/api/logs/files')
-      .then(r => r.json())
+    apiFetch<{ name: string; path: string; size: number }[]>('/api/logs/files')
       .then(data => setLogFiles(data))
       .catch(() => {});
 
@@ -122,26 +122,23 @@ export default function Settings() {
     fetchOllamaModels();
 
     // Load remote servers for Docker host dropdown
-    fetch('/api/remote/servers')
-      .then(r => r.json())
+    apiFetch<{ servers?: any[] }>('/api/remote/servers')
       .then(data => {
         if (data.servers) {
-          setRemoteServers(data.servers.map((s: any) => ({ host: s.host, name: s.name, port: s.port })));
+          setRemoteServers(data.servers.map((s: any) => ({ id: s.id, host: s.host, name: s.name, port: s.port })));
         }
       })
       .catch(() => {});
 
     // Load machines from remote servers and alert configs
-    fetch('/api/remote/servers')
-      .then(r => r.json())
+    apiFetch<{ servers?: any[] }>('/api/remote/servers')
       .then(data => {
         const servers = (data.servers || []).map((s: any) => ({ id: s.id, name: s.name, host: s.host, type: s.host }));
         setMachines(servers);
       })
       .catch(() => {});
 
-    fetch('/api/alerts')
-      .then(r => r.json())
+    apiFetch<{ configs?: any[] }>('/api/alerts')
       .then(data => {
         if (data.configs) setAlertConfigs(data.configs);
       })
@@ -150,8 +147,7 @@ export default function Settings() {
 
   const fetchOllamaModels = () => {
     setLoadingModels(true);
-    fetch('/api/models/ollama')
-      .then(r => r.json())
+    apiFetch<{ models?: any[] }>('/api/models/ollama')
       .then(data => {
         if (data.models && data.models.length > 0) {
           setOllamaModels(data.models);
@@ -233,10 +229,7 @@ export default function Settings() {
     setTestResult(null);
 
     try {
-      const res = await fetch('/api/settings', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      await apiJson('/api/settings', 'PUT', {
           openaiApiKey: settings.openaiApiKey,
           openaiBaseUrl: settings.openaiBaseUrl,
           model: settings.model,
@@ -251,17 +244,11 @@ export default function Settings() {
           containerPatrolEnabled: settings.containerPatrolEnabled,
           containerPatrolInterval: settings.containerPatrolInterval,
           containerPatrolLevels: settings.containerPatrolLevels,
-        })
       });
 
-      if (res.ok) {
-        setSaved(true);
-        setTimeout(() => setSaved(false), 3000);
-        toast.success('设置已保存');
-      } else {
-        setTestResult({ success: false, message: '保存失败' });
-        toast.error('保存失败');
-      }
+      setSaved(true);
+      setTimeout(() => setSaved(false), 3000);
+      toast.success('设置已保存');
     } catch {
       setTestResult({ success: false, message: '保存失败' });
       toast.error('保存失败');
@@ -295,17 +282,13 @@ export default function Settings() {
           cooldown_minutes: 5,
           webhook_url: '',
         };
-        return fetch('/api/alerts', {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
+        return apiJson('/api/alerts', 'PUT', {
             machine_id: cfg.machine_id,
             enabled: cfg.enabled,
             patterns: cfg.patterns,
             severity_filter: cfg.severity_filter,
             cooldown_minutes: cfg.cooldown_minutes,
             webhook_url: cfg.webhook_url,
-          })
         });
       });
 
@@ -327,17 +310,14 @@ export default function Settings() {
   const testDocker = async (ds: any) => {
     setDockerTestStatus(prev => ({ ...prev, [ds.id]: 'testing' }));
     try {
-      const res = await fetch('/api/docker/ping', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sourceId: ds.id, config: {
-          socketPath: ds.socketPath || undefined,
-          host: ds.socketPath ? undefined : (ds.host || 'localhost'),
-          port: ds.socketPath ? undefined : (ds.port || 2375),
-          tls: ds.tls,
-        }})
-      });
-      const data = await res.json();
+      const data = await apiJson<{ success?: boolean; name?: string; containers?: number; running?: number; error?: string }>('/api/docker/ping', 'POST', { sourceId: ds.id, config: ds.via?.serverId
+          ? { via: { serverId: ds.via.serverId, socketPath: ds.via.socketPath || '/var/run/docker.sock' } }
+          : {
+              socketPath: ds.socketPath || undefined,
+              host: ds.socketPath ? undefined : (ds.host || 'localhost'),
+              port: ds.socketPath ? undefined : (ds.port || 2375),
+              tls: ds.tls,
+            } });
       if (data.success) {
         setDockerTestStatus(prev => ({ ...prev, [ds.id]: 'ok' }));
         setDockerTestMsg(prev => ({ ...prev, [ds.id]: `${data.name} ✅ ${data.containers} 容器 / ${data.running} 运行中` }));
@@ -360,31 +340,23 @@ export default function Settings() {
 
     try {
       // 先保存当前配置，确保测试用的是页面上的最新值
-      const saveRes = await fetch('/api/settings', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      try {
+        await apiJson('/api/settings', 'PUT', {
           openaiApiKey: settings.openaiApiKey,
           openaiBaseUrl: settings.openaiBaseUrl,
           model: settings.model,
-        })
-      });
-      if (!saveRes.ok) {
+        });
+      } catch {
         setTestResult({ success: false, message: '保存配置失败，无法测试' });
         setTesting(false);
         return;
       }
 
-      const res = await fetch('/api/logs/analyze', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          logs: [{ id: '1', timestamp: new Date().toISOString(), level: 'INFO', message: 'API connection test' }],
-          prompt: 'Reply with exactly: "API test successful"'
-        })
+      const data = await apiJson<{ analysis?: string; error?: string }>('/api/logs/analyze', 'POST', {
+        logs: [{ id: '1', timestamp: new Date().toISOString(), level: 'INFO', message: 'API connection test' }],
+        prompt: 'Reply with exactly: "API test successful"'
       });
 
-      const data = await res.json();
       if (data.analysis) {
         setTestResult({ success: true, message: isLocal ? '本地模型连接成功！' : 'API 连接成功！' });
       } else {
@@ -1020,12 +992,12 @@ export default function Settings() {
                     type="button"
                     onClick={() => {
                       const updated = [...(settings.dockerSources || [])];
-                      updated[idx] = { ...ds, socketPath: '/var/run/docker.sock', host: '', port: 0 };
+                      updated[idx] = { ...ds, socketPath: '/var/run/docker.sock', host: '', port: 0, via: undefined };
                       setSettings(p => ({ ...p, dockerSources: updated }));
                       setSaved(false);
                     }}
                     className={`flex-1 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
-                      ds.socketPath
+                      ds.socketPath && !ds.via?.serverId
                         ? 'bg-green-500/20 border-green-500/50 text-green-400'
                         : 'bg-dark-800/40 border-dark-700/50 text-dark-400 hover:border-dark-600'
                     }`}
@@ -1036,18 +1008,35 @@ export default function Settings() {
                     type="button"
                     onClick={() => {
                       const updated = [...(settings.dockerSources || [])];
-                      updated[idx] = { ...ds, socketPath: '', host: 'localhost', port: 2375 };
+                      updated[idx] = { ...ds, socketPath: '', host: 'localhost', port: 2375, via: undefined };
                       setSettings(p => ({ ...p, dockerSources: updated }));
                       setSaved(false);
                     }}
                     className={`flex-1 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
-                      !ds.socketPath && ds.host
+                      !ds.socketPath && !ds.via?.serverId && ds.host
                         ? 'bg-blue-500/20 border-blue-500/50 text-blue-400'
                         : 'bg-dark-800/40 border-dark-700/50 text-dark-400 hover:border-dark-600'
                     }`}
                   >
                     🖥️ TCP
                   </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const updated = [...(settings.dockerSources || [])];
+                        updated[idx] = { ...ds, socketPath: '', host: '', port: 0, tls: false,
+                          via: { serverId: remoteServers[0]?.id || '', socketPath: '/var/run/docker.sock' } };
+                        setSettings(p => ({ ...p, dockerSources: updated }));
+                        setSaved(false);
+                      }}
+                      className={`flex-1 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
+                        ds.via?.serverId
+                          ? 'bg-amber-500/20 border-amber-500/50 text-amber-400'
+                          : 'bg-dark-800/40 border-dark-700/50 text-dark-400 hover:border-dark-600'
+                      }`}
+                    >
+                      🔐 SSH 服务器
+                    </button>
                 </div>
                 {ds.socketPath && (
                   <div className="flex items-center gap-2">
@@ -1070,6 +1059,48 @@ export default function Settings() {
 
               {/* Fields */}
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3 p-4">
+                  {ds.via?.serverId ? (
+                    <>
+                      <div>
+                        <p className="text-xs text-dark-600 mb-1">SSH 服务器</p>
+                        <select
+                          value={ds.via?.serverId || ''}
+                          onChange={e => {
+                            const updated = [...(settings.dockerSources || [])];
+                            updated[idx] = { ...ds, via: { serverId: e.target.value, socketPath: ds.via?.socketPath || '/var/run/docker.sock' } };
+                            setSettings(p => ({ ...p, dockerSources: updated }));
+                            setSaved(false);
+                          }}
+                          className="w-full px-2.5 py-1.5 bg-dark-800/60 border border-dark-700/50 rounded-lg text-xs text-dark-200 focus:outline-none focus:border-amber-500/50"
+                        >
+                          <option value="">选择服务器…</option>
+                          {remoteServers.map(srv => (
+                            <option key={srv.id} value={srv.id}>{srv.name}（{srv.host}:{srv.port}）</option>
+                          ))}
+                        </select>
+                        {remoteServers.length === 0 && (
+                          <p className="text-[10px] text-red-400 mt-1">请先在「远程服务器」页添加一台 SSH 服务器</p>
+                        )}
+                      </div>
+                      <div>
+                        <p className="text-xs text-dark-600 mb-1">远端 Docker Socket</p>
+                        <input
+                          type="text"
+                          value={ds.via?.socketPath || '/var/run/docker.sock'}
+                          onChange={e => {
+                            const updated = [...(settings.dockerSources || [])];
+                            updated[idx] = { ...ds, via: { serverId: ds.via?.serverId || '', socketPath: e.target.value } };
+                            setSettings(p => ({ ...p, dockerSources: updated }));
+                            setSaved(false);
+                          }}
+                          placeholder="/var/run/docker.sock"
+                          className="w-full px-2.5 py-1.5 bg-dark-800/60 border border-dark-700/50 rounded-lg text-xs text-dark-200 placeholder-dark-600 focus:outline-none focus:border-amber-500/50"
+                        />
+                        <p className="text-[10px] text-dark-600 mt-1">走 SSH 通道访问 docker.sock，无需暴露 2375</p>
+                      </div>
+                    </>
+                  ) : (
+                    <>
                 <div className="relative">
                   <p className="text-xs text-dark-600 mb-1">主机地址</p>
                   {!ds.socketPath && remoteServers.length > 0 ? (
@@ -1182,6 +1213,8 @@ export default function Settings() {
                     </div>
                   </button>
                 </div>
+                  </>
+                  )}
                 <div>
                   <p className="text-xs text-dark-600 mb-1">AI 分析</p>
                   <button
@@ -1246,6 +1279,7 @@ export default function Settings() {
                 <p className="text-xs text-dark-600 leading-relaxed mb-2">
                   每个配置项连接的是一个 <strong className="text-dark-400">Docker Server（守护进程）</strong>，不是单个容器。
                   连接成功后会自动列出该 Server 上的所有容器，无需手动添加。
+                  <span className="text-amber-400/90">🔐 「SSH 服务器」模式通过 SSH 通道访问远端 docker.sock，无需在远端暴露 2375（无需重启 dockerd、不影响运行中的容器），凭据复用远程服务器配置。</span>
                 </p>
                 <details className="group">
                   <summary className="text-xs text-blue-400 cursor-pointer hover:text-blue-300 transition-colors">

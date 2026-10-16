@@ -44,9 +44,15 @@ cd client && npm install && cd ..
 
 ```bash
 cp .env.example .env
-# 编辑 .env 填入 API Key / Fill in your API Key
-OPENAI_API_KEY=sk-you...here
+# 编辑 .env。最少需要设置 OPENLOG_TOKEN（生产模式强制鉴权）
 ```
+
+> ⚠️ 服务默认只监听 `127.0.0.1:3011`。若需要从其他机器访问，必须显式设置
+> `HOST=0.0.0.0`、`OPENLOG_TOKEN`，并把前端来源加入 `OPENLOG_ALLOWED_ORIGINS`。
+> 详见 `.env.example` 内的逐项说明。
+
+模型 API Key 等配置在**页面「设置」中填写**，持久化在数据库里；`.env` 里的
+`OPENAI_API_KEY` 只在数据库尚无配置时作为首次启动的默认值。
 
 ### 运行 | Running
 
@@ -60,6 +66,27 @@ cd client && npm run dev -- --port 5173 --host
 ```
 
 访问 | Visit http://localhost:5173
+
+---
+
+## 🧪 开发与质量门禁 | Dev & Quality Gates
+
+```bash
+npm test              # 单元 + 集成测试（100 个用例，含 19 个安全回归）
+npm run test:coverage # 带覆盖率
+npm run lint          # 服务端 ESLint
+npm run lint:client   # 客户端 ESLint（React + TS）
+npm run lint:all      # 上面两个一起跑
+npm run build         # tsc -b && vite build
+```
+
+CI（`.github/workflows/ci.yml`）在 push/PR 到 `node` / `main` 时依次执行
+双端安装 → 双端 lint → 构建 → 测试。
+
+> ⚠️ **测试隔离**：测试会拉起真实服务端子进程。若未设置 `OPENLOG_DATA_DIR`，
+> 它会读写项目里的 `data/openlog.db`、`settings.json`、`remote-servers.json`。
+> `vitest.config.js` 已默认把它们指向 `/tmp/openlog-vitest`，
+> 手动跑服务时请留意不要用测试参数指向生产数据。
 
 ---
 

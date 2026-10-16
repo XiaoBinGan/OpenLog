@@ -5,6 +5,7 @@
  */
 
 import Database from 'better-sqlite3';
+import { errorMessage } from '../errors.js';
 import mysql from 'mysql2/promise';
 import { Client as PgClient } from 'pg';
 import { existsSync, mkdirSync } from 'fs';
@@ -12,7 +13,9 @@ import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const DATA_DIR = join(__dirname, '../../data');
+// OPENLOG_DATA_DIR 让测试与容器把数据库放到隔离位置；不设置时行为与以前完全一致。
+// 没有这个开关时 `npm test` 会直接读写生产库 data/openlog.db。
+const DATA_DIR = process.env.OPENLOG_DATA_DIR || join(__dirname, '../../data');
 const SQLITE_PATH = join(DATA_DIR, 'openlog.db');
 
 let db = null;
@@ -108,7 +111,7 @@ export async function initDb(config = {}) {
       db = await adaptMySQL(conn);
       console.log('[DB] MySQL connected:', cfg.host || 'localhost');
     } catch (err) {
-      console.warn('[DB] MySQL 连接失败:', err.message, '→ 尝试下一种...');
+      console.warn('[DB] MySQL 连接失败:', errorMessage(err), '→ 尝试下一种...');
       rawDb = null; db = null; dbType = null;
     }
   }
@@ -130,7 +133,7 @@ export async function initDb(config = {}) {
       db = adaptPostgres(conn);
       console.log('[DB] PostgreSQL connected:', cfg.host || 'localhost');
     } catch (err) {
-      console.warn('[DB] PostgreSQL 连接失败:', err.message, '→ 尝试下一种...');
+      console.warn('[DB] PostgreSQL 连接失败:', errorMessage(err), '→ 尝试下一种...');
       if (rawDb) { try { rawDb.end(); } catch {} }
       rawDb = null; db = null; dbType = null;
     }
@@ -148,7 +151,7 @@ export async function initDb(config = {}) {
       db = adaptSQLite(conn);
       console.log('[DB] SQLite initialized:', SQLITE_PATH);
     } catch (err) {
-      throw new Error(`[DB] 无法初始化数据库: ${err.message}`);
+      throw new Error(`[DB] 无法初始化数据库: ${errorMessage(err)}`);
     }
   }
 

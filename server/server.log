@@ -1,9 +1,0 @@
-[DocMind] 已在运行 (PID 90980)
-[DB] SQLite initialized: /Users/wujiahao/.qclaw/workspace/OpenLog/data/openlog.db
-[DB] 数据库初始化完成
-[Remote] 从 SQLite 加载了 2 台服务器
-🚀 Give Me The Log server running on http://localhost:3001
-[default] 🚀 开始监听: /Users/wujiahao/logs (*.log)
-🔄 正在重连 2 台之前在线的服务器...
-  ✅ 双卡 重连成功
-  ✅ VLLM 重连成功

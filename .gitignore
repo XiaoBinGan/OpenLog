@@ -19,6 +19,10 @@ remote-servers.json
 dist/
 client/dist/
 vite.log
+*.tsbuildinfo
+
+# 运行时日志（由程序生成，不应提交）
+*.log
 
 # 本地数据库
 data/

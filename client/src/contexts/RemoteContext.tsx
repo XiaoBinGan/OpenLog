@@ -5,6 +5,7 @@
 import { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import type { RemoteServer, RemoteServerState, RemoteFileList, Log } from '../types';
 import { useDevice } from './DeviceContext';
+import { apiFetch, apiJson } from '../api/client';
 
 interface RemoteContextValue {
   servers: RemoteServer[];
@@ -63,11 +64,8 @@ export function RemoteProvider({ children }: { children: React.ReactNode }) {
   // 加载服务器列表
   const refreshServers = useCallback(async () => {
     try {
-      const res = await fetch('/api/remote/servers');
-      if (res.ok) {
-        const data = await res.json();
-        setServers(data.servers || []);
-      }
+      const data = await apiFetch<{ servers?: RemoteServer[] }>('/api/remote/servers');
+      setServers(data.servers || []);
     } catch {}
   }, []);
 
@@ -110,16 +108,13 @@ export function RemoteProvider({ children }: { children: React.ReactNode }) {
   // 连接服务器
   const connect = useCallback(async (server: RemoteServer) => {
     try {
-      const res = await fetch(`/api/remote/servers/${server.id}/connect`, { method: 'POST' });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      const data = await apiFetch<{ success?: boolean; error?: string }>(`/api/remote/servers/${server.id}/connect`, { method: 'POST' });
       if (!data.success) throw new Error(data.error || '连接失败');
 
       // 拉取 stats
       let systemStats: Record<string, string> | null = null;
       try {
-        const statsRes = await fetch(`/api/remote/servers/${server.id}/stats`);
-        if (statsRes.ok) systemStats = await statsRes.json();
+        systemStats = await apiFetch<Record<string, string>>(`/api/remote/servers/${server.id}/stats`);
       } catch {}
 
       const initPath = server.logPath?.replace(/\/$/, '') || '/var/log';
@@ -142,16 +137,11 @@ export function RemoteProvider({ children }: { children: React.ReactNode }) {
 
       // 立即加载初始目录文件（不靠 useEffect，避免时序问题）
       try {
-        const filesRes = await fetch(`/api/remote/servers/${server.id}/files?path=${encodeURIComponent(initPath)}`);
-        if (filesRes.ok) {
-          const fileData = await filesRes.json();
-          setActiveServer(prev => {
-            if (!prev || prev.id !== server.id) return prev;
-            return { ...prev, files: fileData, filesLoading: false };
-          });
-        } else {
-          setActiveServer(prev => prev && prev.id === server.id ? { ...prev, filesLoading: false } : prev);
-        }
+        const fileData = await apiFetch<RemoteFileList>(`/api/remote/servers/${server.id}/files?path=${encodeURIComponent(initPath)}`);
+        setActiveServer(prev => {
+          if (!prev || prev.id !== server.id) return prev;
+          return { ...prev, files: fileData, filesLoading: false };
+        });
       } catch {
         setActiveServer(prev => prev && prev.id === server.id ? { ...prev, filesLoading: false } : prev);
       }
@@ -177,7 +167,7 @@ export function RemoteProvider({ children }: { children: React.ReactNode }) {
       : (servers.find(s => s.id === targetId)?.name ?? targetId);
 
     try {
-      await fetch(`/api/remote/servers/${targetId}/disconnect`, { method: 'POST' });
+      await apiFetch(`/api/remote/servers/${targetId}/disconnect`, { method: 'POST' });
       showToast('info', `已断开 ${name}`);
       // 只有断开的是当前活跃服务器时才清空 activeServer
       if (activeServerRef.current?.id === targetId) {
@@ -203,9 +193,7 @@ export function RemoteProvider({ children }: { children: React.ReactNode }) {
     const path = normPath(filePath || server.files.currentPath);
     setActiveServer(prev => prev ? { ...prev, filesLoading: true } : prev);
     try {
-      const res = await fetch(`/api/remote/servers/${serverId}/files?path=${encodeURIComponent(path)}`);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data: RemoteFileList = await res.json();
+      const data = await apiFetch<RemoteFileList>(`/api/remote/servers/${serverId}/files?path=${encodeURIComponent(path)}`);
       setActiveServer(prev => {
         if (!prev || prev.id !== serverId) return prev;
         return { ...prev, files: data, filesLoading: false };
@@ -245,9 +233,7 @@ export function RemoteProvider({ children }: { children: React.ReactNode }) {
     try {
       const params = new URLSearchParams({ file: filePath, lines: String(lines) });
       if (search) params.append('search', search);
-      const res = await fetch(`/api/remote/servers/${serverId}/logs?${params}`);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
+      const data = await apiFetch<{ logs?: Log[]; totalLines?: number }>(`/api/remote/servers/${serverId}/logs?${params}`);
       setActiveServer(prev => {
         if (!prev || prev.id !== serverId) return prev;
         return { ...prev, logs: data.logs || [], totalLines: data.totalLines ?? 0, logsLoading: false };
@@ -263,9 +249,7 @@ export function RemoteProvider({ children }: { children: React.ReactNode }) {
     if (!server) return;
     const serverId = server.id;
     try {
-      const res = await fetch(`/api/remote/servers/${serverId}/file/read?path=${encodeURIComponent(filePath)}`);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
+      const data = await apiFetch<{ error?: string; content?: string }>(`/api/remote/servers/${serverId}/file/read?path=${encodeURIComponent(filePath)}`);
       if (data.error) throw new Error(data.error);
       setActiveServer(prev => {
         if (!prev || prev.id !== serverId) return prev;
@@ -293,12 +277,7 @@ export function RemoteProvider({ children }: { children: React.ReactNode }) {
     if (!server || !server.editingFilePath) return { success: false, error: '没有打开的文件' };
     const { id, editingFilePath, fileContent } = server;
     try {
-      const res = await fetch(`/api/remote/servers/${id}/file/write`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path: editingFilePath, content: fileContent }),
-      });
-      const data = await res.json();
+      const data = await apiJson<{ error?: string }>(`/api/remote/servers/${id}/file/write`, 'POST', { path: editingFilePath, content: fileContent });
       if (data.error) throw new Error(data.error);
       setActiveServer(prev => prev ? { ...prev, fileModified: false } : prev);
       showToast('success', `✅ 保存成功: ${editingFilePath.split('/').pop()}`);
@@ -337,13 +316,11 @@ export function RemoteProvider({ children }: { children: React.ReactNode }) {
 
     try {
       // 1. 初始化
-      const initRes = await fetch(`/api/remote/servers/${serverId}/file/upload/init`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path: remotePath, fileSize: localFile.size }),
-        signal: abort.signal,
-      });
-      const initData = await initRes.json();
+      const initData = await apiJson<{ error?: string; uploadId: string }>(
+        `/api/remote/servers/${serverId}/file/upload/init`, 'POST',
+        { path: remotePath, fileSize: localFile.size },
+        { signal: abort.signal },
+      );
       if (initData.error) throw new Error(initData.error);
       const { uploadId } = initData;
 
@@ -368,13 +345,11 @@ export function RemoteProvider({ children }: { children: React.ReactNode }) {
         let lastErr = '';
         for (let retry = 0; retry < MAX_RETRIES; retry++) {
           try {
-            const chunkRes = await fetch(`/api/remote/servers/${serverId}/file/upload/chunk`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ uploadId, chunkIndex: i, data: base64 }),
-              signal: abort.signal,
-            });
-            const chunkData = await chunkRes.json();
+            const chunkData = await apiJson<{ error?: string }>(
+              `/api/remote/servers/${serverId}/file/upload/chunk`, 'POST',
+              { uploadId, chunkIndex: i, data: base64 },
+              { signal: abort.signal },
+            );
             if (chunkData.error) throw new Error(chunkData.error);
             setUploadProgress({ current: i + 1, total: totalChunks, fileName: localFile.name });
             break;
@@ -388,13 +363,11 @@ export function RemoteProvider({ children }: { children: React.ReactNode }) {
       }
 
       // 3. 完成合并
-      const completeRes = await fetch(`/api/remote/servers/${serverId}/file/upload/complete`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ uploadId, totalChunks }),
-        signal: abort.signal,
-      });
-      const completeData = await completeRes.json();
+      const completeData = await apiJson<{ error?: string; warning?: string }>(
+        `/api/remote/servers/${serverId}/file/upload/complete`, 'POST',
+        { uploadId, totalChunks },
+        { signal: abort.signal },
+      );
       if (completeData.error) throw new Error(completeData.error);
 
       setUploadProgress(null);
@@ -405,10 +378,7 @@ export function RemoteProvider({ children }: { children: React.ReactNode }) {
       setUploadProgress(null);
       if (err.name === 'AbortError') {
         // 清理远程会话
-        try { await fetch(`/api/remote/servers/${serverId}/file/upload/cancel`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ uploadId: '' }),
-        }); } catch (_) {}
+        try { await apiJson(`/api/remote/servers/${serverId}/file/upload/cancel`, 'POST', { uploadId: '' }); } catch (_) {}
         showToast('info', '上传已取消');
         return { success: false, error: '已取消' };
       }
@@ -428,21 +398,15 @@ export function RemoteProvider({ children }: { children: React.ReactNode }) {
       if (!server || server.status !== 'connected') return;
       
       try {
-        const res = await fetch(`/api/remote/servers/${server.id}/stats`);
-        if (res.ok) {
-          const stats: Record<string, any> = await res.json();
-          setActiveServer(prev => {
-            if (!prev || prev.id !== server.id) return prev;
-            return { ...prev, systemStats: stats };
-          });
-        } else {
-          // stats API 失败（如 SSH 已断开），清理连接状态
-          setActiveServer(null);
-          resetToLocal();
-          refreshServers();
-        }
+        // apiFetch 在非 2xx 时抛错，因此「stats API 失败」与「网络错误」
+        // 走同一个 catch —— 两种情况原本就执行同样的清理逻辑。
+        const stats = await apiFetch<Record<string, string>>(`/api/remote/servers/${server.id}/stats`);
+        setActiveServer(prev => {
+          if (!prev || prev.id !== server.id) return prev;
+          return { ...prev, systemStats: stats };
+        });
       } catch {
-        // 网络错误，同样清理状态
+        // stats 获取失败（SSH 已断开或网络波动），清理连接状态
         setActiveServer(null);
         resetToLocal();
         refreshServers();

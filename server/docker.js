@@ -1,6 +1,8 @@
 import Docker from 'dockerode';
+import { errorMessage } from './errors.js';
 import path from 'path';
 import fs from 'fs';
+import { resolveDockerTransport } from './docker-transport.js';
 
 // ─── 工具函数 ──────────────────────────────────────────
 
@@ -174,6 +176,20 @@ export function getDocker(sourceId, config = {}) {
   return docker;
 }
 
+/**
+ * 解析传输并取得 dockerode 客户端。
+ * SSH(via) 源会先建好本地桥再连；socket/tcp 源直接构造。
+ * 幂等：传已解析的 plain 配置也可以（resolveDockerTransport 原样返回）。
+ */
+async function getDockerFor(sourceId, sourceOrConfig = {}) {
+  return getDocker(sourceId, await resolveDockerTransport(sourceOrConfig));
+}
+
+/** 清空全部 dockerode 实例缓存（桥重建后调用，连接会按需重建） */
+export function clearDockerInstances() {
+  dockerInstances.clear();
+}
+
 export function resetDockerInstance(sourceId) {
   dockerInstances.delete(sourceId);
 }
@@ -272,7 +288,7 @@ function extractKeyEvents(logs, maxEvents = 20) {
 // 测试 Docker 连接
 export async function pingDocker(sourceId, config = {}) {
   try {
-    const docker = getDocker(sourceId, config);
+    const docker = await getDockerFor(sourceId, config);
     const info = await docker.info();
     return {
       success: true,
@@ -287,14 +303,14 @@ export async function pingDocker(sourceId, config = {}) {
       memory: info.MemTotal
     };
   } catch (err) {
-    return { success: false, error: err.message };
+    return { success: false, error: errorMessage(err) };
   }
 }
 
 // 获取容器列表
 export async function listContainers(sourceId, config = {}) {
   try {
-    const docker = getDocker(sourceId, config);
+    const docker = await getDockerFor(sourceId, config);
     const containers = await docker.listContainers({ all: true });
     return containers.map(c => {
       // 解析网络信息
@@ -351,14 +367,14 @@ export async function listContainers(sourceId, config = {}) {
       };
     });
   } catch (err) {
-    throw new Error(`无法获取容器列表: ${err.message}`);
+    throw new Error(`无法获取容器列表: ${errorMessage(err)}`);
   }
 }
 
 // 读取容器日志
 export async function getContainerLogs(sourceId, containerId, config = {}) {
   try {
-    const docker = getDocker(sourceId, config);
+    const docker = await getDockerFor(sourceId, config);
     const container = docker.getContainer(containerId);
 
     const logs = await container.logs({
@@ -402,7 +418,7 @@ export async function getContainerLogs(sourceId, containerId, config = {}) {
 
     return lines;
   } catch (err) {
-    throw new Error(`读取日志失败: ${err.message}`);
+    throw new Error(`读取日志失败: ${errorMessage(err)}`);
   }
 }
 
@@ -426,7 +442,7 @@ export async function batchGetLogs(sources) {
         containerName: src.containerName || src.containerId,
         logs: [],
         success: false,
-        error: err.message
+        error: errorMessage(err)
       });
     }
   }
@@ -469,49 +485,49 @@ function getContainerName(c) {
 }
 
 export async function startContainer(sourceId, containerId, config = {}) {
-  const docker = getDocker(sourceId, config);
+  const docker = await getDockerFor(sourceId, config);
   const container = docker.getContainer(containerId);
   await container.start();
   return { ok: true, message: '容器已启动' };
 }
 
 export async function stopContainer(sourceId, containerId, config = {}) {
-  const docker = getDocker(sourceId, config);
+  const docker = await getDockerFor(sourceId, config);
   const container = docker.getContainer(containerId);
   await container.stop({ t: 10 });
   return { ok: true, message: '容器已停止' };
 }
 
 export async function restartContainer(sourceId, containerId, config = {}) {
-  const docker = getDocker(sourceId, config);
+  const docker = await getDockerFor(sourceId, config);
   const container = docker.getContainer(containerId);
   await container.restart({ t: 10 });
   return { ok: true, message: '容器已重启' };
 }
 
 export async function pauseContainer(sourceId, containerId, config = {}) {
-  const docker = getDocker(sourceId, config);
+  const docker = await getDockerFor(sourceId, config);
   const container = docker.getContainer(containerId);
   await container.pause();
   return { ok: true, message: '容器已暂停' };
 }
 
 export async function unpauseContainer(sourceId, containerId, config = {}) {
-  const docker = getDocker(sourceId, config);
+  const docker = await getDockerFor(sourceId, config);
   const container = docker.getContainer(containerId);
   await container.unpause();
   return { ok: true, message: '容器已恢复' };
 }
 
 export async function removeContainer(sourceId, containerId, config = {}) {
-  const docker = getDocker(sourceId, config);
+  const docker = await getDockerFor(sourceId, config);
   const container = docker.getContainer(containerId);
   await container.remove({ force: true });
   return { ok: true, message: '容器已删除' };
 }
 
 export async function execInContainer(sourceId, containerId, cmd, config = {}) {
-  const docker = getDocker(sourceId, config);
+  const docker = await getDockerFor(sourceId, config);
   const container = docker.getContainer(containerId);
   // cmd: string or string[]
   const command = Array.isArray(cmd) ? cmd : cmd.split(' ');
@@ -586,7 +602,7 @@ export async function healthCheck(sources) {
       allContainers.push(...containers);
       sourceMap[src.id] = src;
     } catch (err) {
-      console.warn(`[healthCheck] 跳过 ${src.name}:`, err.message);
+      console.warn(`[healthCheck] 跳过 ${src.name}:`, errorMessage(err));
     }
   }
 
@@ -626,7 +642,7 @@ export async function healthCheck(sources) {
         exitCode: c.exitCode,
         exitType: c.exitType,
         status: c.status,
-        errors: [`无法获取日志: ${err.message}`],
+        errors: [`无法获取日志: ${errorMessage(err)}`],
         sourceName: c._sourceName,
       });
     }
@@ -669,7 +685,7 @@ export async function startEventWatcher(sourceId, config, onEvent) {
   if (!config.enabled) return;
 
   try {
-    const docker = getDocker(sourceId, config);
+    const docker = await getDockerFor(sourceId, config);
     const stream = await docker.getEvents({
       filters: JSON.stringify({ type: ['container'], event: ['die'] })
     });
@@ -726,7 +742,7 @@ export async function startEventWatcher(sourceId, config, onEvent) {
     });
 
     stream.on('error', err => {
-      console.error(`[Docker Events] ${config.name}:`, err.message);
+      console.error(`[Docker Events] ${config.name}:`, errorMessage(err));
       eventWatchers.delete(sourceId);
     });
 
@@ -735,10 +751,10 @@ export async function startEventWatcher(sourceId, config, onEvent) {
       eventWatchers.delete(sourceId);
     });
   } catch (err) {
-    console.error(`[Docker Events] ${config.name} 启动失败:`, err.message);
+    console.error(`[Docker Events] ${config.name} 启动失败:`, errorMessage(err));
     // 不支持 events 的 Docker 版本静默跳过
     if (!err.message.includes('400')) {
-      console.warn(`[Docker Events] ${config.name}: ${err.message}`);
+      console.warn(`[Docker Events] ${config.name}: ${errorMessage(err)}`);
     }
   }
 }
@@ -804,10 +820,13 @@ export async function patrolContainerLogs(sources, levels, hostExecForSource = n
     if (!src.enabled) return;
     const srcExec = hostExecForSource ? hostExecForSource(src) : null;
     try {
-      const docker = getDocker(src.id, src);
+      const docker = await getDockerFor(src.id, src);
       const containers = await listContainers(src.id, src);
       const runningContainers = containers.filter(c => c.state === 'running');
       const logPaths = (src.logPaths && src.logPaths.length > 0) ? src.logPaths : null;
+
+      // 这一轮连上了：如果之前一直在报错，补一条恢复日志
+      clearPatrolSkip(src.name);
 
       // 每个容器并行扫描
       await Promise.all(runningContainers.map(async (c) => {
@@ -898,9 +917,66 @@ export async function patrolContainerLogs(sources, levels, hostExecForSource = n
         } catch (_) { /* 单个容器跳过 */ }
       }));
     } catch (err) {
-      console.warn(`[Patrol] 跳过 ${src.name}:`, err.message);
+      // 同样的失败别每轮都刷一遍。
+      // 巡检间隔 10s，一台不可达的服务器会持续产出完全相同的错误行 ——
+      // 实测 20 分钟内刷了 200+ 行「connect ETIMEDOUT 203.0.113.10:2375」，
+      // 把真正有用的日志淹没了（诊断别的故障时根本翻不到）。
+      // 每个源只在「错误内容变化」时记录，并在恢复时补一条恢复日志。
+      logPatrolSkipOnce(src.name, errorMessage(err));
     }
   }));
 
   return results;
+}
+
+/**
+ * 按 (源名 → 上次错误) 去重巡检失败日志。
+ * 错误内容变化、或从失败恢复时才会输出，避免以巡检间隔刷屏。
+ */
+export const patrolSkipSeen = new Map();
+
+/**
+ * 把失败文本归一化成「可用于去重的签名」。
+ *
+ * 直接拿原文比较会导致去重形同虚设：错误文本里带着每次都变的部分 ——
+ *   1. 本地临时端口：`- Local (0.0.0.0:54981)` 每次连接都换一个；
+ *   2. 同一台不可达的机器会在 ENETUNREACH / ETIMEDOUT / socket hang up /
+ *      握手超时 之间来回振荡（实测每 10s 就换一种）。
+ * 结果就是「同一次故障」被当成「连续变化」刷屏（见 [Patrol] 跳过 4090*4）。
+ *
+ * 归一化规则：可达性类错误全部归为一个签名；「远端 docker.sock 无响应」
+ * （SSH 通但通道没回应，通常是 dockerd 没跑）单独一类；其它错误保留正文
+ * —— 这类变化（权限、dockerd 状态）才值得重新记录。
+ */
+export function patrolErrorSignature(message) {
+  const normalized = String(message)
+    .replace(/- Local \([\d.:]+\)/g, '')
+    .replace(/:\d{2,5}\b/g, ':<port>')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (/No response from server/i.test(normalized)) return 'no-response（远端 docker.sock 无响应，dockerd 未在运行？）';
+  if (/ENETUNREACH|EHOSTUNREACH|ETIMEDOUT|ECONNREFUSED|ECONNRESET|EPIPE|socket hang up|handshake/i.test(normalized)) {
+    return 'unreachable';
+  }
+  return normalized;
+}
+
+export function logPatrolSkipOnce(sourceName, message) {
+  const sig = patrolErrorSignature(message);
+  const prev = patrolSkipSeen.get(sourceName);
+  if (prev && prev.sig === sig) return; // 同类错误，静默
+  patrolSkipSeen.set(sourceName, { sig, message });
+  if (prev === undefined) {
+    console.warn(`[Patrol] 跳过 ${sourceName}:`, message);
+  } else {
+    console.warn(`[Patrol] 跳过 ${sourceName}:`, message, '（错误内容已变化，此前为：' + prev.message + '）');
+  }
+}
+
+/** 巡检成功时调用，用于在恢复后补一条日志并清掉去重状态。 */
+export function clearPatrolSkip(sourceName) {
+  const prev = patrolSkipSeen.get(sourceName);
+  if (prev === undefined) return;
+  patrolSkipSeen.delete(sourceName);
+  console.log(`[Patrol] ${sourceName} 已恢复（此前错误：${prev.message}）`);
 }

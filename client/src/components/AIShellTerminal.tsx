@@ -9,6 +9,9 @@ import {
   BookOpen, ChevronDown,
 } from 'lucide-react';
 import type { RemoteServer } from '../types';
+import { withWsToken } from '../api/auth';
+import { apiFetch } from '../api/client';
+import { sanitizeHtml } from '../utils/sanitize';
 
 interface SkillBrief {
   id: string;
@@ -35,7 +38,7 @@ interface ChatMessage {
 }
 
 function ansiToHtml(text: string): string {
-  return text
+  return sanitizeHtml(text
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     .replace(/\x1b\[90m/g, '<span class="text-gray-500">')
     .replace(/\x1b\[32m/g, '<span class="text-green-400">')
@@ -48,7 +51,7 @@ function ansiToHtml(text: string): string {
     .replace(/\x1b\[1;31m/g, '<span class="text-red-300 font-bold">')
     .replace(/\x1b\[1m/g, '<span class="font-bold">')
     .replace(/\x1b\[0m/g, '</span>')
-    .replace(/\x1b\[[0-9;]*m/g, '');
+    .replace(/\x1b\[[0-9;]*m/g, ''));
 }
 
 export default function AIShellTerminal({ server, onClose, onReady }: AIShellTerminalProps) {
@@ -75,8 +78,7 @@ export default function AIShellTerminal({ server, onClose, onReady }: AIShellTer
 
   // 加载技能列表
   useEffect(() => {
-    fetch('/api/skills')
-      .then(r => r.json())
+    apiFetch<{ skills?: SkillBrief[] }>('/api/skills')
       .then(data => setSkillsList(data.skills || []))
       .catch(() => {});
   }, []);
@@ -85,7 +87,6 @@ export default function AIShellTerminal({ server, onClose, onReady }: AIShellTer
   // 端口与后端 server/index.js 保持一致
   const BACKEND_PORT = 3011;
   useEffect(() => {
-    // @ts-ignore
     const isDev = import.meta.env?.DEV || false;
     const hostname = window.location.hostname;
     const wsHost = (isDev && hostname === 'localhost') ? `localhost:${BACKEND_PORT}` : window.location.host;
@@ -94,7 +95,7 @@ export default function AIShellTerminal({ server, onClose, onReady }: AIShellTer
     setConnecting(true);
     setError(null);
 
-    const ws = new WebSocket(wsUrl);
+    const ws = new WebSocket(withWsToken(wsUrl));
     wsRef.current = ws;
 
     let ready = false;
