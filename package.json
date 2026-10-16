@@ -4,7 +4,7 @@
   "description": "智能日志分析与监控系统 - AI-Powered Log Analysis & Monitoring",
   "type": "module",
   "scripts": {
-    "postinstall": "npm rebuild better-sqlite3",
+    "postinstall": "node scripts/ensure-sqlite-binding.js",
     "init-db": "node scripts/init-db.js",
     "dev": "concurrently \"npm run server\" \"npm run client\"",
     "client": "npm run dev --prefix client",

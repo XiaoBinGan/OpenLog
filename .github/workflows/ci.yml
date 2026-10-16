@@ -23,18 +23,20 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          # jsdom 30 依赖链要求 Node >= 22.22（@asamuzakjp/css-color 等），
+          # 与本地开发版本保持一致
+          node-version: '22'
           cache: npm
           cache-dependency-path: |
             package-lock.json
             client/package-lock.json
 
-      # better-sqlite3 是原生模块，postinstall 会执行 npm rebuild
+      # better-sqlite3 是原生模块；postinstall 守卫只会在预编译不可用时才编译源码
       - name: Install server dependencies
-        run: npm ci
+        run: npm ci --no-audit --no-fund
 
       - name: Install client dependencies
-        run: npm ci --prefix client
+        run: npm ci --prefix client --no-audit --no-fund
 
       - name: Lint (server)
         run: npm run lint
