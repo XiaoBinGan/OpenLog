@@ -3,6 +3,7 @@ import ReactDOM from 'react-dom/client'
 import App from './App'
 import './index.css'
 import { bootstrapAuth, whenTokenReady } from './api/auth'
+import AuthGate from './components/AuthGate'
 
 const root = ReactDOM.createRoot(document.getElementById('root')!)
 
@@ -25,7 +26,10 @@ async function start() {
   }
   root.render(
     <React.StrictMode>
-      <App />
+      {/* 生产模式下远端浏览器拿不到自动令牌，AuthGate 负责要求用户输入一次 */}
+      <AuthGate>
+        <App />
+      </AuthGate>
     </React.StrictMode>,
   )
 }

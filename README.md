@@ -109,6 +109,17 @@ npm.cmd start
 （`scripts/start-prod.js` 会把 `NODE_ENV` 默认设为 `production`）。
 容器部署见 `Dockerfile` / `docker-compose.yml`（镜像已内置 `NODE_ENV=production`、`PORT=3011`、`HOST=0.0.0.0`）。
 
+#### 远端访问与访问令牌 | Remote access & token
+
+`GET /api/auth/token` 只允许**回环地址**调用（非 localhost 一律 403），所以从其它机器
+用浏览器访问生产实例时，前端无法自动拿到令牌，会弹出「需要访问令牌」入口：
+
+- 令牌取自服务端 `data/.auth_token`（首次启动自动生成，容器部署即数据卷里那个文件）；
+  若设置了 `OPENLOG_TOKEN` 环境变量则以它为准。
+- 输入一次后保存在浏览器 `localStorage`（仅本机），后续访问免输入；
+  令牌变更（换容器/换令牌）后会自动再次提示。
+- 想临时换令牌：浏览器 DevTools 执行 `localStorage.removeItem('openlog_token')` 后刷新。
+
 ---
 
 ## 🧪 开发与质量门禁 | Dev & Quality Gates

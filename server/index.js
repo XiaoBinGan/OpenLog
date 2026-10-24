@@ -57,6 +57,12 @@ function loadOrCreateToken() {
   return token;
 }
 
+// 生产模式鉴权提示：只提示令牌位置，不打印令牌本身。
+// 远端浏览器访问时，前端会自动弹出「需要访问令牌」入口，输入这里的令牌即可。
+if (process.env.NODE_ENV === 'production' && !process.env.OPENLOG_TOKEN) {
+  console.log(`[Auth] 生产模式已启用鉴权；访问令牌在 ${TOKEN_FILE}（浏览器首次访问需输入）`);
+}
+
 // 判断是否为回环地址（仅开发模式下用于免鉴权）
 
 // 时间安全比较 token：先用 SHA-256 对齐长度，再 timingSafeEqual
