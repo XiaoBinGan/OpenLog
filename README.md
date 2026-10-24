@@ -27,7 +27,7 @@
 
 ### 前置要求 | Prerequisites
 
-- Node.js 20+ (推荐 v20.12.0 / Recommended)
+- Node.js **22.22+**（`jsdom 30` 依赖链要求；见 `.nvmrc`）
 - npm
 - OpenAI API Key（用于 AI 分析 / for AI analysis）
 
@@ -54,11 +54,15 @@ cp .env.example .env
 模型 API Key 等配置在**页面「设置」中填写**，持久化在数据库里；`.env` 里的
 `OPENAI_API_KEY` 只在数据库尚无配置时作为首次启动的默认值。
 
+> 🔐 `OPENLOG_SECRET_KEY` 决定数据库里 SSH 密码 / 模型 Key 的加密密钥。
+> 从「未设置」切到「已设置」会触发一次性数据迁移（单向），设置后不要再取消，
+> 否则此前已重新加密的凭据将无法解读。
+
 ### 运行 | Running
 
 ```bash
 # 终端 1 — Server / Terminal 1
-nvm use 20
+nvm use 22
 node server/index.js
 
 # 终端 2 — Client / Terminal 2
@@ -67,12 +71,50 @@ cd client && npm run dev -- --port 5173 --host
 
 访问 | Visit http://localhost:5173
 
+### Windows 快速开始 | Windows Quick Start
+
+Windows 上 `npm` 的 PowerShell 包装脚本（`npm.ps1`）常被执行策略拦截，
+统一改用 `npm.cmd`；另外 Windows 不支持文件系统 unix socket，
+Docker-over-SSH 桥会自动改用命名管道 `\\.\pipe\...`（已内置，无需配置）。
+
+```powershell
+cd D:\project\openlog
+copy .env.example .env
+npm.cmd install
+npm.cmd install --prefix client
+
+# 终端 1
+node server/index.js
+# 终端 2
+cd client; npm.cmd run dev -- --port 5173 --host
+```
+
+### 生产模式部署（单端口） | Production (single port)
+
+`NODE_ENV=production` 时后端会直接托管 `client/dist` 静态页面，只需暴露 3011 一个端口：
+
+```bash
+npm ci --no-audit --no-fund
+npm run build
+OPENLOG_TOKEN=<你的访问令牌> NODE_ENV=production HOST=0.0.0.0 node server/index.js   # POSIX
+```
+
+```powershell
+# Windows：用 npm.cmd start（跨平台，等价于 NODE_ENV=production）
+$env:OPENLOG_TOKEN = '<你的访问令牌>'
+npm.cmd start
+```
+
+生产模式强制鉴权：所有 `/api`、`/ws` 请求都需要携带 `OPENLOG_TOKEN`
+（`scripts/start-prod.js` 会把 `NODE_ENV` 默认设为 `production`）。
+容器部署见 `Dockerfile` / `docker-compose.yml`（镜像已内置 `NODE_ENV=production`、`PORT=3011`、`HOST=0.0.0.0`）。
+
 ---
 
 ## 🧪 开发与质量门禁 | Dev & Quality Gates
 
 ```bash
-npm test              # 单元 + 集成测试（100 个用例，含 19 个安全回归）
+npm test              # 单元 + 集成测试（约 300 个用例，含安全回归）
 npm run test:coverage # 带覆盖率
 npm run lint          # 服务端 ESLint
 npm run lint:client   # 客户端 ESLint（React + TS）
@@ -81,12 +123,13 @@ npm run build         # tsc -b && vite build
 ```
 
 CI（`.github/workflows/ci.yml`）在 push/PR 到 `node` / `main` 时依次执行
-双端安装 → 双端 lint → 构建 → 测试。
+双端安装 → 双端 lint → 构建 → 测试；**矩阵覆盖 ubuntu-latest 与 windows-latest**
+（Docker-over-SSH 桥、路径分隔符等差异只在 Windows 暴露，因此必须进 CI）。
 
 > ⚠️ **测试隔离**：测试会拉起真实服务端子进程。若未设置 `OPENLOG_DATA_DIR`，
 > 它会读写项目里的 `data/openlog.db`、`settings.json`、`remote-servers.json`。
-> `vitest.config.js` 已默认把它们指向 `/tmp/openlog-vitest`，
-> 手动跑服务时请留意不要用测试参数指向生产数据。
+> `vitest.config.js` 已默认把它们指向系统临时目录下的 `openlog-vitest`
+> （跨平台，不再是写死的 `/tmp`），手动跑服务时请留意不要用测试参数指向生产数据。
 
 ---
 

@@ -2,7 +2,8 @@
 # 多阶段构建：先编译前端，再运行后端
 
 # ── Stage 1: 构建前端 ──
-FROM node:20-alpine AS client-builder
+# Node 20 已 EOL，统一到 22（与 CI / .nvmrc 一致）
+FROM node:22-alpine AS client-builder
 WORKDIR /app/client
 COPY client/package*.json ./
 RUN npm install --legacy-peer-deps
@@ -11,7 +12,7 @@ COPY client/ ./
 RUN npm run build
 
 # ── Stage 2: 生产镜像 ──
-FROM node:20-alpine
+FROM node:22-alpine
 
 ARG CACHE_BUST=1
 

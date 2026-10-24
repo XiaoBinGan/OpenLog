@@ -9,7 +9,8 @@ echo "🚀 OpenLog 开发环境启动"
 echo "=========================="
 
 # 1. 检查 Node 版本
-REQUIRED_NODE=20
+# 22 与 CI / .nvmrc 对齐（jsdom 30 依赖链要求 Node >= 22.22）
+REQUIRED_NODE=22
 CURRENT_NODE=$(node -v 2>/dev/null | sed 's/v//' | cut -d. -f1)
 if [ "$CURRENT_NODE" != "$REQUIRED_NODE" ]; then
   if command -v nvm &>/dev/null || [ -s "$HOME/.nvm/nvm.sh" ]; then

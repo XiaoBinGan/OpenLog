@@ -9,7 +9,7 @@ import { ensureSshConnection } from './remote.js';
 /**
  * Docker-over-SSH 桥接层。
  *
- * 把远端 docker.sock 通过一条**已建立的 SSH 连接**桥成本地 unix socket，
+ * 把远端 docker.sock 通过一条**已建立的 SSH 连接**桥成本地 socket，
  * dockerode 直接连这个本地 socket —— 对 dockerode 完全透明，因此现有
  * 24 条路由、事件监听、日志巡检一行都不用改。
  *
@@ -21,14 +21,24 @@ import { ensureSshConnection } from './remote.js';
  *  - 桥**不自己管理 SSH 连接**，只搭 remote.js 连接池的便车
  *    （node-ssh 的 forwardOutStreamLocal）。断连/重连逻辑只有一份。
  *  - SSH 连接断开后旧桥自动失效，下次使用时惰性重建。
- *  - 本地 socket 放在 mkdtemp 私有目录并 chmod 600，防止本机其它进程
+ *  - POSIX：本地 socket 放在 mkdtemp 私有目录并 chmod 600，防止本机其它进程
  *    通过它拿到 Docker 控制权（那等价 root）。
+ *  - Windows：Node 不支持监听文件系统 unix socket（EACCES），改用命名管道
+ *    `\\.\pipe\...`；管道名带「用户名+进程号」作用域，默认 ACL 仅当前用户与
+ *    管理员可连。
  */
 
 export const DEFAULT_REMOTE_DOCKER_SOCKET = '/var/run/docker.sock';
 
-/** 桥的本地 socket 目录：0700 私有目录，进程退出即随系统清理 */
-const BRIDGE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'openlog-docker-bridge-'));
+/**
+ * Windows 上 Node 的 net 服务器**不能**监听文件系统里的 unix socket 路径
+ * （listen 直接 EACCES），只能用命名管道 `\\.\pipe\...`。dockerode 只把
+ * socketPath 透传给 http.request，命名管道同样可用，所以桥对上层透明。
+ */
+const IS_WIN = process.platform === 'win32';
+
+/** 桥的本地 socket 目录：0700 私有目录，进程退出即随系统清理（仅 POSIX） */
+const BRIDGE_DIR = IS_WIN ? null : fs.mkdtempSync(path.join(os.tmpdir(), 'openlog-docker-bridge-'));
 
 /** key: `${serverId}::${remoteSocketPath}` → handle */
 const bridges = new Map();
@@ -51,6 +61,14 @@ function bridgeKey(serverId, remoteSocketPath) {
 function makeLocalSocketPath(serverId, remoteSocketPath) {
   const hash = crypto.createHash('sha1').update(remoteSocketPath).digest('hex').slice(0, 8);
   const safeId = String(serverId).replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 24) || 'srv';
+  if (IS_WIN) {
+    // 命名管道在整个登录会话内全局可见，用「用户名 + pid」隔离不同用户/实例，
+    // 避免两台 OpenLog 或两个用户共用同一个管道名互相抢连接。
+    const scope = crypto.createHash('sha1')
+      .update(`${os.userInfo().username}::${process.pid}`)
+      .digest('hex').slice(0, 8);
+    return `\\\\.\\pipe\\openlog-docker-${safeId.slice(0, 16)}-${hash}-${scope}`;
+  }
   return path.join(BRIDGE_DIR, `${safeId}-${hash}.sock`);
 }
 
@@ -104,7 +122,8 @@ async function buildBridge(key, serverId, remoteSocketPath) {
   }
 
   const localSocketPath = makeLocalSocketPath(serverId, remoteSocketPath);
-  try { fs.unlinkSync(localSocketPath); } catch { /* 不存在即可 */ }
+  // 命名管道不是文件：unlink 会 ENOENT（已被 catch），这里显式跳过更清晰
+  if (!IS_WIN) { try { fs.unlinkSync(localSocketPath); } catch { /* 不存在即可 */ } }
 
   const channels = new Set();
 
@@ -140,7 +159,8 @@ async function buildBridge(key, serverId, remoteSocketPath) {
   });
 
   // 本机其它用户不得通过这个 socket 访问 Docker（等价 root）
-  try { fs.chmodSync(localSocketPath, 0o600); } catch { /* 失败不致命，下面会验证 */ }
+  // 命名管道无法 chmod：默认 ACL 只授予当前用户与管理员，等价效果见 README 说明
+  if (!IS_WIN) { try { fs.chmodSync(localSocketPath, 0o600); } catch { /* 失败不致命，下面会验证 */ } }
 
   // 建桥时先探一次：把「dockerd 没跑 / 路径错 / sshd 不支持转发」在**第一次使用**
   // 就变成清晰报错，而不是让首个 docker 请求挂到超时。
@@ -180,7 +200,8 @@ async function teardown(handle) {
   handle.channels.clear();
 
   await new Promise((resolve) => handle.server.close(() => resolve()));
-  try { fs.unlinkSync(handle.localSocketPath); } catch { /* 已删除 */ }
+  // 命名管道随 server.close() 自动消失，没有文件需要删
+  if (!IS_WIN) { try { fs.unlinkSync(handle.localSocketPath); } catch { /* 已删除 */ } }
   bridgeStats.closed++;
 
   // 桥没了，dockerode 实例缓存的连接可能仍指向旧路径。

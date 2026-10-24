@@ -10,10 +10,31 @@ import { getKv, setKv, getDb } from './db/index.js';
 // AES-256-GCM 加密密钥（32 字节）
 // 优先从 OPENLOG_SECRET_KEY 派生；未设置时回退到源码内置种子（兼容旧数据）
 const LEGACY_ENC_KEY = crypto.scryptSync('openlog-remote-secret-salt-v2', 'openlog', 32);
-const ENC_KEY = process.env.OPENLOG_SECRET_KEY
-  ? crypto.scryptSync(process.env.OPENLOG_SECRET_KEY, 'openlog-remote-secret-salt-v2', 32)
-  : LEGACY_ENC_KEY;
 const ALGORITHM = 'aes-256-gcm';
+
+// 密钥按需解析（不要在模块初始化时固化）：
+// ESM 的 import 求值早于入口模块体里的 dotenv 加载，remote.js 初始化时
+// process.env.OPENLOG_SECRET_KEY 往往还是空值。若在这里固化密钥，就会
+// 永久回退到源码内置 legacy key，导致 .env 的 OPENLOG_SECRET_KEY 形同虚设。
+// 改成「调用时读取 + 值变化时重算」，同时仍然缓存 scrypt 结果避免重复开销。
+let cachedKeySource = null;
+let cachedEncKey = LEGACY_ENC_KEY;
+
+function getEncKey() {
+  const source = process.env.OPENLOG_SECRET_KEY || '';
+  if (source !== cachedKeySource) {
+    cachedKeySource = source;
+    cachedEncKey = source
+      ? crypto.scryptSync(source, 'openlog-remote-secret-salt-v2', 32)
+      : LEGACY_ENC_KEY;
+  }
+  return cachedEncKey;
+}
+
+/** 当前生效的密钥来源：'env'（OPENLOG_SECRET_KEY）或 'legacy'（源码内置种子） */
+export function getEncryptionKeySource() {
+  return (process.env.OPENLOG_SECRET_KEY || '') ? 'env' : 'legacy';
+}
 
 // 旧密钥解密成功后需要立即用新密钥重新加密并落盘
 let needsReencrypt = false;
@@ -24,7 +45,10 @@ let needsReencrypt = false;
  */
 
 // 远程服务器配置存储路径（保留作回退）
-const CONFIG_PATH = process.env.REMOTE_CONFIG_PATH || path.join(process.cwd(), 'remote-servers.json');
+// 同样按需读取：模块初始化时 .env 可能尚未加载
+function getConfigPath() {
+  return process.env.REMOTE_CONFIG_PATH || path.join(process.cwd(), 'remote-servers.json');
+}
 
 // 内存中的服务器配置
 let servers = [];
@@ -59,8 +83,8 @@ export function loadServers() {
 
   // 回退到文件
   try {
-    if (fs.existsSync(CONFIG_PATH)) {
-      const data = fs.readFileSync(CONFIG_PATH, 'utf-8');
+    if (fs.existsSync(getConfigPath())) {
+      const data = fs.readFileSync(getConfigPath(), 'utf-8');
       servers = JSON.parse(data);
       servers = servers.map(s => ({
         ...s,
@@ -100,7 +124,7 @@ function saveServers() {
 
   // 回退到文件
   try {
-    fs.writeFileSync(CONFIG_PATH, JSON.stringify(dataToSave, null, 2));
+    fs.writeFileSync(getConfigPath(), JSON.stringify(dataToSave, null, 2));
   } catch (err) {
     console.error('Failed to save remote servers config:', errorMessage(err));
   }
@@ -111,7 +135,7 @@ function saveServers() {
  */
 function encryptPassword(password) {
   const iv = crypto.randomBytes(16);
-  const cipher = crypto.createCipheriv(ALGORITHM, ENC_KEY, iv);
+  const cipher = crypto.createCipheriv(ALGORITHM, getEncKey(), iv);
   const encrypted = Buffer.concat([cipher.update(password, 'utf8'), cipher.final()]);
   const authTag = cipher.getAuthTag();
   // 格式: iv:authTag:ciphertext (均为 hex)
@@ -133,12 +157,13 @@ function decryptPassword(encrypted) {
   if (!encrypted.includes(':')) {
     return Buffer.from(encrypted, 'base64').toString('utf-8');
   }
-  // 优先使用新密钥（OPENLOG_SECRET_KEY 派生）
+  const key = getEncKey();
+  // 优先使用当前密钥（OPENLOG_SECRET_KEY 派生）
   try {
-    return decryptWithKey(encrypted, ENC_KEY);
+    return decryptWithKey(encrypted, key);
   } catch {}
-  // 新密钥失败则回退旧密钥；成功后标记迁移，加载完成后用新密钥重新加密并落盘
-  if (ENC_KEY !== LEGACY_ENC_KEY) {
+  // 当前密钥失败则回退旧密钥；成功后标记迁移，加载完成后用新密钥重新加密并落盘
+  if (key !== LEGACY_ENC_KEY) {
     try {
       const decrypted = decryptWithKey(encrypted, LEGACY_ENC_KEY);
       needsReencrypt = true;
@@ -156,6 +181,9 @@ function persistKeyMigration() {
   saveServers();
   console.log('[Remote] 已使用新密钥重新加密存储的 SSH 密码');
 }
+
+/** 仅供测试：加解密内部实现（生产代码不要引用） */
+export const _cryptoInternals = { encryptPassword, decryptPassword, decryptWithKey, getEncryptionKeySource };
 
 /**
  * 获取所有服务器配置（不返回密码）

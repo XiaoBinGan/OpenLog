@@ -41,43 +41,26 @@ router.get('/api/gpu/local', async (req, res) => {
 });
 
 // 获取 GPU 列表（远程）— 通过已连接的远程服务器
+// 注意：nvidia-smi 的 --query-compute-apps 不支持 gpu_index 字段，
+// 必须查 gpu_uuid 再用 uuid→index 映射；解析/汇总逻辑见 gpu.js。
+const REMOTE_GPU_QUERY = 'nvidia-smi --query-gpu=index,name,uuid,utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader,nounits 2>&1';
+const REMOTE_PROC_QUERY = 'nvidia-smi --query-compute-apps=gpu_uuid,pid,process_name,used_memory --format=csv,noheader,nounits 2>&1';
+
 router.get('/api/gpu/remote-server/:serverId', async (req, res) => {
   try {
     const { serverId } = req.params;
-    // 获取 GPU 基本状态
-    const result = await remote.execRemoteCommand(serverId, 'nvidia-smi --query-gpu=index,name,utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader,nounits 2>&1');
-    if (result.error) throw new Error(result.error);
-    const lines = (result.stdout || '').trim().split('\n').filter(l => l.trim());
 
-    // 获取进程信息
-    const procResult = await remote.execRemoteCommand(serverId, 'nvidia-smi --query-compute-apps=pid,gpu_index,process_name,used_memory --format=csv,noheader,nounits 2>&1');
-    const procLines = (procResult.stdout || '').trim().split('\n').filter(l => l.trim());
-    const processesByGpu = {};
-    for (const pline of procLines) {
-      const pparts = pline.split(',').map(s => s.trim());
-      const gpuIdx = parseInt(pparts[1]) || 0;
-      if (!processesByGpu[gpuIdx]) processesByGpu[gpuIdx] = [];
-      processesByGpu[gpuIdx].push({
-        pid: parseInt(pparts[0]) || 0,
-        name: pparts[2] || 'unknown',
-        usedMemory: parseInt(pparts[3]) || 0,
-      });
-    }
+    const gpuResult = await remote.execRemoteCommand(serverId, REMOTE_GPU_QUERY);
+    if (gpuResult?.error) throw new Error(gpuResult.error);
 
-    const devices = lines.map(line => {
-      const parts = line.split(',').map(s => s.trim());
-      const idx = parseInt(parts[0]) || 0;
-      return {
-        index: idx,
-        name: parts[1] || 'Unknown',
-        util: parseFloat(parts[2]) || 0,
-        memUsed: parseInt(parts[3]) || 0,
-        memTotal: parseInt(parts[4]) || 0,
-        temp: parseFloat(parts[5]) || 0,
-        processes: processesByGpu[idx] || [],
-      };
-    });
-    const summary = gpu.getGPUSummary(devices);
+    // 进程查询失败（无进程 / nvidia-smi 版本差异）不应让整个接口失败
+    let procStdout = '';
+    try {
+      const procResult = await remote.execRemoteCommand(serverId, REMOTE_PROC_QUERY);
+      if (!procResult?.error) procStdout = procResult?.stdout || '';
+    } catch { /* 进程信息可缺省 */ }
+
+    const { devices, summary } = gpu.buildRemoteGPUPayload(gpuResult.stdout || '', procStdout);
     res.json({ devices, summary });
   } catch (err) {
     res.status(500).json({ error: errorMessage(err) });

@@ -204,6 +204,112 @@ function parseNVIDIAProcessOutput(output, gpuBusIdToIndex = null) {
   });
 }
 
+// ─── 远程 GPU（复用已建立的 SSH 连接）────────────────────────────────────────
+//
+// 说明：/api/gpu/remote-server/:serverId 直接复用 remote.js 的 SSH 连接，
+// 只需要解析 nvidia-smi 的两段文本输出。以前这里用了非法字段 gpu_index
+// （nvidia-smi 不认），进程信息整段变成 pid=0/unknown；同时把 {util,memUsed}
+// 结构喂给 getGPUSummary()（它要 vendor/utilization/memoryUsed），summary
+// 全成 null。下面把「解析 + 汇总」抽成纯函数，路由只负责执行命令。
+
+function toNumber(value) {
+  const n = Number.parseFloat(value);
+  return Number.isFinite(n) ? n : 0;
+}
+
+/**
+ * 解析 nvidia-smi --query-gpu=index,name,uuid,utilization.gpu,memory.used,memory.total,temperature.gpu
+ * @returns {Array<{index:number,name:string,uuid:string,utilization:number,memoryUsed:number,memoryTotal:number,temperature:number}>}
+ */
+export function parseRemoteNvidiaGPUs(output) {
+  if (!output || !output.trim()) return [];
+  return output.trim().split('\n')
+    .filter(line => line.trim())
+    .map(line => {
+      const parts = line.split(',').map(s => s.trim());
+      const index = Number.parseInt(parts[0], 10);
+      // 跳过 nvidia-smi 的报错行（例如 "Field ... is not a valid field"）
+      if (!Number.isInteger(index)) return null;
+      return {
+        index,
+        name: parts[1] || 'Unknown',
+        uuid: parts[2] || '',
+        utilization: toNumber(parts[3]),
+        memoryUsed: toNumber(parts[4]),
+        memoryTotal: toNumber(parts[5]),
+        temperature: toNumber(parts[6]),
+      };
+    })
+    .filter(Boolean);
+}
+
+/**
+ * 解析 nvidia-smi --query-compute-apps=gpu_uuid,pid,process_name,used_memory
+ * @returns {Array<{gpuId:string,pid:number,processName:string,memoryUsed:number}>}
+ */
+export function parseRemoteNvidiaProcesses(output) {
+  if (!output || !output.trim()) return [];
+  return output.trim().split('\n')
+    .filter(line => line.trim())
+    .map(line => {
+      const parts = line.split(',').map(s => s.trim());
+      // 报错行（如 "Field ... is not a valid field"）里没有合法 uuid/pid
+      if (!parts[0] || /invalid|not a valid|error/i.test(line)) return null;
+      const pid = Number.parseInt(parts[1], 10);
+      if (!Number.isInteger(pid)) return null;
+      return {
+        gpuId: parts[0],
+        pid,
+        processName: parts[2] || 'unknown',
+        memoryUsed: toNumber(parts[3]),
+      };
+    })
+    .filter(Boolean);
+}
+
+/**
+ * nvidia-smi 两段输出 → { devices, summary }。
+ * devices 形状与 /api/monitor/stats 的 gpus 保持一致（前端可复用），
+ * summary 用 GPUDevice 结构（vendor/utilization/memoryUsed）计算。
+ */
+export function buildRemoteGPUPayload(gpuOutput, processOutput) {
+  const gpus = parseRemoteNvidiaGPUs(gpuOutput);
+  const uuidToIndex = new Map(gpus.filter(g => g.uuid).map(g => [g.uuid, g.index]));
+
+  const devices = gpus.map(g => ({
+    index: g.index,
+    name: g.name,
+    util: g.utilization,
+    memUsed: g.memoryUsed,
+    memTotal: g.memoryTotal,
+    temp: g.temperature,
+    processes: [],
+  }));
+
+  for (const proc of parseRemoteNvidiaProcesses(processOutput)) {
+    const index = uuidToIndex.get(proc.gpuId);
+    if (index === undefined) continue;
+    const device = devices.find(d => d.index === index);
+    if (!device) continue;
+    device.processes.push({
+      gpuId: String(index), pid: proc.pid, name: proc.processName, usedMemory: proc.memoryUsed,
+    });
+  }
+
+  // getGPUSummary 需要统一结构（vendor/utilization/memoryUsed/temperature）
+  const normalized = devices.map(d => ({
+    vendor: 'NVIDIA',
+    name: d.name,
+    memoryTotal: d.memTotal,
+    memoryUsed: d.memUsed,
+    utilization: d.util,
+    temperature: d.temp,
+    processes: d.processes,
+  }));
+
+  return { devices, summary: getGPUSummary(normalized) };
+}
+
 // ─── AMD GPU ────────────────────────────────────────────────────────────────
 
 async function getAMDGPUsLocal() {

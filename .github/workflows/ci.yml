@@ -14,8 +14,16 @@ concurrency:
 
 jobs:
   verify:
-    name: Lint · Test · Build
-    runs-on: ubuntu-latest
+    name: Lint · Test · Build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      # 两个平台都跑完再汇总结果，避免一个平台失败掩盖另一个平台的结论
+      fail-fast: false
+      matrix:
+        # Windows 必须进矩阵：Docker-over-SSH 桥、路径分隔符、执行策略等
+        # 差异只在 Windows 暴露（历史上 local socket 建桥就因此漏到生产）
+        os: [ubuntu-latest, windows-latest]
 
     steps:
       - uses: actions/checkout@v4
@@ -53,7 +61,7 @@ jobs:
         run: npm test
 
       - name: Upload coverage
-        if: always()
+        if: always() && matrix.os == 'ubuntu-latest'
         uses: actions/upload-artifact@v4
         with:
           name: coverage

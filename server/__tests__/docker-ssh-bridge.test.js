@@ -43,6 +43,20 @@ const {
   describeChannelFailure, getBridgeStatus, bridgeStats, _internals,
 } = await import('../docker-ssh-bridge.js');
 
+const IS_WIN = process.platform === 'win32';
+
+/**
+ * 桥的「存在」判定：POSIX 是文件系统 socket 文件，Windows 是命名管道。
+ * 命名管道没有文件实体，只能用「能不能连上」来判断。
+ */
+async function bridgeAlive(sock) {
+  if (!IS_WIN) return fs.existsSync(sock);
+  return new Promise((resolve) => {
+    const c = net.connect(sock, () => { c.destroy(); resolve(true); });
+    c.on('error', () => resolve(false));
+  });
+}
+
 /** 最小可用的假 dockerd：实现 dockerode 需要的 /version 与 /_ping */
 function startFakeDockerd() {
   const server = http.createServer((req, res) => {
@@ -102,7 +116,7 @@ describe('描述通道失败（分层报错）', () => {
 describe('桥的建立与复用', () => {
   it('建桥后返回可连的本地 socket，且能真正到达 dockerd', async () => {
     const sock = await ensureDockerBridge('srv-1');
-    expect(fs.existsSync(sock)).toBe(true);
+    expect(await bridgeAlive(sock)).toBe(true);
 
     // 通过桥发一个真实的 docker API 请求
     const body = await new Promise((resolve, reject) => {
@@ -117,17 +131,23 @@ describe('桥的建立与复用', () => {
     expect(body).toContain('19.03.15');
   });
 
-  it('本地 socket 权限为 600（防止本机其它用户拿到 Docker 控制权）', async () => {
+  it.skipIf(IS_WIN)('本地 socket 权限为 600（防止本机其它用户拿到 Docker 控制权）', async () => {
     const sock = await ensureDockerBridge('srv-1');
     const mode = fs.statSync(sock).mode & 0o777;
     expect(mode).toBe(0o600);
   });
 
-  it('放在 0700 私有目录，而不是公共 /tmp 根下', async () => {
+  it.skipIf(IS_WIN)('放在 0700 私有目录，而不是公共 /tmp 根下', async () => {
     const dirMode = fs.statSync(_internals.BRIDGE_DIR).mode & 0o777;
     expect(dirMode).toBe(0o700);
     const sock = await ensureDockerBridge('srv-1');
     expect(sock.startsWith(_internals.BRIDGE_DIR)).toBe(true);
+  });
+
+  it.runIf(IS_WIN)('Windows 用命名管道桥（文件系统 unix socket 会 EACCES）', async () => {
+    const sock = await ensureDockerBridge('srv-win');
+    expect(sock.startsWith('\\\\.\\pipe\\openlog-docker-')).toBe(true);
+    expect(await bridgeAlive(sock)).toBe(true);
   });
 
   it('同一个 (服务器, socket) 复用同一个桥', async () => {
@@ -151,7 +171,7 @@ describe('桥的建立与复用', () => {
     expect(new Set(results).size).toBe(1);
     // 而且只真正构建了一次
     expect(bridgeStats.built).toBe(before + 1);
-    expect(fs.existsSync(results[0])).toBe(true);
+    expect(await bridgeAlive(results[0])).toBe(true);
   });
 
   it('并发调用中若建桥失败，所有调用者都拿到同一个错误（不会漏出 EADDRINUSE）', async () => {
@@ -182,7 +202,7 @@ describe('桥的建立与复用', () => {
     // 本地 socket 路径是按 (serverId, 远端路径) 确定性生成的，
     // 所以「重建了」要靠构建计数判断，不能靠路径不同。
     expect(bridgeStats.built).toBe(before + 1);
-    expect(fs.existsSync(b)).toBe(true);
+    expect(await bridgeAlive(b)).toBe(true);
 
     // 重建后必须真的能用（不是留了个死 socket）
     holder.isConnected = true;
@@ -199,11 +219,11 @@ describe('桥的建立与复用', () => {
     expect(a).toBe(b); // 路径确实相同（确定性命名），此处仅记录该事实
   });
 
-  it('显式关闭后不再出现在状态里，socket 文件被删除', async () => {
+  it('显式关闭后不再出现在状态里，socket 不再可连', async () => {
     const sock = await ensureDockerBridge('srv-1');
     await closeDockerBridge('srv-1');
     expect(getBridgeStatus().find((x) => x.serverId === 'srv-1')).toBeUndefined();
-    expect(fs.existsSync(sock)).toBe(false);
+    expect(await bridgeAlive(sock)).toBe(false);
   });
 });
 
@@ -229,6 +249,6 @@ describe('失败路径', () => {
     await expect(ensureDockerBridge('srv-r')).rejects.toThrow();
     holder.mode = 'ok';
     const sock = await ensureDockerBridge('srv-r');
-    expect(fs.existsSync(sock)).toBe(true);
+    expect(await bridgeAlive(sock)).toBe(true);
   });
 });

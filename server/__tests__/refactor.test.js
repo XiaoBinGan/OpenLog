@@ -119,7 +119,9 @@ describe('抽取重构不变量', () => {
   /** 反向确认：确实存在「有命名导出但不在 default 对象里」的成员 —— 这正是当初的坑。 */
   it('default 对象不是全部命名导出的超集（所以导入方式必须匹配）', async () => {
     const remoteMod = await import('../remote.js');
-    const namedKeys = [...Object.keys(remoteMod)].filter((k) => k !== 'default');
+    // 下划线前缀是「仅供测试的内部导出」（如 _cryptoInternals），
+    // 不属于运行时 API 面，不参与这条不变量检查。
+    const namedKeys = [...Object.keys(remoteMod)].filter((k) => k !== 'default' && !k.startsWith('_'));
     const defaultKeys = new Set(Object.keys(remoteMod.default ?? {}));
     const notInDefault = namedKeys.filter((k) => !defaultKeys.has(k));
     // 如果哪天有人把 default 对象补全了，这条断言会失败 —— 那时可以放宽，

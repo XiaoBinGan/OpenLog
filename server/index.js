@@ -1,3 +1,9 @@
+// .env 必须在其它 import 之前加载：ESM 会先求值所有 import，
+// remote.js / docker.js 等在模块初始化阶段就会读 process.env
+// （例如 OPENLOG_SECRET_KEY 决定 SSH 密码的加密密钥）。
+// 旧写法在 import 之后才 dotenv.config()，那些模块拿到的是空值，
+// 于是回退到源码内置密钥 —— .env 里的 OPENLOG_SECRET_KEY 形同虚设。
+import 'dotenv/config';
 import express from 'express';
 import { errorMessage, isTransientNetworkError } from './errors.js';
 import cors from 'cors';
@@ -11,7 +17,6 @@ import chokidar from 'chokidar';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import dotenv from 'dotenv';
 import * as remote from './remote.js';
 import * as docker from './docker.js';
 import { warnIfUnconfigured as warnIfHostGpuUnconfigured } from './gpu-host-ssh.js';
@@ -31,8 +36,6 @@ import { isLoopbackAddress } from './security/loopback.js';
 import { migrateWatchSourceFields } from './settings-migrations.js';
 import { initDb, getDb, getKv, setKv, insertLogRecord, getAlertConfig, closeDb } from './db/index.js';
 import { resolveDockerTransport } from './docker-transport.js';
-
-dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);

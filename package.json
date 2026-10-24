@@ -15,7 +15,11 @@
     "lint": "eslint .",
     "lint:client": "npm run lint --prefix client",
     "lint:all": "npm run lint && npm run lint:client",
-    "start": "NODE_ENV=production node server/index.js"
+    "start": "node scripts/start-prod.js",
+    "start:posix": "NODE_ENV=production node server/index.js"
+  },
+  "engines": {
+    "node": ">=22.22"
   },
   "dependencies": {
     "better-sqlite3": "^12.9.0",
