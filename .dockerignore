@@ -1,0 +1,17 @@
+# Docker 构建上下文排除项
+# 目的：1) 不把数据/日志/密钥打进镜像；2) 避免 node_modules 等大目录拖慢构建
+
+.git
+.github
+node_modules
+client/node_modules
+client/dist
+data
+logs
+coverage
+_deploy
+*.bundle
+.env
+*.log
+.DS_Store
+Thumbs.db

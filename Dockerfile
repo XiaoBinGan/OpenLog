@@ -23,7 +23,10 @@ RUN echo "Cache bust: ${CACHE_BUST}" && apk add --no-cache python3 make g++ open
 
 # 复制后端依赖
 COPY package*.json ./
-RUN echo "Cache bust: ${CACHE_BUST}" && npm install --omit=dev --legacy-peer-deps && npm rebuild better-sqlite3
+# postinstall（ensure-sqlite-binding.js）在 npm install 阶段就会执行，
+# 必须先把它复制进来，否则构建直接 MODULE_NOT_FOUND（旧镜像构建时还没有这个脚本）
+COPY scripts/ensure-sqlite-binding.js ./scripts/
+RUN echo "Cache bust: ${CACHE_BUST}" && npm install --omit=dev --legacy-peer-deps --no-audit --no-fund && npm rebuild better-sqlite3
 
 # 复制后端源码
 COPY server/ ./server/

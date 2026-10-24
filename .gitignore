@@ -36,3 +36,6 @@ server_go/
 .idea/
 __pycache__/
 coverage/
+
+# 本地部署临时文件（git bundle / 部署脚本）
+_deploy/
