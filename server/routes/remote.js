@@ -12,6 +12,7 @@
 import express from 'express';
 import { errorMessage } from '../errors.js';
 import * as remote from '../remote.js';
+import { getRemoteMfu } from '../gpu-mfu.js';
 import {
   hasShellMetaChars, rejectUnlessRemoteExecEnabled,
   READONLY_COMMANDS, commandBaseName,
@@ -355,6 +356,22 @@ router.get('/api/remote/servers/:id/stats', async (req, res) => {
     } else {
       res.status(500).json({ error: errorMessage(err) });
     }
+  }
+});
+
+/**
+ * MFU（模型算力利用率）—— 独立端点，避免拖慢 /stats。
+ *
+ * /stats 是 30 秒轮询的热路径，而 MFU 需要读 vLLM /metrics 并做两次差分采样
+ * （冷启动要 sleep 2s）。放同一个接口会让监控页每次都变慢，所以拆开：
+ * 前端单独请求、失败不影响显卡状态展示。
+ */
+router.get('/api/remote/servers/:id/mfu', async (req, res) => {
+  try {
+    const result = await getRemoteMfu(req.params.id);
+    res.json(result);
+  } catch (err) {
+    res.json({ available: false, reason: errorMessage(err) });
   }
 });
 

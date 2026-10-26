@@ -9,7 +9,7 @@
 | 特性 | Feature |
 |------|---------|
 | 📊 实时仪表盘 | Real-time Dashboard |
-| 🎮 多服务算力监控 | Multi-server GPU Monitoring |
+| 🎮 多服务算力监控 | Multi-server GPU Monitoring (利用率 / 显存 / 温度 / MFU) |
 | 📝 日志流监控 | Live Log Streaming |
 | 🤖 AI 智能分析 | AI Analysis (LLM-powered) |
 | 💬 运维助手 | Ops Assistant (multi-turn chat + tool calling) |
@@ -233,7 +233,7 @@ CI（`.github/workflows/ci.yml`）在 push/PR 到 `node` / `main` 时依次执�
 | 页面 | 路径 | 功能 |
 |------|------|------|
 | 系统监控 | `/monitor` | CPU、内存、磁盘、GPU、进程监控 |
-| 算力监控 | `/gpu` | 所有服务器 GPU 总览（利用率/显存/温度/进程） |
+| 算力监控 | `/gpu` | 所有服务器 GPU 总览（利用率/显存/温度/进程/MFU） |
 | 仪表盘 | `/dashboard` | 总览面板 |
 | 日志流 | `/logs` | 实时日志查看、级别过滤、搜索 |
 | 远程服务器 | `/remote` | SSH 连接、文件浏览、终端、AI Shell |
@@ -325,9 +325,33 @@ openlog/
 ### 🎮 算力监控
 
 - 自动拉取所有已连接服务器的 GPU 状态
-- 每卡展示：算力利用率、显存、温度、进程（PID + 名称 + 显存）
+- 每卡展示：算力利用率、**MFU（模型算力利用率）**、显存、温度、进程（PID + 名称 + 显存）
 - 30 秒自动刷新
 - 与远程服务器页面联动，无需重复输入 host/user
+
+#### MFU（Model FLOPs Utilization）怎么算
+
+卡片上的 `MFU` 显示在「跑着推理引擎的那张卡」上（引擎进程通过 nvidia-smi 的
+`VLLM::EngineCore` 等进程名自动映射到 GPU），公式：
+
+```
+MFU = 模型实际 FLOPs/s ÷ GPU 峰值算力（FP16/BF16 稠密，不含稀疏加速）
+```
+
+数据来源是远端 vLLM 原生 `/metrics`（OpenLog 通过已有 SSH 连接读取，不额外开端口）：
+
+1. 优先用 `vllm:estimated_flops_per_gpu_total`（vLLM 自带 MFU 计数器）做差分；
+2. 该计数器为 0 的版本/配置，用 `vllm:prompt_tokens_total` / `vllm:generation_tokens_total`
+   做差分，按 `2 × 激活参数量 × tokens/s` 估算 FLOPs（参数量从 `model_name` 解析，
+   MoE 取 `A3B` 这类激活参数，避免用总参数量把 MFU 夸大）。
+
+说明与边界：
+
+- 首次加载需要两次采样（约 2 秒），之后 30 秒轮询只多一次 curl；
+- 峰值算力表覆盖 4090/5090/A100/H100/L40S/T4 等常见型号，**表里没有的卡不猜**，
+  该服务器不显示 MFU；未检测到 vLLM `/metrics` 时也不显示；
+- 单流 decode 的 MFU 通常只有 1%–5%（显存带宽受限），高并发/长 prefill 才会明显升高；
+- 该数值用于横向对比「同一台机器不同模型/批次配置」，不是绝对性能指标。
 
 ### 🔔 告警规则
 
@@ -350,6 +374,7 @@ openlog/
 | GET | `/api/monitor/stats` | 系统状态（含 GPU） |
 | GET | `/api/remote/servers` | 远程服务器列表 |
 | GET | `/api/remote/servers/:id/stats` | 远程系统状态（含 GPU 进程） |
+| GET | `/api/remote/servers/:id/mfu` | 远程模型 MFU（读 vLLM `/metrics`） |
 | GET | `/api/docker/containers` | 容器列表 |
 | GET | `/api/docker/containers/:sid/:cid/logs` | 容器日志 |
 | WS | `/ws/docker/logs/:sid/:cid` | 容器实时日志流 |

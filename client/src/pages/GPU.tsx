@@ -35,12 +35,24 @@ interface GPUDevice {
   processes?: { pid: number; name: string; usedMemory: number }[];
 }
 
+/** MFU（模型算力利用率）：来自远端 vLLM /metrics，按服务器聚合 */
+interface ServerMfu {
+  available: boolean;
+  mfu?: number;
+  model?: string | null;
+  gpuIndexes?: number[];
+  peakTflops?: number;
+  flopsPerSec?: number;
+  reason?: string;
+}
+
 interface ServerGPU {
   serverId: string;
   serverName: string;
   serverHost: string;
   devices: GPUDevice[];
   summary: { total: number; utilAvg: number; memUsedAvg: number; memTotalAvg: number; tempAvg: number } | null;
+  mfu?: ServerMfu | null;
   error?: string;
   loading: boolean;
 }
@@ -65,7 +77,11 @@ export default function GPU() {
 
   const fetchServerGPU = useCallback(async (server: typeof connectedServers[0]): Promise<ServerGPU> => {
     try {
+      // MFU 单独请求：冷启动要在远端做两次采样（约 2s），不能拖慢显卡状态展示；
+      // 失败也不影响这一台服务器的其它指标。
+      const mfuPromise = apiFetch<ServerMfu>(`/api/remote/servers/${server.id}/mfu`).catch(() => null);
       const data = await apiFetch<RemoteGpuStats>(`/api/remote/servers/${server.id}/stats`);
+      const mfu = await mfuPromise;
       if (data.error) throw new Error(data.error);
       if (data.offline) throw new Error('服务器未连接');
       // Monitor stats 已经包含 gpus 数组（含 processes）
@@ -83,6 +99,7 @@ export default function GPU() {
         serverHost: server.host,
         devices: gpus,
         summary,
+        mfu,
         loading: false,
       };
     } catch (err) {
@@ -92,6 +109,7 @@ export default function GPU() {
         serverHost: server.host,
         devices: [],
         summary: null,
+        mfu: null,
         error: err instanceof Error ? err.message : '查询失败',
         loading: false,
       };
@@ -204,6 +222,12 @@ export default function GPU() {
   const totalMemUsed = serverGPUs.reduce((s, sv) => s + sv.devices.reduce((m, d) => m + (Number(d.memUsed) || 0), 0), 0);
   const totalMemTotal = serverGPUs.reduce((s, sv) => s + sv.devices.reduce((m, d) => m + (Number(d.memTotal) || 0), 0), 0);
 
+  // 全局 MFU：只统计「算出了 MFU」的服务器，避免把不可用的算成 0 拉低平均值
+  const mfuServers = serverGPUs.filter(sv => sv.mfu?.available && typeof sv.mfu.mfu === 'number');
+  const avgMfu = mfuServers.length > 0
+    ? mfuServers.reduce((s, sv) => s + (sv.mfu!.mfu as number), 0) / mfuServers.length
+    : null;
+
   return (
     <div className="max-w-7xl mx-auto">
       {/* Header */}
@@ -250,7 +274,7 @@ export default function GPU() {
 
       {/* Global Overview */}
       {totalGPUs > 0 && (
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-6">
           <div className="glass rounded-xl p-4">
             <div className="text-xs text-dark-400 mb-1">GPU 总数</div>
             <div className="text-2xl font-bold text-dark-100">{totalGPUs}</div>
@@ -258,6 +282,17 @@ export default function GPU() {
           <div className="glass rounded-xl p-4">
             <div className="text-xs text-dark-400 mb-1">算力利用率</div>
             <div className="text-2xl font-bold text-emerald-400">{avgUtil.toFixed(1)}%</div>
+          </div>
+          <div className="glass rounded-xl p-4">
+            <div className="text-xs text-dark-400 mb-1" title="MFU = 模型实际 FLOPs/s ÷ GPU 峰值算力（FP16/BF16 稠密）">
+              模型 MFU
+            </div>
+            <div className="text-2xl font-bold text-amber-400">
+              {avgMfu === null ? '—' : `${avgMfu.toFixed(1)}%`}
+            </div>
+            <div className="text-xs text-dark-500">
+              {avgMfu === null ? '未检测到 vLLM 指标' : `${mfuServers.length} 个模型`}
+            </div>
           </div>
           <div className="glass rounded-xl p-4">
             <div className="text-xs text-dark-400 mb-1">总显存占用</div>
@@ -297,6 +332,18 @@ export default function GPU() {
                 {sv.devices.length} GPU · 均用 {(sv.summary?.utilAvg ?? 0).toFixed(1)}% · 均温 {(sv.summary?.tempAvg ?? 0).toFixed(0)}°C
               </span>
             )}
+            {sv.mfu?.available && typeof sv.mfu.mfu === 'number' && (
+              <span
+                className="px-2 py-0.5 bg-amber-500/10 border border-amber-500/30 rounded-lg text-xs text-amber-400"
+                title={[
+                  `MFU（模型算力利用率）= 模型实际 FLOPs/s ÷ GPU 峰值算力`,
+                  sv.mfu.model ? `模型：${sv.mfu.model}` : null,
+                  sv.mfu.peakTflops ? `峰值：${sv.mfu.peakTflops} TFLOPS（FP16/BF16 稠密）` : null,
+                ].filter(Boolean).join('\n')}
+              >
+                MFU {sv.mfu.mfu.toFixed(1)}%
+              </span>
+            )}
           </div>
 
           {sv.error ? (
@@ -314,6 +361,12 @@ export default function GPU() {
             <div className="grid md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
               {sv.devices.map(gpu => {
                 const memPct = gpu.memTotal > 0 ? (gpu.memUsed / gpu.memTotal) * 100 : 0;
+                // MFU 属于「跑着推理引擎的那张/那些卡」：gpuIndexes 为空时按服务器级显示
+                const gpuMfu = sv.mfu?.available && typeof sv.mfu.mfu === 'number'
+                  && (!sv.mfu.gpuIndexes || sv.mfu.gpuIndexes.length === 0 || sv.mfu.gpuIndexes.includes(gpu.index))
+                  ? sv.mfu
+                  : null;
+                const gpuMfuValue = gpuMfu?.mfu ?? null;
                 return (
                   <div key={gpu.index} className="glass rounded-xl p-4 space-y-3">
                     {/* Name & Temp */}
@@ -341,6 +394,29 @@ export default function GPU() {
                         }`} style={{ width: `${gpu.util}%` }} />
                       </div>
                     </div>
+
+                    {/* MFU（模型算力利用率）——仅引擎所在卡显示，数据来自 vLLM /metrics */}
+                    {gpuMfuValue !== null && (
+                      <div>
+                        <div
+                          className="flex justify-between text-xs text-dark-400 mb-1"
+                          title={[
+                            'MFU（模型算力利用率）= 模型实际 FLOPs/s ÷ GPU 峰值算力',
+                            gpuMfu?.model ? `模型：${gpuMfu.model}` : null,
+                            gpuMfu?.peakTflops ? `峰值：${gpuMfu.peakTflops} TFLOPS（FP16/BF16 稠密）` : null,
+                          ].filter(Boolean).join('\n')}
+                        >
+                          <span>MFU</span>
+                          <span className="text-amber-400 font-medium">{gpuMfuValue.toFixed(1)}%</span>
+                        </div>
+                        <div className="h-2 bg-dark-800 rounded-full overflow-hidden">
+                          <div
+                            className="h-full bg-amber-500 transition-all"
+                            style={{ width: `${Math.min(100, Math.max(0, gpuMfuValue))}%` }}
+                          />
+                        </div>
+                      </div>
+                    )}
 
                     {/* Memory */}
                     <div>
