@@ -18,6 +18,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import * as remote from './remote.js';
+import { runAgent, classifyCommand, MAX_STEPS } from './ai-shell.js';
 import * as docker from './docker.js';
 import { warnIfUnconfigured as warnIfHostGpuUnconfigured } from './gpu-host-ssh.js';
 import gpuRouter from './routes/gpu.js';
@@ -1381,205 +1382,175 @@ async function handleShellWebSocket(ws, serverId) {
   }
 }
 
-// AI Shell WebSocket 处理器 — 自然语言 → AI 生成命令 → 远程执行
+// AI Shell WebSocket 处理器
+/**
+ * AI Shell WebSocket：多步 agent 会话（见 server/ai-shell.js）。
+ *
+ * 客户端 → 服务端：
+ *   { type:'agent_task', id, text, history, skillContent, skillName, autoRun, maxSteps }
+ *   { type:'confirm', id, allow }    确认/拒绝一条 write|danger 命令
+ *   { type:'cancel', id }            取消当前任务（含正在运行的命令）
+ *   { type:'execute', id, command }  命令模式：直接执行（流式输出）
+ *
+ * 服务端 → 客户端：
+ *   context_ready / step_start / thought / model_delta / command_ready /
+ *   confirm_required / command_start / command_output / command_done /
+ *   command_rejected / final / agent_done / cancelled / error
+ */
 async function handleAIShellWebSocket(ws, serverId) {
   console.log(`AI Shell WebSocket connected for server: ${serverId}`);
 
-  const SYSTEM_PROMPT = `You are an AI assistant on a remote Linux server (${serverId}). You have TWO modes:
+  ws.send(JSON.stringify({ type: 'aishell_ready', message: 'AI Shell session ready' }));
 
-## Mode 1: Command (when the request involves checking system state, files, processes, logs, etc.)
-Output ONLY the shell command on a single line — no explanation, no markdown, no backticks.
-Rules for commands:
-- Use POSIX-compatible syntax
-- Never generate destructive commands (rm -rf, dd, mkfs, etc.) unless explicitly requested
-- For monitoring queries, prefer concise output (use head/tail/grep)
-- Multi-step operations should be joined with && or ;
-- Assume tools: grep, awk, sed, find, curl, ps, top, df, free, du, systemctl, journalctl, docker, kubectl, python3, nvidia-smi
+  let abortController = null;
+  let pendingConfirm = null;
 
-## Mode 2: Answer (when the request is a general question, explanation, or cannot be converted to a command)
-Prefix your response with "ANSWER:" followed by a helpful, concise answer in Chinese.
-Example: "ANSWER: Docker 是一种容器化平台，用于打包和运行应用。"
+  const send = (taskId, payload) => {
+    if (ws.readyState !== ws.OPEN) return;
+    ws.send(JSON.stringify({ ...payload, id: taskId }));
+  };
 
-Choose Mode 2 if the user is asking "是什么", "怎么做", "为什么", "能做什么" or any knowledge question.
-Choose Mode 1 for operational requests like "查看", "列出", "检查", "找出".`;
+  /** 流式执行：把 remote 的异常统一成结果对象 */
+  const execStream = async (sid, command, options = {}) => {
+    try {
+      return await remote.execRemoteCommandStream(sid, command, options);
+    } catch (err) {
+      return { success: false, error: errorMessage(err), stdout: '', stderr: '', exitCode: -1 };
+    }
+  };
 
-  ws.send(JSON.stringify({
-    type: 'aishell_ready',
-    message: 'AI Shell session ready'
-  }));
+  /** 调用 LLM（流式，把增量推给前端作为「思考中」预览） */
+  const callModel = async (messages, signal, taskId) => {
+    const s = ensureSettings();
+    const apiKey = s.openaiApiKey;
+    const baseUrl = s.openaiBaseUrl || 'http://localhost:11434/v1';
+    const model = s.model || 'qwen3.5:9b';
+    const isLocalModel = /localhost|127\.0\.0\.1|0\.0\.0\.0/.test(baseUrl);
+
+    if (!apiKey && !isLocalModel) {
+      throw new Error('未配置 LLM API Key。请在设置页面配置。');
+    }
+
+    const OpenAI = (await import('openai')).default;
+    const openai = new OpenAI({ apiKey: apiKey || 'ollama', baseURL: baseUrl });
+    const stream = await openai.chat.completions.create({
+      model,
+      messages,
+      temperature: 0.2,
+      max_tokens: 1200,
+      stream: true,
+    }, { signal });
+
+    let content = '';
+    for await (const chunk of stream) {
+      const delta = chunk.choices?.[0]?.delta?.content;
+      if (delta) {
+        content += delta;
+        send(taskId, { type: 'model_delta', data: delta });
+      }
+    }
+    return { content };
+  };
 
   ws.on('message', async (data) => {
+    let msg;
     try {
-      const msg = JSON.parse(data.toString());
+      msg = JSON.parse(data.toString());
+    } catch {
+      return;
+    }
+    const taskId = msg.id || Date.now().toString(36);
 
-      // 自然语言指令 → 生成命令
-      if (msg.type === 'natural_language' || msg.type === 'regenerate') {
-        const requestId = msg.id;
-        const text = msg.text;
-        const skillContent = msg.skillContent || '';
-        const skillName = msg.skillName || '';
-        const history = msg.history || [];
+    // ── 取消 ────────────────────────────────────────────────────────────
+    if (msg.type === 'cancel') {
+      abortController?.abort();
+      if (pendingConfirm) { const resolve = pendingConfirm; pendingConfirm = null; resolve(false); }
+      send(taskId, { type: 'cancelled' });
+      return;
+    }
 
-        // 如果有技能上下文，构建增强 system prompt
-        let systemPrompt = SYSTEM_PROMPT;
-        if (skillContent) {
-          systemPrompt = `${SYSTEM_PROMPT}
+    // ── 确认危险/写操作 ─────────────────────────────────────────────────
+    if (msg.type === 'confirm') {
+      if (pendingConfirm) {
+        const resolve = pendingConfirm;
+        pendingConfirm = null;
+        resolve(Boolean(msg.allow));
+      }
+      return;
+    }
 
-## 🎯 用户当前使用的技能: ${skillName}
+    // ── 命令模式：直接执行（流式）──────────────────────────────────────
+    if (msg.type === 'execute') {
+      const command = String(msg.command || '').trim();
+      if (!command) return;
+      abortController?.abort();
+      abortController = new AbortController();
+      const { signal } = abortController;
+      const risk = classifyCommand(command);
+      send(taskId, { type: 'command_start', step: 1, command, risk: risk.risk });
+      try {
+        const result = await execStream(serverId, command, {
+          timeoutMs: 300_000,
+          signal,
+          onStdout: (chunk) => send(taskId, { type: 'command_output', step: 1, stream: 'stdout', data: chunk }),
+          onStderr: (chunk) => send(taskId, { type: 'command_output', step: 1, stream: 'stderr', data: chunk }),
+        });
+        if (signal.aborted) { send(taskId, { type: 'cancelled' }); return; }
+        if (result?.error) send(taskId, { type: 'command_error', step: 1, error: result.error });
+        send(taskId, { type: 'command_done', step: 1, exitCode: result?.exitCode ?? -1 });
+      } catch (err) {
+        send(taskId, { type: 'command_error', step: 1, error: errorMessage(err) });
+        send(taskId, { type: 'command_done', step: 1, exitCode: -1 });
+      }
+      return;
+    }
 
-以下是该技能的标准操作流程，请严格遵循它来生成命令：
-
-${skillContent}
-
-重要：你的任务是根据上述技能规程，将用户的自然语言请求转换为 shell 命令。技能规程的 Workflow 章节提供了命令顺序，优先使用其中指定的命令和参数。`;
-        }
-
-        console.log(`[AIShell] 收到自然语言: "${text.slice(0, 80)}"${skillName ? ` (技能: ${skillName})` : ''}`);
-
-        try {
-          const apiKey = ensureSettings().openaiApiKey;
-          const baseUrl = ensureSettings().openaiBaseUrl || 'http://localhost:11434/v1';
-          const model = ensureSettings().model || 'qwen3.5:9b';
-          const isLocalModel = baseUrl.includes('localhost') || baseUrl.includes('127.0.0.1') || baseUrl.includes('0.0.0.0');
-
-          if (!apiKey && !isLocalModel) {
-            ws.send(JSON.stringify({
-              type: 'error',
-              id: requestId,
-              error: '未配置 LLM API Key。请在设置页面配置。'
-            }));
-            return;
-          }
-
-          const OpenAI = (await import('openai')).default;
-          const openai = new OpenAI({
-            apiKey: apiKey || 'ollama',
-            baseURL: baseUrl
-          });
-
-          const response = await openai.chat.completions.create({
-            model,
-            messages: [
-              { role: 'system', content: systemPrompt },
-              ...history.filter(h => h.role && h.content).map(h => ({ role: h.role, content: h.content })),
-              { role: 'user', content: text }
-            ],
-            temperature: 0.2,
-            max_tokens: 800,
-            timeout: 30_000
-          });
-
-          const rawOutput = (response.choices[0].message.content || '').trim();
-
-          // Check if it's a text answer (not a command)
-          if (rawOutput.startsWith('ANSWER:')) {
-            const answer = rawOutput.slice(7).trim();
-            ws.send(JSON.stringify({
-              type: 'assistant_answer',
-              id: requestId,
-              content: answer
-            }));
-            return;
-          }
-
-          let command = rawOutput;
-
-          // 清理可能的 markdown 代码块标记
-          command = command
-            .replace(/^```(?:bash|sh|shell|cmd|powershell)?\s*/i, '')
-            .replace(/\s*```$/i, '')
-            .trim();
-
-          console.log(`[AIShell] 生成命令: "${command}"`);
-
-          if (!command || command === 'NO_COMMAND') {
-            ws.send(JSON.stringify({
-              type: 'error',
-              id: requestId,
-              error: 'AI 无法将你的请求转换为命令。请尝试更具体的描述，或切换到命令模式手动输入。'
-            }));
-            return;
-          }
-
-          ws.send(JSON.stringify({
-            type: 'command_generated',
-            id: requestId,
-            command
-          }));
-
-        } catch (err) {
-          console.error('[AIShell] AI 生成命令失败:', errorMessage(err));
-          ws.send(JSON.stringify({
-            type: 'error',
-            id: requestId,
-            error: `AI 生成命令失败: ${errorMessage(err)}`
-          }));
-        }
+    // ── agent 任务（natural_language 走兼容路径）────────────────────────
+    if (msg.type === 'agent_task' || msg.type === 'natural_language' || msg.type === 'regenerate') {
+      abortController?.abort();
+      abortController = new AbortController();
+      const { signal } = abortController;
+      const text = String(msg.text || msg.prompt || '');
+      if (!text.trim()) {
+        send(taskId, { type: 'error', error: '缺少任务描述' });
+        return;
       }
 
-      // 执行命令
-      else if (msg.type === 'execute') {
-        const requestId = msg.id;
-        const command = msg.command;
-
-        console.log(`[AIShell] 执行命令: "${command}"`);
-
-        try {
-          const result = await remote.execRemoteCommand(serverId, command);
-
-          if (result.error) {
-            ws.send(JSON.stringify({
-              type: 'command_error',
-              id: requestId,
-              error: result.error
-            }));
-            ws.send(JSON.stringify({
-              type: 'command_done',
-              id: requestId,
-              exitCode: -1
-            }));
-            return;
-          }
-
-          // 发送 stdout
-          if (result.stdout) {
-            ws.send(JSON.stringify({
-              type: 'command_output',
-              id: requestId,
-              data: result.stdout
-            }));
-          }
-
-          // 发送 stderr
-          if (result.stderr) {
-            ws.send(JSON.stringify({
-              type: 'command_output',
-              id: requestId,
-              data: `\x1b[33m${result.stderr}\x1b[0m`
-            }));
-          }
-
-          ws.send(JSON.stringify({
-            type: 'command_done',
-            id: requestId,
-            exitCode: result.exitCode ?? 0
-          }));
-
-        } catch (err) {
-          console.error('[AIShell] 命令执行失败:', errorMessage(err));
-          ws.send(JSON.stringify({
-            type: 'command_error',
-            id: requestId,
-            error: errorMessage(err)
-          }));
-        }
+      try {
+        const result = await runAgent({
+          serverId,
+          text,
+          history: Array.isArray(msg.history) ? msg.history : [],
+          skillContent: msg.skillContent || '',
+          skillName: msg.skillName || '',
+          autoRun: msg.autoRun !== false,
+          maxSteps: Math.min(Math.max(Number(msg.maxSteps) || MAX_STEPS, 1), MAX_STEPS),
+          signal,
+          send: (payload) => send(taskId, payload),
+          callModel: (messages, sig) => callModel(messages, sig, taskId),
+          execStream,
+          confirm: (state) => new Promise((resolve) => {
+            pendingConfirm = resolve;
+            send(taskId, { type: 'confirm_required', ...state });
+          }),
+        });
+        send(taskId, {
+          type: 'agent_done',
+          status: result.status,
+          steps: result.steps,
+          ...(result.answer ? { answer: result.answer } : {}),
+        });
+      } catch (err) {
+        console.error('[AIShell] agent 执行失败:', errorMessage(err));
+        send(taskId, { type: 'error', error: errorMessage(err) });
+        send(taskId, { type: 'agent_done', status: 'error', steps: 0 });
       }
-    } catch (err) {
-      console.error('[AIShell] 消息处理错误:', err);
     }
   });
 
   ws.on('close', () => {
+    abortController?.abort();
+    if (pendingConfirm) { const resolve = pendingConfirm; pendingConfirm = null; resolve(false); }
     console.log(`AI Shell WebSocket closed for server: ${serverId}`);
   });
 

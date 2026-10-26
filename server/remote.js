@@ -882,6 +882,82 @@ export async function execRemoteCommand(id, command) {
 }
 
 /**
+ * 流式执行远程命令（AI Shell 用）。
+ *
+ * 与 execRemoteCommand 的区别：
+ * - stdout/stderr 边产生边回调，长命令不会「憋到结束才显示」；
+ * - 支持 AbortSignal 中断（关闭 SSH channel），也支持超时；
+ * - 返回完整结果，便于 agent 把输出回灌给模型。
+ *
+ * @param {string} id 服务器 id
+ * @param {string} command 要执行的命令
+ * @param {object} [opts]
+ * @param {(chunk: string) => void} [opts.onStdout]
+ * @param {(chunk: string) => void} [opts.onStderr]
+ * @param {number} [opts.timeoutMs] 默认 120s
+ * @param {AbortSignal} [opts.signal]
+ */
+export async function execRemoteCommandStream(id, command, opts = {}) {
+  const { onStdout, onStderr, timeoutMs = 120_000, signal } = opts;
+  const ssh = sshConnections.get(id);
+  if (!ssh) throw new Error('服务器未连接');
+
+  return new Promise((resolve) => {
+    let channel = null;
+    let settled = false;
+    let aborted = false;
+    const stdout = [];
+    const stderr = [];
+
+    const cleanup = () => {
+      clearTimeout(timer);
+      if (signal) signal.removeEventListener('abort', onAbort);
+    };
+    const finish = (payload) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve({ stdout: stdout.join(''), stderr: stderr.join(''), exitCode: -1, ...payload });
+    };
+    const interrupt = (reason) => {
+      aborted = true;
+      try { channel?.close(); } catch { /* channel 可能已关闭 */ }
+      finish({ success: false, error: reason, cancelled: true });
+    };
+    const onAbort = () => interrupt('已取消');
+
+    const timer = setTimeout(
+      () => interrupt(`命令超时（>${Math.round(timeoutMs / 1000)}s）`),
+      timeoutMs,
+    );
+    if (signal) {
+      if (signal.aborted) return interrupt('已取消');
+      signal.addEventListener('abort', onAbort, { once: true });
+    }
+
+    ssh.execCommand(command, {
+      onChannel: (ch) => { channel = ch; },
+      onStdout: (chunk) => {
+        const text = chunk.toString('utf8');
+        stdout.push(text);
+        try { onStdout?.(text); } catch { /* 回调异常不影响执行 */ }
+      },
+      onStderr: (chunk) => {
+        const text = chunk.toString('utf8');
+        stderr.push(text);
+        try { onStderr?.(text); } catch { /* 同上 */ }
+      },
+    }).then((result) => {
+      if (aborted || settled) return;
+      finish({ success: true, stdout: result.stdout, stderr: result.stderr, exitCode: result.code ?? 0 });
+    }).catch((err) => {
+      if (aborted || settled) return;
+      finish({ success: false, error: errorMessage(err) });
+    });
+  });
+}
+
+/**
  * 解析远程日志行
  */
 function parseRemoteLogLine(line, source, index = 0) {

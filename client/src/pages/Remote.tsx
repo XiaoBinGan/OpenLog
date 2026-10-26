@@ -785,7 +785,7 @@ export default function Remote() {
       {/* AI Shell 终端弹窗 */}
       {showAIShell && activeServer && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
-          <div className="w-full max-w-5xl mx-4 h-[640px]">
+          <div className="w-full max-w-6xl mx-4 h-[82vh]">
             <AIShellTerminal
               server={{ ...activeServer, name: activeServer.name, host: activeServer.host, port: activeServer.port, username: activeServer.username }}
               onClose={() => { setShowAIShell(false); setAiShellOpening(false); }}
