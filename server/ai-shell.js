@@ -430,8 +430,16 @@ export async function runAgent(opts) {
         return { status: 'done', steps: step, answer: parsed.answer || '' };
       }
       if (parsed.type !== 'run' || !parsed.command) {
-        send({ type: 'final', step, content: '模型没有给出可执行的命令或结论，请补充更具体的需求。' });
-        return { status: 'done', steps: step };
+        // 模型输出既不是命令也不是明确 ANSWER 时，宁可把它当回答显示，也不要静默丢弃内容
+        const fallback = String(reply?.content || '').trim();
+        send({
+          type: 'final',
+          step,
+          content: fallback
+            ? fallback.replace(/```[a-zA-Z]*\n?/g, '').trim()
+            : '模型没有给出可执行的命令或结论，请补充更具体的需求。',
+        });
+        return { status: 'done', steps: step, answer: fallback || undefined };
       }
 
       // 3) 风险分级 → 可能需要用户确认
