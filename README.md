@@ -56,7 +56,88 @@ cp .env.example .env
 
 > 🔐 `OPENLOG_SECRET_KEY` 决定数据库里 SSH 密码 / 模型 Key 的加密密钥。
 > 从「未设置」切到「已设置」会触发一次性数据迁移（单向），设置后不要再取消，
-> 否则此前已重新加密的凭据将无法解读。
+> 否则此前已重新加密的凭据将无法解读。生成方式（32 字节）：
+>
+> ```bash
+> node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+> ```
+
+### 访问令牌 | Access Token
+
+服务端用 `OPENLOG_TOKEN` 做访问鉴权（生产模式强制，见下文「生效范围」）。
+**令牌就是控制台的总钥匙**：它能调 SSH、Docker、远程执行等全部管理接口，务必保密。
+
+#### 1. 如何生成 | Generate
+
+推荐用 Node 自带的 `crypto` 生成 24 字节随机令牌（48 位十六进制，和服务端自动生成的格式一致）：
+
+```bash
+node -e "console.log(require('crypto').randomBytes(24).toString('hex'))"
+# 示例输出：3f9c2a...（48 个十六进制字符）
+```
+
+把输出写进 `.env`（`cp .env.example .env` 后编辑）：
+
+```bash
+OPENLOG_TOKEN=3f9c2a...（你生成的值）
+```
+
+容器/Compose 部署时用环境变量传入（**不要**写进镜像）：
+
+```bash
+# docker run
+docker run -d ... -e OPENLOG_TOKEN=<你的令牌> openlog:latest
+
+# docker compose（compose 文件里已声明 OPENLOG_TOKEN 必填，可放在同目录 .env 或命令行传入）
+OPENLOG_TOKEN=<你的令牌> docker compose up -d
+```
+
+#### 2. 不设置时的默认行为 | Default behavior
+
+**不设置 `OPENLOG_TOKEN` 也能用**，服务端会自己生成并持久化：
+
+1. 首次启动时生成 24 字节随机令牌，写入 `data/.auth_token`（权限 `0600`，已被 `.gitignore` 忽略）；
+2. 之后每次启动**复用该文件**，令牌不变（容器部署里它就在数据卷 `data/` 下，重建容器也不会变）；
+3. 优先级：`OPENLOG_TOKEN` 环境变量 **>** `data/.auth_token` **>** 首次自动生成；
+4. 删除 `data/.auth_token` 并重启 → 会重新生成一个**新令牌**，旧令牌立即失效
+   （浏览器里存过旧令牌的会回到「需要访问令牌」输入框）。
+
+读取当前生效的令牌：
+
+```bash
+cat data/.auth_token                       # 本机/裸机
+docker exec openlog cat /app/data/.auth_token   # 容器部署（数据卷挂载在 /app/data）
+```
+
+> 注意：如果设置了 `OPENLOG_TOKEN` 环境变量，**以环境变量为准**，`data/.auth_token` 可能根本不存在或已过期，不要拿文件去猜。
+
+#### 3. 生效范围与用法 | Scope & usage
+
+| 场景 | 是否需要令牌 |
+|---|---|
+| `NODE_ENV=production`（含容器默认） | **所有** `/api`、`/ws` 请求都需要 |
+| 开发模式 + 回环地址（`127.0.0.1` / `::1`） | 免鉴权（本机调试用） |
+| 开发模式 + 其它机器访问 | 需要令牌 |
+
+- HTTP 请求头：`Authorization: Bearer <token>`
+- WebSocket：`ws://host:port/ws?token=<token>`
+- 浏览器从其它机器访问生产实例时，会自动弹出「需要访问令牌」输入框（`AuthGate`），
+  输入一次后保存在本机 `localStorage`，之后免输入；令牌变更后会重新提示。
+
+#### 4. 更换令牌 | Rotate
+
+任选一种，然后重启服务端，所有浏览器都会重新要求输入：
+
+```bash
+# 方式 A：改环境变量（推荐，令牌不受数据目录影响）
+OPENLOG_TOKEN=<新令牌> node server/index.js
+
+# 方式 B：删文件让它自动生成
+rm -f data/.auth_token && node server/index.js
+```
+
+> 安全提醒：不要提交 `.env`、不要把令牌写进 URL/截图/聊天记录；生产环境建议把
+> `OPENLOG_TOKEN` 放进 Compose `.env`、Docker secret 或部署平台的 Secret 管理里。
 
 ### 运行 | Running
 
@@ -115,10 +196,13 @@ npm.cmd start
 用浏览器访问生产实例时，前端无法自动拿到令牌，会弹出「需要访问令牌」入口：
 
 - 令牌取自服务端 `data/.auth_token`（首次启动自动生成，容器部署即数据卷里那个文件）；
-  若设置了 `OPENLOG_TOKEN` 环境变量则以它为准。
+  若设置了 `OPENLOG_TOKEN` 环境变量则以它为准。生成方式与默认行为见
+  [访问令牌 | Access Token](#访问令牌--access-token)。
 - 输入一次后保存在浏览器 `localStorage`（仅本机），后续访问免输入；
   令牌变更（换容器/换令牌）后会自动再次提示。
 - 想临时换令牌：浏览器 DevTools 执行 `localStorage.removeItem('openlog_token')` 后刷新。
+  （提示：Chrome 控制台首次粘贴会要求手动输入「允许粘贴」，这是浏览器的防自 XSS
+  保护，不是本项目的提示；正常流程无需控制台，令牌直接输在页面输入框即可。）
 
 ---
 
