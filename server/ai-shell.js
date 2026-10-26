@@ -446,9 +446,12 @@ export async function runAgent(opts) {
         const allowed = await confirm({ risk: risk.risk, command: parsed.command, thought: parsed.thought });
         if (!allowed) {
           send({ type: 'command_rejected', step, command: parsed.command, reason: '用户拒绝执行' });
-          // 把拒绝也告诉模型，让它换方案
+          // 拒绝要明确：不要再绕道用别的命令达成同一目的
           messages.push({ role: 'assistant', content: `RUN: ${parsed.command}` });
-          messages.push({ role: 'user', content: `用户拒绝执行这条命令${risk.reason ? `（风险：${risk.reason}）` : ''}，请换一种更安全的方式完成目标。` });
+          messages.push({
+            role: 'user',
+            content: `用户拒绝执行这条命令${risk.reason ? `（风险：${risk.reason}）` : ''}。不要再尝试用其它命令达成同样的目的；如果这个目标必须修改服务器状态，请直接说明需要用户手动处理，并给出建议步骤。`,
+          });
           continue;
         }
       }
