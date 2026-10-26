@@ -137,6 +137,24 @@ function LayoutContent() {
             }
           }
         }
+        // 容器日志实时错误（ERROR / FATAL 一行一推）
+        if (data.type === 'container_log_alert') {
+          const d = data.data || {};
+          const cName = d.containerName || d.containerId?.slice(0, 12) || '容器';
+          const level = (d.level || 'ERROR').toUpperCase();
+          const text = String(d.content || d.line || '').replace(/\s+/g, ' ').slice(0, 160);
+          const extra = d.suppressed > 0 ? `（同批还有 ${d.suppressed} 条）` : '';
+          const notify = level === 'FATAL' ? toast.error : toast.warning;
+          notify(`🐳 ${cName} · ${level}`, {
+            description: text + extra,
+            action: {
+              label: '查看日志 →',
+              onClick: () => navigate(`/docker?sourceId=${encodeURIComponent(d.sourceId || '')}&containerId=${encodeURIComponent(d.containerId || '')}&openLog=1`),
+            },
+            persistent: true,
+            group: `logalert-${d.sourceId || ''}-${d.containerId || cName}-${level}`,
+          });
+        }
       } catch {}
     });
 

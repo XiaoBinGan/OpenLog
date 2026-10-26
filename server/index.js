@@ -20,6 +20,8 @@ import { fileURLToPath } from 'url';
 import * as remote from './remote.js';
 import { runAgent, classifyCommand, MAX_STEPS } from './ai-shell.js';
 import * as docker from './docker.js';
+import { ContainerLogWatcher } from './container-log-watch.js';
+import { parseLogLevel } from './log-level.js';
 import { warnIfUnconfigured as warnIfHostGpuUnconfigured } from './gpu-host-ssh.js';
 import gpuRouter from './routes/gpu.js';
 import skillsRouter from './routes/skills.js';
@@ -351,10 +353,13 @@ const defaultSettings = {
   ],
   // 容器异常退出通知
   dockerEventNotify: true,
-  // 容器日志定时巡检
-  containerPatrolEnabled: false,
+  // 容器日志定时巡检（默认开启：容器打 ERROR 就要能看到，不能要求用户先去设置里打开）
+  containerPatrolEnabled: true,
   containerPatrolInterval: '300000',  // ms，默认 5 分钟
-  containerPatrolLevels: ['ERROR', 'FATAL', 'WARN']
+  containerPatrolLevels: ['ERROR', 'FATAL', 'WARN'],
+  // 容器日志实时错误提醒（增量 tail，命中 ERROR/FATAL 立即弹框）
+  containerLogWatchEnabled: true,
+  containerLogWatchInterval: 5000,    // ms，实时轮询间隔
 };
 
 // Settings - 懒加载，数据库初始化完成后加载
@@ -1012,6 +1017,49 @@ function restartContainerPatrol() {
   startContainerPatrol();
 }
 
+// ─── 容器日志实时错误监听 ────────────────────────────────
+// 巡检是「每 5 分钟扫一次」，页面上看不到即时反馈。这里补上实时那一半：
+// 按 5s 增量 tail 运行中容器的日志，命中 ERROR/FATAL 立刻广播 → 前端弹 toast。
+let containerLogWatcher = null;
+
+function createContainerLogWatcher() {
+  return new ContainerLogWatcher({
+    listRunningSources: () => docker.listRunningContainersBySource(ensureSettings().dockerSources || []),
+    fetchLogs: (source, container, sinceSec) =>
+      docker.getContainerLogsSince(source.sourceId, source.config, container.id, sinceSec),
+    onAlert: (alert) => {
+      broadcast({ type: 'container_log_alert', data: alert });
+      console.log(`[LogWatch] ⚠️ ${alert.containerName} [${alert.level}] ${String(alert.content).slice(0, 120)}`);
+    },
+    onError: (msg) => console.warn(`[LogWatch] ${msg}`),
+    intervalMs: Number(ensureSettings().containerLogWatchInterval) || 5000,
+    // 实时提醒只看 ERROR/FATAL：WARN 太吵，交给定时巡检的等级配置
+    levels: ensureSettings().containerLogWatchLevels || ['ERROR', 'FATAL'],
+  });
+}
+
+function startContainerLogWatch() {
+  stopContainerLogWatch();
+  if (ensureSettings().containerLogWatchEnabled === false) {
+    console.log('[LogWatch] 容器日志实时错误提醒已关闭');
+    return;
+  }
+  containerLogWatcher = createContainerLogWatcher();
+  containerLogWatcher.start();
+  console.log(`[LogWatch] 容器日志实时错误提醒已启动 (间隔 ${containerLogWatcher.intervalMs / 1000}s)`);
+}
+
+function stopContainerLogWatch() {
+  if (containerLogWatcher) {
+    containerLogWatcher.stop();
+    containerLogWatcher = null;
+  }
+}
+
+function restartContainerLogWatch() {
+  startContainerLogWatch();
+}
+
 // API Routes
 
 // ─── 日志路由（已抽到 server/routes/logs.js）──────────────────────────────
@@ -1029,7 +1077,7 @@ app.use(createMonitorRouter({ monitorHistory }));
 // ============================================================
 app.use(createSettingsRouter({
   ensureSettings, saveSettings, startLogWatcher,
-  restartDockerEventWatch, restartContainerPatrol, startMonitor,
+  restartDockerEventWatch, restartContainerPatrol, restartContainerLogWatch, startMonitor,
 }));
 
 // ============================================================
@@ -1611,13 +1659,13 @@ async function handleDockerLogStream(ws, sourceId, containerId) {
           line = data.trim();
         }
 
-        // 解析日志等级
+        // 解析日志等级（多格式：JSON / 时间戳前缀 / vLLM 包装前缀 / logfmt 等）
         let level = 'INFO';
         let content = line;
-        const levelMatch = line.match(/^\s*\[(FATAL|ERROR|WARN|WARNING|INFO|DEBUG|TRACE)\]\s*/i);
-        if (levelMatch) {
-          level = levelMatch[1].toUpperCase() === 'WARNING' ? 'WARN' : levelMatch[1].toUpperCase();
-          content = line.substring(levelMatch[0].length);
+        {
+          const parsed = parseLogLevel(line);
+          level = parsed.level;
+          content = parsed.content;
         }
 
         if (ws.readyState === ws.OPEN) {
@@ -1702,6 +1750,7 @@ server.listen(PORT, HOST, async () => {
   startMonitor();
   startDockerEventWatch();
   startContainerPatrol();
+  startContainerLogWatch();
   startMaintenance();
   warnIfHostGpuUnconfigured();
 

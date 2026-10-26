@@ -3,6 +3,7 @@ import { errorMessage } from './errors.js';
 import path from 'path';
 import fs from 'fs';
 import { resolveDockerTransport } from './docker-transport.js';
+import { parseLogLevel } from './log-level.js';
 
 // ─── 工具函数 ──────────────────────────────────────────
 
@@ -18,14 +19,17 @@ function normalizeForDedup(line) {
     .trim();
 }
 
-// 解析日志行中的等级
+export { normalizeForDedup };
+
+/**
+ * 解析日志行中的等级。
+ *
+ * 曾经只认 `[ERROR] xxx` 一种前缀，导致 `ERROR xxx`、JSON 日志、vLLM 的
+ * `(APIServer pid=1) ERROR:` 等真实格式全被判成 INFO —— 巡检和实时告警都不触发。
+ * 现在统一走 log-level.js 的多格式解析器。
+ */
 function parseLogLine(line) {
-  const match = line.match(/^\s*\[(FATAL|ERROR|WARN|WARNING|INFO|DEBUG|TRACE)\]\s*/i);
-  if (match) {
-    const level = match[1].toUpperCase() === 'WARNING' ? 'WARN' : match[1].toUpperCase();
-    return { level, content: line.substring(match[0].length) };
-  }
-  return { level: 'INFO', content: line };
+  return parseLogLevel(line);
 }
 
 // ─── 容器内文件日志扫描 ──────────────────────────────────
@@ -447,6 +451,61 @@ export async function batchGetLogs(sources) {
     }
   }
   return results;
+}
+
+/**
+ * 增量读取容器日志（实时错误监听用）。
+ * 与 getContainerLogs 的区别：带 `since`（unix 秒），只取新日志；不解析、直接返回原始 Buffer，
+ * 解析交给 container-log-watch.js（那里需要按行做等级识别与去重）。
+ *
+ * @param {string} sourceId
+ * @param {object} sourceConfig Docker 源配置
+ * @param {string} containerId
+ * @param {number} sinceUnixSec 只取该时间之后的日志
+ */
+export async function getContainerLogsSince(sourceId, sourceConfig, containerId, sinceUnixSec) {
+  const docker = await getDockerFor(sourceId, sourceConfig);
+  const container = docker.getContainer(containerId);
+  const result = await container.logs({
+    stdout: true,
+    stderr: true,
+    timestamps: true,
+    since: Math.max(0, Math.floor(Number(sinceUnixSec) || 0)),
+    tail: 200,
+  });
+  return Buffer.isBuffer(result) ? result : Buffer.from(result);
+}
+
+/**
+ * 列出「正在运行的容器」，按 Docker 源分组（实时错误监听用）。
+ *
+ * 与 listContainers 的区别：只请求运行中的容器（`all: false`），且只取监听需要的
+ * 三个字段。实时监听每 5s 跑一次，不能每次都把 70 个容器的完整元数据搬一遍
+ * （通过 SSH 桥接时那是实打实的流量）。
+ *
+ * @param {Array} sources 设置里的 dockerSources
+ * @returns {Promise<Array<{sourceId:string, sourceName:string, config:object, containers:Array}>>}
+ */
+export async function listRunningContainersBySource(sources) {
+  const enabled = (sources || []).filter(s => s && s.enabled);
+  const out = [];
+  await Promise.all(enabled.map(async (src) => {
+    try {
+      const docker = await getDockerFor(src.id, src);
+      const containers = await docker.listContainers({ all: false });
+      const running = (containers || [])
+        .filter(c => (c.State || '').toLowerCase() !== 'exited')
+        .map(c => ({
+          id: c.Id,
+          shortId: c.Id.slice(0, 12),
+          name: (c.Names || [])[0]?.replace(/^\//, '') || c.Id.slice(0, 12),
+        }));
+      if (running.length > 0) {
+        out.push({ sourceId: src.id, sourceName: src.name || src.id, config: src, containers: running });
+      }
+    } catch { /* 单个源不可达时跳过，下一轮再试 */ }
+  }));
+  return out;
 }
 
 // 追踪上下游链路

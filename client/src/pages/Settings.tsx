@@ -293,6 +293,8 @@ export default function Settings() {
           containerPatrolEnabled: settings.containerPatrolEnabled,
           containerPatrolInterval: settings.containerPatrolInterval,
           containerPatrolLevels: settings.containerPatrolLevels,
+          containerLogWatchEnabled: settings.containerLogWatchEnabled,
+          containerLogWatchInterval: settings.containerLogWatchInterval,
       });
 
       setSaved(true);
@@ -1499,6 +1501,43 @@ export default function Settings() {
               <div className="w-10 h-5 bg-dark-700 rounded-full peer peer-checked:bg-accent-500 peer-checked:after:translate-x-5 after:content-[''] after:absolute after:top-0.5 after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all"></div>
             </label>
           </div>
+        </div>
+
+        {/* 容器日志实时错误提醒 */}
+        <div className="mb-4 pb-4 border-b border-dark-800">
+          <div className="flex items-center justify-between mb-2">
+            <div>
+              <p className="font-medium">容器错误日志实时提醒</p>
+              <p className="text-sm text-dark-400">
+                增量 tail 运行中容器的日志，出现 ERROR / FATAL 立刻在页面右下角弹框（含日志原文，可一键跳转日志）
+              </p>
+            </div>
+            <label className="relative inline-flex items-center cursor-pointer">
+              <input
+                type="checkbox"
+                checked={settings.containerLogWatchEnabled !== false}
+                onChange={e => setSettings({ ...settings, containerLogWatchEnabled: e.target.checked })}
+                className="sr-only peer"
+              />
+              <div className="w-10 h-5 bg-dark-700 rounded-full peer peer-checked:bg-accent-500 peer-checked:after:translate-x-5 after:content-[''] after:absolute after:top-0.5 after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all"></div>
+            </label>
+          </div>
+          {settings.containerLogWatchEnabled !== false && (
+            <div className="flex items-center gap-3">
+              <label className="text-sm text-dark-400">检查间隔</label>
+              <select
+                value={String(settings.containerLogWatchInterval ?? 5000)}
+                onChange={e => setSettings({ ...settings, containerLogWatchInterval: Number(e.target.value) })}
+                className="px-3 py-1.5 bg-dark-900 border border-dark-700 rounded-lg text-dark-200 text-sm"
+              >
+                <option value="3000">3 秒</option>
+                <option value="5000">5 秒（推荐）</option>
+                <option value="10000">10 秒</option>
+                <option value="30000">30 秒（省资源）</option>
+              </select>
+              <span className="text-xs text-dark-600">命中后同一错误 60 秒内不重复弹框</span>
+            </div>
+          )}
         </div>
 
         {/* 定时巡检配置 */}

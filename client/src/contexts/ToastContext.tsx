@@ -12,12 +12,14 @@ interface ToastOptions {
   action?: ToastAction;
   persistent?: boolean; // 不自动消失，手动关闭
   group?: string;       // 同类 toast 去重：同 group 只保留一条
+  description?: string; // 第二行详情（错误日志原文、影响范围等）
 }
 
 interface ToastMsg {
   id: string;
   type: ToastType;
   message: string;
+  description?: string;
   action?: ToastAction;
   persistent?: boolean;
   group?: string;
@@ -54,25 +56,32 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     const action = opts?.action;
     const persistent = opts?.persistent || false;
     const group = opts?.group;
+    const description = opts?.description;
 
-    // 同 group 合并：更新已有 toast 的消息
+    // 同 group 合并：更新已有 toast 的消息（保留旧的详情，除非这次显式给了）
     if (group) {
       setToasts(prev => {
         const existing = prev.findIndex(t => t.group === group);
         if (existing !== -1) {
           const next = [...prev];
-          next[existing] = { ...next[existing], message, action: action || next[existing].action };
+          next[existing] = {
+            ...next[existing],
+            message,
+            description: description ?? next[existing].description,
+            type,
+            action: action || next[existing].action,
+          };
           return next;
         }
         const newId = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-        return [...prev, { id: newId, type, message, action, persistent, group }];
+        return [...prev, { id: newId, type, message, description, action, persistent, group }];
       });
       return;
     }
 
     // 普通 toast
     const id = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-    setToasts(prev => [...prev, { id, type, message, action, persistent, group }]);
+    setToasts(prev => [...prev, { id, type, message, description, action, persistent, group }]);
 
     if (!persistent) {
       setTimeout(() => {
@@ -96,24 +105,29 @@ export function ToastProvider({ children }: { children: ReactNode }) {
           return (
             <div
               key={t.id}
-              className={`flex items-center gap-2.5 px-4 py-3 rounded-xl border shadow-2xl backdrop-blur-xl animate-slide-in pointer-events-auto group ${colorMap[t.type]}`}
+              className={`flex items-start gap-2.5 px-4 py-3 rounded-xl border shadow-2xl backdrop-blur-xl animate-slide-in pointer-events-auto group max-w-md ${colorMap[t.type]}`}
             >
-              <Icon className="w-4 h-4 flex-shrink-0" />
-              <span className="text-sm">{t.message}</span>
+              <Icon className="w-4 h-4 flex-shrink-0 mt-0.5" />
+              <div className="min-w-0 flex-1">
+                <div className="text-sm font-medium break-words">{t.message}</div>
+                {t.description && (
+                  <div className="text-xs opacity-75 mt-0.5 font-mono break-all line-clamp-3">{t.description}</div>
+                )}
+              </div>
               {t.action && (
                 <button
                   onClick={() => {
                     t.action!.onClick();
                     setToasts(prev => prev.filter(to => to.id !== t.id));
                   }}
-                  className="ml-1 px-2.5 py-1 text-xs rounded-lg border border-current/30 hover:bg-white/10 transition-colors font-medium whitespace-nowrap"
+                  className="ml-1 mt-0.5 px-2.5 py-1 text-xs rounded-lg border border-current/30 hover:bg-white/10 transition-colors font-medium whitespace-nowrap flex-shrink-0"
                 >
                   {t.action.label}
                 </button>
               )}
               <button
                 onClick={() => setToasts(prev => prev.filter(to => to.id !== t.id))}
-                className={`ml-1 p-0.5 rounded hover:bg-white/10 transition-colors ${t.persistent ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}
+                className={`ml-1 mt-0.5 p-0.5 rounded hover:bg-white/10 transition-colors flex-shrink-0 ${t.persistent ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}
               >
                 <X className="w-3.5 h-3.5" />
               </button>

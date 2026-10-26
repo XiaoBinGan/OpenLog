@@ -480,11 +480,47 @@ myengine:generation_tokens_total 7890
 - 容器巡检自动触发 Webhook 通知
 - 冷却去重避免重复告警
 
+### 🐳 容器日志告警
+
+两层机制，默认都开启：
+
+| 机制 | 频率 | 作用 |
+|---|---|---|
+| **实时错误提醒** | 增量 tail，默认 5s | 运行中容器出现 `ERROR` / `FATAL` 立刻在页面右下角弹框，带日志原文和「查看日志 →」跳转 |
+| **定时巡检** | 默认 5 分钟 | 批量扫描所有容器，结果进入 AI 分析页；配置了 Webhook 时同时推送 |
+
+日志等级识别覆盖常见格式（`server/log-level.js`，有单测）：
+
+```
+[ERROR] xxx                          ERROR: xxx
+ERROR xxx                            2026-10-26T18:35:14Z ERROR xxx
+2026-10-26 18:35:14,532 - root - ERROR - xxx     (Python logging)
+(APIServer pid=1) ERROR: xxx         (vLLM / uvicorn 包装前缀)
+{"level":"error","msg":"..."}        (JSON 结构化日志，也支持 severity/log.level)
+{"level":50,"msg":"..."}             (pino / bunyan 数字等级)
+level=error msg="..."                (logfmt)
+Oct 26 18:35:14 host app[1]: ERROR xxx           (syslog)
+18:35:14.532 [main] ERROR com.x.App - xxx        (logback)
+2026/10/26 18:35:14 [error] 12#0: xxx            (nginx)
+panic: xxx / [CRITICAL] / [SEVERE]    → FATAL / ERROR
+```
+
+> 早期版本只认 `[ERROR]` 方括号前缀，因此 `ERROR xxx`、JSON 日志、vLLM 的
+> `(APIServer pid=1) ERROR:` 全被判成 INFO，**巡检和弹框都不会触发** —— 这是「容器报错没弹框」的根因。
+> 现在统一走多格式解析器，并且实时提醒默认开启。
+
+弹框说明：
+
+- 同一容器 + 同一错误模式（去掉时间戳/IP/UUID 后的签名）**60 秒内只弹一次**，避免刷屏；
+- 单次检查单容器最多推 5 条，其余合并成「同批还有 N 条」；
+- 弹框常驻，点「查看日志 →」直接跳到 Docker 页并自动展开该容器、打开实时日志流；
+- 可在 **设置 → 容器异常监控** 里关掉实时提醒或调整间隔（3s / 5s / 10s / 30s）。
+
 ### 🐳 Docker 实时日志
 
 - WebSocket 流式 tail，暗色终端风格
 - 暂停/继续/清空/自动滚动
-- 按日志级别着色
+- 按日志级别着色（与告警共用同一套多格式等级解析）
 
 ---
 

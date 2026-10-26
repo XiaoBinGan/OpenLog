@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { marked } from 'marked';
 import { withWsToken } from '../api/auth';
 import { sanitizeHtml } from '../utils/sanitize';
@@ -48,6 +49,7 @@ interface TraceResult {
 export default function Docker() {
   const { selectedDevice, isRemote } = useDevice();
   const toast = useToast();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [sources, setSources] = useState<ContainerSource[]>([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState('');
@@ -167,6 +169,30 @@ export default function Docker() {
   useEffect(() => { fetchContainers(); }, [fetchContainers]);
 
   const allContainers = sources.flatMap(s => s.containers.map(c => ({ ...c, _sourceId: s.sourceId, _sourceName: s.sourceName })));
+
+  // 告警 toast「查看日志 →」深链：/docker?sourceId=..&containerId=..&openLog=1
+  // 等容器列表加载完成后，自动展开该容器并打开实时日志流。
+  const deepLinkHandled = useRef(false);
+  useEffect(() => {
+    if (deepLinkHandled.current) return;
+    const sourceId = searchParams.get('sourceId');
+    const containerId = searchParams.get('containerId');
+    if (!sourceId || !containerId || sources.length === 0) return;
+    const hit = allContainers.find(c =>
+      (c._sourceId === sourceId || searchParams.get('sourceId') === c._sourceId)
+      && (c.id === containerId || c.shortId === containerId || c.id.startsWith(containerId)));
+    if (!hit) return;
+    deepLinkHandled.current = true;
+    (async () => {
+      await toggleExpand(hit._sourceId, hit);
+      toggleLiveLog(hit._sourceId, hit.id);
+      // 消费掉 query，避免刷新/返回时重复打开
+      const next = new URLSearchParams(searchParams);
+      next.delete('sourceId'); next.delete('containerId'); next.delete('openLog');
+      setSearchParams(next, { replace: true });
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sources, searchParams]);
 
   // 按自定义顺序排序（localStorage），新容器自动追加到末尾
   const sortContainers = (containers: typeof allContainers) => {

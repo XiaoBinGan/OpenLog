@@ -206,6 +206,8 @@ export interface Settings {
   containerPatrolEnabled?: boolean;
   containerPatrolInterval?: string;
   containerPatrolLevels?: string[];
+  containerLogWatchEnabled?: boolean;
+  containerLogWatchInterval?: number;
 }
 
 export interface WebSocketMessage {

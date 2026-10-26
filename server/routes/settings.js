@@ -41,6 +41,7 @@ export default function createSettingsRouter({
   startLogWatcher,
   restartDockerEventWatch,
   restartContainerPatrol,
+  restartContainerLogWatch,
   startMonitor,
 }) {
   const router = express.Router();
@@ -77,6 +78,7 @@ export default function createSettingsRouter({
       }
       restartDockerEventWatch();
       restartContainerPatrol();
+      restartContainerLogWatch?.();
     }
 
     if (updates.dockerEventNotify !== undefined) {
@@ -85,6 +87,15 @@ export default function createSettingsRouter({
 
     if (updates.containerPatrolEnabled !== undefined || updates.containerPatrolInterval !== undefined || updates.containerPatrolLevels !== undefined) {
       restartContainerPatrol();
+    }
+
+    // 实时错误提醒：开关 / 间隔 / 等级变化都要重建定时器
+    if (
+      updates.containerLogWatchEnabled !== undefined
+      || updates.containerLogWatchInterval !== undefined
+      || updates.containerPatrolLevels !== undefined
+    ) {
+      restartContainerLogWatch?.();
     }
 
     if (updates.refreshInterval) {
