@@ -55,6 +55,23 @@ describe('classifyCommand —— 风险分级', () => {
     expect(classifyCommand(null).risk).toBe('danger');
   });
 
+  it('只读命令带管道/引号/2>&1 不会误判成 write', () => {
+    for (const cmd of [
+      "docker logs --tail 20 vllm --filter x 2>&1 | grep -iE 'error|warn' | head -20",
+      "docker ps --filter name=vllm --format '{{.Names}}' ; ps -eo pid,cmd | grep vllm | head -40",
+      'nvidia-smi --query-gpu=index,name,memory.used --format=csv',
+      "curl -s http://127.0.0.1:3001/ -o /dev/null -w '%{http_code}'",
+      "grep -r 'error' /var/log/syslog | tail -20",
+    ]) {
+      expect(classifyCommand(cmd).risk, cmd).toBe('read');
+    }
+  });
+
+  it('写文件重定向 → write', () => {
+    expect(classifyCommand('echo hi > /tmp/a').risk).toBe('write');
+    expect(classifyCommand('date >> /tmp/log').risk).toBe('write');
+  });
+
   it('read 命令重定向到 /dev/null 仍算 read', () => {
     expect(classifyCommand('cat /etc/passwd > /dev/null').risk).toBe('read');
     expect(classifyCommand('ls /nope 2> /dev/null').risk).toBe('read');
@@ -344,6 +361,29 @@ describe('runAgent —— 多步 agent 循环', () => {
     expect(result.steps).toBe(2);
     expect(exec).toHaveBeenCalledTimes(2);
     expect(events.some(e => e.type === 'final' && e.content.includes('最大步数'))).toBe(true);
+  });
+
+  it('用户要求修改但模型只查不干 → 会催一次并继续执行', async () => {
+    const { events, send } = collector();
+    const exec = vi.fn(async () => ({ success: true, stdout: '', stderr: '', exitCode: 0 }));
+    const callModel = vi.fn(async () => {
+      if (callModel.mock.calls.length === 1) return { content: 'ANSWER: 目录还不存在。' };
+      if (callModel.mock.calls.length === 2) return { content: 'RUN: mkdir -p /tmp/abc' };
+      return { content: 'ANSWER: 已创建 /tmp/abc。' };
+    });
+    const result = await runAgent({
+      serverId: 's-nudge',
+      text: '帮我创建 /tmp/abc 目录',
+      autoRun: true,
+      send,
+      callModel,
+      execStream: exec,
+      execContext: NOOP_EXEC,
+    });
+    expect(events.some(e => e.type === 'nudge')).toBe(true);
+    expect(exec).toHaveBeenCalledTimes(1);
+    expect(result.status).toBe('done');
+    expect(result.answer).toContain('已创建');
   });
 
   it('取消后停止执行', async () => {

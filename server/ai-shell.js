@@ -27,6 +27,9 @@ export const OBSERVATION_LIMIT = 6000;
 /** 上下文缓存时长 */
 export const CONTEXT_TTL_MS = 5 * 60 * 1000;
 
+/** 用户请求里出现这些词 = 要求做修改（用于「只查不干」兜底） */
+const ACTION_INTENT_RE = /(创建|新建|建一个|建个|删除|删掉|清理|清空|重启|启动|停止|安装|卸载|修改|改成|写入|追加|上传|下载|部署|复制|移动|重命名|mkdir|chmod|chown|kill|restart|install|remove|create|delete|write)/i;
+
 // ─── 风险分级 ──────────────────────────────────────────────────────────────
 
 /** 只读命令白名单（这里没有的、且不在危险表里的，都算 write） */
@@ -65,12 +68,46 @@ const DANGER_RULES = [
 
 const WRITE_HINTS = [
   /\b(rm|mv|cp|mkdir|rmdir|touch|ln|chmod|chown|install|tee|patch)\b/,
-  /(^|[^0-9&])>{1,2}\s*[^\s&]/,
   /\bsed\s+-i\b/,
   /\b(docker|podman|systemctl|service|kubectl)\s+(start|stop|restart|reload|rm|run|exec|apply|delete|set)\b/,
   /\b(apt|apt-get|yum|dnf|apk|pip|pip3|npm|pnpm)\s+(install|add|upgrade|update)\b/,
   /\bkill\b/,
 ];
+
+/**
+ * 去掉引号里的内容（避免 `grep 'a|b'` 被当成管道分割）
+ */
+function stripQuoted(input) {
+  return String(input || '')
+    .replace(/'[^']*'/g, "''")
+    .replace(/"[^"]*"/g, '""');
+}
+
+/**
+ * 找出「真的会写文件」的重定向（`> file` / `>> file`），排除 `2>&1`、`>/dev/null`。
+ * @returns {string[]}
+ */
+function writeRedirects(command) {
+  const text = stripQuoted(command);
+  const out = [];
+  for (const m of text.matchAll(/(?:^|[^0-9&])>{1,2}\s*([^\s;&|]+)/g)) {
+    const target = m[1];
+    if (target === '/dev/null' || target.startsWith('&')) continue;
+    out.push(m[0]);
+  }
+  return out;
+}
+
+/**
+ * 去掉 fd 重定向（`2>&1`、`2>/dev/null`、`&> /dev/null`）。
+ * 它们不影响命令是否只读，但 `&1` 会被管道切段逻辑拆出个 `1` 造成误判。
+ */
+function stripFdRedirects(input) {
+  return String(input || '')
+    .replace(/\d*>>?\s*&\s*\d+/g, ' ')
+    .replace(/\d*>>?\s*\/dev\/null/g, ' ')
+    .replace(/&>\s*\S+/g, ' ');
+}
 
 /**
  * 命令风险分级。
@@ -84,19 +121,25 @@ export function classifyCommand(command) {
     if (rule.re.test(cmd)) return { risk: 'danger', reason: rule.reason };
   }
 
-  // 允许管道/重定向到非文件的只读命令，例如 `ps aux | grep node | head`
-  const segments = cmd.split(/[;&|]+/).map(s => s.trim()).filter(Boolean);
+  // 先把「会写文件」的重定向摘出来：写重定向本身就是写操作
+  const redirects = writeRedirects(cmd);
+  let normalized = cmd;
+  if (redirects.length > 0) {
+    for (const r of redirects) normalized = normalized.split(r).join(' ');
+  }
+  normalized = stripFdRedirects(normalized);
+
+  // 再按未加引号的 ; && || | 切段，只读命令可以链式组合（ps aux | grep x | head）
+  const noQuote = stripQuoted(normalized);
+  const segments = noQuote.split(/[;&|]+/).map(s => s.trim()).filter(Boolean);
   const bases = segments.map(s => s.split(/\s+/)[0].split('/').pop().toLowerCase()).filter(Boolean);
   const allReadonly = bases.length > 0 && bases.every(b => READONLY_BASE.has(b));
 
-  const hasWriteHint = WRITE_HINTS.some(re => re.test(cmd))
-    // `>` 后面跟的是 /dev/null 或 &1/&2 时不算写文件
-    && !/^\s*(cat|grep|ls|echo|printf)[^\n]*>{1,2}\s*(\/dev\/null|&[12])/.test(cmd);
-
+  if (redirects.length > 0) return { risk: 'write', reason: '重定向写入文件' };
+  // 即使是白名单命令（docker / systemctl / service …），带写操作动词也算 write
+  const hasWriteHint = WRITE_HINTS.some(re => re.test(cmd));
   if (allReadonly && !hasWriteHint) return { risk: 'read' };
 
-  // 白名单外的命令（例如 `docker logs` 的 docker 在白名单里，`docker rm` 已在 danger 表）
-  if (hasWriteHint) return { risk: 'write' };
   return { risk: 'write' };
 }
 
@@ -238,9 +281,12 @@ ANSWER: <给用户的最终回答，中文，简洁，可以分点>
 - 最多 ${maxSteps} 步。要善用管道（|）、grep、head 把输出压到几十行以内。
 - 命令必须能在一次 SSH exec 里跑完（不要用 top/vim 这类需要交互的程序，用 top -bn1、ps 代替）。
 - 不要重复已经执行过且成功的命令；失败时先读报错再改参数。
-- 不编造输出：没执行过的信息不要写进 ANSWER。
+- **答案只能来自你实际执行过的命令输出**：没执行过的信息绝对不要写进 ANSWER，不要编造数字或时间。
+- **用户要求做修改（创建/删除/重启/安装/改配置）时，必须真的执行对应命令，不能只检查现状就交差**；
+  执行后用一条命令验证结果，再给 ANSWER。
 - 用户只问概念/知识时直接 ANSWER，不要为了跑命令而跑命令。
 - 危险操作（删除、格式化、重启、停服务）除非用户明确要求，否则不要主动做。
+- ANSWER 要直接回答用户的问题，不要答非所问；先给结论，再给关键依据。
 - 回答用中文。命令本身保持原样。`;
 }
 
@@ -353,6 +399,8 @@ export async function runAgent(opts) {
   ];
 
   let step = 0;
+  let ranMutating = false;
+  let nudged = false;
   try {
     while (step < maxSteps) {
       if (signal?.aborted) return { status: 'cancelled', steps: step };
@@ -366,6 +414,18 @@ export async function runAgent(opts) {
 
       // 2) 结论：结束
       if (parsed.type === 'answer') {
+        // 「只查不干」兜底：用户明确要求改东西，但全程没执行过任何写命令 —— 催一次
+        const wantsAction = ACTION_INTENT_RE.test(String(text));
+        if (wantsAction && !ranMutating && !nudged && step < maxSteps) {
+          nudged = true;
+          send({ type: 'nudge', step, content: '要求执行修改但还没动手，促使模型继续' });
+          messages.push({ role: 'assistant', content: `ANSWER: ${parsed.answer || ''}` });
+          messages.push({
+            role: 'user',
+            content: '注意：这个任务要求实际执行修改操作，但你还没有执行任何写命令。请继续完成（先执行对应命令，再验证结果）；确实无法完成时说明具体原因。',
+          });
+          continue;
+        }
         send({ type: 'final', step, content: parsed.answer || '' });
         return { status: 'done', steps: step, answer: parsed.answer || '' };
       }
@@ -395,6 +455,7 @@ export async function runAgent(opts) {
 
       // 4) 流式执行
       send({ type: 'command_start', step, command: parsed.command });
+      if (risk.risk !== 'read') ranMutating = true;
       const result = await execStream(serverId, parsed.command, {
         timeoutMs: COMMAND_TIMEOUT_MS,
         signal,
