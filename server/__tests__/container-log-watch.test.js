@@ -243,3 +243,23 @@ describe('ContainerLogWatcher —— 实时监听', () => {
     expect(DEFAULT_SIGNATURE_COOLDOWN_MS).toBe(60000);
   });
 });
+
+describe('???? ?? ??????????', () => {
+  it('isSelfLogLine ?? OpenLog ???????', async () => {
+    const mod = await import('../container-log-watch.js');
+    expect(mod.isSelfLogLine('[LogWatch] ?? openlog [ERROR] x')).toBe(true);
+    expect(mod.isSelfLogLine('[Patrol] ?? y')).toBe(true);
+    expect(mod.isSelfLogLine('ERROR real app failure')).toBe(false);
+  });
+
+  it('collectAlerts ????????????????', async () => {
+    const mod = await import('../container-log-watch.js');
+    const state = {};
+    const { events } = mod.collectAlerts([
+      { timestamp: 't', line: '[LogWatch] ?? openlog [ERROR] boom' },
+      { timestamp: 't', line: 'ERROR real failure' },
+    ], state, { now: 1 });
+    expect(events).toHaveLength(1);
+    expect(events[0].content).toContain('real failure');
+  });
+});

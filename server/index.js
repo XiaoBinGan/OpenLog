@@ -20,7 +20,7 @@ import { fileURLToPath } from 'url';
 import * as remote from './remote.js';
 import { runAgent, classifyCommand, MAX_STEPS } from './ai-shell.js';
 import * as docker from './docker.js';
-import { ContainerLogWatcher } from './container-log-watch.js';
+import { ContainerLogWatcher, detectSelfContainerId } from './container-log-watch.js';
 import { parseLogLevel } from './log-level.js';
 import { warnIfUnconfigured as warnIfHostGpuUnconfigured } from './gpu-host-ssh.js';
 import gpuRouter from './routes/gpu.js';
@@ -1023,8 +1023,17 @@ function restartContainerPatrol() {
 let containerLogWatcher = null;
 
 function createContainerLogWatcher() {
+  // 跳过 OpenLog 自身容器：它自己的告警日志里带 [ERROR] 字样，监听自己会自激放大
+  const selfId = detectSelfContainerId();
   return new ContainerLogWatcher({
-    listRunningSources: () => docker.listRunningContainersBySource(ensureSettings().dockerSources || []),
+    listRunningSources: async () => {
+      const sources = await docker.listRunningContainersBySource(ensureSettings().dockerSources || []);
+      if (!selfId) return sources;
+      return sources.map(s => ({
+        ...s,
+        containers: s.containers.filter(c => !c.id.startsWith(selfId.slice(0, 12))),
+      })).filter(s => s.containers.length > 0);
+    },
     fetchLogs: (source, container, sinceSec) =>
       docker.getContainerLogsSince(source.sourceId, source.config, container.id, sinceSec),
     onAlert: (alert) => {

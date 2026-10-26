@@ -4,6 +4,7 @@ import path from 'path';
 import fs from 'fs';
 import { resolveDockerTransport } from './docker-transport.js';
 import { parseLogLevel } from './log-level.js';
+import { isSelfLogLine, detectSelfContainerId } from './container-log-watch.js';
 
 // ─── 工具函数 ──────────────────────────────────────────
 
@@ -881,7 +882,10 @@ export async function patrolContainerLogs(sources, levels, hostExecForSource = n
     try {
       const docker = await getDockerFor(src.id, src);
       const containers = await listContainers(src.id, src);
-      const runningContainers = containers.filter(c => c.state === 'running');
+      // ?? OpenLog ??????????????? [ERROR]????????
+      const selfId = detectSelfContainerId();
+      const runningContainers = containers.filter(c => c.state === 'running'
+        && !(selfId && c.id && c.id.startsWith(selfId.slice(0, 12))));
       const logPaths = (src.logPaths && src.logPaths.length > 0) ? src.logPaths : null;
 
       // 这一轮连上了：如果之前一直在报错，补一条恢复日志
@@ -918,8 +922,9 @@ export async function patrolContainerLogs(sources, levels, hostExecForSource = n
           // 更新检查点
           updatePatrolCheckpoint(key, stdLogs);
 
-          // 按等级过滤
+          // 按等级过滤（自身告警日志不参与，避免自激放大）
           const matchedLines = allNew.filter(l => {
+            if (isSelfLogLine(l.content || l.line)) return false;
             const lvl = (l.level || 'INFO').toUpperCase();
             return effectiveLevels.includes(lvl);
           });

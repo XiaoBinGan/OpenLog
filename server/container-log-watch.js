@@ -14,6 +14,7 @@
  *  - 容器频繁重启/新建时，轮询天然自愈，不需要重连状态机。
  */
 
+import { readFileSync } from 'node:fs';
 import { parseLogLevel, matchAlertLine } from './log-level.js';
 import { errorMessage } from './errors.js';
 
@@ -25,6 +26,28 @@ export const DEFAULT_SIGNATURE_COOLDOWN_MS = 60 * 1000;
 export const MAX_LINES_PER_CONTAINER_PER_TICK = 5;
 /** 首次发现容器时回看的时间窗（ms）——只补最近几条，避免刷历史 */
 export const FIRST_SEEN_LOOKBACK_MS = 5000;
+
+/**
+ * 自身日志前缀：OpenLog 自己的容器不要监听自己的告警输出，否则会自激放大。
+ * 例：`[LogWatch] ⚠️ openlog [ERROR] ...` 会被当成新的 ERROR 再告警一次。
+ */
+export const SELF_LOG_PREFIXES = ['[LogWatch]', '[Patrol]', '[Alert]', '[Docker Events]'];
+
+/** 该行是否来自 OpenLog 自己的日志 */
+export function isSelfLogLine(line) {
+  const text = String(line || '').trim();
+  return SELF_LOG_PREFIXES.some(p => text.startsWith(p));
+}
+
+/** 检测当前进程所在容器 ID（用于跳过自身容器） */
+export function detectSelfContainerId() {
+  try {
+    const cgroup = readFileSync('/proc/self/cgroup', 'utf8');
+    const m = cgroup.match(/(?:docker|containerd|kubepods)[^\n]*?\/([0-9a-f]{12,64})/);
+    if (m) return m[1];
+  } catch { /* 非 Linux / 无 cgroup 时忽略 */ }
+  return null;
+}
 
 /** 去重签名：去掉时间戳/请求 ID 等动态部分 */
 export function alertSignature(line) {
@@ -93,6 +116,8 @@ export function collectAlerts(lines, state, opts = {}) {
   let dropped = 0;
 
   for (const { timestamp, line } of lines || []) {
+    // ????????????????? ? ????? ? ?????????
+    if (isSelfLogLine(line)) continue;
     const { level, content } = parseLogLevel(line);
     const wanted = levels.map(l => String(l).toUpperCase());
     if (!wanted.includes(level)) continue;
