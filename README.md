@@ -326,32 +326,140 @@ openlog/
 
 - 自动拉取所有已连接服务器的 GPU 状态
 - 每卡展示：算力利用率、**MFU（模型算力利用率）**、显存、温度、进程（PID + 名称 + 显存）
+- MFU 只在「服务确实暴露了推理指标」时才显示；没接入的服务只显示利用率/显存/温度（不猜、不用利用率冒充）
 - 30 秒自动刷新
 - 与远程服务器页面联动，无需重复输入 host/user
 
 #### MFU（Model FLOPs Utilization）怎么算
 
 卡片上的 `MFU` 显示在「跑着推理引擎的那张卡」上（引擎进程通过 nvidia-smi 的
-`VLLM::EngineCore` 等进程名自动映射到 GPU），公式：
+`VLLM::EngineCore` / `strata` 等进程名自动映射到 GPU），公式：
 
 ```
 MFU = 模型实际 FLOPs/s ÷ GPU 峰值算力（FP16/BF16 稠密，不含稀疏加速）
 ```
 
-数据来源是远端 vLLM 原生 `/metrics`（OpenLog 通过已有 SSH 连接读取，不额外开端口）：
+**核心原则：服务没有暴露推理指标，就不显示 MFU。** OpenLog 不会用
+「GPU 利用率」冒充 MFU —— 那是 kernel 活跃时间占比，不是模型算力利用率，
+两者在访存受限的 decode 阶段能差一个数量级。
 
-1. 优先用 `vllm:estimated_flops_per_gpu_total`（vLLM 自带 MFU 计数器）做差分；
-2. 该计数器为 0 的版本/配置，用 `vllm:prompt_tokens_total` / `vllm:generation_tokens_total`
-   做差分，按 `2 × 激活参数量 × tokens/s` 估算 FLOPs（参数量从 `model_name` 解析，
-   MoE 取 `A3B` 这类激活参数，避免用总参数量把 MFU 夸大）。
+数据来源（OpenLog 通过已有 SSH 连接在**目标机本地**读取，不额外开端口、不改远端配置）：
+
+1. 引擎自报的 FLOPs 计数器（如 vLLM 的 `vllm:estimated_flops_per_gpu_total`）做差分；
+2. 该计数器缺失或恒为 0 时，用 token 计数差分 × `2 × 激活参数量`
+   （MoE 取 `A3B` 这类激活参数，避免用总参数量把 MFU 夸大）；
+3. 有引擎自报 GPU 型号时（如 Strata 的 `/metrics`）用它把 MFU 映射到具体显卡。
+
+**支持自动发现的引擎/格式**：
+
+| 引擎/格式 | 端点 | 关键指标 |
+|---|---|---|
+| vLLM | `/metrics` (Prometheus) | `vllm:prompt_tokens_total` + `vllm:generation_tokens_total`（优先 `by_source{local_compute}`，剔除 prefix cache 命中） |
+| Strata | `/metrics` (JSON) | `totals.prompt_tokens` / `totals.output_tokens` |
+| SGLang | `/metrics` (Prometheus) | `sglang:prompt_tokens_total` / `generation_tokens_total` |
+| TGI | `/metrics` (Prometheus) | `tgi_request_input_length_sum` / `tgi_request_generated_tokens_sum` |
+| llama.cpp | `/metrics` (Prometheus) | `llamacpp:prompt_tokens_total` / `llamacpp:tokens_predicted_total` |
+| 自定义服务 | `/metrics` (JSON 或 Prometheus) | 见下一节「接入自定义推理服务」 |
+
+发现与鉴权都是自动的：扫本机监听端口 + `docker ps` 暴露端口；遇到 401/403 时，
+从本机容器的 `*_KEY / *_TOKEN / *_SECRET` 环境变量里取候选 key 重试。
+`/metrics` 只允许回环地址访问（`127.0.0.1` / `localhost`），不会把指标暴露到公网。
 
 说明与边界：
 
-- 首次加载需要两次采样（约 2 秒），之后 30 秒轮询只多一次 curl；
-- 峰值算力表覆盖 4090/5090/A100/H100/L40S/T4 等常见型号，**表里没有的卡不猜**，
-  该服务器不显示 MFU；未检测到 vLLM `/metrics` 时也不显示；
+- 首次加载需要两次采样（约 2 秒），之后 30 秒轮询只多一次 curl；差分窗口上限 90 秒，
+  超过就重新采样，避免「旧窗口」被当成当前值（这也解释了为什么空闲时会显示 0%，而不是历史峰值）；
+- 峰值算力表覆盖 4090/5090/A100/H100/L40S/T4 等常见型号，**表里没有的卡不猜**，该服务器不显示 MFU；
+  未发现推理指标端点、或服务未实现指标时，同样**不显示 MFU**（只显示利用率/显存/温度）；
 - 单流 decode 的 MFU 通常只有 1%–5%（显存带宽受限），高并发/长 prefill 才会明显升高；
 - 该数值用于横向对比「同一台机器不同模型/批次配置」，不是绝对性能指标。
+
+### 🔌 接入自定义推理服务（手写 transformer 代码）
+
+OpenLog 的 MFU 采集和引擎无关：**只要你的服务能报告「处理了多少 token」，就能算出 MFU**。
+手写 Transformer / 自研推理框架 / 训练脚本都适用。三条接入路径：
+
+#### 方式一：加一个 `/metrics` 端点（推荐，5 行代码）
+
+在推理循环里累计 token 数，暴露成 JSON（或 Prometheus 文本）。OpenLog 会自动发现并接入。
+
+**JSON 契约**（字段名支持常见别名）：
+
+```json
+{
+  "model": "my-transformer-7b",
+  "prompt_tokens": 123456,
+  "generation_tokens": 7890,
+  "gpu": "NVIDIA GeForce RTX 4090"
+}
+```
+
+- `prompt_tokens` 别名：`input_tokens` / `prefill_tokens`；`generation_tokens` 别名：
+  `output_tokens` / `completion_tokens` / `decode_tokens`
+- `flops_total`（可选）：如果你的代码能直接统计 FLOPs，填它最准，OpenLog 会优先用
+- `gpu`（可选）：引擎自报显卡型号，用于把 MFU 挂到对应的卡上
+- 必须是**单调递增的累计值**（OpenLog 用两次采样差分求速率）
+
+示例（FastAPI + PyTorch，10 行接入）：
+
+```python
+from fastapi import FastAPI
+import torch
+
+app = FastAPI()
+STATS = {"prompt_tokens": 0, "generation_tokens": 0}
+
+@app.get("/metrics")
+def metrics():
+    return {
+        "model": "my-transformer-7b",
+        "prompt_tokens": STATS["prompt_tokens"],
+        "generation_tokens": STATS["generation_tokens"],
+        "gpu": torch.cuda.get_device_name(0),
+    }
+
+# 在你的推理循环里累计（prefill 后加 prompt 长度，每生成一个 token 加 1）
+# STATS["prompt_tokens"] += len(input_ids[0])
+# STATS["generation_tokens"] += 1
+```
+
+Prometheus 文本格式也可以（OpenLog 用 `sumMetric` 前缀匹配，`<任意前缀>:prompt_tokens_total` 都认）：
+
+```
+myengine:prompt_tokens_total 123456
+myengine:generation_tokens_total 7890
+```
+
+#### 方式二：日志解析（不改代码，前提是日志里有 token 数）
+
+如果你的脚本已经在打印 token 信息，可以把该日志目录配给 OpenLog（远程服务器页的
+「日志目录 / 文件匹配」），OpenLog 会按行解析 `tokens=N` / `tok/s=N` 之类的字段。
+第一次接入建议用方式一 —— 日志解析依赖格式稳定，脚本改版容易断。
+
+#### 方式三：手工指定参数量（名字里没有 `27B` 时）
+
+模型名解析不出参数量（例如 `my-transformer`）时，在 **设置 → 算力监控 / MFU 数据源** 里
+为那台服务器填「激活参数量（B）」。同时也可以在这里覆盖：
+
+| 字段 | 作用 |
+|---|---|
+| 指标地址 | 手动指定 `http://127.0.0.1:<port>/metrics`（留空=自动发现；**只接受回环地址**） |
+| 鉴权 Key | 指标端点需要 Bearer 鉴权时填写（服务端存储、前端只显示前 4 位） |
+| 激活参数量（B） | 覆盖模型名解析结果（MoE 填激活参数，不是总参数） |
+| 引擎进程名 | 可选正则，用于把 MFU 挂到具体显卡（例：进程是 `python train_server.py` 就填 `train_server`） |
+| 算力口径 | FP16/BF16 稠密 或 FP8 稠密（按模型实际计算精度选） |
+
+> 找不到引擎进程、且服务没有自报 `gpu` 型号时，MFU 按「占满该机全部 GPU」折算（除以卡数），
+> 卡片上会同时显示在每张卡上。想精确到卡，就补「引擎进程名」或让服务在 JSON 里带上 `gpu`。
+
+#### 怎么确认接好了
+
+1. 在目标机上 `curl -s http://127.0.0.1:<port>/metrics` 能看到上面契约里的字段；
+2. 打开「算力监控」页 → 对应服务器的标题行会出现 `<engine> MFU x.x%` 徽标；
+3. 发一次推理请求，30 秒内数值应明显升高（空闲时回落为 0% 是正常的）。
+
+> 如果容器里的服务暂时没做指标上报，卡片上就**不会显示 MFU**（只有利用率/显存/温度）——
+> 这是刻意设计：宁可不显示，也不给一个用 GPU 利用率冒充的假数。
 
 ### 🔔 告警规则
 

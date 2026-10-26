@@ -91,15 +91,18 @@ router.post('/api/gpu/query', async (req, res) => {
 });
 
 // 保存 / 加载 GPU 配置
+// 说明：同一份配置里除 GPU 静态信息外，也承载「MFU 指标源」。
+// apiKey 属于凭据，GET 一律脱敏；POST 收到含 *** 的值视为「不修改」。
 router.get('/api/gpu/configs', (req, res) => {
-  res.json({ configs: gpu.loadGPUConfigs() });
+  res.json({ configs: gpu.maskGpuConfigs(gpu.loadGPUConfigs()) });
 });
 
 router.post('/api/gpu/configs', (req, res) => {
   try {
-    const { configs } = req.body;
-    gpu.saveGPUConfigs(configs);
-    res.json({ ok: true });
+    const incoming = Array.isArray(req.body?.configs) ? req.body.configs : [];
+    const merged = gpu.mergeGpuConfigs(incoming, gpu.loadGPUConfigs() || []);
+    gpu.saveGPUConfigs(merged);
+    res.json({ ok: true, configs: gpu.maskGpuConfigs(merged) });
   } catch (err) {
     res.status(500).json({ error: errorMessage(err) });
   }

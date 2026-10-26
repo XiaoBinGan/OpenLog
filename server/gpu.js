@@ -686,6 +686,47 @@ export function saveGPUConfigs(configs) {
   return setKv('gpu_configs', configs);
 }
 
+/** apiKey 脱敏后缀（前端收到含此后缀的值 = 保持原密钥不变） */
+export const GPU_API_KEY_MASK = '***';
+
+/**
+ * 对外返回的 GPU 配置：apiKey 只保留前 4 位 + `***`。
+ * 配置里同时承载 MFU 数据源（metricsUrl/apiKey/paramsB/dtype），
+ * 凭据不能明文回传给浏览器。
+ */
+export function maskGpuConfigs(configs) {
+  return (configs || []).map(c => {
+    if (!c || typeof c !== 'object' || !c.apiKey) return c;
+    const key = String(c.apiKey);
+    return { ...c, apiKey: `${key.slice(0, 4)}${GPU_API_KEY_MASK}` };
+  });
+}
+
+/**
+ * 合并前端提交的 GPU 配置与已有配置：
+ * - apiKey 含 `***`（脱敏回传）时保留旧密钥；
+ * - 空 apiKey 视为不设置；
+ * - paramsB 空串视为不设置，否则转数字。
+ */
+export function mergeGpuConfigs(incoming, existing = []) {
+  return (incoming || []).map(c => {
+    if (!c || typeof c !== 'object') return c;
+    const prev = (existing || []).find(e => e && (e.serverId === c.serverId || (e.id && e.id === c.id)));
+    const next = { ...c };
+    if (typeof next.apiKey === 'string' && next.apiKey.includes(GPU_API_KEY_MASK)) {
+      if (prev?.apiKey) next.apiKey = prev.apiKey;
+      else delete next.apiKey;
+    }
+    if (!next.apiKey) delete next.apiKey;
+    if (next.paramsB === '' || next.paramsB == null) delete next.paramsB;
+    else if (Number.isFinite(Number(next.paramsB))) next.paramsB = Number(next.paramsB);
+    if (typeof next.metricsUrl === 'string' && !next.metricsUrl.trim()) delete next.metricsUrl;
+    if (typeof next.processPattern === 'string' && !next.processPattern.trim()) delete next.processPattern;
+    if (next.dtype !== 'fp8' && next.dtype !== 'fp16') delete next.dtype;
+    return next;
+  });
+}
+
 /**
  * 汇总信息（供前端展示）
  */

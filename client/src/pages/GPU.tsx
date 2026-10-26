@@ -35,15 +35,36 @@ interface GPUDevice {
   processes?: { pid: number; name: string; usedMemory: number }[];
 }
 
-/** MFU（模型算力利用率）：来自远端 vLLM /metrics，按服务器聚合 */
-interface ServerMfu {
+/** 单引擎 MFU 结果（同一台机器上可能同时有 vLLM / Strata 等多个引擎） */
+interface MfuEngine {
+  engine: string;
   available: boolean;
-  mfu?: number;
   model?: string | null;
+  mfu?: number;
   gpuIndexes?: number[];
   peakTflops?: number;
-  flopsPerSec?: number;
+  paramsB?: number | null;
+  tokensPerSec?: number;
+  windowSec?: number;
+  method?: string;
   reason?: string;
+  endpoint?: string;
+  sampledAt?: string;
+}
+
+/** 某张卡的 MFU（服务端已经按引擎进程/型号把引擎映射到显卡） */
+interface GpuMfuEntry {
+  mfu: number;
+  engine: string;
+  model?: string | null;
+  windowSec?: number;
+}
+
+interface ServerMfu {
+  available: boolean;
+  engines?: MfuEngine[];
+  gpuMfu?: Record<string, GpuMfuEntry>;
+  reason?: string | null;
 }
 
 interface ServerGPU {
@@ -222,11 +243,15 @@ export default function GPU() {
   const totalMemUsed = serverGPUs.reduce((s, sv) => s + sv.devices.reduce((m, d) => m + (Number(d.memUsed) || 0), 0), 0);
   const totalMemTotal = serverGPUs.reduce((s, sv) => s + sv.devices.reduce((m, d) => m + (Number(d.memTotal) || 0), 0), 0);
 
-  // 全局 MFU：只统计「算出了 MFU」的服务器，避免把不可用的算成 0 拉低平均值
-  const mfuServers = serverGPUs.filter(sv => sv.mfu?.available && typeof sv.mfu.mfu === 'number');
-  const avgMfu = mfuServers.length > 0
-    ? mfuServers.reduce((s, sv) => s + (sv.mfu!.mfu as number), 0) / mfuServers.length
+  // 全局 MFU：按「算出 MFU 的显卡」平均；同时给出覆盖率，避免把不可用的算成 0
+  const mfuCards: GpuMfuEntry[] = serverGPUs.flatMap(sv => Object.values(sv.mfu?.gpuMfu || {}));
+  const avgMfu = mfuCards.length > 0
+    ? mfuCards.reduce((s, e) => s + (Number(e.mfu) || 0), 0) / mfuCards.length
     : null;
+  const mfuEngineNames = [...new Set(serverGPUs
+    .flatMap(sv => sv.mfu?.engines || [])
+    .filter(e => e.available)
+    .map(e => e.engine))];
 
   return (
     <div className="max-w-7xl mx-auto">
@@ -284,14 +309,16 @@ export default function GPU() {
             <div className="text-2xl font-bold text-emerald-400">{avgUtil.toFixed(1)}%</div>
           </div>
           <div className="glass rounded-xl p-4">
-            <div className="text-xs text-dark-400 mb-1" title="MFU = 模型实际 FLOPs/s ÷ GPU 峰值算力（FP16/BF16 稠密）">
+            <div className="text-xs text-dark-400 mb-1" title="MFU = 模型实际 FLOPs/s ÷ GPU 峰值算力（FP16/BF16 稠密）&#10;按引擎所在显卡平均；窗口约 30s">
               模型 MFU
             </div>
             <div className="text-2xl font-bold text-amber-400">
               {avgMfu === null ? '—' : `${avgMfu.toFixed(1)}%`}
             </div>
             <div className="text-xs text-dark-500">
-              {avgMfu === null ? '未检测到 vLLM 指标' : `${mfuServers.length} 个模型`}
+              {avgMfu === null
+                ? '未检测到推理引擎指标'
+                : `${mfuCards.length} 张卡${mfuEngineNames.length ? ` · ${mfuEngineNames.join(' + ')}` : ''}`}
             </div>
           </div>
           <div className="glass rounded-xl p-4">
@@ -332,17 +359,25 @@ export default function GPU() {
                 {sv.devices.length} GPU · 均用 {(sv.summary?.utilAvg ?? 0).toFixed(1)}% · 均温 {(sv.summary?.tempAvg ?? 0).toFixed(0)}°C
               </span>
             )}
-            {sv.mfu?.available && typeof sv.mfu.mfu === 'number' && (
+            {(sv.mfu?.engines || []).filter(e => e.available).map(e => (
               <span
+                key={e.engine}
                 className="px-2 py-0.5 bg-amber-500/10 border border-amber-500/30 rounded-lg text-xs text-amber-400"
                 title={[
                   `MFU（模型算力利用率）= 模型实际 FLOPs/s ÷ GPU 峰值算力`,
-                  sv.mfu.model ? `模型：${sv.mfu.model}` : null,
-                  sv.mfu.peakTflops ? `峰值：${sv.mfu.peakTflops} TFLOPS（FP16/BF16 稠密）` : null,
+                  `引擎：${e.engine}`,
+                  e.model ? `模型：${e.model}` : null,
+                  e.paramsB ? `激活参数：${e.paramsB}B` : null,
+                  e.peakTflops ? `峰值：${e.peakTflops} TFLOPS（FP16/BF16 稠密）` : null,
+                  typeof e.tokensPerSec === 'number' ? `窗口吞吐：${e.tokensPerSec} tok/s（近 ${e.windowSec ?? '?'}s）` : null,
+                  e.endpoint ? `指标源：${e.endpoint}` : null,
                 ].filter(Boolean).join('\n')}
               >
-                MFU {sv.mfu.mfu.toFixed(1)}%
+                {e.engine} MFU {typeof e.mfu === 'number' ? `${e.mfu.toFixed(1)}%` : '—'}
               </span>
+            ))}
+            {!sv.mfu?.available && sv.mfu?.reason && (
+              <span className="text-xs text-dark-600" title={sv.mfu.reason}>MFU —</span>
             )}
           </div>
 
@@ -361,12 +396,9 @@ export default function GPU() {
             <div className="grid md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
               {sv.devices.map(gpu => {
                 const memPct = gpu.memTotal > 0 ? (gpu.memUsed / gpu.memTotal) * 100 : 0;
-                // MFU 属于「跑着推理引擎的那张/那些卡」：gpuIndexes 为空时按服务器级显示
-                const gpuMfu = sv.mfu?.available && typeof sv.mfu.mfu === 'number'
-                  && (!sv.mfu.gpuIndexes || sv.mfu.gpuIndexes.length === 0 || sv.mfu.gpuIndexes.includes(gpu.index))
-                  ? sv.mfu
-                  : null;
-                const gpuMfuValue = gpuMfu?.mfu ?? null;
+                // 服务端已把每个引擎映射到显卡：gpuMfu[卡号]
+                const gpuMfuEntry = sv.mfu?.gpuMfu?.[String(gpu.index)] || null;
+                const gpuMfuValue = gpuMfuEntry && typeof gpuMfuEntry.mfu === 'number' ? gpuMfuEntry.mfu : null;
                 return (
                   <div key={gpu.index} className="glass rounded-xl p-4 space-y-3">
                     {/* Name & Temp */}
@@ -395,18 +427,19 @@ export default function GPU() {
                       </div>
                     </div>
 
-                    {/* MFU（模型算力利用率）——仅引擎所在卡显示，数据来自 vLLM /metrics */}
-                    {gpuMfuValue !== null && (
+                    {/* MFU（模型算力利用率）——服务端按引擎进程/型号映射到这张卡时显示 */}
+                    {gpuMfuValue !== null && gpuMfuEntry && (
                       <div>
                         <div
                           className="flex justify-between text-xs text-dark-400 mb-1"
                           title={[
                             'MFU（模型算力利用率）= 模型实际 FLOPs/s ÷ GPU 峰值算力',
-                            gpuMfu?.model ? `模型：${gpuMfu.model}` : null,
-                            gpuMfu?.peakTflops ? `峰值：${gpuMfu.peakTflops} TFLOPS（FP16/BF16 稠密）` : null,
+                            `引擎：${gpuMfuEntry.engine}`,
+                            gpuMfuEntry.model ? `模型：${gpuMfuEntry.model}` : null,
+                            typeof gpuMfuEntry.windowSec === 'number' ? `采样窗口：近 ${gpuMfuEntry.windowSec}s` : null,
                           ].filter(Boolean).join('\n')}
                         >
-                          <span>MFU</span>
+                          <span>MFU <span className="text-dark-600">({gpuMfuEntry.engine})</span></span>
                           <span className="text-amber-400 font-medium">{gpuMfuValue.toFixed(1)}%</span>
                         </div>
                         <div className="h-2 bg-dark-800 rounded-full overflow-hidden">
