@@ -231,6 +231,24 @@ const ServerCard = ({ server, isActive, onConnect, onDisconnect, onEdit, onDelet
     <div className="text-xs text-dark-500 font-mono mb-2 truncate">{server.host}:{server.port}</div>
     <div className="text-xs text-dark-600 truncate mb-3">{server.logPath}</div>
 
+    {/* 失败原因 + 自动重连倒计时：让「红灯」变得可诊断 */}
+    {server.status === 'error' && (
+      <div className="mb-2 px-2 py-1.5 rounded-lg bg-red-500/10 border border-red-500/20">
+        <p className="text-[11px] text-red-300 break-all line-clamp-2" title={server.lastError || ''}>
+          {server.lastError || '连接失败'}
+        </p>
+        <p className="text-[10px] text-dark-500 mt-0.5">
+          {server.lastErrorAt ? `${new Date(server.lastErrorAt).toLocaleTimeString()} 失败` : ''}
+          {server.retryCount ? ` · 已重试 ${server.retryCount} 次，自动重连中` : ' · 自动重连中'}
+        </p>
+      </div>
+    )}
+    {server.status === 'disconnected' && server.lastConnected && (
+      <p className="text-[10px] text-dark-600 mb-2">
+        上次在线：{new Date(server.lastConnected).toLocaleString()}
+      </p>
+    )}
+
     {/* 操作按钮 */}
     {server.status === 'connected' ? (
       <div className="flex gap-1" onClick={e => e.stopPropagation()}>

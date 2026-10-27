@@ -18,6 +18,12 @@ export interface RemoteServer {
   watchFiles: string;
   lastConnected: string | null;
   status: 'connected' | 'disconnected' | 'error';
+  /** 最近一次连接失败的原因（连上后清空） */
+  lastError?: string | null;
+  lastErrorAt?: string | null;
+  /** 自动重连：下次尝试时间与连续失败次数 */
+  nextRetryAt?: number | null;
+  retryCount?: number;
 }
 
 export interface RemoteServerState extends RemoteServer {

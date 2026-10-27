@@ -57,6 +57,25 @@ let servers = [];
 const sshConnections = new Map();
 
 /**
+ * 自动重连状态：serverId → { count, nextAt }
+ *
+ * 为什么要自动重连：一台机器下线（关机/网络/VPN 掉线）后，状态会停在 error，
+ * 之前的实现只有「进程启动时连一次 status==='connected' 的机器」，于是
+ * 机器恢复了也永远不会被重新连上 —— 用户只看到红灯，以为配置错了。
+ *
+ * 退避策略：5s 起步 ×2，封顶 5 分钟，成功了清零。
+ */
+const retryState = new Map();
+const RETRY_BASE_MS = 5_000;
+const RETRY_MAX_MS = 300_000;
+
+/** 计算下一次重试时间（纯函数，便于测试） */
+export function nextRetryAt(count, now = Date.now()) {
+  const delay = Math.min(RETRY_BASE_MS * 2 ** Math.max(0, count - 1), RETRY_MAX_MS);
+  return now + delay;
+}
+
+/**
  * 加载服务器配置（优先从 SQLite，失败则回退到文件）
  */
 export function loadServers() {
@@ -199,6 +218,11 @@ export function getServers() {
     watchFiles: s.watchFiles,
     lastConnected: s.lastConnected,
     status: s.status,
+    lastError: s.lastError || null,
+    lastErrorAt: s.lastErrorAt || null,
+    // 自动重连状态：下次尝试时间与连续失败次数，方便 UI 显示「N 秒后重试」
+    nextRetryAt: retryState.get(s.id)?.nextAt || null,
+    retryCount: retryState.get(s.id)?.count || 0,
   }));
 }
 
@@ -386,11 +410,17 @@ export async function connectServer(id) {
     sshConnections.set(id, ssh);
     server.status = 'connected';
     server.lastConnected = new Date().toISOString();
+    server.lastError = null;
+    server.lastErrorAt = null;
     saveServers();
     
     return { success: true };
   } catch (err) {
     server.status = 'error';
+    // 记录失败原因与时间：UI 要能说清楚「为什么连不上」，
+    // 否则用户只能看到红灯，分不清是自己的网络、机器的 sshd、还是密码错了。
+    server.lastError = errorMessage(err);
+    server.lastErrorAt = new Date().toISOString();
     saveServers();
     throw err;
   }
@@ -424,12 +454,94 @@ export async function disconnectServer(id) {
     await ssh.dispose();
     sshConnections.delete(id);
   }
+  // 手动断开：清掉重试计划，不要自作主张再连回来
+  retryState.delete(id);
   
   const server = servers.find(s => s.id === id);
   if (server) {
     server.status = 'disconnected';
     saveServers();
   }
+}
+
+// ─── 自动重连 ──────────────────────────────────────────────
+
+let reconnectTimer = null;
+let reconnectRunning = false;
+/** 断线很久的机器没必要一直高频重试，超过这个时长就按封顶间隔慢慢试 */
+const RECONNECT_TICK_MS = 10_000;
+
+/**
+ * 跑一轮自动重连：把到期的 error 状态服务器挨个重试。
+ * 抽成独立函数便于测试（不依赖定时器，连接函数可注入）。
+ * @param {number} [now]
+ * @param {(id:string)=>Promise<unknown>} [connect] 注入用；默认 connectServer
+ * @returns {Promise<Array<{id:string,name:string,ok:boolean,error?:string}>>}
+ */
+export async function runReconnectPass(now = Date.now(), connect = connectServer) {
+  const results = [];
+  const pending = servers.filter(s => {
+    if (s.status !== 'error') return false;
+    const st = retryState.get(s.id);
+    return !st || !st.nextAt || st.nextAt <= now;
+  });
+
+  for (const server of pending) {
+    try {
+      await connect(server.id);
+      retryState.delete(server.id);
+      results.push({ id: server.id, name: server.name, ok: true });
+      console.log(`[Remote] ✅ 自动重连成功: ${server.name} (${server.host}:${server.port})`);
+    } catch (err) {
+      const prev = retryState.get(server.id)?.count || 0;
+      const count = prev + 1;
+      const nextAt = nextRetryAt(count, now);
+      retryState.set(server.id, { count, nextAt });
+      results.push({ id: server.id, name: server.name, ok: false, error: errorMessage(err) });
+      const wait = Math.round((nextAt - now) / 1000);
+      console.log(`[Remote] ⏳ ${server.name} 仍不可达（第 ${count} 次），${wait}s 后重试: ${errorMessage(err)}`);
+    }
+  }
+  return results;
+}
+
+/** 启动后台自动重连（幂等） */
+export function startAutoReconnect() {
+  if (reconnectTimer) return;
+  reconnectTimer = setInterval(async () => {
+    if (reconnectRunning) return;
+    reconnectRunning = true;
+    try {
+      await runReconnectPass();
+    } catch (err) {
+      console.warn('[Remote] 自动重连异常:', errorMessage(err));
+    } finally {
+      reconnectRunning = false;
+    }
+  }, RECONNECT_TICK_MS);
+  if (reconnectTimer.unref) reconnectTimer.unref();
+  console.log(`[Remote] 自动重连已启动（每 ${RECONNECT_TICK_MS / 1000}s 检查一次）`);
+}
+
+/** 停止自动重连（测试/关闭用） */
+export function stopAutoReconnect() {
+  if (reconnectTimer) clearInterval(reconnectTimer);
+  reconnectTimer = null;
+  retryState.clear();
+}
+
+/** 测试用：直接读重试状态 */
+export function _getRetryState(id) {
+  return retryState.get(id) || null;
+}
+
+/** 测试用：退避参数（不属于运行时 API，不挂到 default 对象） */
+export const _retryTiming = { RETRY_BASE_MS, RETRY_MAX_MS, RECONNECT_TICK_MS };
+
+/** 测试用：直接替换内存里的服务器列表（不落盘） */
+export function _setServersForTest(list) {
+  servers = Array.isArray(list) ? list : [];
+  retryState.clear();
 }
 
 /**

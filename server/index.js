@@ -1766,9 +1766,9 @@ server.listen(PORT, HOST, async () => {
   // 启动时自动重连之前在线的服务器
   try {
     const servers = remote.getServers();
-    const toReconnect = servers.filter(s => s.status === 'connected');
+    const toReconnect = servers.filter(s => s.status === 'connected' || s.status === 'error');
     if (toReconnect.length > 0) {
-      console.log(`🔄 正在重连 ${toReconnect.length} 台之前在线的服务器...`);
+      console.log(`🔄 正在重连 ${toReconnect.length} 台之前配置过的服务器...`);
       await Promise.allSettled(toReconnect.map(async (s) => {
         try {
           await remote.connectServer(s.id);
@@ -1781,6 +1781,10 @@ server.listen(PORT, HOST, async () => {
   } catch (err) {
     console.error('自动重连出错:', errorMessage(err));
   }
+
+  // 后台自动重连：连不上的机器按 5s→5min 退避持续重试，
+  // 恢复后自动回到 connected（以前只有进程重启才会再连一次）
+  remote.startAutoReconnect();
 });
 
 
