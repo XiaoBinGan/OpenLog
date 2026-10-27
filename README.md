@@ -301,6 +301,19 @@ openlog/
 
 ## 💡 核心功能详解
 
+### 🖥️ 远程服务器管理
+
+- SSH 连接（密码 / 私钥 / 密钥路径），连接池复用同一份实现
+- 文件浏览、日志查看、文件编辑、上传下载（含分块上传）
+- 内嵌终端（PTY）与 AI Shell
+- **断线自动重连**：连不上的机器按 `5s → 10s → 20s → … → 5min` 指数退避持续重试，
+  恢复后自动回到 `connected`，不需要人工点（早期版本只在进程启动时重连一次，
+  机器下线再上线就永远是红灯）
+  - 手动点「断开」会清掉重试计划，不会被自动连回来
+  - 卡片上直接显示**最近一次失败原因**（如 `Timed out while waiting for handshake`、
+    `All configured authentication methods failed`）和已重试次数 —— 红灯可诊断，
+    不用猜是网络、sshd 还是密码问题
+
 ### 🤖 运维助手
 
 - 多轮对话 + 工具调用（docker_list/logs、remote_system_stats 等）
