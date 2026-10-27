@@ -54,6 +54,27 @@ cp .env.example .env
 模型 API Key 等配置在**页面「设置」中填写**，持久化在数据库里；`.env` 里的
 `OPENAI_API_KEY` 只在数据库尚无配置时作为首次启动的默认值。
 
+#### 支持的推理服务（vLLM / SGLang / Strata / Ollama）
+
+设置页的「模型」可以指向任意 **OpenAI 兼容** 服务，只要填对 Base URL：
+
+| 服务 | Base URL 示例 | 原生 function calling |
+|---|---|---|
+| vLLM | `http://127.0.0.1:8000/v1` | 需启动参数 `--enable-auto-tool-choice --tool-call-parser hermes`（或对应 parser） |
+| SGLang | `http://127.0.0.1:30000/v1` | 需启动参数 `--tool-call-parser qwen25`（或对应 parser） |
+| Strata | `http://127.0.0.1:8899/v1` | 支持 |
+| Ollama | `http://localhost:11434/v1` | 取决于模型（qwen3 / llama3.1+ 支持） |
+| OpenAI 兼容云服务 | 各家 `/v1` | 支持 |
+
+**没开原生 tool calling 也能用**：请求带 `tools` 被引擎拒绝时，OpenLog 会自动
+降级到「文本协议」（`TOOL_CALL: {...}` / `FINAL:`），agent 能力（读代码、改配置、
+执行命令、确认闸门、审计）全部保留，只是调度方式从原生 function calling 换成
+提示词协议。降级结论会缓存 30 分钟，前端会收到一条 `provider_notice` 说明。
+
+设置页的「刷新列表」对上述所有服务都有效（统一走 `/v1/models`，Ollama 自动兜底
+`/api/tags`），另有 `GET /api/chat/provider` 可查当前识别到的引擎类型与
+「怎么开启原生 tools」的提示。
+
 > 🔐 `OPENLOG_SECRET_KEY` 决定数据库里 SSH 密码 / 模型 Key 的加密密钥。
 > 从「未设置」切到「已设置」会触发一次性数据迁移（单向），设置后不要再取消，
 > 否则此前已重新加密的凭据将无法解读。生成方式（32 字节）：

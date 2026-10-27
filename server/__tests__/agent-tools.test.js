@@ -131,10 +131,14 @@ describe('buildReadFileCommand —— 读文件命令', () => {
     expect(r.command).toContain("cat '/app/config.yaml'");
   });
 
-  it('行区间用 sed 并带行号', () => {
+  it('行区间用 awk 带行号，且单引号成对（回归：曾经引号嵌套导致远端 bash 语法错误）', () => {
     const r = buildReadFileCommand('/app/big.log', { startLine: 100, endLine: 150 });
-    expect(r.command).toContain("sed -n '100,150p'");
-    expect(r.command).toContain('NR+99');
+    expect(r.command).toContain('awk');
+    expect(r.command).toContain('NR>=100 && NR<=150');
+    expect(r.command).toContain('NR, $0');
+    // 引号必须成对，否则 bash 报 "unexpected EOF while looking for matching"
+    const quotes = (r.command.match(/'/g) || []).length;
+    expect(quotes % 2).toBe(0);
   });
 
   it('非法路径拒绝', () => {

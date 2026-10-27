@@ -143,8 +143,11 @@ export function buildReadFileCommand(path, options = {}) {
   if (Number.isFinite(startLine) && Number.isFinite(endLine)) {
     const s = Math.max(1, Math.floor(startLine));
     const e = Math.max(s, Math.floor(endLine));
-    // sed -n 'A,Bp' + 行号前缀，方便模型引用具体行
-    return { ok: true, command: `sed -n '${s},${e}p' ${shellQuote(check.path)} | awk '{printf "%d\\t%s\\n', NR+${s - 1}, $0}'` };
+    // 只用一个 awk 完成「取行区间 + 加行号」，避免 sed | awk 的引号嵌套坑
+    return {
+      ok: true,
+      command: `awk 'NR>=${s} && NR<=${e} {printf "%d\\t%s\\n", NR, $0}' ${shellQuote(check.path)}`,
+    };
   }
   return {
     ok: true,

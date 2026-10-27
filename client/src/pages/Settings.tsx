@@ -36,6 +36,8 @@ const providers = [
   { id: 'minimax', name: 'MiniMax', baseUrl: 'https://api.minimax.chat/v1', models: ['abab6.5-chat', 'abab5.5-chat'], icon: Cpu },
   { id: 'anthropic', name: 'Anthropic (Claude)', baseUrl: 'https://api.anthropic.com/v1', models: ['claude-3-opus-20240229', 'claude-3-sonnet-20240229', 'claude-3-haiku-20240307'], icon: Cloud },
   { id: 'groq', name: 'Groq', baseUrl: 'https://api.groq.com/openai/v1', models: ['llama3-70b-8192', 'llama3-8b-8192', 'mixtral-8x7b-32768'], icon: Cpu },
+  { id: 'vllm', name: 'vLLM (本地部署)', baseUrl: 'http://127.0.0.1:8000/v1', models: [], icon: Server },
+  { id: 'sglang', name: 'SGLang (本地部署)', baseUrl: 'http://127.0.0.1:30000/v1', models: [], icon: Server },
   { id: 'ollama', name: 'Ollama (本地)', baseUrl: 'http://localhost:11434/v1', models: ['qwen3.5:9b', 'qwen3:8b', 'qwen2.5:14b', 'qwen2.5:7b', 'llama3.1:8b', 'mistral', 'codellama', 'deepseek-coder'], icon: Server },
   { id: 'lmstudio', name: 'LM Studio (本地)', baseUrl: 'http://localhost:1234/v1', models: ['local-model'], icon: Server },
   { id: 'custom', name: '自定义 API', baseUrl: '', models: [], icon: Terminal },
@@ -196,11 +198,14 @@ export default function Settings() {
 
   const fetchOllamaModels = () => {
     setLoadingModels(true);
-    apiFetch<{ models?: any[] }>('/api/models/ollama')
+    // 通用：vLLM / SGLang / Strata / Ollama 都提供 /v1/models，后端会自动兜底 /api/tags
+    const qs = new URLSearchParams();
+    if (settings.openaiBaseUrl) qs.set('baseUrl', settings.openaiBaseUrl);
+    if (settings.openaiApiKey && !settings.openaiApiKey.includes('***')) qs.set('apiKey', settings.openaiApiKey);
+    const suffix = qs.toString() ? `?${qs.toString()}` : '';
+    apiFetch<{ models?: any[] }>(`/api/models${suffix}`)
       .then(data => {
-        if (data.models && data.models.length > 0) {
-          setOllamaModels(data.models);
-        }
+        setOllamaModels(Array.isArray(data.models) ? data.models : []);
         setLoadingModels(false);
       })
       .catch(() => setLoadingModels(false));
@@ -435,7 +440,7 @@ export default function Settings() {
   };
 
   const currentProvider = providers.find(p => p.id === provider) || providers[providers.length - 1];
-  const isLocal = provider === 'ollama' || provider === 'lmstudio';
+  const isLocal = ['ollama', 'lmstudio', 'vllm', 'sglang', 'custom'].includes(provider);
 
   return (
     <div className="space-y-6 animate-fade-in max-w-3xl">
@@ -530,7 +535,7 @@ export default function Settings() {
             <label className="block text-sm text-dark-400 mb-2">模型</label>
 
             {/* Ollama: show detected models + preset */}
-            {provider === 'ollama' ? (
+            {['ollama', 'vllm', 'sglang', 'lmstudio', 'custom'].includes(provider) ? (
               <div className="space-y-2">
                 <div className="flex gap-2">
                   <input
