@@ -34,6 +34,7 @@ import createRemoteRouter from './routes/remote.js';
 import createSettingsRouter, { SENSITIVE_KEYS } from './routes/settings.js';
 import createDockerRouter from './routes/docker.js';
 import createChatRouter from './routes/chat.js';
+import { AGENT_TOOLS, AGENT_TOOL_NAMES, executeAgentTool } from './agent-tools.js';
 import createAuthRouter from './routes/auth.js';
 import { isLoopbackAddress } from './security/loopback.js';
 import { migrateWatchSourceFields } from './settings-migrations.js';
@@ -1124,10 +1125,25 @@ function buildAssistantContext() {
 
 const DANGEROUS_TOOLS = new Set(['docker_start', 'docker_stop', 'docker_restart', 'docker_exec', 'remote_exec']);
 
+/** 确保远程服务器已连接（agent 工具执行前调用） */
+async function ensureRemoteConnected(serverId) {
+  const s = remote.getServers().find(x => x.id === serverId);
+  if (!s) throw new Error(`服务器 ${serverId} 未找到`);
+  if (s.status !== 'connected') await remote.connectServer(serverId);
+}
+
 /** 执行工具调用，返回结果对象 */
 async function executeAssistantTool(name, args) {
   const settings = ensureSettings();
   const dockerSources = settings.dockerSources || [];
+
+  // agent 工具（读写远程代码/配置）：统一走 agent-tools.js
+  if (AGENT_TOOL_NAMES.has(name)) {
+    return executeAgentTool(name, args, {
+      ensureConnected: ensureRemoteConnected,
+      exec: (serverId, command) => remote.execRemoteCommand(serverId, command),
+    });
+  }
 
   // 辅助：根据 sourceId 获取 Docker 配置
   const getDockerConfig = async (sourceId) => {

@@ -13,6 +13,7 @@
 import express from 'express';
 import { errorMessage } from '../errors.js';
 import * as remote from '../remote.js';
+import { AGENT_TOOLS, classifyToolRisk, buildEditPreview } from '../agent-tools.js';
 
 // ─── 运维助手 Tool Calling ──────────────────────────────────────────
 
@@ -37,7 +38,28 @@ const ASSISTANT_TOOLS = [
   { type: 'function', function: { name: 'local_system_stats', description: '获取本机（OpenLog所在服务器）系统状态：CPU/内存/磁盘/网络/进程/GPU', parameters: { type: 'object', properties: {} } } },
   { type: 'function', function: { name: 'local_log_files', description: '列出本地日志文件', parameters: { type: 'object', properties: {} } } },
   { type: 'function', function: { name: 'local_read_log', description: '读取本地日志文件内容', parameters: { type: 'object', properties: { filePath: { type: 'string' }, lines: { type: 'number', description: '读取最后N行，默认200' } }, required: ['filePath'] } } },
+  // ── 远程代码/配置读写（错误定位 + 修复）──
+  ...AGENT_TOOLS,
 ];
+
+/**
+ * 待确认的写操作：confirmId → { resolve, timer }
+ * 前端收到 tool_confirm 事件后弹确认框，再 POST /api/chat/confirm 放行/拒绝。
+ *
+ * 为什么确认要放在服务端：只靠提示词说「先问用户」是不可靠的 ——
+ * 模型漏问一次就会直接改线上文件。这里在代码层面拦一道。
+ */
+const pendingApprovals = new Map();
+let confirmSeq = 0;
+
+/** 测试用：清理挂起的确认 */
+export function _clearPendingApprovals() {
+  for (const [, entry] of pendingApprovals) {
+    clearTimeout(entry.timer);
+    entry.resolve(false);
+  }
+  pendingApprovals.clear();
+}
 
 // 🧠 流式思维过滤器：过滤 Qwen3 等模型的思维过程
 /**
@@ -130,6 +152,31 @@ export default function createChatRouter({
 }) {
   const router = express.Router();
 
+/** 等待前端确认一次写操作；超时视为拒绝 */
+const CONFIRM_TIMEOUT_MS = 3 * 60 * 1000;
+
+function waitForApproval(confirmId, timeoutMs = CONFIRM_TIMEOUT_MS) {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      pendingApprovals.delete(confirmId);
+      resolve(false);
+    }, timeoutMs);
+    if (timer.unref) timer.unref();
+    pendingApprovals.set(confirmId, { resolve, timer });
+  });
+}
+
+// 前端确认/拒绝一次写操作
+router.post('/api/chat/confirm', (req, res) => {
+  const { confirmId, approved } = req.body || {};
+  const entry = pendingApprovals.get(confirmId);
+  if (!entry) return res.status(404).json({ error: '确认请求不存在或已超时' });
+  clearTimeout(entry.timer);
+  pendingApprovals.delete(confirmId);
+  entry.resolve(Boolean(approved));
+  res.json({ ok: true, approved: Boolean(approved) });
+});
+
 router.post('/api/chat', async (req, res) => {
   const { messages } = req.body;
   if (!messages || !Array.isArray(messages) || messages.length === 0) {
@@ -156,30 +203,50 @@ router.post('/api/chat', async (req, res) => {
 
   const systemPrompt = {
     role: 'system',
-    content: `你是 OpenLog 的运维助手，帮用户排查服务器、Docker 容器、日志异常、性能问题。
+    content: `你是 OpenLog 的运维助手，一名能**亲自动手**排查和修复问题的运维工程师。你不只是给建议——你有工具可以直接读代码、改代码、改配置、跑命令。
 风格：简洁有力，像老运维跟同事说话，不啰嗦不念经。用中文。
 格式：关键结论加粗，代码用 \`\`\` 包裹，操作步骤编号列出。
 
-## 🔧 你可以直接调用的工具
-- docker_list / docker_logs / docker_inspect / docker_health_check — 查询容器状态
-- remote_servers / remote_system_stats / remote_exec / remote_list_files / remote_read_file / remote_search_logs — 远程服务器操作
-- local_system_stats / local_log_files / local_read_log — 本机操作
+## 🔧 你的工具
+**查（自动执行）**
+- remote_servers — 列出服务器（拿 serverId，**第一步通常先调这个**）
+- remote_stat / remote_ls — 看文件/目录属性与列表
+- remote_read_file — 读文件（带行号，可指定 startLine/endLine）
+- remote_grep — 在目录/文件里搜索（**错误定位的主力**，返回 文件:行号:内容）
+- remote_git_status / remote_git_diff — 看仓库改动，确认自己改了什么
+- remote_system_stats / remote_search_logs — 系统状态与日志检索
+- docker_list / docker_logs / docker_inspect / docker_health_check — 容器排查
+- local_system_stats / local_log_files / local_read_log — OpenLog 所在机器
 
-## 📌 任务执行原则
-1. **持续追踪**：收到任务后，要主动调用工具获取信息，不要等用户推一步走一步。
-2. **工具失败时换方案**：如果一个工具不可用（如 Docker 源断开），立刻尝试替代方案（如通过远程服务器 ssh 执行 docker 命令，或查看本机日志）。
-3. **给出结论**：收集足够信息后，给出明确的诊断结论和可操作的建议，不要只说"让我看看"。
-4. **记住上下文**：结合对话历史中的巡检报告、分析结果继续深入，不要重复已经做过的事。
+**改（需要用户在界面上点确认）**
+- remote_edit_file — 精确替换（改代码/改配置的首选，old_string 必须唯一）
+- remote_write_file — 整份写入（新建文件或必须整体替换时用）
+- remote_rollback_file — 用自动备份回滚
+- remote_restart_service — 重启 systemd 服务（nginx/docker 等）
+- remote_exec / docker_exec / docker_start / docker_stop / docker_restart — 执行命令与容器操作
 
-## ⚠️ 危险操作安全规则
-对**启动/停止/重启/删除容器、在容器或远程服务器执行命令**的操作：
-1. 先说清楚你要做什么、为什么
-2. 明确说"确认执行吗？"等待用户同意
-3. 用户说"确认"/"好的"/"行"/"执行"后才调用工具
+## 🎯 定位并修复问题的标准流程
+1. **确认目标**：remote_servers 拿 serverId；不确定服务在哪台机器时先问或看上下文。
+2. **定位**：remote_grep 搜报错关键字 → remote_read_file 读相关代码/配置（带行号）。
+   看日志优先用 remote_search_logs 或 remote_read_file 读日志尾部。
+3. **说明方案**：改之前用一两句话讲清楚「改哪个文件、哪一行、改成什么、为什么」。
+4. **动手改**：用 remote_edit_file，old_string 要包含足够上下文保证唯一。
+   （写操作会弹确认框给用户，不需要你在文字里再问一遍；但方案要讲清楚）
+5. **验证**：改完必须验证——remote_read_file 复核改动、remote_exec 跑语法检查/测试、
+   或重启服务后看日志。没验证过不要宣布"已修复"。
+6. **兜底**：验证失败就继续排查；改错了用 remote_rollback_file 回滚。
+
+## 📌 原则
+- **主动推进**：收到任务立刻调工具，不要等用户推一步走一步。
+- **工具失败换方案**：Docker 源不可用就走 SSH 执行 docker 命令；某条路不通就换。
+- **不要瞎猜**：没读过的文件不要假设内容；没执行过的命令不要说已执行。
+- **最小改动**：只改必要的那几行，不要顺手重构、不要动无关文件。
+- **改配置前先备份**：remote_edit_file / remote_write_file 会自动备份，但你要在回答里说明备份存在。
+- **危险操作**：删除、格式化、重启生产服务这类，必须先说明影响，让用户在确认框里决定。
 
 ## 📋 当前环境
 - Docker 源: ${enabledDocker.length > 0 ? enabledDocker.map(s => s.name).join('、') : '无'}
-- 远程服务器: ${connectedRemote.length > 0 ? connectedRemote.map(s => `${s.name}(${s.id.slice(0,8)})`).join('、') : (remoteServers.length > 0 ? `${remoteServers.length}台(均未连接)` : '无')}
+- 远程服务器: ${connectedRemote.length > 0 ? connectedRemote.map(s => `${s.name}(${s.id})`).join('、') : (remoteServers.length > 0 ? `${remoteServers.length}台(均未连接)` : '无')}
 
 ## 最近的系统状态
 ${buildAssistantContext()}`
@@ -199,9 +266,11 @@ ${buildAssistantContext()}`
       ...messages.filter(m => m.role === 'user' || m.role === 'assistant' || m.role === 'tool')
     ];
 
-    // ── Tool Calling 循环（最多 5 轮）──
+    // ── Tool Calling 循环 ──
+    // 定位+修复一个线上问题常常要 6-8 步（grep → 读文件 → 看日志 → 改 → 验证），
+    // 5 轮太少，放宽到 10 轮；每轮都有超时与工具结果截断兜底。
     let toolRound = 0;
-    const MAX_TOOL_ROUNDS = 5;
+    const MAX_TOOL_ROUNDS = 10;
 
     while (toolRound < MAX_TOOL_ROUNDS) {
       toolRound++;
@@ -272,6 +341,39 @@ ${buildAssistantContext()}`
           let args = {};
           try { args = JSON.parse(tc.arguments); } catch { args = {}; }
 
+          // ── 写操作确认闸门 ──────────────────────────────────────────
+          // read 直接跑；write / danger 必须等前端确认（默认 3 分钟超时视为拒绝）
+          const risk = classifyToolRisk(tc.name, args);
+          if (risk.risk !== 'read') {
+            const confirmId = `cf-${Date.now().toString(36)}-${++confirmSeq}`;
+            const preview = tc.name === 'remote_edit_file'
+              ? buildEditPreview(args.oldString, args.newString, args.replaceAll)
+              : undefined;
+            res.write(`data: ${JSON.stringify({
+              type: 'tool_confirm',
+              confirmId,
+              tool: tc.name,
+              args,
+              risk: risk.risk,
+              reason: risk.reason,
+              preview,
+            })}\n\n`);
+
+            const approved = await waitForApproval(confirmId);
+            res.write(`data: ${JSON.stringify({ type: 'tool_confirm_result', confirmId, approved })}\n\n`);
+
+            if (!approved) {
+              const denied = { error: '用户拒绝执行该操作', skipped: true };
+              res.write(`data: ${JSON.stringify({ type: 'tool_result', tool: tc.name, result: denied })}\n\n`);
+              allMessages.push({
+                role: 'tool',
+                tool_call_id: tc.id,
+                content: JSON.stringify(denied),
+              });
+              continue;
+            }
+          }
+
           res.write(`data: ${JSON.stringify({ type: 'tool_start', tool: tc.name, args })}\n\n`);
 
           const result = await executeAssistantTool(tc.name, args);
@@ -281,7 +383,7 @@ ${buildAssistantContext()}`
           allMessages.push({
             role: 'tool',
             tool_call_id: tc.id,
-            content: JSON.stringify(result)
+            content: JSON.stringify(result).slice(0, 20000),
           });
         }
 

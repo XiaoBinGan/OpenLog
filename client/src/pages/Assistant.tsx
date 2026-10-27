@@ -78,6 +78,17 @@ export default function Assistant() {
   const [editingConvTitle, setEditingConvTitle] = useState<string | null>(null);
   const [convTitleInput, setConvTitleInput] = useState('');
 
+  // 待用户确认的写操作（改代码/改配置/重启服务/执行命令）
+  const [pendingConfirm, setPendingConfirm] = useState<{
+    confirmId: string;
+    tool: string;
+    args: any;
+    risk: 'write' | 'danger';
+    reason?: string;
+    preview?: string;
+  } | null>(null);
+  const pendingConfirmRef = useRef<{ confirmId: string; tool: string; args: any } | null>(null);
+
   // @ 提及状态
   const [atOpen, setAtOpen] = useState(false);
   const [selectedHistoryIds, setSelectedHistoryIds] = useState<string[]>([]);
@@ -287,7 +298,20 @@ export default function Assistant() {
             if (data === '[DONE]') continue;
             try {
               const p = JSON.parse(data);
-              if (p.type === 'tool_start') {
+              if (p.type === 'tool_confirm') {
+                pendingConfirmRef.current = { confirmId: p.confirmId, tool: p.tool, args: p.args };
+                setPendingConfirm({
+                  confirmId: p.confirmId,
+                  tool: p.tool,
+                  args: p.args,
+                  risk: p.risk,
+                  reason: p.reason,
+                  preview: p.preview,
+                });
+              } else if (p.type === 'tool_confirm_result') {
+                setPendingConfirm(null);
+                pendingConfirmRef.current = null;
+              } else if (p.type === 'tool_start') {
                 setOpsMessages(prev => prev.map((m, i) => i === prev.length - 1 ? {
                   ...m, toolCalls: [...(m.toolCalls || []), { tool: p.tool, args: p.args, status: 'running', result: null }]
                 } : m));
@@ -325,6 +349,23 @@ export default function Assistant() {
        remote_list_files: '文件列表', remote_read_file: '读取文件', remote_search_logs: '搜索日志',
        local_system_stats: '本机状态', local_log_files: '日志文件', local_read_log: '读取日志',
     } as Record<string, string>)[t] || t;
+
+  /** 回传确认结果给后端（允许/拒绝一次写操作） */
+  const respondConfirm = async (approved: boolean) => {
+    const cur = pendingConfirmRef.current;
+    if (!cur) return;
+    setPendingConfirm(null);
+    pendingConfirmRef.current = null;
+    try {
+      await fetch('/api/chat/confirm', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ confirmId: cur.confirmId, approved }),
+      });
+    } catch (e) {
+      console.error('确认回传失败', e);
+    }
+  };
 
   const stopGeneration = () => abortRef.current?.abort();
   const clearChat = () => { if (opsMessages.length > 0) setOpsMessages([]); };
@@ -479,17 +520,41 @@ export default function Assistant() {
                   }`}>
                     {/* 工具调用状态 */}
                     {(msg as any).toolCalls?.length > 0 && (
-                      <div className="flex flex-wrap gap-1.5 mb-2">
-                        {(msg as any).toolCalls.map((tc: any, i: number) => (
-                          <span key={i} className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium ${
-                            tc.status === 'running' ? 'bg-yellow-500/10 text-yellow-400 border border-yellow-500/20' :
-                            tc.status === 'done' && tc.result?.error ? 'bg-red-500/10 text-red-400 border border-red-500/20' :
-                            'bg-green-500/10 text-green-400 border border-green-500/20'
-                          }`}>
-                            {tc.status === 'running' && <Loader className="w-3 h-3 animate-spin" />}
-                            {toolLabel(tc.tool)}
-                          </span>
-                        ))}
+                      <div className="space-y-1.5 mb-2">
+                        <div className="flex flex-wrap gap-1.5">
+                          {(msg as any).toolCalls.map((tc: any, i: number) => (
+                            <span
+                              key={i}
+                              title={[
+                                tc.args?.filePath ? `文件: ${tc.args.filePath}` : '',
+                                tc.args?.path ? `路径: ${tc.args.path}` : '',
+                                tc.args?.pattern ? `搜索: ${tc.args.pattern}` : '',
+                                tc.args?.command ? `命令: ${tc.args.command}` : '',
+                                tc.args?.service ? `服务: ${tc.args.service}` : '',
+                                tc.result?.error ? `错误: ${String(tc.result.error).slice(0, 200)}` : '',
+                                typeof tc.result?.matchCount === 'number' ? `命中 ${tc.result.matchCount} 行` : '',
+                              ].filter(Boolean).join('\n')}
+                              className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium ${
+                                tc.status === 'running' ? 'bg-yellow-500/10 text-yellow-400 border border-yellow-500/20' :
+                                tc.status === 'done' && tc.result?.error ? 'bg-red-500/10 text-red-400 border border-red-500/20' :
+                                'bg-green-500/10 text-green-400 border border-green-500/20'
+                              }`}>
+                                {tc.status === 'running' && <Loader className="w-3 h-3 animate-spin" />}
+                                {toolLabel(tc.tool)}
+                                {typeof tc.result?.matchCount === 'number' && tc.result.matchCount > 0 && ` ${tc.result.matchCount}`}
+                              </span>
+                            ))}
+                          </div>
+                          {/* 文件改动预览（write/edit 成功后展示 diff） */}
+                          {(msg as any).toolCalls
+                            .filter((tc: any) => tc.result?.preview)
+                            .map((tc: any, i: number) => (
+                              <pre key={`p${i}`} className="text-[10px] font-mono bg-dark-950/60 rounded p-1.5 overflow-x-auto whitespace-pre-wrap break-all">
+                                {String(tc.result.preview).split('\n').map((line, j) => (
+                                  <div key={j} className={line.startsWith('+') ? 'text-green-400' : line.startsWith('-') ? 'text-red-400' : 'text-dark-400'}>{line}</div>
+                                ))}
+                              </pre>
+                            ))}
                       </div>
                     )}
                     {msg.content ? (
@@ -516,6 +581,53 @@ export default function Assistant() {
 
         {/* 输入区 */}
         <div className="flex-shrink-0 pt-3 border-t border-dark-800 relative">
+          {/* 写操作确认条：模型要改代码/改配置/重启服务时在这里等你点 */}
+          {pendingConfirm && (
+            <div className={`mb-2 rounded-xl border p-3 ${
+              pendingConfirm.risk === 'danger'
+                ? 'bg-red-500/10 border-red-500/30'
+                : 'bg-yellow-500/10 border-yellow-500/30'
+            }`}>
+              <div className="flex items-start gap-2">
+                <Sparkles className={`w-4 h-4 flex-shrink-0 mt-0.5 ${pendingConfirm.risk === 'danger' ? 'text-red-400' : 'text-yellow-400'}`} />
+                <div className="min-w-0 flex-1">
+                  <p className="text-xs font-medium text-dark-100">
+                    AI 请求{pendingConfirm.risk === 'danger' ? '执行危险操作' : '修改文件'}：
+                    <span className="text-accent-400 ml-1">{toolLabel(pendingConfirm.tool)}</span>
+                    {pendingConfirm.reason && <span className="text-dark-400 font-normal ml-2">（{pendingConfirm.reason}）</span>}
+                  </p>
+                  {pendingConfirm.args?.filePath && (
+                    <p className="text-[11px] text-dark-400 font-mono mt-0.5 break-all">{pendingConfirm.args.filePath}</p>
+                  )}
+                  {pendingConfirm.args?.command && (
+                    <pre className="text-[11px] text-dark-300 font-mono mt-1 bg-dark-900/60 rounded p-1.5 overflow-x-auto whitespace-pre-wrap break-all">{pendingConfirm.args.command}</pre>
+                  )}
+                  {pendingConfirm.preview && (
+                    <pre className="text-[11px] font-mono mt-1 bg-dark-900/60 rounded p-1.5 overflow-x-auto whitespace-pre-wrap break-all">
+                      {pendingConfirm.preview.split('\n').map((line: string, i: number) => (
+                        <div key={i} className={line.startsWith('+') ? 'text-green-400' : line.startsWith('-') ? 'text-red-400' : 'text-dark-400'}>{line}</div>
+                      ))}
+                    </pre>
+                  )}
+                  <div className="flex items-center gap-2 mt-2">
+                    <button
+                      onClick={() => respondConfirm(true)}
+                      className="px-3 py-1 rounded-lg bg-green-500/20 text-green-400 text-xs font-medium hover:bg-green-500/30 transition-colors"
+                    >
+                      允许执行
+                    </button>
+                    <button
+                      onClick={() => respondConfirm(false)}
+                      className="px-3 py-1 rounded-lg bg-dark-700 text-dark-300 text-xs hover:bg-dark-600 transition-colors"
+                    >
+                      拒绝
+                    </button>
+                    <span className="text-[10px] text-dark-500">3 分钟不操作视为拒绝 · 写前会自动备份</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
           <div className="flex items-end gap-2">
             <div className="relative flex-1">
               <textarea
