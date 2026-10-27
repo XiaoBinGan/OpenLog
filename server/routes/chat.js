@@ -14,6 +14,17 @@ import express from 'express';
 import { errorMessage } from '../errors.js';
 import * as remote from '../remote.js';
 import { AGENT_TOOLS, classifyToolRisk, buildEditPreview } from '../agent-tools.js';
+import { recordAgentAction, listAgentActions } from '../agent-audit.js';
+
+/** serverId → 服务器名（审计里记名字比记 uuid 好认） */
+function serverNameById(serverId) {
+  if (!serverId) return undefined;
+  try {
+    return remote.getServers().find(s => s.id === serverId)?.name;
+  } catch {
+    return undefined;
+  }
+}
 
 // ─── 运维助手 Tool Calling ──────────────────────────────────────────
 
@@ -175,6 +186,13 @@ router.post('/api/chat/confirm', (req, res) => {
   pendingApprovals.delete(confirmId);
   entry.resolve(Boolean(approved));
   res.json({ ok: true, approved: Boolean(approved) });
+});
+
+// 运维助手写操作审计流水（用真实 SSH 账号时，这是事后复查/回滚的入口）
+router.get('/api/chat/audit', (req, res) => {
+  const limit = Number(req.query.limit) || 50;
+  const serverId = req.query.serverId ? String(req.query.serverId) : undefined;
+  res.json({ actions: listAgentActions(limit, serverId) });
 });
 
 router.post('/api/chat', async (req, res) => {
@@ -364,6 +382,15 @@ ${buildAssistantContext()}`
 
             if (!approved) {
               const denied = { error: '用户拒绝执行该操作', skipped: true };
+              recordAgentAction({
+                tool: tc.name,
+                action: 'denied',
+                serverId: args.serverId,
+                serverName: serverNameById(args.serverId),
+                filePath: args.filePath || args.path,
+                command: args.command,
+                summary: risk.reason,
+              });
               res.write(`data: ${JSON.stringify({ type: 'tool_result', tool: tc.name, result: denied })}\n\n`);
               allMessages.push({
                 role: 'tool',
@@ -377,6 +404,20 @@ ${buildAssistantContext()}`
           res.write(`data: ${JSON.stringify({ type: 'tool_start', tool: tc.name, args })}\n\n`);
 
           const result = await executeAssistantTool(tc.name, args);
+
+          // 审计：写/危险操作（已确认执行）留一条可复查的记录
+          if (risk.risk !== 'read') {
+            recordAgentAction({
+              tool: tc.name,
+              action: result?.error ? 'failed' : 'executed',
+              serverId: args.serverId,
+              serverName: serverNameById(args.serverId),
+              filePath: args.filePath || args.path,
+              command: args.command,
+              summary: result?.error ? String(result.error).slice(0, 200) : (result?.preview || risk.reason),
+              success: !result?.error,
+            });
+          }
 
           res.write(`data: ${JSON.stringify({ type: 'tool_result', tool: tc.name, result })}\n\n`);
 
