@@ -164,6 +164,29 @@ export function isToolUnsupportedError(err) {
   return /tool|function[_\s-]?call|tool_choice|tools.*not|unsupported.*tool|not support.*tool|unknown parameter|invalid parameter.*tool/.test(msg);
 }
 
+/**
+ * 判断「模型明明该调工具，却只吐了段文字」。
+ *
+ * 这是 vLLM / SGLang **没开 tool-call parser** 时的真实表现（实测 vLLM 0.x）：
+ * 传 `tools` 不报错，直接被忽略，模型转而用自然语言描述「我需要调用 remote_ls，
+ * 但缺少 serverId」——用户看到的是一段没有执行任何操作的废话。
+ *
+ * 判据：首轮（还没有任何工具结果）+ 正文里出现了工具名 + 没有任何 tool_calls。
+ *
+ * 为什么限制「首轮」：后续轮次模型提到工具名是正常的（比如「我用 remote_grep 查到…」），
+ * 那种情况不能误判成降级。
+ */
+export function looksLikeUncalledToolUse(content, toolNames) {
+  const text = String(content || '');
+  if (!text.trim()) return false;
+  for (const name of toolNames || []) {
+    if (!name) continue;
+    // 工具名带下划线，普通中文回答里不会自然出现
+    if (text.includes(name)) return true;
+  }
+  return false;
+}
+
 // ─── 文本工具协议 ──────────────────────────────────────────────────────────
 
 /**

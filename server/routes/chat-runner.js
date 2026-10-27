@@ -19,7 +19,7 @@ import { classifyToolRisk, buildEditPreview } from '../agent-tools.js';
 import { recordAgentAction } from '../agent-audit.js';
 import {
   normalizeBaseUrl, guessEngine, getCachedToolSupport, setCachedToolSupport,
-  isToolUnsupportedError, TOOL_PROTOCOL_PROMPT, renderToolsAsText,
+  isToolUnsupportedError, looksLikeUncalledToolUse, TOOL_PROTOCOL_PROMPT, renderToolsAsText,
   parseToolProtocol, renderToolResultForTextProtocol, extractDelta,
 } from '../llm-provider.js';
 
@@ -197,6 +197,21 @@ export function createChatRunner({ ensureSettings, executeAssistantTool, pending
 
       // 引擎确实支持原生 tools（这次成功拿到 tool_calls）→ 缓存结论
       if (useNative && toolCallAcc.size > 0) setCachedToolSupport(baseUrl, model, true);
+
+      // ── 静默忽略 tools 的引擎（vLLM/SGLang 未开 parser）──
+      // 现象：传了 tools 不报错，但返回的是「我需要调用 xxx 工具」这类文字，没有任何 action。
+      // 处理：判为不支持原生 tools，丢弃这段废话，切文本协议重试本轮。
+      if (useNative && toolCallAcc.size === 0 && round === 1 && contentAcc.trim()
+        && looksLikeUncalledToolUse(contentAcc, tools.map(t => t.function?.name).filter(Boolean))) {
+        setCachedToolSupport(baseUrl, model, false);
+        mode = 'text';
+        round--;
+        if (!textModeNotified) {
+          textModeNotified = true;
+          sse({ type: 'provider_notice', message: '当前推理服务未真正启用原生工具调用（请求被静默忽略），已自动切换为文本协议', engine });
+        }
+        continue;
+      }
 
       // 思维过程：仅在设置允许时推给前端
       if (reasoningAcc && settings.thinkingEnabled) {

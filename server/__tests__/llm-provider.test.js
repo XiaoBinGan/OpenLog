@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const {
   normalizeBaseUrl, apiUrl, guessEngine, listModels,
-  getCachedToolSupport, setCachedToolSupport, isToolUnsupportedError,
+  getCachedToolSupport, setCachedToolSupport, isToolUnsupportedError, looksLikeUncalledToolUse,
   TOOL_PROTOCOL_PROMPT, renderToolsAsText, parseToolProtocol,
   renderToolResultForTextProtocol, extractDelta, ENGINE_HINTS,
   _resetToolCapabilityCache,
@@ -124,6 +124,24 @@ describe('isToolUnsupportedError —— 识别「引擎不支持 tools」', () =
     expect(isToolUnsupportedError({ message: 'invalid api key', status: 401 })).toBe(false);
     expect(isToolUnsupportedError({ message: 'context length exceeded', status: 400 })).toBe(false);
     expect(isToolUnsupportedError({ message: 'Service Unavailable', status: 503 })).toBe(false);
+  });
+});
+
+describe('looksLikeUncalledToolUse —— 识别 vLLM 静默忽略 tools', () => {
+  const names = ['remote_grep', 'remote_ls', 'remote_read_file'];
+
+  it('模型只在文字里提工具名（真实 vLLM 未开 parser 的表现）→ 判为未真正支持', () => {
+    const text = '我需要调用 remote_ls 工具来列目录，但需要先知道 serverId。请告诉我服务器。';
+    expect(looksLikeUncalledToolUse(text, names)).toBe(true);
+  });
+
+  it('正常回答不误判', () => {
+    expect(looksLikeUncalledToolUse('磁盘使用率 42%，内存充足。', names)).toBe(false);
+    expect(looksLikeUncalledToolUse('', names)).toBe(false);
+  });
+
+  it('中文回答里提到工具名才算（无下划线单词不误伤）', () => {
+    expect(looksLikeUncalledToolUse('建议用 grep 查一下', names)).toBe(false);
   });
 });
 
