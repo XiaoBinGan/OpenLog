@@ -316,10 +316,50 @@ openlog/
 
 ### 🤖 运维助手
 
-- 多轮对话 + 工具调用（docker_list/logs、remote_system_stats 等）
-- SSE 流式输出，工具调用状态可视化
-- @ 提及联动分析历史上下文
-- 支持注入巡检报告自动分析
+不只会聊天——它能**在已连接的 SSH 服务器上定位问题、改代码、改配置**，然后把结果告诉你。
+
+**查（自动执行）**
+
+| 工具 | 用途 |
+|---|---|
+| `remote_servers` | 列出服务器与连接状态（拿 serverId） |
+| `remote_stat` / `remote_ls` | 文件属性 / 目录列表 |
+| `remote_read_file` | 读文件（带行号，可指定行区间；超 200KB 截断并提示） |
+| `remote_grep` | **错误定位主力**：正则搜目录/文件，返回 `文件:行号:内容` |
+| `remote_git_status` / `remote_git_diff` | 看仓库状态与未提交改动 |
+| `remote_system_stats` / `remote_search_logs` | 系统状态 / 日志检索 |
+| `docker_list` / `docker_logs` / `docker_inspect` / `docker_health_check` | 容器排查 |
+
+**改（服务端强制确认，不是靠提示词自觉）**
+
+| 工具 | 说明 |
+|---|---|
+| `remote_edit_file` | 精确替换字符串改代码/配置；**old_string 必须唯一**，否则拒绝并告诉模型有几处匹配 |
+| `remote_write_file` | 整份写入（新建或覆盖） |
+| `remote_rollback_file` | 用最近一次自动备份回滚 |
+| `remote_restart_service` | 重启 systemd 服务 |
+| `remote_exec` / `docker_exec` / `docker_start/stop/restart` | 执行命令与容器操作 |
+
+**三道安全闸**
+
+1. **服务端确认**：`write` / `danger` 类工具调用会暂停，前端弹出确认条（显示文件路径、命令、diff 预览），
+   点「允许执行」才真正跑；**3 分钟不操作视为拒绝**，拒绝结果会回灌给模型让它换方案（只靠 prompt 说「先问用户」不可靠，所以放在代码里拦）
+2. **自动备份**：写/改之前把原文件复制成 `<文件>.openlog-bak.<时间戳>`，改错可一键回滚
+3. **路径与命令校验**：只接受绝对路径、拒绝引号/换行；`/etc`、`/root`、`~/.ssh` 等关键路径的写入升级为红色 danger 提示；
+   删除/格式化/`dd` 等破坏性命令单独标注
+
+**标准工作流**（写进了 system prompt）：`remote_servers` 定位机器 → `remote_grep` 搜报错 →
+`remote_read_file` 读代码 → 说明方案 → `remote_edit_file` 改 → **验证**（读回复核 / 跑测试 / 重启后看日志）→ 失败则回滚。
+最多 10 轮工具调用。
+
+其他：
+
+- SSE 流式输出，工具调用状态与 diff 实时可视化
+- @ 提及联动分析历史上下文；支持注入巡检报告自动分析
+- 对话历史本地持久化
+
+> ⚠️ 安全边界：工具以 SSH 登录用户身份执行，确认闸门防的是「误改」，**不是沙箱**。
+> 建议给 OpenLog 单独的低权限账号，高危操作靠账号权限兜底。
 
 ### 🧠 AI Shell
 

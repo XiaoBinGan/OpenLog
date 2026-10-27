@@ -158,6 +158,11 @@ export function buildReadFileCommand(path, options = {}) {
 const READ_TOOLS = new Set([
   'remote_stat', 'remote_ls', 'remote_read_file', 'remote_grep',
   'remote_git_status', 'remote_git_diff',
+  // 既有只读工具（chat.js 里的老工具，都是查询类，不该弹确认）
+  'docker_list', 'docker_logs', 'docker_inspect', 'docker_health_check',
+  'remote_servers', 'remote_system_stats', 'remote_list_files',
+  'remote_read_file', 'remote_search_logs',
+  'local_system_stats', 'local_log_files', 'local_read_log',
 ]);
 
 /** 写类：需要用户确认（改了能回滚） */

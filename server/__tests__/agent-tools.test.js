@@ -144,7 +144,13 @@ describe('buildReadFileCommand —— 读文件命令', () => {
 
 describe('classifyToolRisk —— 风险分级', () => {
   it('读类自动执行', () => {
-    for (const name of ['remote_stat', 'remote_ls', 'remote_read_file', 'remote_grep', 'remote_git_status', 'remote_git_diff']) {
+    for (const name of [
+      'remote_stat', 'remote_ls', 'remote_read_file', 'remote_grep', 'remote_git_status', 'remote_git_diff',
+      // ????????????????
+      'docker_list', 'docker_logs', 'docker_inspect', 'docker_health_check',
+      'remote_servers', 'remote_system_stats', 'remote_list_files', 'remote_search_logs',
+      'local_system_stats', 'local_log_files', 'local_read_log',
+    ]) {
       expect(classifyToolRisk(name, {}).risk, name).toBe('read');
     }
   });
