@@ -12,8 +12,11 @@
 | 🎮 多服务算力监控 | Multi-server GPU Monitoring (利用率 / 显存 / 温度 / MFU) |
 | 📝 日志流监控 | Live Log Streaming |
 | 🤖 AI 智能分析 | AI Analysis (LLM-powered) |
-| 💬 运维助手 | Ops Assistant (multi-turn chat + tool calling) |
-| 🧠 AI Shell | AI Shell (natural language → shell commands) |
+| 💬 运维助手（会动手） | Ops Assistant (agent: locate → read → edit code/config → verify) |
+| 🧠 AI Shell | AI Shell (natural language → multi-step shell agent) |
+| 🩺 推理服务兼容 | OpenAI-compatible: vLLM / SGLang / Strata / Ollama (auto tool-calling fallback) |
+| 🔍 容器日志实时告警 | Container log alert (multi-format level parsing + popup) |
+| 📊 GPU MFU | MFU per card, engine-agnostic (vLLM / SGLang / Strata / TGI / custom) |
 | 🔧 技能管理 | Skills Management (import/export, Markdown spec) |
 | 🔔 告警规则 + Webhook 通知 | Alert Rules + Webhook Notifications |
 | 🐳 Docker 管理 | Docker Management |
@@ -66,10 +69,16 @@ cp .env.example .env
 | Ollama | `http://localhost:11434/v1` | 取决于模型（qwen3 / llama3.1+ 支持） |
 | OpenAI 兼容云服务 | 各家 `/v1` | 支持 |
 
-**没开原生 tool calling 也能用**：请求带 `tools` 被引擎拒绝时，OpenLog 会自动
-降级到「文本协议」（`TOOL_CALL: {...}` / `FINAL:`），agent 能力（读代码、改配置、
-执行命令、确认闸门、审计）全部保留，只是调度方式从原生 function calling 换成
-提示词协议。降级结论会缓存 30 分钟，前端会收到一条 `provider_notice` 说明。
+**没开原生 tool calling 也能用**。两种失败模式都处理了：
+
+1. 引擎**报错**（如 vLLM 的 `400 tools is not supported`）
+2. 引擎**静默忽略** `tools`（vLLM / SGLang 没加 `--tool-call-parser` 时的真实行为：
+   不报错，但只回一段「我需要调用 remote_ls…」的文字，一次工具都没执行）
+
+两种情况都会自动切到「文本协议」（模型输出 `TOOL_CALL: {...}` / `FINAL:`），
+agent 能力（读代码、改配置、执行命令、确认闸门、审计）全部保留，只是调度方式
+从原生 function calling 换成提示词协议。降级结论缓存 30 分钟，前端会收到一条
+`provider_notice` 说明，不会每次都重试。
 
 设置页的「刷新列表」对上述所有服务都有效（统一走 `/v1/models`，Ollama 自动兜底
 `/api/tags`），另有 `GET /api/chat/provider` 可查当前识别到的引擎类型与
@@ -230,7 +239,7 @@ npm.cmd start
 ## 🧪 开发与质量门禁 | Dev & Quality Gates
 
 ```bash
-npm test              # 单元 + 集成测试（约 300 个用例，含安全回归）
+npm test              # 单元 + 集成测试（约 520 个用例，含安全回归）
 npm run test:coverage # 带覆盖率
 npm run lint          # 服务端 ESLint
 npm run lint:client   # 客户端 ESLint（React + TS）
@@ -261,9 +270,9 @@ CI（`.github/workflows/ci.yml`）在 push/PR 到 `node` / `main` 时依次执�
 | Docker 容器 | `/docker` | 容器管理、实时日志流、上下游链路 |
 | AI 分析 | `/analytics` | 日志分析、容器巡检、健康诊断 |
 | 分析历史 | `/analysis-history` | 历史分析记录查看 |
-| 运维助手 | `/assistant` | LLM 多轮对话、工具调用、@ 提及联动 |
+| 运维助手 | `/assistant` | Agent：定位问题、改代码/配置、跑命令并验证（写操作需确认，留审计） |
 | 技能管理 | `/skills` | 自定义技能 CRUD、导入/导出、标准格式 |
-| 设置 | `/settings` | 模型配置、告警规则、容器巡检 |
+| 设置 | `/settings` | 模型配置（vLLM/SGLang/Strata/Ollama）、告警规则、容器巡检 |
 
 ---
 
@@ -295,16 +304,64 @@ openlog/
 │   │   │   └── ...
 │   │   └── types.ts
 │   └── package.json
-├── server/                  # Node.js 后端
-│   ├── index.js             # 主文件（API + WebSocket + 巡检）
-│   ├── remote.js            # SSH 远程连接管理
-│   ├── docker.js            # Docker API 封装
-│   ├── gpu.js               # GPU 查询（nvidia-smi）
-│   └── db/                  # SQLite 数据库层
-│       └── index.js         # 表结构 + CRUD
+├── server/                    # Node.js 后端
+│   ├── index.js               # 主文件（API + WebSocket + 巡检）
+│   ├── remote.js              # SSH 远程连接管理（含自动重连/退避）
+│   ├── docker.js              # Docker API 封装
+│   ├── docker-ssh-bridge.js   # Docker over SSH（命名管道桥接）
+│   ├── gpu.js                 # GPU 查询（nvidia-smi）
+│   ├── gpu-mfu.js             # MFU 计算（引擎无关，多来源探测）
+│   ├── log-level.js           # 日志级别解析（多格式）
+│   ├── container-log-watch.js # 容器日志实时错误监听
+│   ├── ai-shell.js            # AI Shell 多步 agent（环境感知/风险分级）
+│   ├── llm-provider.js        # 推理服务适配（vLLM/SGLang/Strata/Ollama）
+│   ├── agent-tools.js         # 运维助手「动手」工具（读/改/回滚）
+│   ├── agent-audit.js         # 写操作审计流水
+│   ├── routes/                # 路由（chat/chat-runner/docker/remote/gpu/...）
+│   └── db/                    # SQLite 数据库层
+│       └── index.js           # 表结构 + CRUD
 ├── data/                    # 数据库文件（gitignored）
 └── package.json
 ```
+
+---
+
+## 🕒 更新记录 | Recent Changes
+
+> 只记对使用者有影响的变化，详细提交见 `git log`。
+
+### 2026-10 · 运维助手变成 agent、推理服务兼容
+
+**运维助手能动手了**（`/assistant`）
+
+- 新增 10 个远程工具：`remote_stat` / `remote_ls` / `remote_read_file`（行区间、200KB 截断）/
+  `remote_grep` / `remote_edit_file`（精确替换、要求唯一）/ `remote_write_file` /
+  `remote_rollback_file` / `remote_git_status` / `remote_git_diff` / `remote_restart_service`
+- **服务端确认闸门**：`write` / `danger` 工具调用会暂停 SSE，前端弹确认条（文件路径 / 命令 / diff 预览），
+  3 分钟不操作视为拒绝；拒绝结果回灌给模型让它换方案
+- **自动备份**：改/写前复制 `<文件>.openlog-bak.<时间戳>`，可 `remote_rollback_file` 回滚
+- **审计流水**：`GET /api/chat/audit` 可查每次写操作的工具 / 服务器 / 文件 / 命令 / 结果
+- 工具轮次上限 5 → 10，System prompt 写入「定位 → 说明 → 修改 → **验证** → 失败回滚」标准流程
+
+**推理服务兼容**（vLLM / SGLang / Strata / Ollama）
+
+- 新增 `GET /api/models`（统一 `/v1/models`，Ollama 自动兜底 `/api/tags`）与
+  `GET /api/chat/provider`（识别引擎类型 + 开启原生 tools 的提示）
+- **自动降级**：引擎不支持原生 function calling（报错 **或静默忽略 tools**）时，
+  自动切到 `TOOL_CALL:` / `FINAL:` 文本协议，agent 能力不变；结论缓存 30 分钟
+- 修复 `ThinkingStreamFilter` 吞掉回复的严重 bug：不输出 `<think>` 标记的模型
+  （Strata / vLLM / SGLang 等把思考放 `reasoning_content`）曾导致回答只剩半句甚至全空
+- 设置页新增 vLLM / SGLang 预设，「刷新列表」对所有引擎生效
+
+**远程服务器**
+
+- 断线自动重连（指数退避 5s → 300s 封顶），卡片上显示失败原因 / 重试次数 / 下次重试时间
+
+**容器日志告警**
+
+- 多格式日志级别解析（`[ERROR]` / `ERROR:` / JSON / pino 数字 / syslog / logback / nginx / `panic:` 等）
+- 实时监听（5s 增量轮询）+ 前端弹框，点击直达该容器实时日志
+- 防止自激放大：跳过 OpenLog 自己的容器和自身日志行
 
 ---
 
@@ -315,7 +372,7 @@ openlog/
 | 前端 | React + TypeScript + Vite + TailwindCSS + Recharts + marked |
 | 后端 | Node.js + Express + WebSocket + SSE |
 | 数据库 | SQLite (better-sqlite3) |
-| AI | OpenAI API（兼容 Ollama 等本地模型） |
+| AI | OpenAI 兼容协议（vLLM / SGLang / Strata / Ollama / 云端），原生 tool calling 不可用时自动降级为文本协议 |
 | 监控 | chokidar + systeminformation + nvidia-smi |
 
 ---
@@ -623,6 +680,8 @@ panic: xxx / [CRITICAL] / [SEVERE]    → FATAL / ERROR
 | POST | `/api/chat` | 运维助手对话（SSE 流式，含 agent 工具调用） |
 | POST | `/api/chat/confirm` | 确认/拒绝一次写操作（`{confirmId, approved}`） |
 | GET | `/api/chat/audit` | 运维助手写操作审计流水 |
+| GET | `/api/chat/provider` | 当前推理服务引擎类型与能力提示 |
+| GET | `/api/models` | 模型列表（vLLM/SGLang/Strata/Ollama，支持 `?baseUrl=&apiKey=` 覆盖） |
 
 ---
 
