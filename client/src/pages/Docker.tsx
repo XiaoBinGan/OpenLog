@@ -1050,6 +1050,7 @@ function TerminalPanel({ panelKey, containerName, cmds, cmdInput, setCmdInput, o
         <Terminal className="w-3.5 h-3.5 text-accent-400" />
         <span className="text-xs font-mono text-accent-400">{containerName}</span>
         <span className="text-xs text-dark-600">容器内执行命令</span>
+        <span className="text-[10px] text-dark-700 border border-dark-800 rounded px-1">只读</span>
         <div className="ml-auto flex gap-1">
           <button
             onClick={(e) => { e.preventDefault(); e.stopPropagation(); onClear(); }}
@@ -1062,7 +1063,7 @@ function TerminalPanel({ panelKey, containerName, cmds, cmdInput, setCmdInput, o
       <div className="h-52 overflow-y-auto px-4 py-2 font-mono text-xs">
         {cmds.length === 0 ? (
           <div className="text-dark-600 py-4 text-center">
-            输入命令按回车执行，例如 <span className="text-accent-400">ps aux</span>、<span className="text-accent-400">ls /</span>、<span className="text-accent-400">cat /etc/hosts</span>
+            输入命令按回车执行（仅只读命令，禁止 <span className="text-accent-400">; | && $( )</span> 等 shell 组成），例如 <span className="text-accent-400">ps aux</span>、<span className="text-accent-400">ls /</span>、<span className="text-accent-400">cat /etc/hosts</span>
           </div>
         ) : cmds.map((l, i) => (
           <div key={i} className="mb-3">

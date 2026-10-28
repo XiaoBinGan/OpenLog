@@ -51,6 +51,36 @@ export function rejectUnlessRemoteExecEnabled(res) {
   return true;
 }
 
+/**
+ * 容器内命令执行开关（Docker 页面「容器内执行命令」面板）。
+ *
+ * 与 REST 远程执行分开是刻意的：
+ *   - REST 远程执行（SSH）默认关闭，面向外部脚本，白名单挡不住逃逸口；
+ *   - 容器内执行是**页面功能**，只能跑只读白名单命令、且禁止 shell 元字符，
+ *     单独一个开关可以「开面板但不开 SSH 远程执行」。
+ *
+ * 开启方式：OPENLOG_ENABLE_CONTAINER_EXEC=1（或 OPENLOG_ENABLE_REMOTE_EXEC=1 一并开启）。
+ * 不设则面板会明确提示「容器内命令执行未启用」，而不是莫名其妙的 400。
+ */
+export const CONTAINER_EXEC_ENABLED =
+  process.env.OPENLOG_ENABLE_CONTAINER_EXEC === '1' || REMOTE_EXEC_ENABLED;
+
+if (CONTAINER_EXEC_ENABLED) {
+  console.warn(
+    '⚠️  [安全] 容器内命令执行已开启（只读白名单 + 禁止元字符）。' +
+    '持有 token 的调用方可 in 容器内查看文件与进程。'
+  );
+}
+
+/** 开关关闭时写 403 并返回 true（调用方应 `if (rejectUnlessContainerExecEnabled(res)) return;`）。 */
+export function rejectUnlessContainerExecEnabled(res) {
+  if (CONTAINER_EXEC_ENABLED) return false;
+  res.status(403).json({
+    error: '容器内命令执行未启用。设置环境变量 OPENLOG_ENABLE_CONTAINER_EXEC=1 后重启服务即可使用（仅允许只读命令）。',
+  });
+  return true;
+}
+
 // 仅保留真正只读、且没有执行/写入逃逸口的命令。
 // 已移除：find、awk、sed（可执行任意子进程 / 改写文件）
 //          sort、uniq（-o 与第二参数可写文件）

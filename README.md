@@ -658,6 +658,29 @@ panic: xxx / [CRITICAL] / [SEVERE]    → FATAL / ERROR
 - 暂停/继续/清空/自动滚动
 - 按日志级别着色（与告警共用同一套多格式等级解析）
 
+### 💻 容器内执行命令（Docker 页面终端面板）
+
+容器详情里展开的终端面板，可以在容器内跑**只读**命令做快速排查：
+
+- 支持的：`ls` / `cat` / `head` / `tail` / `ps` / `grep` / `du` / `df` / `uname` / `stat` / `ss` / `ping` 等
+  （完整白名单见 `server/security/shell-command-policy.js`）
+- 禁止：shell 元字符与命令链接（`;` `|` `&&` `$( )` 反引号 `>` `<` 换行）——命令**不经过 shell**，
+  直接按 argv 传给容器
+- 输出做 Docker 多路复用帧解复用（否则帧头字节会混进正文），单条命令输出上限 256KB
+- 命令按引号规则切分，`cat "/var/log/my app.log"` 这类带空格的路径可用
+
+**默认关闭**，需要显式开启（可以只开面板、不开 SSH 远程执行）：
+
+```bash
+OPENLOG_ENABLE_CONTAINER_EXEC=1   # 或 OPENLOG_ENABLE_REMOTE_EXEC=1 一并开启
+```
+
+关闭时面板会返回明确提示「容器内命令执行未启用」，而不是让人摸不着头脑的报错。
+
+> ⚠️ 「元字符过滤 + 命令名白名单」**不是安全边界**：命令本身可能有逃逸口。
+> 真正的边界是这个开关默认关闭 + 页面 token 鉴权。看完整日志/排障建议用只读面板，
+> 需要交互式 shell 时走 `/remote` 页的 AI Shell 或 SSH 终端。
+
 ---
 
 ## 📝 API 速查
@@ -669,6 +692,7 @@ panic: xxx / [CRITICAL] / [SEVERE]    → FATAL / ERROR
 | GET | `/api/remote/servers/:id/stats` | 远程系统状态（含 GPU 进程） |
 | GET | `/api/remote/servers/:id/mfu` | 远程模型 MFU（读 vLLM `/metrics`） |
 | GET | `/api/docker/containers` | 容器列表 |
+| POST | `/api/docker/:sourceId/:containerId/exec` | 容器内执行命令（只读白名单，需 `OPENLOG_ENABLE_CONTAINER_EXEC=1`） |
 | GET | `/api/docker/containers/:sid/:cid/logs` | 容器日志 |
 | WS | `/ws/docker/logs/:sid/:cid` | 容器实时日志流 |
 | WS | `/ws/aishell/:serverId` | AI Shell 终端 |

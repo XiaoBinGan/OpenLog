@@ -20,7 +20,7 @@ import { errorMessage } from '../errors.js';
 import { v4 as uuidv4 } from 'uuid';
 import * as docker from '../docker.js';
 import {
-  hasShellMetaChars, rejectUnlessRemoteExecEnabled,
+  hasShellMetaChars, rejectUnlessContainerExecEnabled,
   READONLY_COMMANDS, commandBaseName,
 } from '../security/shell-command-policy.js';
 import { getServers } from '../remote.js';
@@ -70,6 +70,33 @@ router.post('/api/docker/ping', async (req, res) => {
   res.json(result);
 });
 
+// 执行命令（容器内）
+// 必须注册在通用路由 POST /api/docker/:sourceId/:containerId/:op **之前**。
+// 否则会被它先匹配到，落到 default 分支返回 400「不支持的操作: exec」——
+// Docker 页面的「容器内执行命令」面板打的就是这条路由（真实 bug）。
+// 安全策略与 REST 远程命令执行共用：默认关闭 + 元字符过滤 + 只读白名单。
+router.post('/api/docker/:sourceId/:containerId/exec', async (req, res) => {
+  const { sourceId, containerId } = req.params;
+  const { command } = req.body;
+  if (rejectUnlessContainerExecEnabled(res)) return;
+  const config = await getDockerConfig(sourceId);
+  if (!config) return res.status(404).json({ error: 'Docker 源未找到' });
+  if (!command) return res.status(400).json({ error: '缺少 command 参数' });
+  if (hasShellMetaChars(command)) {
+    return res.status(403).json({ error: '命令被安全策略阻止: 不允许 shell 元字符或命令链接' });
+  }
+  const cmdBase = commandBaseName(command);
+  if (!READONLY_COMMANDS.includes(cmdBase)) {
+    return res.status(403).json({ error: `命令被安全策略阻止: ${cmdBase}` });
+  }
+
+  try {
+    const { output } = await docker.execInContainer(sourceId, containerId, command, config);
+    res.json({ output });
+  } catch (err) {
+    res.status(500).json({ error: errorMessage(err) });
+  }
+});
 // Docker 容器操作（stop/start/restart/remove）
 router.post('/api/docker/:sourceId/:containerId/:op', async (req, res) => {
   try {
@@ -676,34 +703,5 @@ router.post('/api/docker/:sourceId/:containerId/pause',  (req, res) => runDocker
 router.post('/api/docker/:sourceId/:containerId/unpause',(req, res) => runDockerOp(req, res, 'unpauseContainer'));
 router.delete('/api/docker/:sourceId/:containerId',      (req, res) => runDockerOp(req, res, 'removeContainer'));
 
-// 执行命令（容器内）
-// ⚠️ 本路由目前被上方更早注册的通用路由
-//      app.post('/api/docker/:sourceId/:containerId/:op')
-//    遮蔽 —— 通用路由不识别 op=exec，所以它实际不可达（返回 400）。
-// 原先它带有一份包含 python/node/npm/docker 且【没有元字符过滤】的白名单，
-// 一旦通用路由被删除或调整顺序，它就会立刻变成可达的容器内任意命令执行入口。
-// 因此这里与 REST 远程命令执行采用同一策略：默认关闭 + 元字符过滤 + 只读白名单。
-router.post('/api/docker/:sourceId/:containerId/exec', async (req, res) => {
-  const { sourceId, containerId } = req.params;
-  const { command } = req.body;
-  if (rejectUnlessRemoteExecEnabled(res)) return;
-  const config = await getDockerConfig(sourceId);
-  if (!config) return res.status(404).json({ error: 'Docker 源未找到' });
-  if (!command) return res.status(400).json({ error: '缺少 command 参数' });
-  if (hasShellMetaChars(command)) {
-    return res.status(403).json({ error: '命令被安全策略阻止: 不允许 shell 元字符或命令链接' });
-  }
-  const cmdBase = commandBaseName(command);
-  if (!READONLY_COMMANDS.includes(cmdBase)) {
-    return res.status(403).json({ error: `命令被安全策略阻止: ${cmdBase}` });
-  }
-
-  try {
-    const { output } = await docker.execInContainer(sourceId, containerId, command, config);
-    res.json({ output });
-  } catch (err) {
-    res.status(500).json({ error: errorMessage(err) });
-  }
-});
   return router;
 }

@@ -586,21 +586,143 @@ export async function removeContainer(sourceId, containerId, config = {}) {
   return { ok: true, message: '容器已删除' };
 }
 
+/**
+ * 把命令字符串切成 argv，尊重引号与反斜杠转义。
+ *
+ * 为什么不用 `cmd.split(' ')`：`cat "/var/log/my app.log"` 会被切成
+ * `cat` + `"/var/log/my` + `app.log"`，引号原样传给容器里的程序，直接失败。
+ * shell 语义做不了（也不该做，见 security/shell-command-policy.js），
+ * 所以只做一个「够用的引号感知切分」。
+ */
+export function tokenizeCommand(cmd) {
+  const input = String(cmd ?? '');
+  const argv = [];
+  let current = '';
+  let quote = null;
+  let hasToken = false;
+
+  for (let i = 0; i < input.length; i++) {
+    const ch = input[i];
+    if (quote) {
+      if (ch === quote) { quote = null; continue; }
+      if (ch === '\\' && quote === '"' && i + 1 < input.length) { current += input[++i]; continue; }
+      current += ch;
+      continue;
+    }
+    if (ch === '"' || ch === "'") { quote = ch; hasToken = true; continue; }
+    if (ch === '\\' && i + 1 < input.length) { current += input[++i]; hasToken = true; continue; }
+    if (ch === ' ' || ch === '\t') {
+      if (hasToken || current) { argv.push(current); current = ''; hasToken = false; }
+      continue;
+    }
+    current += ch;
+    hasToken = true;
+  }
+  if (hasToken || current) argv.push(current);
+  return argv;
+}
+
+/**
+ * Docker exec / attach 流的解复用器。
+ *
+ * 非 TTY 的 exec 输出是「多路复用帧」：
+ *   [0]=stream(1=stdout,2=stderr) [1..3]=0 [4..7]=payload 长度(BE) [8..]=payload
+ * 直接把 chunk toString() 会让头部字节混进输出（真实看到的就是
+ * `\u0001\u0000\u0000\u0000\u0000\u0000\u0000]assistant_memory`）。
+ *
+ * 帧可能跨 chunk 切断，所以这里保留残余字节等下一块。
+ */
+export function createExecDemuxer() {
+  let buffer = Buffer.alloc(0);
+  let multiplexed = null; // null=还没判断, true/false=是否带帧头
+
+  const looksMultiplexed = (buf) => buf.length >= 8
+    && buf[0] <= 2 && buf[1] === 0 && buf[2] === 0 && buf[3] === 0
+    && buf.readUInt32BE(4) <= 32 * 1024 * 1024;
+
+  return {
+    /** 喂一块数据，返回已解析的文本 */
+    push(chunk) {
+      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      if (!buf.length) return '';
+      if (multiplexed === null) {
+        buffer = Buffer.concat([buffer, buf]);
+        if (buffer.length < 8) return '';
+        multiplexed = looksMultiplexed(buffer);
+      } else {
+        buffer = Buffer.concat([buffer, buf]);
+      }
+      // 纯 TTY 输出：没有帧头，原样返回
+      if (!multiplexed) {
+        const out = buffer.toString('utf8');
+        buffer = Buffer.alloc(0);
+        return out;
+      }
+      let out = '';
+      while (buffer.length >= 8) {
+        const size = buffer.readUInt32BE(4);
+        if (size > 32 * 1024 * 1024) { // 帧头错乱，退化成纯文本，避免死循环
+          multiplexed = false;
+          out += buffer.toString('utf8');
+          buffer = Buffer.alloc(0);
+          return out;
+        }
+        if (buffer.length < 8 + size) break;
+        out += buffer.slice(8, 8 + size).toString('utf8');
+        buffer = buffer.slice(8 + size);
+      }
+      return out;
+    },
+    /** 流结束：把残留当纯文本吐出（避免丢最后一段） */
+    flush() {
+      if (!buffer.length) return '';
+      const rest = multiplexed === false ? buffer.toString('utf8') : '';
+      buffer = Buffer.alloc(0);
+      return rest;
+    },
+    /** 测试/调试：当前残留字节数 */
+    pending() {
+      return buffer.length;
+    },
+  };
+}
+
+/** 容器内执行命令时输出上限，防止一条 `cat 大文件` 把内存和前端打爆 */
+const MAX_EXEC_OUTPUT = 256 * 1024;
+
 export async function execInContainer(sourceId, containerId, cmd, config = {}) {
   const docker = await getDockerFor(sourceId, config);
   const container = docker.getContainer(containerId);
-  // cmd: string or string[]
-  const command = Array.isArray(cmd) ? cmd : cmd.split(' ');
+  // cmd: string（按 shell 引号规则切 argv）或已是数组
+  const command = Array.isArray(cmd) ? cmd : tokenizeCommand(cmd);
+  if (!command.length) throw new Error('命令为空');
   const exec = await container.exec({
     Cmd: command,
     AttachStdout: true,
     AttachStderr: true,
   });
   const stream = await exec.start({ hijack: true, stdin: false });
+  const demux = createExecDemuxer();
   return new Promise((resolve, reject) => {
     let output = '';
-    stream.on('data', chunk => { output += chunk.toString(); });
-    stream.on('end', () => resolve({ output, exitCode: 0 }));
+    let truncated = false;
+    stream.on('data', chunk => {
+      if (truncated) return;
+      output += demux.push(chunk);
+      if (output.length > MAX_EXEC_OUTPUT) {
+        output = output.slice(0, MAX_EXEC_OUTPUT);
+        truncated = true;
+      }
+    });
+    stream.on('end', async () => {
+      output += demux.flush();
+      let exitCode = 0;
+      try {
+        const info = await exec.inspect();
+        exitCode = info?.ExitCode ?? 0;
+      } catch { /* inspect 失败不影响输出 */ }
+      resolve({ output, exitCode, truncated });
+    });
     stream.on('error', reject);
   });
 }
