@@ -424,6 +424,24 @@ openlog/
 > 数据库本身不是瓶颈：实测 SQLite（WAL）单条插入 8k+ 条/秒、1000 台服务器加载 20ms。
 > 1000 台以上先调上面这几个并发/间隔参数；真要再上一个量级，再考虑采集进程与 Web 进程分离 + PostgreSQL 连接池。
 
+**1000 台推荐配置**（连接数上限要 ≥ 服务器数，否则每轮采集都在做 SSH 重连）：
+
+```bash
+OPENLOG_STATS_CONCURRENCY=32        # 采集并发（1000 台一轮约 6-12s）
+OPENLOG_STATS_INTERVAL_MS=30000     # 采集间隔
+OPENLOG_MAX_SSH_CONNECTIONS=1200    # 常驻连接上限 ≥ 服务器数
+OPENLOG_SSH_IDLE_TTL_MS=1800000     # 空闲回收放宽到 30 分钟
+OPENLOG_RECONNECT_CONCURRENCY=32
+OPENLOG_RECONNECT_MAX_PER_PASS=128
+```
+
+> 为什么连接数要放大：采集器每 30s 访问每台机器，如果上限只有 300，LRU 会在每轮采集里
+> 把连接踢掉再重建（一次 SSH 握手 200–500ms + CPU），1000 台就是每秒几十次握手。
+> 内存代价很小：一条空闲 ssh2 连接约几百 KB。
+
+**已知边界**：单进程持有上千条 SSH 会话是可行的，但再加一个量级（5000+）建议把采集
+拆成独立进程/多实例，Web 与采集解耦，数据库换 PostgreSQL + 连接池。
+
 **升级说明**：旧版本把服务器存在 `kv_store` 的 `remote_servers` key 里，启动时会**自动迁移**到新表，
 旧数据保留在 `remote_servers_legacy` 作为备份，不需要手工操作。
 
