@@ -84,6 +84,28 @@ const DEFAULT_STORE: AssistantStore = (() => {
   return { opsConvs: [ops], opsActiveId: ops.id, docConvs: [docs], docActiveId: docs.id };
 })();
 
+/**
+ * 历史消息清洗：把上次刷新/中断时残留的「运行中」状态收尾。
+ *
+ * 真实 bug：旧版本对话存进 localStorage 时，如果最后一个工具调用没等到
+ * tool_result（关页面、断网、SSE 事件被 chunk 切断），刷新后 chip 会永远转圈。
+ * 本地没有正在跑的请求，所以任何 persisted 的 running 一律视为已中断。
+ */
+function sanitizeMessages(messages: AssistantMessage[] | undefined): AssistantMessage[] {
+  if (!Array.isArray(messages)) return [];
+  return messages.map((m) => {
+    const hasRunningTools = Array.isArray(m.toolCalls) && m.toolCalls.some(tc => tc.status === 'running');
+    if (!m.streaming && !hasRunningTools) return m;
+    return {
+      ...m,
+      streaming: false,
+      ...(hasRunningTools
+        ? { toolCalls: (m.toolCalls || []).map(tc => (tc.status === 'running' ? { ...tc, status: 'aborted' } : tc)) }
+        : {}),
+    };
+  });
+}
+
 function loadStore(): AssistantStore {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -100,9 +122,9 @@ function loadStore(): AssistantStore {
       parsed.docActiveId = docs.id;
     }
     return {
-      opsConvs: parsed.opsConvs,
+      opsConvs: parsed.opsConvs.map(c => ({ ...c, messages: sanitizeMessages(c.messages) })),
       opsActiveId: parsed.opsActiveId ?? null,
-      docConvs: parsed.docConvs,
+      docConvs: parsed.docConvs.map(c => ({ ...c, messages: sanitizeMessages(c.messages) })),
       docActiveId: parsed.docActiveId ?? null,
     };
   } catch {

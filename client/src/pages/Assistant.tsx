@@ -9,6 +9,8 @@ import { useAssistantContext } from '../contexts/AssistantContext';
 import { marked } from 'marked';
 import { sanitizeHtml } from '../utils/sanitize';
 import { apiFetch } from '../api/client';
+import { createSSELineSplitter, parseSSEDataLine } from '../utils/sseLines';
+import { applyToolResult, settleToolCalls, toolCallTone } from '../utils/toolCallState';
 
 const QUICK_PROMPTS = [
   '如何排查 CPU 飙高问题？',
@@ -287,55 +289,67 @@ export default function Assistant() {
       if (!reader) throw new Error('No reader');
       const decoder = new TextDecoder();
       let acc = '';
+      // SSE 行缓冲：一次 read 可能拿到半行（`tool_result` 被切断就会整条丢掉，
+      // 表现为顶部工具 chip 永远转圈）。跨 chunk 残行统一交给 splitter 保管。
+      const splitter = createSSELineSplitter();
+      const handleLines = (lines: string[]) => {
+        for (const line of lines) {
+          if (!line.startsWith('data: ') && !line.startsWith('data:')) continue;
+          const data = (parseSSEDataLine(line) || '').replace(/\r$/, '');
+          if (!data || data === '[DONE]') continue;
+          try {
+            const p = JSON.parse(data);
+            if (p.type === 'tool_confirm') {
+              pendingConfirmRef.current = { confirmId: p.confirmId, tool: p.tool, args: p.args };
+              setPendingConfirm({
+                confirmId: p.confirmId,
+                tool: p.tool,
+                args: p.args,
+                risk: p.risk,
+                reason: p.reason,
+                preview: p.preview,
+              });
+            } else if (p.type === 'tool_confirm_result') {
+              setPendingConfirm(null);
+              pendingConfirmRef.current = null;
+            } else if (p.type === 'tool_start') {
+              setOpsMessages(prev => prev.map((m, i) => i === prev.length - 1 ? {
+                ...m, toolCalls: [...(m.toolCalls || []), { tool: p.tool, args: p.args, status: 'running', result: null }]
+              } : m));
+            } else if (p.type === 'tool_result') {
+              // 只收尾「第一个还没结果」的同名调用（同一工具可能被连调多次）
+              setOpsMessages(prev => prev.map((m, i) => (
+                i === prev.length - 1
+                  ? { ...m, toolCalls: applyToolResult((m.toolCalls || []) as any, p.tool, p.result) as any }
+                  : m
+              )));
+            } else if (p.content) {
+              acc += p.content;
+            } else if (p.reasoning_content) {
+              setOpsMessages(prev => prev.map((m, i) => i === prev.length - 1 ? { ...m, reasoning_content: p.reasoning_content } : m));
+            }
+          } catch {}
+        }
+      };
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-        const chunk = decoder.decode(value, { stream: true });
-        const lines = chunk.split('\n');
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            const data = line.slice(6);
-            if (data === '[DONE]') continue;
-            try {
-              const p = JSON.parse(data);
-              if (p.type === 'tool_confirm') {
-                pendingConfirmRef.current = { confirmId: p.confirmId, tool: p.tool, args: p.args };
-                setPendingConfirm({
-                  confirmId: p.confirmId,
-                  tool: p.tool,
-                  args: p.args,
-                  risk: p.risk,
-                  reason: p.reason,
-                  preview: p.preview,
-                });
-              } else if (p.type === 'tool_confirm_result') {
-                setPendingConfirm(null);
-                pendingConfirmRef.current = null;
-              } else if (p.type === 'tool_start') {
-                setOpsMessages(prev => prev.map((m, i) => i === prev.length - 1 ? {
-                  ...m, toolCalls: [...(m.toolCalls || []), { tool: p.tool, args: p.args, status: 'running', result: null }]
-                } : m));
-              } else if (p.type === 'tool_result') {
-                setOpsMessages(prev => prev.map((m, i) => i === prev.length - 1 ? {
-                  ...m, toolCalls: (m.toolCalls || []).map((tc: any) =>
-                    tc.tool === p.tool && tc.status === 'running' ? { ...tc, status: 'done', result: p.result } : tc
-                  )
-                } : m));
-              } else if (p.content) {
-                acc += p.content;
-              } else if (p.reasoning_content) {
-                setOpsMessages(prev => prev.map((m, i) => i === prev.length - 1 ? { ...m, reasoning_content: p.reasoning_content } : m));
-              }
-            } catch {}
-          }
-        }
+        handleLines(splitter.push(decoder.decode(value, { stream: true })));
         setOpsMessages(prev => prev.map((m, i) => i === prev.length - 1 ? { ...m, content: acc } : m));
       }
+      // 流正常结束：把结尾没有换行的残行也处理掉
+      handleLines(splitter.flush());
     } catch (e: any) {
       if (e.name !== 'AbortError')
         setOpsMessages(prev => prev.map((m, i) =>
           i === prev.length - 1 ? { ...m, content: `❌ ${e.message}`, streaming: false } : m));
     }
+    // 收尾：流结束/中断后不能留任何转圈状态（否则用户以为还在跑）
+    setOpsMessages(prev => prev.map((m, i) => {
+      if (i !== prev.length - 1) return m;
+      const settled = settleToolCalls((m.toolCalls || []) as any) as any;
+      return settled ? { ...m, streaming: false, toolCalls: settled } : { ...m, streaming: false };
+    }));
     setLoading(false);
     abortRef.current = null;
   };
@@ -535,12 +549,14 @@ export default function Assistant() {
                                 typeof tc.result?.matchCount === 'number' ? `命中 ${tc.result.matchCount} 行` : '',
                               ].filter(Boolean).join('\n')}
                               className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium ${
-                                tc.status === 'running' ? 'bg-yellow-500/10 text-yellow-400 border border-yellow-500/20' :
-                                tc.status === 'done' && tc.result?.error ? 'bg-red-500/10 text-red-400 border border-red-500/20' :
+                                toolCallTone(tc as any) === 'running' ? 'bg-yellow-500/10 text-yellow-400 border border-yellow-500/20' :
+                                toolCallTone(tc) === 'aborted' ? 'bg-dark-800 text-dark-400 border border-dark-700' :
+                                toolCallTone(tc) === 'failed' ? 'bg-red-500/10 text-red-400 border border-red-500/20' :
                                 'bg-green-500/10 text-green-400 border border-green-500/20'
                               }`}>
                                 {tc.status === 'running' && <Loader className="w-3 h-3 animate-spin" />}
                                 {toolLabel(tc.tool)}
+                                {tc.status === 'aborted' && ' · 已中断'}
                                 {typeof tc.result?.matchCount === 'number' && tc.result.matchCount > 0 && ` ${tc.result.matchCount}`}
                               </span>
                             ))}
