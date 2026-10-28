@@ -35,7 +35,24 @@ router.get('/api/remote/servers/stats', async (req, res) => {
       if (!ids) return res.json(snap);
       return res.json({ ...snap, servers: snap.servers.filter(s => ids.includes(s.serverId)) });
     }
-    res.json(statsScheduler.snapshot());
+    const snap = statsScheduler.snapshot();
+    // ?fields=gpu → 只回显卡相关字段。1000 台时完整 stats（含进程/磁盘）会有几 MB，
+    // 算力监控页只关心 GPU，瘦身后体积能小一个量级。
+    if (req.query.fields === 'gpu') {
+      return res.json({
+        ...snap,
+        servers: snap.servers.map(s => ({
+          serverId: s.serverId,
+          serverName: s.serverName,
+          statsAt: s.statsAt,
+          statsError: s.statsError,
+          gpus: s.stats?.gpus ?? [],
+          mfu: s.mfu ?? null,
+          mfuAt: s.mfuAt ?? null,
+        })),
+      });
+    }
+    res.json(snap);
   } catch (err) {
     res.status(500).json({ error: errorMessage(err) });
   }

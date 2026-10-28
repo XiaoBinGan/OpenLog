@@ -98,7 +98,8 @@ export default function GPU() {
 
   /** 把一条快照条目转成页面用的 ServerGPU */
   const toServerGPU = useCallback((entry: any, server: typeof connectedServers[0] | undefined): ServerGPU => {
-    const gpus: GPUDevice[] = (entry?.stats?.gpus || []).map((g: any) => ({
+    const rawGpus = entry?.gpus ?? entry?.stats?.gpus ?? [];
+    const gpus: GPUDevice[] = (rawGpus as any[]).map((g: any) => ({
       index: g.index ?? 0,
       name: g.name || 'GPU',
       util: Number(g.util) || 0,
@@ -235,8 +236,8 @@ export default function GPU() {
     if (connectedServers.length > 0) {
       try {
         const snap = await apiFetch<{
-          servers?: Array<{ serverId: string; serverName: string; stats: any; statsError?: string | null; mfu?: ServerMfu | null }>;
-        }>('/api/remote/servers/stats');
+          servers?: Array<{ serverId: string; serverName: string; gpus?: any[]; stats?: any; statsError?: string | null; mfu?: ServerMfu | null }>;
+        }>('/api/remote/servers/stats?fields=gpu');
         const byId = new Map(connectedServers.map(s => [s.id, s]));
         const entries = snap.servers || [];
         const remoteResults = entries.map(entry => toServerGPU(entry, byId.get(entry.serverId)));

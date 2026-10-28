@@ -182,6 +182,10 @@ export function createStatsScheduler({
     if (getMfu) {
       mfuTimer = setInterval(() => { mfuPass().catch(() => {}); }, mfuIntervalMs);
       if (mfuTimer.unref) mfuTimer.unref();
+      // 首轮 stats 采完才知道哪些机器有 GPU，等 10s 再采一次 MFU，
+      // 否则页面头 60s 里 MFU 一直是空的（用户以为坏了）
+      const firstMfu = setTimeout(() => { mfuPass().catch(() => {}); }, 10_000);
+      if (firstMfu.unref) firstMfu.unref();
     }
     pass().catch(() => {});
     console.log(`[Stats] 集中采集已启动（间隔 ${effectiveInterval}ms，并发 ${concurrency}，MFU ${getMfu ? `${mfuIntervalMs}ms` : '关闭'}）`);
