@@ -18,10 +18,28 @@ import {
   READONLY_COMMANDS, commandBaseName,
 } from '../security/shell-command-policy.js';
 
-export default function createRemoteRouter({ ensureSettings, stripThinking }) {
+export default function createRemoteRouter({ ensureSettings, stripThinking, statsScheduler }) {
   const router = express.Router();
 
 // ========================================
+
+// 批量状态快照：算力监控页一次拿所有机器（替代前端 1000 路扇出）
+router.get('/api/remote/servers/stats', async (req, res) => {
+  try {
+    if (!statsScheduler) return res.status(503).json({ error: '状态采集器未启动' });
+    const ids = req.query.ids ? String(req.query.ids).split(',').filter(Boolean) : null;
+    if (req.query.refresh === '1' || ids) {
+      // 指定机器或显式要求刷新：按需补采（限并发），再返回快照
+      await statsScheduler.ensure(ids || undefined);
+      const snap = statsScheduler.snapshot();
+      if (!ids) return res.json(snap);
+      return res.json({ ...snap, servers: snap.servers.filter(s => ids.includes(s.serverId)) });
+    }
+    res.json(statsScheduler.snapshot());
+  } catch (err) {
+    res.status(500).json({ error: errorMessage(err) });
+  }
+});
 
 // Get all remote servers
 router.get('/api/remote/servers', (req, res) => {
@@ -347,6 +365,11 @@ router.post('/api/remote/servers/:id/file/upload/cancel', async (req, res) => {
 // Get remote system stats
 router.get('/api/remote/servers/:id/stats', async (req, res) => {
   try {
+    // 采集器刚采过就直接给缓存，避免同一台机器被前端和后台重复 SSH 一遍
+    if (statsScheduler?.isFresh(req.params.id)) {
+      const cached = statsScheduler.get(req.params.id);
+      if (cached?.stats) return res.json(cached.stats);
+    }
     const stats = await remote.getRemoteSystemStats(req.params.id);
     res.json(stats);
   } catch (err) {

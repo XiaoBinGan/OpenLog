@@ -174,6 +174,15 @@ describe('核心路由 200 冒烟测试', () => {
       const data = await res.json();
       expect(data).toHaveProperty('servers');
     });
+
+    it('GET /api/remote/servers/stats — 批量快照（替代前端 1000 路扇出）', async () => {
+      const res = await get('/api/remote/servers/stats');
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(Array.isArray(data.servers)).toBe(true);
+      expect(data.meta).toBeTruthy();
+      expect(typeof data.meta.concurrency).toBe('number');
+    });
   });
 
   describe('机器管理模块 (machines)', () => {

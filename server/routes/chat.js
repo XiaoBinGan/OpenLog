@@ -257,6 +257,17 @@ export default function createChatRouter({
     const enabledDocker = dockerSources.filter(s => s.enabled);
     const remoteServers = remote.getServers();
     const connectedRemote = remoteServers.filter(s => s.status === 'connected');
+    // 服务器清单要截断：几千台全塞进 system prompt 会直接炸上下文（十万级 token）。
+    // 只给前 30 台 + 总数摘要，完整清单让模型用 remote_servers 工具现查。
+    const PROMPT_SERVER_LIMIT = 30;
+    const serverListText = connectedRemote.length === 0
+      ? (remoteServers.length > 0 ? `${remoteServers.length}台(均未连接)` : '无')
+      : [
+        connectedRemote.slice(0, PROMPT_SERVER_LIMIT).map(s => `${s.name}(${s.id})`).join('、'),
+        connectedRemote.length > PROMPT_SERVER_LIMIT
+          ? `…共 ${connectedRemote.length} 台已连接（只列前 ${PROMPT_SERVER_LIMIT} 台，其余用 remote_servers 工具查询）`
+          : '',
+      ].filter(Boolean).join(' ');
 
     const systemPrompt = `你是 OpenLog 的运维助手，一名能**亲自动手**排查和修复问题的运维工程师。你不只是给建议——你有工具可以直接读代码、改代码、改配置、跑命令。
 风格：简洁有力，像老运维跟同事说话，不啰嗦不念经。用中文。
@@ -302,7 +313,7 @@ export default function createChatRouter({
 ## 📋 当前环境
 - 推理服务: ${ENGINE_HINTS[engine]?.name || engine}（${baseUrl} / ${model}）
 - Docker 源: ${enabledDocker.length > 0 ? enabledDocker.map(s => s.name).join('、') : '无'}
-- 远程服务器: ${connectedRemote.length > 0 ? connectedRemote.map(s => `${s.name}(${s.id})`).join('、') : (remoteServers.length > 0 ? `${remoteServers.length}台(均未连接)` : '无')}
+- 远程服务器: ${serverListText}
 
 ## 最近的系统状态
 ${buildAssistantContext()}`;

@@ -5,7 +5,12 @@ import { v4 as uuidv4 } from 'uuid';
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
-import { getKv, setKv, getDb } from './db/index.js';
+import { getDb, getDbType } from './db/index.js';
+import {
+  ensureServersTable, listServerRows, countServerRows, rowToServer, serverToRow,
+  queueServerWrite, queueServerDelete, flushServerWrites, migrateLegacyKvServers,
+} from './remote-store.js';
+import { mapLimit } from './concurrency.js';
 
 // AES-256-GCM 加密密钥（32 字节）
 // 优先从 OPENLOG_SECRET_KEY 派生；未设置时回退到源码内置种子（兼容旧数据）
@@ -57,6 +62,59 @@ let servers = [];
 const sshConnections = new Map();
 
 /**
+ * SSH 连接上限与空闲回收。
+ *
+ * 1000 台服务器的场景下，「每台一条常驻连接」会让单进程同时持有上千条 ssh2 会话：
+ * 内存还能撑，但每个连接 15s 一次 keepalive，事件循环和 CPU（加解密）会被慢慢吃掉。
+ * 这里按 LRU 限制常驻连接数，超出的回收最久未使用的空闲连接；
+ * 需要时 ensureSshConnection() 会按需重连（配置还在，重连成本可接受）。
+ */
+const MAX_IDLE_CONNECTIONS = Number(process.env.OPENLOG_MAX_SSH_CONNECTIONS) || 300;
+/** 空闲多久回收（默认 10 分钟） */
+const IDLE_CONNECTION_TTL_MS = Number(process.env.OPENLOG_SSH_IDLE_TTL_MS) || 10 * 60 * 1000;
+/** 单次 SSH 建连超时（node-ssh 默认 20s，1000 台重连串行时太久） */
+const SSH_READY_TIMEOUT_MS = Number(process.env.OPENLOG_SSH_READY_TIMEOUT_MS) || 10_000;
+/** 连接最近使用时间：id → ts（LRU 依据） */
+const connectionLastUsed = new Map();
+
+function touchConnection(id) {
+  connectionLastUsed.set(id, Date.now());
+}
+
+/** 回收超过上限或空闲太久的连接（返回关闭数量） */
+export function evictIdleConnections(now = Date.now()) {
+  let closed = 0;
+  const entries = [...sshConnections.keys()].map(id => ({ id, used: connectionLastUsed.get(id) || 0 }));
+  // 1) 先按空闲时长回收
+  for (const { id, used } of entries) {
+    if (now - used > IDLE_CONNECTION_TTL_MS) {
+      const ssh = sshConnections.get(id);
+      sshConnections.delete(id);
+      connectionLastUsed.delete(id);
+      try { ssh?.dispose?.(); } catch { /* 忽略 */ }
+      closed++;
+    }
+  }
+  // 2) 还超上限就按 LRU 继续收
+  const remaining = [...sshConnections.keys()].map(id => ({ id, used: connectionLastUsed.get(id) || 0 }))
+    .sort((a, b) => a.used - b.used);
+  while (remaining.length > MAX_IDLE_CONNECTIONS) {
+    const { id } = remaining.shift();
+    const ssh = sshConnections.get(id);
+    sshConnections.delete(id);
+    connectionLastUsed.delete(id);
+    try { ssh?.dispose?.(); } catch { /* 忽略 */ }
+    closed++;
+  }
+  return closed;
+}
+
+/** 测试用：连接池状态 */
+export function _connectionPoolStats() {
+  return { size: sshConnections.size, max: MAX_IDLE_CONNECTIONS, idleTtlMs: IDLE_CONNECTION_TTL_MS };
+}
+
+/**
  * 自动重连状态：serverId → { count, nextAt }
  *
  * 为什么要自动重连：一台机器下线（关机/网络/VPN 掉线）后，状态会停在 error，
@@ -76,25 +134,25 @@ export function nextRetryAt(count, now = Date.now()) {
 }
 
 /**
- * 加载服务器配置（优先从 SQLite，失败则回退到文件）
+ * 加载服务器配置：`remote_servers` 表（首选）→ 旧 kv JSON（一次性迁移）→ 文件（兜底）。
+ *
+ * 1000 台规模下这里必须走表：旧实现把整个数组存在 kv 的一个 key 里，
+ * 状态变化就要重写整块 JSON，同步驱动下会阻塞事件循环。
  */
-export function loadServers() {
-  // 检查数据库是否已初始化
+export async function loadServers() {
   let db;
   try { db = getDb(); } catch {}
 
   if (db) {
     try {
-      const stored = getKv('remote_servers');
-      if (stored && Array.isArray(stored)) {
-        servers = stored.map(s => ({
-          ...s,
-          password: s.password ? decryptPassword(s.password) : undefined,
-        }));
-        persistKeyMigration();
-        console.log('[Remote] 从 SQLite 加载了', servers.length, '台服务器');
-        return servers;
-      }
+      await ensureServersTable();
+      // 旧 kv 数据一次性迁移（表里已有数据则不动）
+      await migrateLegacyKvServers((s) => serverToRow(s, encryptPassword));
+      const rows = await listServerRows();
+      servers = rows.map(r => rowToServer(r, decryptPassword));
+      persistKeyMigration();
+      console.log(`[Remote] 从 remote_servers 表加载了 ${servers.length} 台服务器`);
+      return servers;
     } catch (err) {
       console.warn('[Remote] 从 DB 加载失败，回退到文件:', errorMessage(err));
     }
@@ -119,35 +177,35 @@ export function loadServers() {
 }
 
 /**
- * 保存服务器配置（优先 SQLite，失败则回退到文件）
+ * 把一台服务器的当前状态排入写队列（合并 + 微批，100ms 内的多次变更只落一次库）。
+ * 单行 UPDATE 取代了原来的「整块 JSON 重写」。
  */
-function saveServers() {
-  // 加密密码后保存
-  const dataToSave = servers.map(s => ({
-    ...s,
-    password: s.password ? encryptPassword(s.password) : undefined,
-  }));
-
-  // 检查数据库是否已初始化
-  let db;
-  try { db = getDb(); } catch {}
-
-  if (db) {
-    try {
-      setKv('remote_servers', dataToSave);
-      return;
-    } catch (err) {
-      console.warn('[Remote] 保存到 DB 失败，回退到文件:', errorMessage(err));
-    }
-  }
-
-  // 回退到文件
+function saveServer(id) {
+  const server = servers.find(s => s.id === id);
+  if (!server) return;
   try {
-    fs.writeFileSync(getConfigPath(), JSON.stringify(dataToSave, null, 2));
+    queueServerWrite(serverToRow(server, encryptPassword));
   } catch (err) {
-    console.error('Failed to save remote servers config:', errorMessage(err));
+    console.warn('[Remote] 排队写服务器失败:', errorMessage(err));
   }
 }
+
+/**
+ * 全量落库（仅用于迁移/导入/重新加密这类批量场景）。
+ * 注意：日常状态变更请用 saveServer(id)，不要调这个。
+ */
+function saveServers() {
+  const rows = servers.map(s => serverToRow(s, encryptPassword));
+  for (const row of rows) {
+    try { queueServerWrite(row); } catch { /* 单行失败不影响其它行 */ }
+  }
+}
+
+/** 等待写队列落库完成（退出/测试/配置变更后需要确定性时用） */
+export async function flushServers() {
+  await flushServerWrites();
+}
+
 
 /**
  * 简单的密码加密（生产环境应使用更安全的方案）
@@ -257,7 +315,7 @@ export function addServer(config) {
   };
   
   servers.push(server);
-  saveServers();
+  saveServer(server.id);
   return server;
 }
 
@@ -280,7 +338,7 @@ export function updateServer(id, updates) {
     id, // 保持 id 不变
   };
   
-  saveServers();
+  saveServer(id);
   return servers[index];
 }
 
@@ -295,7 +353,7 @@ export function deleteServer(id) {
   disconnectServer(id);
   
   servers.splice(index, 1);
-  saveServers();
+  queueServerDelete(id);
   return true;
 }
 
@@ -382,6 +440,8 @@ export async function connectServer(id) {
       // 正是这一类问题）。keepalive 每 15s 探测一次，3 次无响应即判定断开。
       keepaliveInterval: 15000,
       keepaliveCountMax: 3,
+      // 建连超时：node-ssh 默认 20s，1000 台重连时太久（限并发后仍要尽快失败）
+      readyTimeout: SSH_READY_TIMEOUT_MS,
     };
     
     if (server.privateKey) {
@@ -403,16 +463,17 @@ export async function connectServer(id) {
       if (sshConnections.get(id) === ssh) {
         sshConnections.delete(id);
         const srv = servers.find(x => x.id === id);
-        if (srv) { srv.status = 'disconnected'; saveServers(); }
+        if (srv) { srv.status = 'disconnected'; saveServer(id); }
       }
     });
     
     sshConnections.set(id, ssh);
+    touchConnection(id);
     server.status = 'connected';
     server.lastConnected = new Date().toISOString();
     server.lastError = null;
     server.lastErrorAt = null;
-    saveServers();
+    saveServer(id);
     
     return { success: true };
   } catch (err) {
@@ -421,7 +482,7 @@ export async function connectServer(id) {
     // 否则用户只能看到红灯，分不清是自己的网络、机器的 sshd、还是密码错了。
     server.lastError = errorMessage(err);
     server.lastErrorAt = new Date().toISOString();
-    saveServers();
+    saveServer(id);
     throw err;
   }
 }
@@ -437,7 +498,13 @@ export async function connectServer(id) {
  */
 export async function ensureSshConnection(id) {
   const existing = sshConnections.get(id);
-  if (existing && existing.isConnected()) return existing;
+  if (existing && existing.isConnected()) {
+    touchConnection(id);
+    return existing;
+  }
+
+  // 连接数超限时先回收 LRU，避免 1000 台场景把进程撑爆
+  if (sshConnections.size >= MAX_IDLE_CONNECTIONS) evictIdleConnections();
 
   await connectServer(id);
 
@@ -445,6 +512,7 @@ export async function ensureSshConnection(id) {
   if (!ssh || !ssh.isConnected()) {
     throw new Error(`服务器 ${id} 的 SSH 连接未能建立`);
   }
+  touchConnection(id);
   return ssh;
 }
 
@@ -460,8 +528,9 @@ export async function disconnectServer(id) {
   const server = servers.find(s => s.id === id);
   if (server) {
     server.status = 'disconnected';
-    saveServers();
+    saveServer(id);
   }
+  connectionLastUsed.delete(id);
 }
 
 // ─── 自动重连 ──────────────────────────────────────────────
@@ -470,38 +539,50 @@ let reconnectTimer = null;
 let reconnectRunning = false;
 /** 断线很久的机器没必要一直高频重试，超过这个时长就按封顶间隔慢慢试 */
 const RECONNECT_TICK_MS = 10_000;
+/** 单轮并发重连数：串行 await 在 1000 台时一轮要几小时（每次失败最长 10s） */
+const RECONNECT_CONCURRENCY = Number(process.env.OPENLOG_RECONNECT_CONCURRENCY) || 16;
+/** 单轮最多尝试多少台：避免一次 pass 跑太久，剩下的下一 tick 继续 */
+const RECONNECT_MAX_PER_PASS = Number(process.env.OPENLOG_RECONNECT_MAX_PER_PASS) || 64;
 
 /**
- * 跑一轮自动重连：把到期的 error 状态服务器挨个重试。
- * 抽成独立函数便于测试（不依赖定时器，连接函数可注入）。
+ * 跑一轮自动重连：把到期的 error 状态服务器**并发**重试。
+ *
+ * 旧实现是 `for (server of pending) await connect(...)`：1000 台不可达时
+ * 一轮 = 1000 × 建连超时（10s）= 2.7 小时，期间 `reconnectRunning` 锁住不再重试，
+ * 等于自动重连失效。现在改成「限并发 + 每轮限量」：
+ *   - 并发 RECONNECT_CONCURRENCY（默认 16）
+ *   - 每轮最多 RECONNECT_MAX_PER_PASS（默认 64）台，且按 nextAt 最早优先
+ *
  * @param {number} [now]
  * @param {(id:string)=>Promise<unknown>} [connect] 注入用；默认 connectServer
  * @returns {Promise<Array<{id:string,name:string,ok:boolean,error?:string}>>}
  */
 export async function runReconnectPass(now = Date.now(), connect = connectServer) {
-  const results = [];
-  const pending = servers.filter(s => {
-    if (s.status !== 'error') return false;
-    const st = retryState.get(s.id);
-    return !st || !st.nextAt || st.nextAt <= now;
-  });
+  const due = servers
+    .filter(s => {
+      if (s.status !== 'error') return false;
+      const st = retryState.get(s.id);
+      return !st || !st.nextAt || st.nextAt <= now;
+    })
+    .sort((a, b) => (retryState.get(a.id)?.nextAt || 0) - (retryState.get(b.id)?.nextAt || 0))
+    .slice(0, RECONNECT_MAX_PER_PASS);
 
-  for (const server of pending) {
+  const results = await mapLimit(due, RECONNECT_CONCURRENCY, async (server) => {
     try {
       await connect(server.id);
       retryState.delete(server.id);
-      results.push({ id: server.id, name: server.name, ok: true });
       console.log(`[Remote] ✅ 自动重连成功: ${server.name} (${server.host}:${server.port})`);
+      return { id: server.id, name: server.name, ok: true };
     } catch (err) {
       const prev = retryState.get(server.id)?.count || 0;
       const count = prev + 1;
       const nextAt = nextRetryAt(count, now);
       retryState.set(server.id, { count, nextAt });
-      results.push({ id: server.id, name: server.name, ok: false, error: errorMessage(err) });
       const wait = Math.round((nextAt - now) / 1000);
       console.log(`[Remote] ⏳ ${server.name} 仍不可达（第 ${count} 次），${wait}s 后重试: ${errorMessage(err)}`);
+      return { id: server.id, name: server.name, ok: false, error: errorMessage(err) };
     }
-  }
+  });
   return results;
 }
 

@@ -392,6 +392,41 @@ openlog/
     `All configured authentication methods failed`）和已重试次数 —— 红灯可诊断，
     不用猜是网络、sshd 还是密码问题
 
+### 📈 规模与性能（1000 台量级）
+
+原本是按「几十台」设计的，1000 台会先被这些地方卡死，现已逐项改造：
+
+| 问题 | 原状态 | 现在 |
+|---|---|---|
+| 服务器配置存储 | 整块 JSON 存在 `kv_store`，每台状态变化都重写整个数组（1000 台 332KB / 1.7ms，同步阻塞事件循环） | 独立表 `remote_servers`，**一行一台**，状态变化只 UPDATE 一行；写操作合并 + 100ms 微批。实测 1000 次状态更新排队 5ms、落库 95ms；加载 1000 台 20ms |
+| 算力监控采集 | 前端每 30s 对**每台**机器发 2 个请求（stats + mfu），`Promise.all` 无上限 → 1000 台 = 2000 并发请求/30s | **服务端集中采集**：限并发（默认 16）、内存缓存、间隔自适应；前端只发**一个**请求拿全量快照 `GET /api/remote/servers/stats` |
+| 自动重连 | 串行 `for … await connect()`：1000 台不可达时一轮要数小时，期间不再重试（等于失效） | **限并发 + 每轮限量**（默认 16 并发 / 每轮 64 台，按下次重试时间排序），一轮几秒内完成并持续滚动 |
+| SSH 连接数 | 每台一条常驻连接，无上限 | 连接池上限（默认 300）+ **空闲回收**（默认 10 分钟），按需重连；建连超时 10s（原默认 20s） |
+| 容器日志监听 | 每 5s 双层串行循环，**无防重入** → 容器一多就任务堆积 | 定时器侧防重入 + 耗时超间隔自动放宽间隔 |
+| 日志保留 | `logPersistenceMaxAge` 只在**手动**端点生效，没有定时任务 → 无限增长 | 维护任务每小时按保留天数清理 `log_records` / `analysis_records` + WAL checkpoint |
+| 运维助手 prompt | 把所有已连接服务器都塞进 system prompt（几千台 = 十万级 token） | 只列前 30 台 + 总数摘要，其余让模型用 `remote_servers` 工具现查 |
+| 启动重连 | `Promise.allSettled` 一次拉起上千条 SSH | 限并发（默认 16） |
+
+**可调参数**（环境变量，均有默认值）：
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `OPENLOG_STATS_INTERVAL_MS` | `30000` | 状态采集间隔 |
+| `OPENLOG_STATS_CONCURRENCY` | `16` | 采集并发上限（1000 台时建议 16–32） |
+| `OPENLOG_MFU_INTERVAL_MS` | `60000` | MFU 采集间隔（只采有 GPU 的机器） |
+| `OPENLOG_MAX_SSH_CONNECTIONS` | `300` | 常驻 SSH 连接上限（LRU 回收） |
+| `OPENLOG_SSH_IDLE_TTL_MS` | `600000` | 空闲连接回收时间 |
+| `OPENLOG_SSH_READY_TIMEOUT_MS` | `10000` | SSH 建连超时 |
+| `OPENLOG_RECONNECT_CONCURRENCY` | `16` | 自动重连并发 |
+| `OPENLOG_RECONNECT_MAX_PER_PASS` | `64` | 每轮最多重试台数 |
+| `OPENLOG_STARTUP_CONNECT_CONCURRENCY` | `16` | 启动时重连并发 |
+
+> 数据库本身不是瓶颈：实测 SQLite（WAL）单条插入 8k+ 条/秒、1000 台服务器加载 20ms。
+> 1000 台以上先调上面这几个并发/间隔参数；真要再上一个量级，再考虑采集进程与 Web 进程分离 + PostgreSQL 连接池。
+
+**升级说明**：旧版本把服务器存在 `kv_store` 的 `remote_servers` key 里，启动时会**自动迁移**到新表，
+旧数据保留在 `remote_servers_legacy` 作为备份，不需要手工操作。
+
 ### 🤖 运维助手
 
 不只会聊天——它能**在已连接的 SSH 服务器上定位问题、改代码、改配置**，然后把结果告诉你。
@@ -689,7 +724,8 @@ OPENLOG_ENABLE_CONTAINER_EXEC=1   # 或 OPENLOG_ENABLE_REMOTE_EXEC=1 一并开�
 |------|------|------|
 | GET | `/api/monitor/stats` | 系统状态（含 GPU） |
 | GET | `/api/remote/servers` | 远程服务器列表 |
-| GET | `/api/remote/servers/:id/stats` | 远程系统状态（含 GPU 进程） |
+| GET | `/api/remote/servers/:id/stats` | 远程系统状态（含 GPU 进程，命中采集缓存） |
+| GET | `/api/remote/servers/stats` | 全量状态快照（服务端集中采集，`?refresh=1` 或 `?ids=a,b` 可按需补采） |
 | GET | `/api/remote/servers/:id/mfu` | 远程模型 MFU（读 vLLM `/metrics`） |
 | GET | `/api/docker/containers` | 容器列表 |
 | POST | `/api/docker/:sourceId/:containerId/exec` | 容器内执行命令（只读白名单，需 `OPENLOG_ENABLE_CONTAINER_EXEC=1`） |

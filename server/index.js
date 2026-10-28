@@ -31,6 +31,8 @@ import createAnalysisRouter from './routes/analysis.js';
 import assistantMemoryRouter from './routes/assistant-memory.js';
 import createModelsRouter from './routes/models.js';
 import createRemoteRouter from './routes/remote.js';
+import { createStatsScheduler } from './stats-scheduler.js';
+import { mapLimit } from './concurrency.js';
 import createSettingsRouter, { SENSITIVE_KEYS } from './routes/settings.js';
 import createDockerRouter from './routes/docker.js';
 import createChatRouter from './routes/chat.js';
@@ -38,8 +40,9 @@ import { AGENT_TOOLS, AGENT_TOOL_NAMES, executeAgentTool } from './agent-tools.j
 import createAuthRouter from './routes/auth.js';
 import { isLoopbackAddress } from './security/loopback.js';
 import { migrateWatchSourceFields } from './settings-migrations.js';
-import { initDb, getDb, getKv, setKv, insertLogRecord, getAlertConfig, closeDb } from './db/index.js';
+import { initDb, getDb, getKv, setKv, insertLogRecord, getAlertConfig, closeDb, pruneOldRecords, checkpoint } from './db/index.js';
 import { resolveDockerTransport } from './docker-transport.js';
+import { getRemoteMfu } from './gpu-mfu.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -218,7 +221,7 @@ async function initDatabase() {
     await initDb();
     console.log('[DB] 数据库初始化完成');
     ensureSettings();
-    remote.loadServers();
+    await remote.loadServers();
   } catch (err) {
     console.error('[DB] 初始化失败:', errorMessage(err));
   }
@@ -1333,7 +1336,18 @@ app.use(createDockerRouter({
 // Remote Server API Routes —— 已抽到 server/routes/remote.js
 // 命令安全策略与 docker /exec 共用 server/security/shell-command-policy.js
 // ========================================
-app.use(createRemoteRouter({ ensureSettings, stripThinking }));
+// 集中采集器：服务端限并发拉取所有已连接服务器的状态，前端只拿快照。
+// 1000 台时这是「不再让浏览器扇出 2000 个请求」的关键。
+const statsScheduler = createStatsScheduler({
+  getServers: () => remote.getServers(),
+  getStats: (id) => remote.getRemoteSystemStats(id),
+  getMfu: (id) => getRemoteMfu(id),
+  intervalMs: Number(process.env.OPENLOG_STATS_INTERVAL_MS) || 30_000,
+  mfuIntervalMs: Number(process.env.OPENLOG_MFU_INTERVAL_MS) || 60_000,
+  concurrency: Number(process.env.OPENLOG_STATS_CONCURRENCY) || 16,
+});
+
+app.use(createRemoteRouter({ ensureSettings, stripThinking, statsScheduler }));
 
 // Shell 会话存储
 const shellSessions = new Map();
@@ -1785,14 +1799,15 @@ server.listen(PORT, HOST, async () => {
     const toReconnect = servers.filter(s => s.status === 'connected' || s.status === 'error');
     if (toReconnect.length > 0) {
       console.log(`🔄 正在重连 ${toReconnect.length} 台之前配置过的服务器...`);
-      await Promise.allSettled(toReconnect.map(async (s) => {
+      // 限并发：1000 台同时建连会把事件循环和 1000 个 sshd 一起打满
+      await mapLimit(toReconnect, Number(process.env.OPENLOG_STARTUP_CONNECT_CONCURRENCY) || 16, async (s) => {
         try {
           await remote.connectServer(s.id);
           console.log(`  ✅ ${s.name} 重连成功`);
         } catch (err) {
           console.log(`  ❌ ${s.name} 重连失败: ${errorMessage(err)}`);
         }
-      }));
+      });
     }
   } catch (err) {
     console.error('自动重连出错:', errorMessage(err));
@@ -1801,6 +1816,7 @@ server.listen(PORT, HOST, async () => {
   // 后台自动重连：连不上的机器按 5s→5min 退避持续重试，
   // 恢复后自动回到 connected（以前只有进程重启才会再连一次）
   remote.startAutoReconnect();
+  statsScheduler.start();
 });
 
 
@@ -1858,10 +1874,41 @@ function startMaintenance() {
   if (maintenanceTimer) clearInterval(maintenanceTimer);
   const configured = Number(process.env.OPENLOG_MAINTENANCE_INTERVAL_MS);
   const interval = Number.isFinite(configured) && configured > 0 ? configured : 60_000;
-  maintenanceTimer = setInterval(pruneEphemeralMaps, interval);
+  maintenanceTimer = setInterval(() => {
+    pruneEphemeralMaps();
+    runRetention().catch(err => console.error('[Maintenance] 保留策略执行失败:', errorMessage(err)));
+  }, interval);
   // 不要因为这个定时器而阻止进程退出
   if (maintenanceTimer.unref) maintenanceTimer.unref();
   console.log(`[Maintenance] 过期状态清理已启动，间隔 ${interval}ms`);
+}
+
+// ─── 数据保留策略（每小时最多跑一次）──────────────────────────
+let lastRetentionAt = 0;
+const RETENTION_INTERVAL_MS = 60 * 60 * 1000;
+
+/**
+ * 清理过期日志/分析记录 + WAL checkpoint。
+ *
+ * 这条以前完全缺失：`logPersistenceMaxAge` 只在手动端点里用到，没有任何定时任务。
+ * 几千台机器开着日志持久化时，log_records 会无限增长，最后磁盘和查询一起崩，
+ * 所以必须由后台定期按保留天数删旧数据。
+ */
+async function runRetention() {
+  const now = Date.now();
+  if (now - lastRetentionAt < RETENTION_INTERVAL_MS) return;
+  lastRetentionAt = now;
+  const settings = ensureSettings();
+  const logDays = Number(settings.logPersistenceMaxAge) || 7;
+  if (!settings.logPersistence && logDays <= 0) return;
+  const res = await pruneOldRecords({ logDays, analysisDays: Math.max(logDays * 4, 30) });
+  await checkpoint();
+  if (res.logs || res.analyses) {
+    console.log(`[Retention] 清理过期记录：日志 ${res.logs} 条、分析 ${res.analyses} 条（保留 ${logDays} 天）`);
+  }
+  // 顺带回收空闲 SSH 连接（1000 台场景下不让连接池无限膨胀）
+  const closed = remote.evictIdleConnections();
+  if (closed > 0) console.log(`[Retention] 回收空闲 SSH 连接 ${closed} 条`);
 }
 
 let shuttingDown = false;

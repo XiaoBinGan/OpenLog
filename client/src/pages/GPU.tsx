@@ -96,33 +96,45 @@ export default function GPU() {
   // 追踪是否已经尝试过本机 GPU 回退，避免反复 fetch
   const localFallbackTriedRef = useRef(false);
 
+  /** 把一条快照条目转成页面用的 ServerGPU */
+  const toServerGPU = useCallback((entry: any, server: typeof connectedServers[0] | undefined): ServerGPU => {
+    const gpus: GPUDevice[] = (entry?.stats?.gpus || []).map((g: any) => ({
+      index: g.index ?? 0,
+      name: g.name || 'GPU',
+      util: Number(g.util) || 0,
+      memUsed: Number(g.memUsed) || 0,
+      memTotal: Number(g.memTotal) || 0,
+      temp: Number(g.temp) || 0,
+      processes: g.processes || [],
+    }));
+    const summary = gpus.length > 0 ? {
+      total: gpus.length,
+      utilAvg: gpus.reduce((s: number, g) => s + g.util, 0) / gpus.length,
+      memUsedAvg: gpus.reduce((s: number, g) => s + g.memUsed, 0) / gpus.length,
+      memTotalAvg: gpus.reduce((s: number, g) => s + g.memTotal, 0) / gpus.length,
+      tempAvg: gpus.reduce((s: number, g) => s + g.temp, 0) / gpus.length,
+    } : null;
+    return {
+      serverId: entry?.serverId || server?.id || '',
+      serverName: entry?.serverName || server?.name || '服务器',
+      serverHost: server?.host || '',
+      devices: gpus,
+      summary,
+      mfu: entry?.mfu ?? null,
+      loading: false,
+      ...(entry?.statsError ? { error: entry.statsError } : {}),
+    };
+  }, []);
+
   const fetchServerGPU = useCallback(async (server: typeof connectedServers[0]): Promise<ServerGPU> => {
     try {
-      // MFU 单独请求：冷启动要在远端做两次采样（约 2s），不能拖慢显卡状态展示；
-      // 失败也不影响这一台服务器的其它指标。
+      // 单台按需查询（批量快照没覆盖到时兜底）
       const mfuPromise = apiFetch<ServerMfu>(`/api/remote/servers/${server.id}/mfu`).catch(() => null);
       const data = await apiFetch<RemoteGpuStats>(`/api/remote/servers/${server.id}/stats`);
       const mfu = await mfuPromise;
       if (data.error) throw new Error(data.error);
       if (data.offline) throw new Error('服务器未连接');
-      // Monitor stats 已经包含 gpus 数组（含 processes）
-      const gpus = data.gpus || [];
-      const summary = gpus.length > 0 ? {
-        total: gpus.length,
-        utilAvg: gpus.reduce((s: number, g: any) => s + (Number(g.util) || 0), 0) / gpus.length,
-        memUsedAvg: gpus.reduce((s: number, g: any) => s + (Number(g.memUsed) || 0), 0) / gpus.length,
-        memTotalAvg: gpus.reduce((s: number, g: any) => s + (Number(g.memTotal) || 0), 0) / gpus.length,
-        tempAvg: gpus.reduce((s: number, g: any) => s + (Number(g.temp) || 0), 0) / gpus.length,
-      } : null;
-      return {
-        serverId: server.id,
-        serverName: server.name,
-        serverHost: server.host,
-        devices: gpus,
-        summary,
-        mfu,
-        loading: false,
-      };
+      return toServerGPU({ serverId: server.id, serverName: server.name, stats: data, mfu }, server);
     } catch (err) {
       return {
         serverId: server.id,
@@ -135,7 +147,7 @@ export default function GPU() {
         loading: false,
       };
     }
-  }, []);
+  }, [toServerGPU]);
 
   // 本机 GPU 获取：先尝试本地 /api/monitor/stats，无 GPU 时回退到同 host 远程连接
   const fetchLocalGPU = useCallback(async (): Promise<ServerGPU | null> => {
@@ -217,10 +229,30 @@ export default function GPU() {
     //   }
     // }
 
-    // 远程服务器
+    // 远程服务器：一次拉服务端聚合快照。
+    // 旧实现是 Promise.all 对每台服务器各发 2 个请求（stats + mfu），
+    // 1000 台 = 每 30s 2000 个并发请求，浏览器和服务端都会被打满。
     if (connectedServers.length > 0) {
-      const remoteResults = await Promise.all(connectedServers.map(s => fetchServerGPU(s)));
-      results.push(...remoteResults.filter(r => r.devices.length > 0 || r.error));
+      try {
+        const snap = await apiFetch<{
+          servers?: Array<{ serverId: string; serverName: string; stats: any; statsError?: string | null; mfu?: ServerMfu | null }>;
+        }>('/api/remote/servers/stats');
+        const byId = new Map(connectedServers.map(s => [s.id, s]));
+        const entries = snap.servers || [];
+        const remoteResults = entries.map(entry => toServerGPU(entry, byId.get(entry.serverId)));
+        // 快照里没有的（极少：刚好断连）单独兜底查询，避免整块缺失
+        const missing = connectedServers.filter(s => !entries.some(e => e.serverId === s.id));
+        if (missing.length > 0 && missing.length <= 20) {
+          const fallback = await Promise.all(missing.map(s => fetchServerGPU(s)));
+          remoteResults.push(...fallback);
+        }
+        results.push(...remoteResults.filter(r => r.devices.length > 0 || r.error));
+      } catch {
+        // 聚合接口失败时退回逐台查询（保持可用），但限制数量避免把服务端打爆
+        const subset = connectedServers.slice(0, 20);
+        const remoteResults = await Promise.all(subset.map(s => fetchServerGPU(s)));
+        results.push(...remoteResults.filter(r => r.devices.length > 0 || r.error));
+      }
     }
 
     setServerGPUs(results);
@@ -228,7 +260,7 @@ export default function GPU() {
       setGlobalLoading(false);
     }
     setLastRefresh(new Date());
-  }, [connectedServers, fetchServerGPU, fetchLocalGPU, isRemote]);
+  }, [connectedServers, fetchServerGPU, fetchLocalGPU, isRemote, toServerGPU]);
 
   useEffect(() => {
     fetchAllGPUs();

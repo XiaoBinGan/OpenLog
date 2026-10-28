@@ -160,6 +160,10 @@ export class ContainerLogWatcher {
     this.cooldownMs = cooldownMs;
     this.timer = null;
     this.running = false;
+    /** 防重入标记：上一轮还没跑完时跳过这一轮 */
+    this.busy = false;
+    /** 上一轮耗时（ms），用于间隔自适应 */
+    this.lastTickMs = 0;
     /** key `${sourceId}:${containerId}` → { sinceMs, state } */
     this.checkpoints = new Map();
   }
@@ -171,6 +175,11 @@ export class ContainerLogWatcher {
     this.running = true;
     this.tick().catch(err => this.onError(errorMessage(err)));
     this.timer = setInterval(() => {
+      // 防重入：一轮要轮询 N 个容器的日志，几百个容器时可能跑不完一个间隔。
+      // 旧实现没有这个保护，setInterval 会让一轮套一轮，请求越积越多。
+      // 注意放在定时器这一侧判断（而不是 tick() 开头）：手动/测试触发的 tick
+      // 仍然应该执行，生产里真正怕的是定时器把任务堆起来。
+      if (this.busy) return;
       this.tick().catch(err => this.onError(errorMessage(err)));
     }, this.intervalMs);
     if (this.timer.unref) this.timer.unref();
@@ -183,10 +192,33 @@ export class ContainerLogWatcher {
     this.checkpoints.clear();
   }
 
-  /** 单轮扫描（测试里直接调用） */
+  /** 单轮扫描（测试里直接调用；定时器侧已做防重入判断） */
   async tick() {
     if (!this.running) return;
-    const now = Date.now();
+    this.busy = true;
+    const startedAt = Date.now();
+    try {
+      await this._tickBody(startedAt);
+    } finally {
+      this.busy = false;
+      this.lastTickMs = Date.now() - startedAt;
+      if (this.lastTickMs > this.intervalMs * 1.5) {
+        // 采集比间隔还慢：把间隔自适应放宽，避免持续堆积（1000 台场景必需）
+        this.intervalMs = Math.min(Math.round(this.lastTickMs * 2), 60_000);
+        if (this.timer) {
+          clearInterval(this.timer);
+          this.timer = setInterval(() => {
+            if (this.busy) return;
+            this.tick().catch(err => this.onError(errorMessage(err)));
+          }, this.intervalMs);
+          if (this.timer.unref) this.timer.unref();
+        }
+        this.onError(`[LogWatch] 采集耗时 ${this.lastTickMs}ms 超过间隔，自动放宽到 ${this.intervalMs}ms`);
+      }
+    }
+  }
+
+  async _tickBody(now) {
     let sources;
     try {
       sources = await this.listRunningSources();

@@ -333,6 +333,48 @@ export function insertAnalysis(record) {
   );
 }
 
+/**
+ * 清理过期记录（保留策略）。
+ *
+ * 之前 logPersistenceMaxAge（默认 7 天）只在手动 `DELETE /api/logs/history` 时生效，
+ * 没有任何定时任务 —— 开了持久化 + 几千台机器时，log_records 会无上限增长，
+ * 最终把磁盘和查询都拖死。这个函数给后台维护任务调用。
+ *
+ * @param {{ logDays?: number, analysisDays?: number }} [opts]
+ * @returns {Promise<{ logs:number, analyses:number }>}
+ */
+export async function pruneOldRecords({ logDays = 7, analysisDays = 30 } = {}) {
+  const nowSec = Math.floor(Date.now() / 1000);
+  const results = { logs: 0, analyses: 0 };
+  if (logDays > 0) {
+    // log_records 的 timestamp 是毫秒；旧数据可能为空，用 created_at 兜底
+    const cutoffMs = (nowSec - logDays * 86400) * 1000;
+    const cutoffSec = nowSec - logDays * 86400;
+    const r = await db.run(
+      `DELETE FROM log_records WHERE (timestamp IS NOT NULL AND timestamp < ?) OR (timestamp IS NULL AND created_at < ?)`,
+      cutoffMs, cutoffSec,
+    );
+    results.logs = r?.changes || 0;
+  }
+  if (analysisDays > 0) {
+    const cutoffSec = nowSec - analysisDays * 86400;
+    const r = await db.run(`DELETE FROM analysis_records WHERE created_at < ?`, cutoffSec);
+    results.analyses = r?.changes || 0;
+  }
+  return results;
+}
+
+/** WAL checkpoint：长时间高频写之后把 WAL 收敛回主库，避免 -wal 无限增长 */
+export async function checkpoint() {
+  try {
+    if (dbType !== 'sqlite' || !rawDb) return false;
+    rawDb.pragma('wal_checkpoint(TRUNCATE)');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function listAnalysis({ machine_id, log_record_id, limit = 50 } = {}) {
   let sql = `SELECT * FROM analysis_records WHERE 1=1`;
   const params = [];
