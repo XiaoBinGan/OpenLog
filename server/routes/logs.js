@@ -50,7 +50,7 @@ router.get('/api/logs/history', async (req, res) => {
   try {
     const { machine_id, severity, limit = 200, offset = 0, startDate, endDate } = req.query;
     
-    const records = listLogRecords({ machine_id, severity, limit: parseInt(limit), offset: parseInt(offset) });
+    const records = await listLogRecords({ machine_id, severity, limit: parseInt(limit), offset: parseInt(offset) });
     
     // 可选：按时间范围过滤
     let filtered = records;
@@ -77,7 +77,7 @@ router.delete('/api/logs/history', async (req, res) => {
     const cutoffTs = Math.floor(Date.now() / 1000) - days * 86400;
     
     const db = getDb();
-    const result = db.run(`DELETE FROM log_records WHERE timestamp < ?`, cutoffTs);
+    const result = await db.run(`DELETE FROM log_records WHERE timestamp < ?`, cutoffTs);
     
     res.json({ deleted: result.changes, cutoffDate: new Date(cutoffTs * 1000).toISOString() });
   } catch (err) {

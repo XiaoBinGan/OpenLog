@@ -18,6 +18,7 @@ vi.mock('../db/index.js', () => ({
     exec: async () => {},
   }),
   getDbType: () => 'sqlite',
+  schemaDialect: () => ({ id: 'TEXT', key: 'TEXT', text: 'TEXT', json: 'JSON', epoch: 'INTEGER', now: "strftime('%s','now')" }),
   getKv: (k) => kv.store.get(k),
   setKv: (k, v) => { kv.store.set(k, JSON.parse(JSON.stringify(v))); },
 }));

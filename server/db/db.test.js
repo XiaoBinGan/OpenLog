@@ -210,8 +210,8 @@ describe('Analysis Records CRUD', () => {
     expect(result.changes).toBeGreaterThanOrEqual(0);
   });
 
-  it('should list analyses', () => {
-    const analyses = listAnalysis({ machine_id: machineId });
+  it('should list analyses', async () => {
+    const analyses = await listAnalysis({ machine_id: machineId });
     expect(Array.isArray(analyses)).toBe(true);
     expect(analyses.length).toBeGreaterThanOrEqual(1);
     const a = analyses.find(r => r.id === analysisId);
@@ -220,8 +220,8 @@ describe('Analysis Records CRUD', () => {
     expect(a.model).toBe('gpt-4');
   });
 
-  it('should list analyses by log_record_id', () => {
-    const analyses = listAnalysis({ log_record_id: logId });
+  it('should list analyses by log_record_id', async () => {
+    const analyses = await listAnalysis({ log_record_id: logId });
     expect(analyses.length).toBeGreaterThanOrEqual(1);
   });
 });

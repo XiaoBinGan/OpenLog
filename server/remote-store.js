@@ -15,7 +15,7 @@
  *   - 数据库适配层可能是同步（SQLite）或异步（MySQL/PostgreSQL），两种都处理
  */
 
-import { getDb, getDbType, getKv, setKv } from './db/index.js';
+import { getDb, getDbType, getKv, setKv, schemaDialect } from './db/index.js';
 import { errorMessage } from './errors.js';
 
 /** 服务器表名：不要和 log_records 的 machines 表混淆（那张表用于日志归属） */
@@ -29,31 +29,35 @@ const COLUMNS = [
   'extra', 'created_at', 'updated_at',
 ];
 
-const DDL = `
-CREATE TABLE IF NOT EXISTS ${SERVERS_TABLE} (
-  id TEXT PRIMARY KEY,
-  name TEXT NOT NULL,
-  host TEXT NOT NULL,
-  port INTEGER,
-  username TEXT,
-  password TEXT,
-  private_key TEXT,
-  private_key_path TEXT,
-  log_path TEXT,
-  watch_files TEXT,
-  status TEXT,
-  last_error TEXT,
-  last_error_at TEXT,
-  last_connected TEXT,
-  extra TEXT,
-  created_at INTEGER,
-  updated_at INTEGER
-)`;
-
 const INDEXES = [
   `CREATE INDEX IF NOT EXISTS idx_remote_servers_status ON ${SERVERS_TABLE}(status)`,
   `CREATE INDEX IF NOT EXISTS idx_remote_servers_host ON ${SERVERS_TABLE}(host)`,
 ];
+
+/** 方言化建表语句（MySQL 的 TEXT 不能做 PK，PG/MySQL 时间戳用 BIGINT） */
+export function buildServersDdl(type) {
+  const d = schemaDialect(type);
+  return `
+CREATE TABLE IF NOT EXISTS ${SERVERS_TABLE} (
+  id ${d.id} PRIMARY KEY,
+  name ${d.text} NOT NULL,
+  host ${d.text} NOT NULL,
+  port INTEGER,
+  username ${d.text},
+  password ${d.text},
+  private_key ${d.text},
+  private_key_path ${d.text},
+  log_path ${d.text},
+  watch_files ${d.text},
+  status ${d.text},
+  last_error ${d.text},
+  last_error_at ${d.text},
+  last_connected ${d.text},
+  extra ${d.text},
+  created_at ${d.epoch},
+  updated_at ${d.epoch}
+)`;
+}
 
 let tableReady = false;
 
@@ -61,7 +65,7 @@ let tableReady = false;
 export async function ensureServersTable() {
   if (tableReady) return;
   const db = getDb();
-  await db.exec(DDL);
+  await db.exec(buildServersDdl(getDbType()));
   for (const idx of INDEXES) {
     try { await db.exec(idx); } catch { /* 索引已存在或方言差异，忽略 */ }
   }
@@ -148,16 +152,36 @@ export async function countServerRows() {
   return Number(row?.n || 0);
 }
 
-/** 整体替换（仅用于迁移/导入），单事务执行 */
+/**
+ * 生成多行 INSERT 的 SQL 与参数（纯函数，便于测试）。
+ * 1000 行如果逐个 INSERT，走远程 PostgreSQL 就是 1000 次网络往返
+ * （实测 20s+）；按 100 行一批可以降到 10 次左右。
+ */
+export function buildBulkInsertSql(rows) {
+  const values = rows.map(() => `(${COLUMNS.map(() => '?').join(', ')})`).join(', ');
+  const params = [];
+  for (const row of rows) {
+    for (const c of COLUMNS) params.push(row[c] ?? null);
+  }
+  return {
+    sql: `INSERT INTO ${SERVERS_TABLE} (${COLUMNS.join(', ')}) VALUES ${values}`,
+    params,
+  };
+}
+
+/** 批量导入时每批行数：兼顾往返次数与单条 SQL 大小 */
+export const BULK_INSERT_CHUNK = 100;
+
+/** 整体替换（仅用于迁移/导入） */
 export async function replaceAllServerRows(rows) {
   await ensureServersTable();
   const db = getDb();
   await db.run(`DELETE FROM ${SERVERS_TABLE}`);
-  for (const row of rows) {
-    await db.run(
-      `INSERT INTO ${SERVERS_TABLE} (${COLUMNS.join(', ')}) VALUES (${COLUMNS.map(() => '?').join(', ')})`,
-      ...COLUMNS.map(c => row[c] ?? null),
-    );
+  const list = Array.isArray(rows) ? rows : [];
+  for (let i = 0; i < list.length; i += BULK_INSERT_CHUNK) {
+    const chunk = list.slice(i, i + BULK_INSERT_CHUNK);
+    const { sql, params } = buildBulkInsertSql(chunk);
+    await db.run(sql, params);
   }
 }
 

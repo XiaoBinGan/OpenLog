@@ -14,9 +14,9 @@ import {
 const router = express.Router();
 
 // 获取所有技能
-router.get('/api/skills', (req, res) => {
+router.get('/api/skills', async (req, res) => {
   try {
-    const skills = listSkills();
+    const skills = await listSkills();
     res.json({ skills });
   } catch (err) {
     res.status(500).json({ error: errorMessage(err) });
@@ -24,13 +24,13 @@ router.get('/api/skills', (req, res) => {
 });
 
 // 创建技能
-router.post('/api/skills', (req, res) => {
+router.post('/api/skills', async (req, res) => {
   const { name, command, description, content, category, is_default } = req.body;
   if (!name || !command) return res.status(400).json({ error: 'name and command required' });
 
   try {
     const skill = { id: uuidv4(), name, command, description, content, category, is_default };
-    createSkill(skill);
+    await createSkill(skill);
     res.json({ success: true, skill });
   } catch (err) {
     res.status(500).json({ error: errorMessage(err) });
@@ -38,16 +38,16 @@ router.post('/api/skills', (req, res) => {
 });
 
 // 更新技能
-router.put('/api/skills/:id', (req, res) => {
+router.put('/api/skills/:id', async (req, res) => {
   const { name, command, description, content, category } = req.body;
   if (!name || !command) return res.status(400).json({ error: 'name and command required' });
 
   try {
-    const existing = getSkill(req.params.id);
+    const existing = await getSkill(req.params.id);
     if (!existing) return res.status(404).json({ error: '技能不存在' });
     if (existing.is_default) return res.status(403).json({ error: '内置技能不允许修改' });
 
-    updateSkill(req.params.id, { name, command, description, content, category });
+    await updateSkill(req.params.id, { name, command, description, content, category });
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: errorMessage(err) });
@@ -55,13 +55,13 @@ router.put('/api/skills/:id', (req, res) => {
 });
 
 // 删除技能
-router.delete('/api/skills/:id', (req, res) => {
+router.delete('/api/skills/:id', async (req, res) => {
   try {
-    const existing = getSkill(req.params.id);
+    const existing = await getSkill(req.params.id);
     if (!existing) return res.status(404).json({ error: '技能不存在' });
     if (existing.is_default) return res.status(403).json({ error: '内置技能不允许删除' });
 
-    deleteSkill(req.params.id);
+    await deleteSkill(req.params.id);
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: errorMessage(err) });
@@ -69,9 +69,9 @@ router.delete('/api/skills/:id', (req, res) => {
 });
 
 // 获取所有机器列表
-router.get('/api/machines', (req, res) => {
+router.get('/api/machines', async (req, res) => {
   try {
-    const machines = listMachines();
+    const machines = await listMachines();
     res.json({ machines });
   } catch (err) {
     res.status(500).json({ error: errorMessage(err) });
@@ -79,9 +79,9 @@ router.get('/api/machines', (req, res) => {
 });
 
 // 获取所有告警配置
-router.get('/api/alerts', (req, res) => {
+router.get('/api/alerts', async (req, res) => {
   try {
-    const configs = listAlertConfigs();
+    const configs = await listAlertConfigs();
     res.json({ configs });
   } catch (err) {
     res.status(500).json({ error: errorMessage(err) });
@@ -89,12 +89,12 @@ router.get('/api/alerts', (req, res) => {
 });
 
 // 保存/更新告警配置
-router.put('/api/alerts', (req, res) => {
+router.put('/api/alerts', async (req, res) => {
   const { machine_id, enabled, patterns, severity_filter, cooldown_minutes, webhook_url } = req.body;
   if (!machine_id) return res.status(400).json({ error: 'machine_id is required' });
 
   try {
-    const existing = getAlertConfig(machine_id);
+    const existing = await getAlertConfig(machine_id);
     const config = {
       id: existing?.id || uuidv4(),
       machine_id,
@@ -104,7 +104,7 @@ router.put('/api/alerts', (req, res) => {
       cooldown_minutes: cooldown_minutes !== undefined ? cooldown_minutes : 5,
       webhook_url: webhook_url || '',
     };
-    upsertAlertConfig(config);
+    await upsertAlertConfig(config);
     res.json({ success: true, config });
   } catch (err) {
     res.status(500).json({ error: errorMessage(err) });

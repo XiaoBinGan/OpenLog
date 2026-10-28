@@ -624,7 +624,7 @@ function saveLog(log, source = null) {
           severity: (log.level || 'info').toLowerCase(),
           timestamp: log.timestamp ? Math.floor(new Date(log.timestamp).getTime() / 1000) : Math.floor(Date.now() / 1000),
           parsed: log,
-        });
+        })?.catch?.((err) => console.warn('[DB] 日志持久化失败:', errorMessage(err)));
       } catch (err) {
         console.warn('[DB] 日志持久化失败:', errorMessage(err));
       }
@@ -945,7 +945,7 @@ export function matchesSeverityFilter(lineLevel, severityFilter) {
 /** 处理单个巡检结果的告警通知 */
 async function processAlertForResult(result) {
   try {
-    const config = getAlertConfig(result.sourceId);
+    const config = await getAlertConfig(result.sourceId);
     if (!config || !config.enabled) return;
 
     if (!config.webhook_url) {

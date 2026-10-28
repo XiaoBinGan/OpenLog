@@ -12,6 +12,7 @@ vi.mock('../db/index.js', () => ({
     exec: async () => {},
   }),
   getDbType: () => dbType,
+  schemaDialect: () => ({ id: 'TEXT', key: 'TEXT', text: 'TEXT', json: 'JSON', epoch: 'INTEGER', now: "strftime('%s','now')" }),
   getKv: (k) => kv.store.get(k),
   setKv: (k, v) => { kv.store.set(k, JSON.parse(JSON.stringify(v))); },
 }));
@@ -109,6 +110,30 @@ describe('旧 kv 迁移', () => {
 
   it('没有旧数据时返回 0', async () => {
     expect(await store.migrateLegacyKvServers((s) => store.serverToRow(s, (p) => p))).toBe(0);
+  });
+});
+
+describe('buildBulkInsertSql —— 批量插入（1000 行别再逐个往返）', () => {
+  it('单批生成多行 VALUES，参数按列顺序展开', () => {
+    const rows = [
+      { id: 'a', name: 'n1', host: 'h1' },
+      { id: 'b', name: 'n2', host: 'h2' },
+    ];
+    const { sql, params } = store.buildBulkInsertSql(rows);
+    expect(sql).toContain('INSERT INTO remote_servers');
+    expect(sql).toContain('VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
+    expect(params).toHaveLength(34); // 17 列 × 2 行
+    expect(params[0]).toBe('a');
+    expect(params[17]).toBe('b');
+  });
+
+  it('空数组不生成语句', () => {
+    expect(store.buildBulkInsertSql([]).sql).toContain('VALUES ');
+  });
+
+  it('每批行数常量合理（往返次数 vs SQL 大小的折中）', () => {
+    expect(store.BULK_INSERT_CHUNK).toBeGreaterThanOrEqual(50);
+    expect(store.BULK_INSERT_CHUNK).toBeLessThanOrEqual(500);
   });
 });
 

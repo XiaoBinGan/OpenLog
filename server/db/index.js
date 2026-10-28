@@ -1,16 +1,25 @@
 /**
  * 统一数据库层
- * 支持 SQLite（本地默认）、MySQL、PostgreSQL
- * 自动检测可用数据库，按优先级适配
+ * 支持 SQLite（本地默认）、PostgreSQL（连接池）、MySQL（连接池）
+ *
+ * 设计要点（1000 台服务器场景）：
+ *  - PostgreSQL / MySQL 都用**连接池**，不是单连接 —— 单连接会把所有查询串行化，
+ *    换库不但没扩容反而更慢；
+ *  - SQL 统一用 `?` 占位，PostgreSQL 在适配层转换成 `$1,$2…`（业务代码不用关心方言）；
+ *  - 显式配置的数据库连不上时**直接报错**，不再静默回退到本地 SQLite
+ *    （生产环境静默回退 = 数据写到了没人知道的地方）；
+ *  - 建表用方言化的类型/默认值（SQLite 的 `strftime`、PG 的 `EXTRACT`、MySQL 的 `UNIX_TIMESTAMP`）。
  */
 
 import Database from 'better-sqlite3';
 import { errorMessage } from '../errors.js';
 import mysql from 'mysql2/promise';
-import { Client as PgClient } from 'pg';
+import pg from 'pg';
 import { existsSync, mkdirSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
+
+const { Pool: PgPool } = pg;
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 // OPENLOG_DATA_DIR 让测试与容器把数据库放到隔离位置；不设置时行为与以前完全一致。
@@ -20,7 +29,58 @@ const SQLITE_PATH = join(DATA_DIR, 'openlog.db');
 
 let db = null;
 let dbType = null; // 'sqlite' | 'mysql' | 'postgres'
-let rawDb = null;  // 原生连接
+let rawDb = null;  // 原生连接 / 连接池
+
+// ─── 参数与占位符归一 ─────────────────────────────────────────────────────
+
+/**
+ * 统一参数形式：既支持 `db.run(sql, a, b)`，也支持 `db.run(sql, [a, b])`。
+ * （历史代码两种写法都有，适配层必须都吃下）
+ */
+export function normalizeParams(params) {
+  if (params.length === 1 && Array.isArray(params[0])) return params[0];
+  return params;
+}
+
+/**
+ * 把 `?` 占位符转换成 PostgreSQL 的 `$1, $2…`。
+ *
+ * 必须跳过字符串字面量与注释里的 `?`（`WHERE note = 'a?b'` 不能被改坏），
+ * 所以这里是一个小状态机，而不是简单的 split/join。
+ */
+export function toPgPlaceholders(sql) {
+  const text = String(sql ?? '');
+  let out = '';
+  let i = 0;
+  let n = 0;
+  let quote = null; // "'" | '"' | '`'
+  while (i < text.length) {
+    const ch = text[i];
+    if (quote) {
+      out += ch;
+      if (ch === quote) {
+        // 处理 '' 转义
+        if (text[i + 1] === quote) { out += text[i + 1]; i += 2; continue; }
+        quote = null;
+      }
+      i += 1;
+      continue;
+    }
+    if (ch === "'" || ch === '"' || ch === '`') { quote = ch; out += ch; i += 1; continue; }
+    // 行注释
+    if (ch === '-' && text[i + 1] === '-') {
+      const end = text.indexOf('\n', i);
+      if (end === -1) { out += text.slice(i); break; }
+      out += text.slice(i, end);
+      i = end;
+      continue;
+    }
+    if (ch === '?') { n += 1; out += `$${n}`; i += 1; continue; }
+    out += ch;
+    i += 1;
+  }
+  return out;
+}
 
 // ─── SQLite 适配层 ─────────────────────────────────────────────────────────
 
@@ -30,13 +90,13 @@ function adaptSQLite(conn) {
       // 单条语句
       const cleanSql = sql.replace(/returning.*/i, '').trim();
       const stmt = conn.prepare(cleanSql);
-      return { changes: stmt.run(...params).changes };
+      return { changes: stmt.run(...normalizeParams(params)).changes };
     },
     get(sql, ...params) {
-      return conn.prepare(sql).get(...params);
+      return conn.prepare(sql).get(...normalizeParams(params));
     },
     all(sql, ...params) {
-      return conn.prepare(sql).all(...params);
+      return conn.prepare(sql).all(...normalizeParams(params));
     },
     exec(sql) {
       conn.exec(sql);
@@ -47,15 +107,15 @@ function adaptSQLite(conn) {
 function adaptMySQL(conn) {
   return {
     async run(sql, ...params) {
-      const [r] = await conn.execute(sql, params);
+      const [r] = await conn.execute(sql, normalizeParams(params));
       return { changes: r.affectedRows, insertId: r.insertId };
     },
     async get(sql, ...params) {
-      const [rows] = await conn.execute(sql, params);
+      const [rows] = await conn.execute(sql, normalizeParams(params));
       return rows[0] || null;
     },
     async all(sql, ...params) {
-      const [rows] = await conn.execute(sql, params);
+      const [rows] = await conn.execute(sql, normalizeParams(params));
       return rows;
     },
     async exec(sql) {
@@ -64,79 +124,173 @@ function adaptMySQL(conn) {
   };
 }
 
-function adaptPostgres(conn) {
+/**
+ * PostgreSQL 适配层（连接池）。
+ *
+ * 关键差异：
+ *  - 占位符是 `$1,$2`，业务代码统一写 `?`，这里转换；
+ *  - `pool.query()` 会自动从池里取连接并释放，不需要手工 connect/release；
+ *  - 多语句 DDL 只有「不带参数」时才能一次执行（简单查询协议），迁移里的建表都走 exec；
+ *  - JSONB 字段插入字符串即可（PG 会隐式转换），读出时 pg 已 parse 成对象，
+ *    为了和 SQLite 行为一致（SQLite 返回字符串），读 JSON 列时由业务层兜底解析。
+ */
+function adaptPostgres(pool) {
   return {
     async run(sql, ...params) {
-      const r = await conn.query(sql, params);
-      return { changes: r.rowCount, insertId: r.rows[0]?.id || null };
+      const r = await pool.query(toPgPlaceholders(sql), normalizeParams(params));
+      return { changes: r.rowCount ?? 0, insertId: r.rows?.[0]?.id ?? null };
     },
     async get(sql, ...params) {
-      const r = await conn.query(sql, params);
+      const r = await pool.query(toPgPlaceholders(sql), normalizeParams(params));
       return r.rows[0] || null;
     },
     async all(sql, ...params) {
-      const r = await conn.query(sql, params);
+      const r = await pool.query(toPgPlaceholders(sql), normalizeParams(params));
       return r.rows;
     },
     async exec(sql) {
-      await conn.query(sql);
+      await pool.query(sql);
     }
+  };
+}
+
+// ─── 配置解析（纯函数，便于测试）──────────────────────────────────────────
+
+/**
+ * 从环境变量解析数据库配置。
+ *
+ * 支持：
+ *   OPENLOG_DB_TYPE=sqlite|postgres|mysql       显式指定
+ *   OPENLOG_DATABASE_URL=postgres://u:p@h:5432/db
+ *   OPENLOG_PG_HOST / OPENLOG_PG_PORT / OPENLOG_PG_USER / OPENLOG_PG_PASSWORD / OPENLOG_PG_DATABASE
+ *   OPENLOG_PG_POOL_MAX（默认 10）
+ *   OPENLOG_MYSQL_HOST / ...（可选）
+ *
+ * @returns {{ type?:string, connectionString?:string, postgresConfig?:object, mysqlConfig?:object, explicit:boolean }}
+ */
+export function resolveDbConfig(env = process.env) {
+  const raw = String(env.OPENLOG_DB_TYPE || env.DB_TYPE || '').trim().toLowerCase();
+  const typeMap = { pg: 'postgres', postgresql: 'postgres', postgres: 'postgres', mysql: 'mysql', sqlite: 'sqlite', sqlite3: 'sqlite' };
+  const type = typeMap[raw] || '';
+  const url = String(env.OPENLOG_DATABASE_URL || env.DATABASE_URL || '').trim();
+
+  const pgConfig = {
+    host: env.OPENLOG_PG_HOST || undefined,
+    port: env.OPENLOG_PG_PORT ? Number(env.OPENLOG_PG_PORT) : undefined,
+    user: env.OPENLOG_PG_USER || undefined,
+    password: env.OPENLOG_PG_PASSWORD || undefined,
+    database: env.OPENLOG_PG_DATABASE || undefined,
+    max: env.OPENLOG_PG_POOL_MAX ? Number(env.OPENLOG_PG_POOL_MAX) : undefined,
+    idleTimeoutMillis: env.OPENLOG_PG_IDLE_TIMEOUT_MS ? Number(env.OPENLOG_PG_IDLE_TIMEOUT_MS) : undefined,
+  };
+  const hasPgParts = Boolean(pgConfig.host || pgConfig.user || pgConfig.database);
+
+  const mysqlConfig = {
+    host: env.OPENLOG_MYSQL_HOST || undefined,
+    port: env.OPENLOG_MYSQL_PORT ? Number(env.OPENLOG_MYSQL_PORT) : undefined,
+    user: env.OPENLOG_MYSQL_USER || undefined,
+    password: env.OPENLOG_MYSQL_PASSWORD || undefined,
+    database: env.OPENLOG_MYSQL_DATABASE || undefined,
+  };
+  const hasMysqlParts = Boolean(mysqlConfig.host || mysqlConfig.user || mysqlConfig.database);
+
+  // URL 的 scheme 决定类型
+  let urlType = '';
+  if (/^postgres(ql)?:\/\//i.test(url)) urlType = 'postgres';
+  else if (/^mysql:\/\//i.test(url)) urlType = 'mysql';
+
+  const effectiveType = type || urlType || (hasPgParts ? 'postgres' : hasMysqlParts ? 'mysql' : '');
+  const explicit = Boolean(effectiveType) || Boolean(url) || hasPgParts || hasMysqlParts;
+
+  return {
+    type: effectiveType || undefined,
+    connectionString: url || undefined,
+    postgresConfig: effectiveType === 'postgres' ? pgConfig : undefined,
+    mysqlConfig: effectiveType === 'mysql' ? mysqlConfig : undefined,
+    explicit,
   };
 }
 
 // ─── 初始化 ────────────────────────────────────────────────────────────────
 
+/**
+ * 初始化数据库。
+ *
+ * @param {{ type?:string, connectionString?:string, postgresConfig?:object, mysqlConfig?:object, explicit?:boolean }} [config]
+ *   不传则读环境变量；都不配 → SQLite（WAL）。
+ *   显式配置的库连不上会 **抛错**，不会静默回退到 SQLite
+ *   （否则生产换库时数据库写到了没人知道的地方）。
+ */
 export async function initDb(config = {}) {
-  // config 格式: { type: 'sqlite'|'mysql'|'postgres', path?, connectionString? }
-  const { type, connectionString, mysqlConfig, postgresConfig } = config;
-
   if (db) return db;
 
-  // 优先级：用户指定 > 自动探测
-  if (type === 'mysql' || mysqlConfig) {
+  const envConfig = resolveDbConfig();
+  const merged = { ...envConfig, ...config };
+  const explicit = config.explicit ?? envConfig.explicit;
+  const { type, connectionString, mysqlConfig, postgresConfig } = merged;
+
+  const failures = [];
+
+  if (type === 'postgres' || postgresConfig) {
+    try {
+      const cfg = postgresConfig || {};
+      const pool = new PgPool({
+        ...(connectionString ? { connectionString } : {}),
+        host: cfg.host || (connectionString ? undefined : 'localhost'),
+        port: cfg.port || (connectionString ? undefined : 5432),
+        user: cfg.user || (connectionString ? undefined : 'postgres'),
+        password: cfg.password ?? (connectionString ? undefined : ''),
+        database: cfg.database || (connectionString ? undefined : 'openlog'),
+        max: Number(cfg.max) || 10,
+        idleTimeoutMillis: Number(cfg.idleTimeoutMillis) || 30_000,
+        connectionTimeoutMillis: 5_000,
+        // 连接池里出现的问题是异步事件，不能让它变成 uncaughtException
+        allowExitOnIdle: false,
+      });
+      pool.on('error', (err) => console.error('[DB] PostgreSQL 连接池错误:', errorMessage(err)));
+      // 立刻探活，连不上就别装作成功
+      await pool.query('SELECT 1');
+      rawDb = pool;
+      dbType = 'postgres';
+      db = adaptPostgres(pool);
+      console.log(`[DB] PostgreSQL connected: ${connectionString ? '(URL)' : `${cfg.host || 'localhost'}:${cfg.port || 5432}`} 连接池上限 ${(Number(cfg.max) || 10)}`);
+    } catch (err) {
+      failures.push(`PostgreSQL: ${errorMessage(err)}`);
+      if (rawDb) { try { await rawDb.end(); } catch { /* 忽略 */ } }
+      rawDb = null; db = null; dbType = null;
+    }
+  }
+
+  if (!db && (type === 'mysql' || mysqlConfig)) {
     try {
       const cfg = mysqlConfig || {};
-      const conn = await mysql.createConnection({
+      const pool = mysql.createPool({
+        ...(connectionString ? { uri: connectionString } : {}),
         host: cfg.host || 'localhost',
         port: cfg.port || 3306,
         user: cfg.user || 'root',
         password: cfg.password || '',
         database: cfg.database || 'openlog',
-        connectTimeout: 3000,
+        waitForConnections: true,
+        connectionLimit: Number(cfg.max) || 10,
+        queueLimit: 0,
+        connectTimeout: 5000,
       });
-      await conn.execute(`CREATE DATABASE IF NOT EXISTS \`${cfg.database || 'openlog'}\``);
-      await conn.execute(`USE \`${cfg.database || 'openlog'}\``);
-      rawDb = conn;
+      await pool.query('SELECT 1');
+      rawDb = pool;
       dbType = 'mysql';
-      db = await adaptMySQL(conn);
-      console.log('[DB] MySQL connected:', cfg.host || 'localhost');
+      db = adaptMySQL(pool);
+      console.log(`[DB] MySQL connected: ${cfg.host || 'localhost'} 连接池上限 ${Number(cfg.max) || 10}`);
     } catch (err) {
-      console.warn('[DB] MySQL 连接失败:', errorMessage(err), '→ 尝试下一种...');
+      failures.push(`MySQL: ${errorMessage(err)}`);
+      if (rawDb) { try { await rawDb.end(); } catch { /* 忽略 */ } }
       rawDb = null; db = null; dbType = null;
     }
   }
 
-  if (!db && (type === 'postgres' || postgresConfig)) {
-    try {
-      const cfg = postgresConfig || {};
-      const conn = new PgClient({
-        host: cfg.host || 'localhost',
-        port: cfg.port || 5432,
-        user: cfg.user || 'postgres',
-        password: cfg.password || '',
-        database: cfg.database || 'openlog',
-        connectionTimeoutMillis: 3000,
-      });
-      await conn.connect();
-      rawDb = conn;
-      dbType = 'postgres';
-      db = adaptPostgres(conn);
-      console.log('[DB] PostgreSQL connected:', cfg.host || 'localhost');
-    } catch (err) {
-      console.warn('[DB] PostgreSQL 连接失败:', errorMessage(err), '→ 尝试下一种...');
-      if (rawDb) { try { rawDb.end(); } catch {} }
-      rawDb = null; db = null; dbType = null;
-    }
+  if (!db && type && type !== 'sqlite') {
+    // 显式指定了远程库却连不上：直接失败，不静默落回本地 SQLite
+    throw new Error(`[DB] 指定的数据库不可用 → ${failures.join('; ') || `未知类型 ${type}`}`);
   }
 
   if (!db) {
@@ -146,6 +300,9 @@ export async function initDb(config = {}) {
       const conn = new Database(SQLITE_PATH);
       conn.pragma('journal_mode = WAL');
       conn.pragma('foreign_keys = ON');
+      // 1000 台场景写入更频繁，NORMAL 比默认 FULL 少一次 fsync，崩溃最多丢最后一个事务
+      conn.pragma('synchronous = NORMAL');
+      conn.pragma('busy_timeout = 5000');
       rawDb = conn;
       dbType = 'sqlite';
       db = adaptSQLite(conn);
@@ -155,7 +312,13 @@ export async function initDb(config = {}) {
     }
   }
 
+  if (explicit && dbType === 'sqlite' && type !== 'sqlite') {
+    console.warn('[DB] ⚠️ 未检测到数据库配置，使用本地 SQLite');
+  }
+
   await runMigrations();
+  // kv 全量进内存：让 getKv 保持同步语义（异步适配器下也成立）
+  await loadKvCache();
   return db;
 }
 
@@ -168,113 +331,166 @@ export function getDbType() {
   return dbType;
 }
 
+/** 连接池/数据库概况（健康检查用） */
+export function getDbInfo() {
+  const info = { type: dbType };
+  if (!rawDb) return info;
+  if (dbType === 'postgres' || dbType === 'mysql') {
+    info.pool = {
+      total: rawDb.totalCount ?? rawDb.pool?._allConnections?.length ?? null,
+      idle: rawDb.idleCount ?? rawDb.pool?._freeConnections?.length ?? null,
+      waiting: rawDb.waitingCount ?? rawDb.pool?._connectionQueue?.length ?? null,
+    };
+  }
+  return info;
+}
+
 // ─── 迁移 ─────────────────────────────────────────────────────────────────
 
-async function runMigrations() {
-  if (!db) return;
+/**
+ * 各方言的类型/默认值映射。
+ *
+ * 差异点（踩过才知道）：
+ *  - 时间戳用「秒」存整数：SQLite INTEGER、PG/MySQL BIGINT（INTEGER 32 位会在 2038 溢出）
+ *  - 默认值：SQLite `strftime('%s','now')`、PG `EXTRACT(EPOCH FROM now())::BIGINT`、MySQL `UNIX_TIMESTAMP()`
+ *  - MySQL 的 TEXT 不能直接做主键 → 主键/键列用 VARCHAR
+ *  - JSON：PG 用 JSONB（可索引）、MySQL/SQLite 用 JSON
+ */
+export function schemaDialect(type) {
+  if (type === 'postgres') {
+    return {
+      id: 'TEXT', key: 'TEXT', text: 'TEXT', json: 'JSONB', epoch: 'BIGINT',
+      now: 'EXTRACT(EPOCH FROM now())::BIGINT',
+    };
+  }
+  if (type === 'mysql') {
+    return {
+      id: 'VARCHAR(64)', key: 'VARCHAR(191)', text: 'LONGTEXT', json: 'JSON', epoch: 'BIGINT',
+      now: 'UNIX_TIMESTAMP()',
+    };
+  }
+  return {
+    id: 'TEXT', key: 'TEXT', text: 'TEXT', json: 'JSON', epoch: 'INTEGER',
+    now: "strftime('%s', 'now')",
+  };
+}
 
-  // machines 表
-  await db.exec(`
+/** 建表/建索引：方言化 DDL（纯函数，便于测试生成结果） */
+export function buildSchemaSql(type) {
+  const d = schemaDialect(type);
+  const statements = [];
+
+  statements.push(`
     CREATE TABLE IF NOT EXISTS machines (
-      id TEXT PRIMARY KEY,
-      type TEXT NOT NULL DEFAULT 'local', -- 'local' | 'remote' | 'docker'
-      name TEXT NOT NULL,
-      host TEXT,
+      id ${d.id} PRIMARY KEY,
+      type ${d.text} NOT NULL DEFAULT 'local',
+      name ${d.text} NOT NULL,
+      host ${d.text},
       port INTEGER,
-      ssh_user TEXT,
-      log_path TEXT,
-      created_at INTEGER DEFAULT (strftime('%s', 'now')),
-      updated_at INTEGER DEFAULT (strftime('%s', 'now'))
+      ssh_user ${d.text},
+      log_path ${d.text},
+      created_at ${d.epoch} DEFAULT (${d.now}),
+      updated_at ${d.epoch} DEFAULT (${d.now})
     )
   `);
 
-  // log_records 表
-  await db.exec(`
+  statements.push(`
     CREATE TABLE IF NOT EXISTS log_records (
-      id TEXT PRIMARY KEY,
-      machine_id TEXT NOT NULL,
-      source_type TEXT NOT NULL, -- 'file' | 'docker' | 'container'
-      source_name TEXT NOT NULL,
-      content TEXT NOT NULL,
-      severity TEXT NOT NULL DEFAULT 'error', -- 'error' | 'warn' | 'info'
-      timestamp INTEGER,
-      parsed JSON,
-      created_at INTEGER DEFAULT (strftime('%s', 'now')),
+      id ${d.id} PRIMARY KEY,
+      machine_id ${d.text} NOT NULL,
+      source_type ${d.text} NOT NULL,
+      source_name ${d.text} NOT NULL,
+      content ${d.text} NOT NULL,
+      severity ${d.text} NOT NULL DEFAULT 'error',
+      timestamp ${d.epoch},
+      parsed ${d.json},
+      created_at ${d.epoch} DEFAULT (${d.now}),
       FOREIGN KEY (machine_id) REFERENCES machines(id) ON DELETE CASCADE
     )
   `);
 
-  // analysis_records 表
-  await db.exec(`
+  statements.push(`
     CREATE TABLE IF NOT EXISTS analysis_records (
-      id TEXT PRIMARY KEY,
-      log_record_id TEXT NOT NULL,
-      machine_id TEXT NOT NULL,
-      diagnosis TEXT NOT NULL,
-      suggestion TEXT,
-      severity TEXT,
-      model TEXT,
+      id ${d.id} PRIMARY KEY,
+      log_record_id ${d.text} NOT NULL,
+      machine_id ${d.text} NOT NULL,
+      diagnosis ${d.text} NOT NULL,
+      suggestion ${d.text},
+      severity ${d.text},
+      model ${d.text},
       token_used INTEGER,
-      created_at INTEGER DEFAULT (strftime('%s', 'now')),
+      created_at ${d.epoch} DEFAULT (${d.now}),
       FOREIGN KEY (log_record_id) REFERENCES log_records(id) ON DELETE CASCADE,
       FOREIGN KEY (machine_id) REFERENCES machines(id) ON DELETE CASCADE
     )
   `);
 
-  // alert_configs 表
-  await db.exec(`
+  statements.push(`
     CREATE TABLE IF NOT EXISTS alert_configs (
-      id TEXT PRIMARY KEY,
-      machine_id TEXT NOT NULL,
+      id ${d.id} PRIMARY KEY,
+      machine_id ${d.text} NOT NULL,
       enabled INTEGER NOT NULL DEFAULT 1,
-      patterns TEXT NOT NULL DEFAULT '*.log',
-      severity_filter TEXT DEFAULT 'error',
+      patterns ${d.text} NOT NULL DEFAULT '*.log',
+      severity_filter ${d.text} DEFAULT 'error',
       cooldown_minutes INTEGER DEFAULT 5,
-      webhook_url TEXT,
-      created_at INTEGER DEFAULT (strftime('%s', 'now')),
-      updated_at INTEGER DEFAULT (strftime('%s', 'now')),
+      webhook_url ${d.text},
+      created_at ${d.epoch} DEFAULT (${d.now}),
+      updated_at ${d.epoch} DEFAULT (${d.now}),
       FOREIGN KEY (machine_id) REFERENCES machines(id) ON DELETE CASCADE
     )
   `);
 
-  // 索引
-  await db.exec(`CREATE INDEX IF NOT EXISTS idx_log_records_machine ON log_records(machine_id)`);
-  await db.exec(`CREATE INDEX IF NOT EXISTS idx_log_records_timestamp ON log_records(timestamp)`);
-  await db.exec(`CREATE INDEX IF NOT EXISTS idx_analysis_records_log ON analysis_records(log_record_id)`);
-
-  // kv_store 表（用于 settings 等键值存储）
-  await db.exec(`
+  statements.push(`
     CREATE TABLE IF NOT EXISTS kv_store (
-      key TEXT PRIMARY KEY,
-      value TEXT NOT NULL,
-      updated_at INTEGER DEFAULT (strftime('%s', 'now'))
+      key ${d.key} PRIMARY KEY,
+      value ${d.text} NOT NULL,
+      updated_at ${d.epoch} DEFAULT (${d.now})
     )
   `);
 
-  // skills 表（自定义技能）
-  await db.exec(`
+  statements.push(`
     CREATE TABLE IF NOT EXISTS skills (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL,
-      command TEXT NOT NULL,
-      description TEXT DEFAULT '',
-      content TEXT DEFAULT '',
-      category TEXT DEFAULT '通用',
+      id ${d.id} PRIMARY KEY,
+      name ${d.text} NOT NULL,
+      command ${d.text} NOT NULL,
+      description ${d.text} DEFAULT '',
+      content ${d.text} DEFAULT '',
+      category ${d.text} DEFAULT '通用',
       is_default INTEGER DEFAULT 0,
-      created_at INTEGER DEFAULT (strftime('%s', 'now')),
-      updated_at INTEGER DEFAULT (strftime('%s', 'now'))
+      created_at ${d.epoch} DEFAULT (${d.now}),
+      updated_at ${d.epoch} DEFAULT (${d.now})
     )
   `);
 
-  // 为已有 skills 表添加 content 列（兼容旧数据）
-  try {
-    await db.exec(`ALTER TABLE skills ADD COLUMN content TEXT DEFAULT ''`);
-  } catch { /* 列已存在 */ }
+  return statements;
+}
 
-  // 为已有 skills 表添加 is_default 列（兼容旧数据）
-  try {
-    await db.exec(`ALTER TABLE skills ADD COLUMN is_default INTEGER DEFAULT 0`);
-  } catch { /* 列已存在 */ }
+const CREATE_INDEXES = [
+  `CREATE INDEX IF NOT EXISTS idx_log_records_machine ON log_records(machine_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_log_records_timestamp ON log_records(timestamp)`,
+  `CREATE INDEX IF NOT EXISTS idx_analysis_records_log ON analysis_records(log_record_id)`,
+];
+
+async function runMigrations() {
+  if (!db) return;
+
+  // 建表（逐条 exec：PostgreSQL 的多语句只在不带参数时可用，但单条更好定位错误）
+  for (const sql of buildSchemaSql(dbType)) {
+    await db.exec(sql);
+  }
+
+  // 索引：MySQL 不支持 CREATE INDEX IF NOT EXISTS，统一用 try/catch 兜住「已存在」
+  for (const sql of CREATE_INDEXES) {
+    try { await db.exec(sql); } catch { /* 已存在 */ }
+  }
+
+  // 兼容旧数据：补列（各库都不支持 ADD COLUMN IF NOT EXISTS）
+  for (const sql of [
+    `ALTER TABLE skills ADD COLUMN content ${schemaDialect(dbType).text} DEFAULT ''`,
+    `ALTER TABLE skills ADD COLUMN is_default INTEGER DEFAULT 0`,
+  ]) {
+    try { await db.exec(sql); } catch { /* 列已存在 */ }
+  }
 }
 
 // ─── CRUD helpers ────────────────────────────────────────────────────────────
@@ -375,7 +591,7 @@ export async function checkpoint() {
   }
 }
 
-export function listAnalysis({ machine_id, log_record_id, limit = 50 } = {}) {
+export async function listAnalysis({ machine_id, log_record_id, limit = 50 } = {}) {
   let sql = `SELECT * FROM analysis_records WHERE 1=1`;
   const params = [];
   if (machine_id) { sql += ` AND machine_id = ?`; params.push(machine_id); }
@@ -386,29 +602,72 @@ export function listAnalysis({ machine_id, log_record_id, limit = 50 } = {}) {
 }
 
 // ─── KV Store (settings 等) ─────────────────────────────────────────────────
+//
+// 为什么加内存缓存：`getKv` 被 `loadSettings()` / `ensureSettings()` 这类**同步**函数调用，
+// 而 MySQL / PostgreSQL 适配层是异步的 —— 直接 `db.get()` 会返回 Promise，
+// 于是 PG 下读到的配置全是 undefined（真实 bug）。
+// 做法：启动时把整表读进 Map，读走内存（同步），写先更新内存再异步落库。
+// kv_store 存的是配置/小数据（几十条），全量缓存完全划算。
 
-export function getKv(key) {
-  const row = db.get(`SELECT value FROM kv_store WHERE key = ?`, key);
-  if (!row) return null;
-  try {
-    return JSON.parse(row.value);
-  } catch {
-    return row.value;
+const kvCache = new Map();
+let kvCacheLoaded = false;
+let kvFlushChain = Promise.resolve();
+
+/** 启动时加载 kv 全表到内存（异步）。SQLite 也走这条路，保持行为一致。 */
+export async function loadKvCache() {
+  const rows = await db.all(`SELECT key, value FROM kv_store`);
+  kvCache.clear();
+  for (const row of rows || []) {
+    let parsed;
+    try { parsed = JSON.parse(row.value); } catch { parsed = row.value; }
+    kvCache.set(row.key, parsed);
   }
+  kvCacheLoaded = true;
+  return kvCache.size;
 }
 
+/** 测试用：清空缓存状态 */
+export function _resetKvCache() {
+  kvCache.clear();
+  kvCacheLoaded = false;
+  kvFlushChain = Promise.resolve();
+}
+
+/** 同步读（内存）。未加载时返回 null。 */
+export function getKv(key) {
+  return kvCache.has(key) ? kvCache.get(key) : null;
+}
+
+/** 写：更新内存 + 异步落库（返回 Promise 便于需要确定性的调用方 await） */
 export function setKv(key, value) {
+  kvCache.set(key, value);
   const now = Math.floor(Date.now() / 1000);
   const str = typeof value === 'string' ? value : JSON.stringify(value);
-  return db.run(
+  const write = () => db.run(
     `INSERT INTO kv_store (key, value, updated_at) VALUES (?, ?, ?)
      ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at`,
     [key, str, now]
   );
+  // 串行化：同一 key 连续写时保持落库顺序
+  const p = kvFlushChain.then(write).catch(err => {
+    console.error('[DB] kv 落库失败:', errorMessage(err));
+  });
+  kvFlushChain = p;
+  return p;
 }
 
 export function deleteKv(key) {
-  return db.run(`DELETE FROM kv_store WHERE key = ?`, key);
+  kvCache.delete(key);
+  const p = kvFlushChain.then(() => db.run(`DELETE FROM kv_store WHERE key = ?`, key)).catch(err => {
+    console.error('[DB] kv 删除失败:', errorMessage(err));
+  });
+  kvFlushChain = p;
+  return p;
+}
+
+/** 等待所有 kv 写入落库（退出/测试用） */
+export function flushKvWrites() {
+  return kvFlushChain;
 }
 
 // ─── Skills ────────────────────────────────────────────────────────────────
@@ -442,11 +701,15 @@ export function deleteSkill(id) {
   return db.run(`DELETE FROM skills WHERE id = ?`, id);
 }
 
+/** kv 列表（内存缓存；prefix 过滤） */
 export function listKv(prefix = '') {
-  if (prefix) {
-    return db.all(`SELECT * FROM kv_store WHERE key LIKE ? ORDER BY key`, prefix + '%');
+  const out = [];
+  for (const [key, value] of kvCache) {
+    if (prefix && !key.startsWith(prefix)) continue;
+    out.push({ key, value: typeof value === 'string' ? value : JSON.stringify(value) });
   }
-  return db.all(`SELECT * FROM kv_store ORDER BY key`);
+  out.sort((a, b) => a.key.localeCompare(b.key));
+  return out;
 }
 
 // ─── Alert Configs ─────────────────────────────────────────────────────────
@@ -473,13 +736,20 @@ export function listAlertConfigs() {
   return db.all(`SELECT * FROM alert_configs ORDER BY machine_id`);
 }
 
+/**
+ * 关闭数据库。
+ * 连接池的 `end()` 是异步的，这里返回 Promise 方便优雅退出时 await；
+ * 老调用点（不 await）依然可用。
+ */
 export function closeDb() {
-  if (rawDb) {
-    try {
-      if (dbType === 'mysql') rawDb.end();
-      else if (dbType === 'postgres') rawDb.end();
-      else rawDb.close();
-    } catch {}
-    rawDb = null; db = null; dbType = null;
-  }
+  if (!rawDb) return Promise.resolve();
+  const conn = rawDb;
+  const type = dbType;
+  rawDb = null; db = null; dbType = null;
+  try {
+    if (type === 'mysql') return Promise.resolve(conn.end()).catch(() => {});
+    if (type === 'postgres') return Promise.resolve(conn.end()).catch(() => {});
+    conn.close();
+  } catch { /* 忽略 */ }
+  return Promise.resolve();
 }

@@ -220,6 +220,44 @@ npm.cmd start
 （`scripts/start-prod.js` 会把 `NODE_ENV` 默认设为 `production`）。
 容器部署见 `Dockerfile` / `docker-compose.yml`（镜像已内置 `NODE_ENV=production`、`PORT=3011`、`HOST=0.0.0.0`）。
 
+#### 数据库 | Database
+
+默认 **SQLite**（`data/openlog.db`，WAL + `synchronous=NORMAL` + `busy_timeout=5s`），零配置、单机够用。
+规模化或多实例共享时换 **PostgreSQL**（推荐）或 **MySQL**，两者都走**连接池**：
+
+```bash
+# PostgreSQL（连接池默认 10）
+OPENLOG_DB_TYPE=postgres
+OPENLOG_DATABASE_URL=postgres://openlog:密码@127.0.0.1:5432/openlog
+OPENLOG_PG_POOL_MAX=10
+
+# 也可以分字段：OPENLOG_PG_HOST / PORT / USER / PASSWORD / DATABASE
+# MySQL：OPENLOG_DB_TYPE=mysql + OPENLOG_DATABASE_URL=mysql://...
+```
+
+几个行为约定：
+
+- **显式配置了库却连不上会直接报错**，不会静默回退到本地 SQLite
+  （否则生产换库时数据写到了没人知道的地方）。
+- SQL 全部用 `?` 占位，PostgreSQL 在适配层转成 `$1,$2…`；业务代码不感知方言。
+- 建表按方言生成类型：时间戳 PG/MySQL 用 `BIGINT`（SQLite 的 `INTEGER` 32 位会在 2038 溢出）、
+  PG 的 JSON 列用 `JSONB`、MySQL 主键用 `VARCHAR`（TEXT 不能做主键）。
+- `kv_store`（设置、GPU 配置、审计等）启动时**整表进内存**，读走内存、写异步落库 ——
+  这样 `getKv()` 保持同步语义，异步适配器下也成立（这是之前 PG 读配置全是 undefined 的根因）。
+- 迁移工具：
+
+```bash
+OPENLOG_DB_TYPE=postgres \
+OPENLOG_DATABASE_URL=postgres://openlog:密码@127.0.0.1:5432/openlog \
+  node scripts/migrate-sqlite-to-pg.mjs
+```
+
+幂等（主键冲突跳过）、可 `--dry-run` 先看行数；只复制数据、不动 SQLite 文件（留作回滚）。
+⚠️ SSH 密码是加密存储的，迁移与运行时必须使用**同一个** `OPENLOG_SECRET_KEY`，否则密码解不开。
+
+> PostgreSQL 在 1000 台量级的实测：1000 台服务器批量写入 674ms（分 100 行一批）、读回 86ms、
+> 50 个并发查询 1ms（连接池）；`log_records` 与查询走 `machine_id` / `timestamp` 索引。
+
 #### 远端访问与访问令牌 | Remote access & token
 
 `GET /api/auth/token` 只允许**回环地址**调用（非 localhost 一律 403），所以从其它机器
