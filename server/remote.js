@@ -146,8 +146,11 @@ export async function loadServers() {
   if (db) {
     try {
       await ensureServersTable();
-      // 旧 kv 数据一次性迁移（表里已有数据则不动）
-      await migrateLegacyKvServers((s) => serverToRow(s, encryptPassword));
+      // 旧 kv 数据一次性迁移（表里已有数据则不动）。
+      // ⚠️ 旧 kv 里的 password 字段**已经是密文**（旧 saveServers 先加密再存），
+      // 迁移时不能再加密一次，否则双重加密 → 全部机器 "All configured
+      // authentication methods failed"。所以这里用恒等变换，不是 encryptPassword。
+      await migrateLegacyKvServers((s) => serverToRow(s, (p) => p));
       const rows = await listServerRows();
       servers = rows.map(r => rowToServer(r, decryptPassword));
       persistKeyMigration();
