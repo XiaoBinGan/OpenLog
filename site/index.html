@@ -1,0 +1,648 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>OpenLog · 智能运维监控平台 —— 一个面板管住日志、算力、容器与服务器</title>
+<meta name="description" content="OpenLog 是自托管的智能运维监控平台：日志实时告警、GPU / MFU 监控、Docker over SSH 管理、远程服务器运维、AI 运维助手。1000 台规模压测通过，PostgreSQL 生产运行中，单端口部署。" />
+<meta name="theme-color" content="#0B0F14" />
+<meta property="og:title" content="OpenLog · 智能运维监控平台" />
+<meta property="og:description" content="一个面板管住「日志 · 算力 · 容器 · 服务器 · AI 排查」" />
+<meta property="og:type" content="website" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230B0F14'/%3E%3Crect x='6' y='6' width='9' height='20' rx='2' fill='%2334D399'/%3E%3Crect x='17' y='6' width='9' height='9' rx='2' fill='%2310B981' opacity='.65'/%3E%3Crect x='17' y='17' width='9' height='9' rx='2' fill='%2358A6FF' opacity='.7'/%3E%3C/svg%3E" />
+<link rel="stylesheet" href="assets/style.css" />
+<script>document.documentElement.classList.add('js');</script>
+</head>
+<body>
+<a class="skip" href="#main">跳到主要内容</a>
+
+<header class="nav" id="nav">
+  <div class="wrap nav-inner">
+    <a class="brand" href="#top" aria-label="OpenLog 首页">
+      <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+      <span class="brand-name">OpenLog</span>
+      <span class="brand-tag">node</span>
+    </a>
+    <nav class="nav-links" id="nav-links" aria-label="站点导航">
+      <a href="#why">为什么</a>
+      <a href="#product">产品</a>
+      <a href="#features">能力</a>
+      <a href="#arch">架构</a>
+      <a href="#scale">规模</a>
+      <a href="#security">安全</a>
+      <a href="#roadmap">路线图</a>
+    </nav>
+    <div class="nav-actions">
+      <a class="btn btn-primary btn-sm" href="http://203.0.113.10:3001" target="_blank" rel="noopener">在线体验</a>
+      <button class="nav-burger" id="nav-burger" type="button" aria-label="打开导航菜单" aria-expanded="false" aria-controls="nav-links">
+        <span></span><span></span><span></span>
+      </button>
+    </div>
+  </div>
+</header>
+
+<main id="main">
+
+  <!-- ========== HERO ========== -->
+  <section class="hero" id="top">
+    <div class="wrap hero-grid">
+      <div class="hero-copy reveal">
+        <p class="kicker">Self-hosted · 内网可用</p>
+        <h1><span class="nw">把运维的「看」</span><span class="nw">和「动手」</span><br /><em>放进同一个面板</em></h1>
+        <p class="lead">
+          日志分析、GPU / MFU 监控、Docker 管理、远程服务器运维、AI 运维助手，
+          收进一个 Web 面板。11 个页面共享同一套鉴权、同一份数据、同一套告警通道。
+        </p>
+        <div class="hero-cta">
+          <a class="btn btn-primary" href="http://203.0.113.10:3001" target="_blank" rel="noopener">打开面板 <span aria-hidden="true">→</span></a>
+          <a class="btn btn-ghost" href="#features">看核心能力</a>
+        </div>
+        <ul class="chips" aria-label="核心特性">
+          <li>日志实时告警</li>
+          <li>GPU / MFU</li>
+          <li>Docker over SSH</li>
+          <li>1000 台就绪</li>
+          <li>PostgreSQL</li>
+        </ul>
+      </div>
+
+      <!-- 轮播图 -->
+      <div class="hero-visual reveal">
+        <div class="deck" id="deck" aria-roledescription="轮播图" aria-label="产品界面轮播">
+          <div class="browser">
+            <div class="browser-bar">
+              <span class="lights" aria-hidden="true"><i></i><i></i><i></i></span>
+              <span class="browser-url">203.0.113.10:3001<span id="url-path">/logs</span></span>
+              <span class="browser-dots" aria-hidden="true">⋯</span>
+            </div>
+            <div class="deck-viewport">
+              <div class="track" id="track">
+
+                <!-- 1 日志监控 -->
+                <figure class="slide" role="group" aria-roledescription="幻灯片" aria-label="第 1 张，共 6 张：日志监控与告警">
+                  <div class="mock">
+                    <div class="mock-head">
+                      <span class="mock-title">日志流 · openlog-4090</span>
+                      <span class="tag ok"><i class="dot-live"></i>LIVE</span>
+                    </div>
+                    <div class="mock-body">
+                      <div class="m-log"><span class="lv info">INFO</span><span class="ts">12:04:11</span><span class="msg">model loaded in 8.4s · cuda:0 · kv-cache 21.3GB</span></div>
+                      <div class="m-log"><span class="lv info">INFO</span><span class="ts">12:04:19</span><span class="msg">request batch=32 in=1.2k out=380 · 1.83s</span></div>
+                      <div class="m-log warn"><span class="lv warn">WARN</span><span class="ts">12:05:02</span><span class="msg">queue depth 48 &gt; threshold 32</span></div>
+                      <div class="m-log err"><span class="lv err">ERROR</span><span class="ts">12:05:07</span><span class="msg">CUDA out of memory · tried to allocate 2.31 GiB</span></div>
+                      <div class="m-log err"><span class="lv err">ERROR</span><span class="ts">12:05:07</span><span class="msg">engine worker exited with code 1</span></div>
+                      <div class="m-log dim"><span class="lv">DEBUG</span><span class="ts">12:05:12</span><span class="msg">health probe /v1/models → 200</span></div>
+                      <div class="m-log dim"><span class="lv">DEBUG</span><span class="ts">12:05:19</span><span class="msg">kv-cache hit rate 0.87 · reuse 214 blocks</span></div>
+                    </div>
+                    <div class="m-toast">
+                      <span class="toast-dot" aria-hidden="true"></span>
+                      <span><b>ERROR 命中 3 次</b> · openlog-4090</span>
+                      <span class="toast-act">一键跳转 →</span>
+                    </div>
+                  </div>
+                  <figcaption>
+                    <b>日志监控与告警</b>
+                    <span>WS 实时推送 · 级别过滤 · ERROR 关键字命中就弹窗，一键跳到对应容器日志</span>
+                  </figcaption>
+                </figure>
+
+                <!-- 2 GPU / MFU -->
+                <figure class="slide" role="group" aria-roledescription="幻灯片" aria-label="第 2 张，共 6 张：GPU 与 MFU 模型算力效率">
+                  <div class="mock">
+                    <div class="mock-head">
+                      <span class="mock-title">算力监控 · 4 × A100 80G</span>
+                      <span class="tag blue">MFU 已接入</span>
+                    </div>
+                    <div class="mock-body">
+                      <div class="m-gpu">
+                        <div class="gpu-tile"><span class="gpu-name">GPU 0</span><span class="gpu-val">87<i>%</i></span><span class="gpu-sub">61 / 80 GB · 68°C</span><span class="bar"><i style="width:87%"></i></span></div>
+                        <div class="gpu-tile"><span class="gpu-name">GPU 1</span><span class="gpu-val">91<i>%</i></span><span class="gpu-sub">72 / 80 GB · 71°C</span><span class="bar"><i style="width:91%"></i></span></div>
+                        <div class="gpu-tile"><span class="gpu-name">GPU 2</span><span class="gpu-val">84<i>%</i></span><span class="gpu-sub">58 / 80 GB · 66°C</span><span class="bar"><i style="width:84%"></i></span></div>
+                        <div class="gpu-tile"><span class="gpu-name">GPU 3</span><span class="gpu-val">89<i>%</i></span><span class="gpu-sub">69 / 80 GB · 70°C</span><span class="bar"><i style="width:89%"></i></span></div>
+                      </div>
+                      <div class="m-spark">
+                        <span class="m-spark-label">近 5 分钟 GPU 利用率</span>
+                        <div class="m-chart sm" aria-hidden="true"><i style="height:38%"></i><i style="height:52%"></i><i style="height:47%"></i><i style="height:61%"></i><i style="height:55%"></i><i style="height:68%"></i><i style="height:72%"></i><i style="height:64%"></i><i style="height:78%"></i><i style="height:71%"></i><i style="height:83%"></i><i style="height:76%"></i><i style="height:88%"></i><i style="height:81%"></i><i style="height:92%"></i><i style="height:86%"></i><i style="height:90%"></i><i style="height:84%"></i></div>
+                      </div>
+                      <div class="m-mfu">
+                        <div class="mfu-main"><span class="mfu-num">42.3<i>%</i></span><span class="mfu-label">MFU · 引擎无关口径</span></div>
+                        <div class="mfu-meta">
+                          <span class="mfu-row"><em>模型</em>qwen3.8-flash-next</span>
+                          <span class="mfu-row"><em>引擎</em>vLLM · SGLang · 7 种适配</span>
+                          <span class="mfu-row"><em>口径</em>吞吐 × 系数 / 峰值算力</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  <figcaption>
+                    <b>GPU 与 MFU</b>
+                    <span>GPU / 显存 / 温度连续视角，MFU 引擎无关、零配置，vLLM、SGLang 都能算</span>
+                  </figcaption>
+                </figure>
+
+                <!-- 3 Docker -->
+                <figure class="slide" role="group" aria-roledescription="幻灯片" aria-label="第 3 张，共 6 张：Docker over SSH 容器管理">
+                  <div class="mock">
+                    <div class="mock-head">
+                      <span class="mock-title">Docker · 4090服务器（SSH 桥接）</span>
+                      <span class="tag ok">CONNECTED</span>
+                    </div>
+                    <div class="mock-body">
+                      <div class="m-row head"><span></span><span>容器</span><span>状态</span><span>操作</span></div>
+                      <div class="m-row"><span class="s-dot on"></span><span class="mono">vllm-qwen3</span><span class="st on">运行中</span><span class="acts"><i>日志</i><i>终端</i></span></div>
+                      <div class="m-row"><span class="s-dot on"></span><span class="mono">sglang-router</span><span class="st on">运行中</span><span class="acts"><i>日志</i><i>终端</i></span></div>
+                      <div class="m-row"><span class="s-dot off"></span><span class="mono">embedding-api</span><span class="st off">已退出 1</span><span class="acts"><i>启动</i><i>详情</i></span></div>
+                      <div class="m-row"><span class="s-dot on"></span><span class="mono">openlog-agent</span><span class="st on">运行中</span><span class="acts"><i>日志</i><i>终端</i></span></div>
+                      <div class="m-row"><span class="s-dot off"></span><span class="mono">jupyter-notebook</span><span class="st off">已退出 137</span><span class="acts"><i>启动</i><i>详情</i></span></div>
+                      <div class="m-term">
+                        <span class="t-line"><b>$</b> docker logs -f --tail 3 embedding-api</span>
+                        <span class="t-line dim">[12:08:01] loading model weights…</span>
+                        <span class="t-line err">[12:08:06] RuntimeError: CUDA driver version is insufficient</span>
+                      </div>
+                    </div>
+                  </div>
+                  <figcaption>
+                    <b>Docker over SSH</b>
+                    <span>不用在宿主机装 agent：远端 dockerode 桥接，容器生命周期、实时日志、内嵌终端全都在面板里</span>
+                  </figcaption>
+                </figure>
+
+                <!-- 4 远程服务器 -->
+                <figure class="slide" role="group" aria-roledescription="幻灯片" aria-label="第 4 张，共 6 张：远程服务器连接池">
+                  <div class="mock">
+                    <div class="mock-head">
+                      <span class="mock-title">远程服务器 · 连接是基础设施</span>
+                      <span class="tag ok">4 台</span>
+                    </div>
+                    <div class="mock-body">
+                      <div class="m-srv on">
+                        <span class="srv-top"><i class="s-dot on"></i>4090服务器<em>8ms</em></span>
+                        <span class="srv-sub">连接池复用 · 空闲回收</span>
+                        <span class="srv-sub">文件 / 终端 / AI Shell</span>
+                      </div>
+                      <div class="m-srv on">
+                        <span class="srv-top"><i class="s-dot on"></i>4卡T4<em>12ms</em></span>
+                        <span class="srv-sub">连接池复用 · 空闲回收</span>
+                        <span class="srv-sub">文件 / 终端 / AI Shell</span>
+                      </div>
+                      <div class="m-srv err">
+                        <span class="srv-top"><i class="s-dot err"></i>双卡4090<em>失败 3 次</em></span>
+                        <span class="srv-err">Timed out while waiting for handshake</span>
+                        <span class="srv-sub">退避重连 5s → 10s → 20s → 5min</span>
+                      </div>
+                      <div class="m-pool">
+                        <span><em>连接池</em>2 / 16 活跃</span>
+                        <span><em>空闲回收</em>120s</span>
+                        <span><em>退避上限</em>5min</span>
+                        <span><em>加密</em>AES-256-GCM</span>
+                      </div>
+                    </div>
+                  </div>
+                  <figcaption>
+                    <b>远程服务器</b>
+                    <span>连接池 + 退避重连，卡片上直接写清失败原因，不用猜是网络、sshd 还是密码</span>
+                  </figcaption>
+                </figure>
+
+                <!-- 5 AI 运维助手 -->
+                <figure class="slide" role="group" aria-roledescription="幻灯片" aria-label="第 5 张，共 6 张：AI 运维助手">
+                  <div class="mock">
+                    <div class="mock-head">
+                      <span class="mock-title">运维助手 · 多步 Agent</span>
+                      <span class="tag purple">SSH: 4090服务器</span>
+                    </div>
+                    <div class="mock-body">
+                      <div class="m-chat">
+                        <p class="bubble user">embedding-api 起来就挂，看下什么原因，能修就修掉</p>
+                        <ol class="steps">
+                          <li class="ok"><span>1</span>ssh_exec <em>docker logs --tail 50 embedding-api</em></li>
+                          <li class="ok"><span>2</span>read_file <em>/opt/svc/docker-compose.yml</em></li>
+                          <li class="ok"><span>3</span>patch_file <em>driver: 535.104 → 535.161</em></li>
+                          <li class="run"><span>4</span>docker_restart <em>容器重建中…</em></li>
+                        </ol>
+                        <div class="m-diff">
+                          <span class="d-line"><i>−</i>image: nvidia/cuda:12.2-runtime</span>
+                          <span class="d-line"><i>+</i>image: nvidia/cuda:12.4-runtime</span>
+                        </div>
+                        <p class="bubble ai">已定位：宿主驱动 535.161 与镜像内 CUDA 12.2 驱动版本不匹配。已改 compose 并重建，健康检查通过。</p>
+                      </div>
+                    </div>
+                  </div>
+                  <figcaption>
+                    <b>AI 运维助手（Agent）</b>
+                    <span>不是聊天机器人：多步工具调用，用现有 SSH 账号真改代码、真改配置，每一步都留审计</span>
+                  </figcaption>
+                </figure>
+
+                <!-- 6 规模 -->
+                <figure class="slide" role="group" aria-roledescription="幻灯片" aria-label="第 6 张，共 6 张：1000 台规模">
+                  <div class="mock">
+                    <div class="mock-head">
+                      <span class="mock-title">规模与性能 · 1000 台压测</span>
+                      <span class="tag ok">PASS</span>
+                    </div>
+                    <div class="mock-body">
+                      <div class="m-nums">
+                        <div class="num"><b>1000</b><span>台服务器接入</span></div>
+                        <div class="num"><b>20<i>ms</i></b><span>全量列表加载</span></div>
+                        <div class="num"><b>0.005<i>ms</i></b><span>单条状态更新</span></div>
+                      </div>
+                      <div class="m-chart" aria-hidden="true">
+                        <i style="height:26%"></i><i style="height:34%"></i><i style="height:30%"></i><i style="height:44%"></i><i style="height:39%"></i><i style="height:51%"></i><i style="height:47%"></i><i style="height:58%"></i><i style="height:54%"></i><i style="height:66%"></i><i style="height:61%"></i><i style="height:73%"></i><i style="height:69%"></i><i style="height:80%"></i><i style="height:76%"></i><i style="height:88%"></i><i style="height:83%"></i><i style="height:94%"></i><i style="height:89%"></i><i style="height:97%"></i><i style="height:92%"></i><i style="height:100%"></i><i style="height:96%"></i><i style="height:99%"></i>
+                      </div>
+                      <div class="m-bars">
+                        <span class="bars-row"><em>批量写 1000 行</em><span class="bar"><i style="width:100%"></i></span><b>674ms</b></span>
+                        <span class="bars-row"><em>PB 级接口延迟</em><span class="bar"><i style="width:6%"></i></span><b>1ms</b></span>
+                        <span class="bars-row"><em>告警通道分发</em><span class="bar"><i style="width:18%"></i></span><b>3ms</b></span>
+                      </div>
+                      <div class="m-foot">连接池 max 10 · 会话复用 · 状态推送增量 diff</div>
+                    </div>
+                  </div>
+                  <figcaption>
+                    <b>1000 台规模</b>
+                    <span>从几十台到一千台的改造已完成：增量 diff、连接池限流、批量写、分页与虚拟滚动</span>
+                  </figcaption>
+                </figure>
+
+              </div>
+            </div>
+
+            <div class="deck-bar">
+              <div class="deck-caption" id="deck-caption" aria-live="polite">
+                <b>日志监控与告警</b>
+                <span>WS 实时推送 · 级别过滤 · ERROR 关键字命中就弹窗，一键跳到对应容器日志</span>
+              </div>
+              <div class="deck-controls">
+                <div class="dots" id="deck-dots" role="tablist" aria-label="选择轮播内容"></div>
+                <div class="arrows">
+                  <button class="circ" id="deck-prev" type="button" aria-label="上一张">‹</button>
+                  <span class="counter" id="deck-counter">1 / 6</span>
+                  <button class="circ" id="deck-next" type="button" aria-label="下一张">›</button>
+                </div>
+              </div>
+              <div class="deck-progress"><i id="deck-progress"></i></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ========== 数字带 ========== -->
+  <section class="band" aria-label="关键数字">
+    <div class="wrap band-grid">
+      <div class="stat reveal"><b>11</b><span>个功能页面</span></div>
+      <div class="stat reveal"><b>7</b><span>种推理引擎适配</span></div>
+      <div class="stat reveal"><b>1000</b><span>台压测通过</span></div>
+      <div class="stat reveal"><b>625</b><span>项自动化测试</span></div>
+      <div class="stat reveal"><b>3</b><span>种数据库后端</span></div>
+      <div class="stat reveal"><b>1<i>ms</i></b><span>PG 接口延迟</span></div>
+    </div>
+  </section>
+
+  <!-- ========== 痛点 ========== -->
+  <section id="why">
+    <div class="wrap">
+      <div class="sec-head reveal">
+        <p class="kicker">Why</p>
+        <h2>手工运维的四个真实痛点</h2>
+        <p class="sec-sub">每一条都是我们自己踩过的，不是假设出来的场景。</p>
+      </div>
+      <div class="pain-grid">
+        <article class="pain reveal" style="--c:var(--danger)">
+          <span class="pain-no">01</span>
+          <h3>日志散落</h3>
+          <p>几十个容器、多台机器，出问题第一反应是 ssh 上去 grep。谁在报错、什么时候开始、影响哪些服务，全靠人肉拼。</p>
+          <p class="pain-foot">→ 一次定位半小时起步，事后还答不出「什么时候开始」</p>
+        </article>
+        <article class="pain reveal" style="--c:var(--warn)">
+          <span class="pain-no">02</span>
+          <h3>算力黑盒</h3>
+          <p>GPU 到底用没用上？模型 MFU 多少、是不是卡在显存或通信？只有 nvidia-smi 的一瞬间快照，没有连续视角。</p>
+          <p class="pain-foot">→ 卡空转、显存泄漏，往往等业务报错才发现</p>
+        </article>
+        <article class="pain reveal" style="--c:var(--purple)">
+          <span class="pain-no">03</span>
+          <h3>救火式修复</h3>
+          <p>定位到问题还得找机器、找文件、改配置、重启服务、再验证。一次故障十几分钟，全在切窗口。</p>
+          <p class="pain-foot">→ 全靠人肉切窗口，改错一次要重来一遍</p>
+        </article>
+        <article class="pain reveal" style="--c:var(--blue)">
+          <span class="pain-no">04</span>
+          <h3>工具割裂</h3>
+          <p>日志、监控、Docker、SSH 各用一套工具，上下文对不上；告警看完还得回去翻日志。</p>
+          <p class="pain-foot">→ 一次告警要在 4 个工具之间来回跳</p>
+        </article>
+      </div>
+      <p class="flow reveal">
+        <span>日志</span><i>→</i><span>发现异常</span><i>→</i><span>定位机器与容器</span><i>→</i><span>看算力与模型</span><i>→</i><span>让 AI 直接改代码 / 配置</span><i>→</i><span>验证与审计</span>
+      </p>
+    </div>
+  </section>
+
+  <!-- ========== 产品全景 ========== -->
+  <section id="product">
+    <div class="wrap">
+      <div class="sec-head reveal">
+        <p class="kicker">Product</p>
+        <h2>11 个页面，一套底座</h2>
+        <p class="sec-sub">所有页面共享同一套鉴权、同一份数据、同一套告警通道 —— 不是把 11 个工具拼在一起。</p>
+      </div>
+      <div class="pages-grid">
+        <article class="page-card reveal"><h3>仪表盘</h3><p>全局总览：告警、机器、算力、容器</p></article>
+        <article class="page-card reveal"><h3>系统监控</h3><p>CPU / 内存 / 磁盘 / GPU / 进程</p></article>
+        <article class="page-card reveal"><h3>算力监控</h3><p>利用率 / 显存 / 温度 / MFU</p></article>
+        <article class="page-card reveal"><h3>日志流</h3><p>WS 实时流 · 级别过滤 · 搜索</p></article>
+        <article class="page-card reveal"><h3>远程服务器</h3><p>SSH 连接池 · 文件 · 终端</p></article>
+        <article class="page-card reveal"><h3>Docker</h3><p>容器列表 · 实时日志 · 内嵌终端</p></article>
+        <article class="page-card reveal"><h3>AI 分析</h3><p>日志与巡检的 AI 归因</p></article>
+        <article class="page-card reveal"><h3>分析历史</h3><p>历史结论回溯与对比</p></article>
+        <article class="page-card reveal"><h3>运维助手</h3><p>Agent：定位 + 改代码 / 配置</p></article>
+        <article class="page-card reveal"><h3>技能管理</h3><p>把排障流程沉淀成可复用技能</p></article>
+        <article class="page-card reveal"><h3>设置</h3><p>模型 / 告警 / 巡检 / 数据库</p></article>
+        <article class="page-card page-card-cta reveal">
+          <h3>在线体验</h3>
+          <p>单端口部署，浏览器打开即用</p>
+          <a class="link" href="http://203.0.113.10:3001" target="_blank" rel="noopener">203.0.113.10:3001 →</a>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <!-- ========== 核心能力 ========== -->
+  <section id="features">
+    <div class="wrap">
+      <div class="sec-head reveal">
+        <p class="kicker">Capability</p>
+        <h2>六个真正「能动手」的能力</h2>
+        <p class="sec-sub">每个能力都能落到一次具体操作上，不只是给个图表看。</p>
+      </div>
+      <div class="feat-grid">
+
+        <article class="feat reveal">
+          <h3>日志实时告警</h3>
+          <p>采集 → 匹配 → 弹窗 → 跳转，一条链路闭环。</p>
+          <ul>
+            <li>WebSocket 实时推送，多机器多容器并发流</li>
+            <li>按级别、关键字、正则配置告警规则</li>
+            <li>ERROR 告警弹窗点一下直接跳到该容器日志</li>
+          </ul>
+        </article>
+
+        <article class="feat reveal">
+          <h3>GPU 与 MFU</h3>
+          <p>引擎无关的模型算力效率口径。</p>
+          <ul>
+            <li>nvidia-smi 连续采样，保留趋势而非快照</li>
+            <li>MFU 支持 vLLM、SGLang 等 7 种引擎，零配置</li>
+            <li>快照做瘦身，1000 台也不把库写爆</li>
+          </ul>
+        </article>
+
+        <article class="feat reveal">
+          <h3>Docker over SSH</h3>
+          <p>宿主机什么都不用装。</p>
+          <ul>
+            <li>远端 dockerode 桥接，等同本机 Docker API</li>
+            <li>容器生命周期、实时日志、内嵌 PTY 终端</li>
+            <li>exec 能力做开关，生产可关可开</li>
+          </ul>
+        </article>
+
+        <article class="feat reveal">
+          <h3>远程服务器</h3>
+          <p>连接是基础设施，不是一次性动作。</p>
+          <ul>
+            <li>连接池 LRU + 空闲回收，限并发重连（默认 16）</li>
+            <li>退避重连 5s → 10s → 20s → 5min，手动断开即停</li>
+            <li>密码 AES-256-GCM 存储，支持密钥轮换</li>
+          </ul>
+        </article>
+
+        <article class="feat reveal">
+          <h3>AI 运维助手（Agent）</h3>
+          <p>看得见，也动得了手。</p>
+          <ul>
+            <li>多步工具调用：读文件、改代码、改配置、重启、验证</li>
+            <li>用现有 SSH 账号执行，权限不隔离、全程审计</li>
+            <li>排障过程沉淀为可复用技能</li>
+          </ul>
+        </article>
+
+        <article class="feat reveal">
+          <h3>AI Shell 与模型兼容</h3>
+          <p>自然语言 → 命令 → 结果 → 下一步。</p>
+          <ul>
+            <li>多步 Agent 循环，执行结果回灌给模型继续判断</li>
+            <li>OpenAI 兼容协议，vLLM / SGLang 都能直接接</li>
+            <li>支持本地与内网模型服务（/v1 接口）</li>
+          </ul>
+        </article>
+
+      </div>
+    </div>
+  </section>
+
+  <!-- ========== 架构 ========== -->
+  <section id="arch">
+    <div class="wrap">
+      <div class="sec-head reveal">
+        <p class="kicker">Architecture</p>
+        <h2>分层架构：一层只做一件事</h2>
+        <p class="sec-sub">前端 React 18 + TS + Vite；后端 Node 22 ESM，单端口同时提供 API、WebSocket 与静态资源。</p>
+      </div>
+      <div class="arch">
+        <div class="layer reveal" style="--c:var(--accent)">
+          <div class="layer-name">接入层</div>
+          <ul>
+            <li>Express（ESM）+ WebSocket 统一入口</li>
+            <li>Token 鉴权门禁，生产环境 401 拦截</li>
+            <li>单端口同时托管前端构建产物与 API</li>
+          </ul>
+        </div>
+        <div class="layer reveal" style="--c:var(--accent-2)">
+          <div class="layer-name">服务层</div>
+          <ul>
+            <li>路由域：logs / gpu / docker / remote / assistant / skills / db-info</li>
+            <li>统一的错误包装、限流与审计埋点</li>
+            <li>配置与状态走 kv，读写穿透内存缓存</li>
+          </ul>
+        </div>
+        <div class="layer reveal" style="--c:var(--blue)">
+          <div class="layer-name">能力层</div>
+          <ul>
+            <li>日志采集器 · 告警分发 · GPU 采样与 MFU 适配</li>
+            <li>SSH 连接池 · Docker 桥接 · 文件与 PTY</li>
+            <li>LLM 客户端与 Agent 工具编排（多步）</li>
+          </ul>
+        </div>
+        <div class="layer reveal" style="--c:var(--purple)">
+          <div class="layer-name">数据层</div>
+          <ul>
+            <li>SQLite / PostgreSQL / MySQL 统一方言层</li>
+            <li>同一份 DDL 与占位符转换，切换只改一个环境变量</li>
+            <li>连接池 + 批量写，支撑 1000 台规模</li>
+          </ul>
+        </div>
+      </div>
+      <div class="arch-note reveal">
+        <div><b>前端</b><span>React 18 · TypeScript · Vite · Tailwind</span></div>
+        <div><b>后端</b><span>Node 22 ESM · Express · ws · node-ssh · dockerode</span></div>
+        <div><b>数据</b><span>better-sqlite3 · pg · mysql2</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ========== 规模 ========== -->
+  <section id="scale">
+    <div class="wrap">
+      <div class="sec-head reveal">
+        <p class="kicker">Scale</p>
+        <h2>从几十台到 1000 台</h2>
+        <p class="sec-sub">不是「理论上能扩」，是真按 1000 台造了数据、压了接口、修了瓶颈。</p>
+      </div>
+      <div class="scale-grid">
+        <div class="scale-card reveal"><b>20<i>ms</i></b><span>1000 台服务器全量加载</span></div>
+        <div class="scale-card reveal"><b>0.005<i>ms</i></b><span>单条状态更新</span></div>
+        <div class="scale-card reveal"><b>674<i>ms</i></b><span>1000 行批量写入（原 20.6s）</span></div>
+        <div class="scale-card reveal"><b>1<i>ms</i></b><span>PostgreSQL 接口延迟</span></div>
+      </div>
+      <div class="tbl reveal" role="table" aria-label="规模改造清单">
+        <div class="tr th" role="row"><span>曾经的问题</span><span>做法</span><span>结果</span></div>
+        <div class="tr" role="row"><span>全量列表一次渲染卡死</span><span>分页 + 虚拟滚动 + 增量 diff</span><span>20ms 渲染完成</span></div>
+        <div class="tr" role="row"><span>PG 单连接串行、批量写 20.6s</span><span>连接池 + 100 行分批提交</span><span>674ms</span></div>
+        <div class="tr" role="row"><span>重连风暴把 sshd 打满</span><span>限并发 16 + 指数退避</span><span>1000 台不再一轮数小时</span></div>
+        <div class="tr" role="row"><span>GPU 快照把库写爆</span><span>快照瘦身 + 只留趋势点</span><span>存储可长期留存</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ========== 安全 ========== -->
+  <section id="security">
+    <div class="wrap">
+      <div class="sec-head reveal">
+        <p class="kicker">Security</p>
+        <h2>三道闸门，一把钥匙只开一扇门</h2>
+        <p class="sec-sub">AI 能改代码，所以审计比隔离更重要 —— 每个动作都要留痕、可回溯。</p>
+      </div>
+      <div class="gate-grid">
+        <article class="gate reveal">
+          <span class="gate-no">闸门 01</span>
+          <h3>访问鉴权</h3>
+          <p>全站 Token 门禁，未携带或错误直接 401；生产环境与开发环境开关分离。</p>
+        </article>
+        <article class="gate reveal">
+          <span class="gate-no">闸门 02</span>
+          <h3>凭据保护</h3>
+          <p>服务器密码 AES-256-GCM 加密存储，支持 OPENLOG_SECRET_KEY 轮换；迁移链路已修复「二次加密」坑。</p>
+        </article>
+        <article class="gate reveal">
+          <span class="gate-no">闸门 03</span>
+          <h3>操作审计</h3>
+          <p>AI 与运维助手的每一次命令、每一处文件改动都有记录；容器 exec 由环境变量显式开启。</p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <!-- ========== 工程质量 ========== -->
+  <section id="quality">
+    <div class="wrap quality-grid">
+      <div class="reveal">
+        <p class="kicker">Engineering</p>
+        <h2>能跑，也要能改</h2>
+        <p class="sec-sub">每一次提交都要过测试、Lint、构建三道闸，数据库迁移与 bug 修复都带回归测试。</p>
+        <ul class="gates">
+          <li><b>625</b> 个测试通过（2 skipped）· 31 个测试文件</li>
+          <li><b>npm run lint:all</b>：0 error</li>
+          <li><b>npm run build</b>：前端构建通过后才发布</li>
+          <li>后端约 <b>17k</b> 行、前端约 <b>13k</b> 行，模块边界清晰</li>
+        </ul>
+      </div>
+      <div class="code-card reveal" aria-hidden="true">
+        <div class="code-head"><span class="lights"><i></i><i></i><i></i></span><em>release checklist</em></div>
+        <div class="code-body">
+          <span class="c-dim"># 每次上线前</span>
+          <span class="c-line"><b>$</b> npm test              <i class="ok">625 passed</i></span>
+          <span class="c-line"><b>$</b> npm run lint:all      <i class="ok">0 error</i></span>
+          <span class="c-line"><b>$</b> npm run build         <i class="ok">built in 6.2s</i></span>
+          <span class="c-line"><b>$</b> npm run db:info       <i class="ok">postgres · 1ms</i></span>
+          <span class="c-line"><b>$</b> docker compose up -d <i class="ok">openlog + openlog-pg</i></span>
+          <span class="c-dim"># 单端口 3001：API + WS + 前端</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ========== 路线图 ========== -->
+  <section id="roadmap">
+    <div class="wrap">
+      <div class="sec-head reveal">
+        <p class="kicker">Roadmap</p>
+        <h2>下一步</h2>
+        <p class="sec-sub">按「投入 / 收益」排序：先把能稳定跑做扎实，再考虑规模与编排。</p>
+      </div>
+      <div class="road-grid">
+        <article class="road reveal" style="--c:var(--accent)">
+          <h3>近期 · 1 个月内</h3>
+          <ul>
+            <li>PG 连接池水位接入告警通道</li>
+            <li>容器面板写操作二次确认模式</li>
+            <li>MFU 长窗口与趋势曲线</li>
+            <li>日志检索保存常用查询</li>
+          </ul>
+        </article>
+        <article class="road reveal" style="--c:var(--blue)">
+          <h3>中期 · 一季度</h3>
+          <ul>
+            <li>采集进程与 Web 进程分离</li>
+            <li>多实例分片采集</li>
+            <li>时序数据落库（趋势查询）</li>
+            <li>告警静默与抑制规则</li>
+          </ul>
+        </article>
+        <article class="road reveal" style="--c:var(--purple)">
+          <h3>长期 · 半年+</h3>
+          <ul>
+            <li>告警编排（分级 / 静默 / 值班）</li>
+            <li>SLO 看板与容量预测</li>
+            <li>多租户与权限模型</li>
+            <li>审计日志导出与合规报表</li>
+          </ul>
+        </article>
+      </div>
+      <p class="principle reveal">原则：先把「能稳定跑」做扎实，再考虑规模与编排 —— 每一步都有测试和回滚点。</p>
+    </div>
+  </section>
+
+  <!-- ========== CTA ========== -->
+  <section class="cta" id="try">
+    <div class="wrap">
+      <div class="cta-card reveal">
+        <div>
+          <h2>现在就能打开用</h2>
+          <p>一个端口、一条命令、一个浏览器标签页。内网直接部署，不需要在宿主机装任何 agent。</p>
+        </div>
+        <div class="cta-actions">
+          <a class="btn btn-primary" href="http://203.0.113.10:3001" target="_blank" rel="noopener">打开 OpenLog <span aria-hidden="true">→</span></a>
+          <a class="btn btn-ghost" href="https://github.com/XiaoBinGan/OpenLog" target="_blank" rel="noopener">仓库 · node 分支</a>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="foot">
+  <div class="wrap foot-inner">
+    <div class="foot-brand">
+      <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+      <span>OpenLog · 智能运维监控平台</span>
+    </div>
+    <p class="foot-meta">日志 · 算力 · 容器 · 服务器 · AI 排查　|　单端口部署 · 自托管 · 内网可用</p>
+    <p class="foot-copy">© 2026 OpenLog · node 分支</p>
+  </div>
+</footer>
+
+<script src="assets/app.js" defer></script>
+</body>
+</html>
