@@ -138,6 +138,18 @@ export function _connectionPoolStats() {
 }
 
 /**
+ * 启动时打印连接池配置。
+ * 1000 台部署最常见的配置错误就是上限设小了（默认 1200 够用，但有人会显式设成 300），
+ * 那时每轮采集都在驱逐+重连，日志里只有零零散散的失败，很难看出是配置问题。
+ */
+export function logPoolConfig() {
+  console.log(
+    `[Remote] SSH 连接池：上限 ${MAX_IDLE_CONNECTIONS} 条，空闲回收 ${Math.round(IDLE_CONNECTION_TTL_MS / 60000)} 分钟` +
+    `（实测单连接约 30-64KB 内存 / 1 个 FD；服务器超过 ${MAX_IDLE_CONNECTIONS} 台时请调大 OPENLOG_MAX_SSH_CONNECTIONS）`
+  );
+}
+
+/**
  * 自动重连状态：serverId → { count, nextAt }
  *
  * 为什么要自动重连：一台机器下线（关机/网络/VPN 掉线）后，状态会停在 error，
@@ -643,6 +655,7 @@ export function startAutoReconnect() {
   }, RECONNECT_TICK_MS);
   if (reconnectTimer.unref) reconnectTimer.unref();
   console.log(`[Remote] 自动重连已启动（每 ${RECONNECT_TICK_MS / 1000}s 检查一次）`);
+  logPoolConfig();
 }
 
 /** 停止自动重连（测试/关闭用） */
