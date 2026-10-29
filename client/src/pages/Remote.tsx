@@ -3,6 +3,10 @@
  * 修复：编辑按钮不显示、文件列表点击触发上传、状态切换竞态
  */
 import { useState, useEffect, useRef, useCallback } from 'react';
+import {
+  filterServers, windowServers, countLabel,
+  DEFAULT_VISIBLE_COUNT, LOAD_MORE_STEP, type ServerStatusFilter,
+} from '../utils/serverList';
 import { useToast } from '../contexts/ToastContext';
 import {
   Server, Plus, Trash2, RefreshCw, Folder, FileText, ChevronRight,
@@ -302,6 +306,10 @@ export default function Remote() {
   const [logLines, setLogLines] = useState(200);
   const [logSearch, setLogSearch] = useState('');
   const [showServerList, setShowServerList] = useState(true);
+  // 1000 台规模：一次性渲染全部卡片会卡死浏览器，先按关键字/状态过滤，再做窗口化
+  const [serverSearch, setServerSearch] = useState('');
+  const [statusFilter, setStatusFilter] = useState<'all' | 'connected' | 'error' | 'disconnected'>('all');
+  const [visibleCount, setVisibleCount] = useState(DEFAULT_VISIBLE_COUNT);
   const [dragOver, setDragOver] = useState(false);
 
   // 首次连接后加载文件
@@ -438,6 +446,10 @@ export default function Remote() {
     setConnectingId(null);
   };
 
+  // 过滤 + 窗口化（纯函数，见 client/src/utils/serverList.ts，有单测）
+  const filteredServers = filterServers(servers, { search: serverSearch, status: statusFilter });
+  const { visible: renderedServers, remaining: remainingServers } = windowServers(filteredServers, visibleCount);
+
   return (
     <div className="flex h-[calc(100vh-8rem)] animate-fade-in gap-4">
       {/* Toast */}
@@ -448,10 +460,46 @@ export default function Remote() {
         <div className="w-72 flex-shrink-0 flex flex-col gap-3">
           <div className="flex flex-col gap-2">
           <div className="flex items-center justify-between">
-            <h2 className="text-sm font-semibold text-dark-400 px-1">服务器</h2>
+            <h2 className="text-sm font-semibold text-dark-400 px-1">
+              服务器
+              <span className="text-dark-600 font-normal ml-1">
+                {countLabel(servers.length, filteredServers.length)}
+              </span>
+            </h2>
             <button onClick={() => refreshServers()} className="p-1.5 rounded-lg hover:bg-dark-800 text-dark-500 hover:text-dark-300 transition-colors" title="刷新">
               <RefreshCw className="w-4 h-4" />
             </button>
+          </div>
+
+          {/* 1000 台规模：搜索 + 状态筛选（放在导入/导出按钮上方，先说清"为什么列表不全"） */}
+          <div className="flex flex-col gap-1.5">
+            <input
+              type="search"
+              value={serverSearch}
+              onChange={e => { setServerSearch(e.target.value); setVisibleCount(DEFAULT_VISIBLE_COUNT); }}
+              placeholder="搜索名称 / IP / 用户"
+              className="w-full px-2.5 py-1.5 rounded-lg bg-dark-900 border border-dark-800 text-xs text-dark-200 placeholder-dark-600 focus:outline-none focus:border-accent-500/50"
+            />
+            <div className="flex items-center gap-1 flex-wrap">
+              {([
+                ['all', '全部'],
+                ['connected', '已连接'],
+                ['error', '异常'],
+                ['disconnected', '未连接'],
+              ] as const).map(([value, label]) => (
+                <button
+                  key={value}
+                  onClick={() => { setStatusFilter(value); setVisibleCount(DEFAULT_VISIBLE_COUNT); }}
+                  className={`px-2 py-0.5 rounded text-[11px] border transition-colors ${
+                    statusFilter === value
+                      ? 'bg-accent-500/20 text-accent-400 border-accent-500/40'
+                      : 'text-dark-500 border-dark-800 hover:text-dark-300 hover:border-dark-700'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
           </div>
           <div className="flex items-center gap-1.5 flex-wrap">
             <input
@@ -494,7 +542,17 @@ export default function Remote() {
                 <p className="text-sm">暂无服务器</p>
                 <p className="text-xs mt-1 text-dark-600">点击右上角添加</p>
               </div>
-            ) : servers.map(server => (
+            ) : filteredServers.length === 0 ? (
+              <div className="glass rounded-xl p-6 text-center text-dark-500">
+                <p className="text-sm">没有匹配的服务器</p>
+                <button
+                  onClick={() => { setServerSearch(''); setStatusFilter('all'); setVisibleCount(DEFAULT_VISIBLE_COUNT); }}
+                  className="text-xs mt-2 text-accent-400 hover:text-accent-300"
+                >
+                  清除筛选
+                </button>
+              </div>
+            ) : renderedServers.map(server => (
               <ServerCard
                 key={server.id}
                 server={server}
@@ -516,6 +574,14 @@ export default function Remote() {
                 }}
               />
             ))}
+            {remainingServers > 0 && (
+              <button
+                onClick={() => setVisibleCount(c => c + LOAD_MORE_STEP)}
+                className="glass rounded-xl p-2.5 text-xs text-dark-400 hover:text-dark-200 hover:bg-dark-800/40 transition-colors"
+              >
+                还有 {remainingServers} 台，点击加载更多
+              </button>
+            )}
           </div>
         </div>
       )}

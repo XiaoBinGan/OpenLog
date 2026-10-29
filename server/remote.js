@@ -69,7 +69,18 @@ const sshConnections = new Map();
  * 这里按 LRU 限制常驻连接数，超出的回收最久未使用的空闲连接；
  * 需要时 ensureSshConnection() 会按需重连（配置还在，重连成本可接受）。
  */
-const MAX_IDLE_CONNECTIONS = Number(process.env.OPENLOG_MAX_SSH_CONNECTIONS) || 300;
+/**
+ * 常驻 SSH 连接上限。
+ *
+ * 默认 1200（覆盖单实例 1000 台场景）。实测单个 ssh2 客户端连接成本：
+ *   - 内存 ≈ 64KB RSS / 连接（1000 台 ≈ 64MB，进程基线约 65MB）
+ *   - 文件描述符 = 1 个 / 连接（容器 nofile 上限 1,048,576）
+ * 所以「连接数」不是瓶颈，真正的坑是**上限小于服务器数**：那样每轮状态采集都会
+ * 触发 LRU 驱逐 + 重新握手（实测单次握手 184ms，1000 台每轮要补几百次握手），
+ * CPU 和延迟都会白白翻倍。
+ * 结论：这个值应当 ≥ 服务器台数。1000 台建议 1200。
+ */
+const MAX_IDLE_CONNECTIONS = Number(process.env.OPENLOG_MAX_SSH_CONNECTIONS) || 1200;
 /** 空闲多久回收（默认 10 分钟） */
 const IDLE_CONNECTION_TTL_MS = Number(process.env.OPENLOG_SSH_IDLE_TTL_MS) || 10 * 60 * 1000;
 /** 单次 SSH 建连超时（node-ssh 默认 20s，1000 台重连串行时太久） */
@@ -81,25 +92,37 @@ function touchConnection(id) {
   connectionLastUsed.set(id, Date.now());
 }
 
+/**
+ * 计算该回收哪些连接（纯函数，便于在 1000 台规模上单测）。
+ *
+ * 规则：先按空闲时长回收（超过 TTL），剩下的如果还超过上限，按 LRU 从最久未用的开始收。
+ * @param {Array<{id:string, used:number}>} entries
+ * @param {{max:number, idleTtlMs:number, now:number}} opts
+ * @returns {{expired:string[], evicted:string[]}}
+ */
+export function planEvictions(entries, { max, idleTtlMs, now }) {
+  const list = Array.isArray(entries) ? entries : [];
+  const expired = [];
+  const alive = [];
+  for (const e of list) {
+    if (now - (e.used || 0) > idleTtlMs) expired.push(e.id);
+    else alive.push(e);
+  }
+  alive.sort((a, b) => (a.used || 0) - (b.used || 0));
+  const overflow = Math.max(0, alive.length - Math.max(0, max));
+  return { expired, evicted: alive.slice(0, overflow).map(e => e.id) };
+}
+
 /** 回收超过上限或空闲太久的连接（返回关闭数量） */
 export function evictIdleConnections(now = Date.now()) {
-  let closed = 0;
   const entries = [...sshConnections.keys()].map(id => ({ id, used: connectionLastUsed.get(id) || 0 }));
-  // 1) 先按空闲时长回收
-  for (const { id, used } of entries) {
-    if (now - used > IDLE_CONNECTION_TTL_MS) {
-      const ssh = sshConnections.get(id);
-      sshConnections.delete(id);
-      connectionLastUsed.delete(id);
-      try { ssh?.dispose?.(); } catch { /* 忽略 */ }
-      closed++;
-    }
-  }
-  // 2) 还超上限就按 LRU 继续收
-  const remaining = [...sshConnections.keys()].map(id => ({ id, used: connectionLastUsed.get(id) || 0 }))
-    .sort((a, b) => a.used - b.used);
-  while (remaining.length > MAX_IDLE_CONNECTIONS) {
-    const { id } = remaining.shift();
+  const { expired, evicted } = planEvictions(entries, {
+    max: MAX_IDLE_CONNECTIONS,
+    idleTtlMs: IDLE_CONNECTION_TTL_MS,
+    now,
+  });
+  let closed = 0;
+  for (const id of [...expired, ...evicted]) {
     const ssh = sshConnections.get(id);
     sshConnections.delete(id);
     connectionLastUsed.delete(id);

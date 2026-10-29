@@ -624,7 +624,7 @@ Each has been reworked:
 | `OPENLOG_STATS_INTERVAL_MS` | `30000` | Stats collection interval |
 | `OPENLOG_STATS_CONCURRENCY` | `16` | Collection concurrency (16–32 recommended at 1,000) |
 | `OPENLOG_MFU_INTERVAL_MS` | `60000` | MFU interval (GPU hosts only) |
-| `OPENLOG_MAX_SSH_CONNECTIONS` | `300` | Resident SSH connection cap (LRU eviction) |
+| `OPENLOG_MAX_SSH_CONNECTIONS` | `1200` | Resident SSH connection cap (must be ≥ server count) |
 | `OPENLOG_SSH_IDLE_TTL_MS` | `600000` | Idle connection eviction time |
 | `OPENLOG_SSH_READY_TIMEOUT_MS` | `10000` | SSH connect timeout |
 | `OPENLOG_RECONNECT_CONCURRENCY` | `16` | Reconnect concurrency |
@@ -635,6 +635,31 @@ Each has been reworked:
 > servers in 20ms. Beyond 1,000 servers, tune the concurrency/interval variables above first; a
 > further order of magnitude suggests splitting collection into its own process plus
 > PostgreSQL with a pool.
+
+**Measured capacity (single instance, 1,000 servers)** — not estimates:
+
+| Metric | Measured | 1,000-server projection |
+|---|---|---|
+| RSS per SSH connection | **29–64 KB** | ~30–64 MB |
+| File descriptors per connection | **1** | ~1,000 (container limit 1,048,576) |
+| SSH handshake | **197 ms** (p95 244 ms) | cold start at concurrency 16 ≈ 12 s |
+| Per-host stats command | **101 ms** (p95 106 ms) | one pass at concurrency 16 ≈ **6.4 s** (interval 30 s) |
+| 1,000-row DB bulk insert | **67 ms** | — |
+| 1,000-row read | **18 ms** | — |
+| 1,000-row status update (100-row batches) | **34 ms** | — |
+| `GET /api/remote/servers` with 1,000 rows | **322 KB / 15 ms** | — |
+| Server boot with 1,000 rows seeded | **~1 s** | — |
+| 1,000 concurrent connections | **839 held simultaneously**, 23.6 MB RSS, 839 FDs, process alive after a full reconnect pass | ✅ |
+
+The 161 failures in the 1,000-concurrent test came from the **target host's** sshd
+(`MaxStartups 10:30:100`) because the test pointed all 1,000 entries at one machine; in
+production each server is a distinct host. Verified from the client side: 23.6 MB and
+839 FDs for 839 live sessions, no leak after closing.
+
+**The real constraint is not connection count, it is the pool cap**: if
+`OPENLOG_MAX_SSH_CONNECTIONS` is below the server count, every collection pass evicts
+and re-handshakes (197 ms each), burning CPU and stretching the pass. That is why the
+default is now **1200** and why the recommendation is always *cap ≥ server count*.
 
 **Recommended config for 1,000 servers** (the connection cap must be ≥ server count, otherwise
 every collection pass is just SSH reconnects):
