@@ -60,6 +60,132 @@
     reveals.forEach(function (el) { el.classList.add('in'); });
   }
 
+  /* ---------- 沉浸式滚动叙事（scrollytelling） ---------- */
+  (function cinematics() {
+    var root = document.getElementById('cine');
+    if (!root) return;
+    var track = document.getElementById('cine-track');
+    var steps = Array.prototype.slice.call(root.querySelectorAll('.cine-step'));
+    var frames = Array.prototype.slice.call(root.querySelectorAll('.cine-frame'));
+    var segs = Array.prototype.slice.call(root.querySelectorAll('.cine-seg i'));
+    var countEl = document.getElementById('cine-count');
+    var ghost = document.getElementById('cine-ghost');
+    var hint = document.getElementById('cine-hint');
+    var total = Math.min(steps.length, frames.length);
+    if (!track || !total) return;
+
+    /* 尊重系统「减少动效」：样式已退回普通长列表，这里不再接管滚动 */
+    if (prefersReduced) {
+      root.classList.add('cine-static');
+      return;
+    }
+
+    var clamp = function (v, a, b) { return v < a ? a : v > b ? b : v; };
+    var smoothstep = function (t) { return t * t * (3 - 2 * t); };
+    var pad2 = function (n) { return n < 10 ? '0' + n : '' + n; };
+
+    var vh = window.innerHeight;
+    var start = 0;
+    var span = 1;
+    var raf = 0;
+    var lastText = '';
+    var lastActive = -1;
+
+    function scrolled() {
+      return window.pageYOffset || document.documentElement.scrollTop || 0;
+    }
+
+    function measure() {
+      vh = window.innerHeight || document.documentElement.clientHeight;
+      start = track.getBoundingClientRect().top + scrolled();
+      span = Math.max(1, track.offsetHeight - vh);
+    }
+
+    function paint() {
+      raf = 0;
+      var p = clamp((scrolled() - start) / span, 0, 1);
+      var raw = p * total;
+      var active = Math.min(total - 1, Math.floor(raw));
+
+      root.style.setProperty('--p', p.toFixed(4));
+
+      for (var k = 0; k < total; k++) {
+        /* d = 0→1 表示第 k 幕正在播放；边界处 9% 的窗口做交叉溶解 */
+        var d = raw - k;
+        var fadeIn = k === 0 ? 1 : smoothstep(clamp((d + 0.035) / 0.09, 0, 1));
+        var fadeOut = k === total - 1 ? 1 : 1 - smoothstep(clamp((d - 0.945) / 0.09, 0, 1));
+        var fade = Math.min(fadeIn, fadeOut);
+        var step = steps[k];
+        var fr = frames[k];
+
+        if (fade <= 0.004) {
+          if (step.style.visibility !== 'hidden') {
+            step.style.visibility = 'hidden';
+            step.style.opacity = '0';
+            fr.style.visibility = 'hidden';
+            fr.style.opacity = '0';
+          }
+          continue;
+        }
+
+        var e = smoothstep(clamp(d / 0.42, 0, 1));
+        var o = fade.toFixed(3);
+
+        if (step.style.visibility !== 'visible') {
+          step.style.visibility = 'visible';
+          fr.style.visibility = 'visible';
+        }
+        step.style.opacity = o;
+        step.style.transform = 'translate3d(0,' + ((1 - e) * 22).toFixed(2) + 'px,0)';
+
+        fr.style.opacity = o;
+        fr.style.transform =
+          'translate3d(0,' + ((1 - e) * 30).toFixed(2) + 'px,0) ' +
+          'scale(' + (0.955 + 0.045 * e).toFixed(4) + ') ' +
+          'rotateY(' + ((1 - e) * -4).toFixed(2) + 'deg)';
+      }
+
+      for (var s = 0; s < segs.length; s++) {
+        segs[s].style.width = (clamp(raw - s, 0, 1) * 100).toFixed(2) + '%';
+      }
+
+      if (active !== lastActive) {
+        lastActive = active;
+        if (ghost) ghost.textContent = pad2(active + 1);
+      }
+
+      var hintOpacity = p < 0.9
+        ? 1 - clamp(p * 2.4, 0, 1) * 0.72
+        : clamp(0.28 + ((p - 0.9) / 0.1) * 0.72, 0, 1);
+      var text = p < 0.9 ? '继续滚动 ↓' : '15 秒 · 从告警到可回滚的变更';
+      if (countEl) countEl.textContent = pad2(active + 1) + ' / ' + pad2(total);
+      if (hint) {
+        hint.style.opacity = hintOpacity.toFixed(2);
+        if (text !== lastText) { lastText = text; hint.textContent = text; }
+      }
+    }
+
+    function onScroll() {
+      if (!raf) raf = requestAnimationFrame(paint);
+    }
+
+    function remeasure() {
+      measure();
+      if (!raf) raf = requestAnimationFrame(paint);
+    }
+
+    measure();
+    paint();
+
+    window.addEventListener('scroll', onScroll, { passive: true });
+    window.addEventListener('resize', remeasure, { passive: true });
+    window.addEventListener('orientationchange', remeasure, { passive: true });
+    window.addEventListener('load', remeasure);
+    if (document.fonts && document.fonts.ready) document.fonts.ready.then(remeasure);
+    /* 首屏字体/图片落位后再校准一次锚点 */
+    setTimeout(remeasure, 700);
+  })();
+
   /* ---------- 轮播图 ---------- */
   var deck = document.getElementById('deck');
   var track = document.getElementById('track');

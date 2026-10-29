@@ -302,6 +302,218 @@
     </div>
   </section>
 
+  <!-- ========== 沉浸式滚动叙事 ========== -->
+  <section class="cine" id="cine" aria-label="滚动叙事：一次真实故障的 15 秒处置">
+    <div class="cine-track" id="cine-track">
+      <div class="cine-stage">
+        <div class="cine-bg" aria-hidden="true">
+          <span class="cine-orb a"></span>
+          <span class="cine-orb b"></span>
+          <span class="cine-orb c"></span>
+          <span class="cine-beam"></span>
+        </div>
+
+        <div class="wrap cine-inner">
+          <span class="cine-ghost" id="cine-ghost" aria-hidden="true">01</span>
+          <div class="cine-copy">
+            <p class="cine-kicker"><span class="k-lat">Scroll story</span> · 一次真实故障的 15 秒</p>
+            <ol class="cine-steps">
+              <li class="cine-step" data-i="0">
+                <span class="cine-ts">12:05:07 · LOGS</span>
+                <h2>一个 ERROR，<br /><span class="nw">从 412 台机器里浮出来</span></h2>
+                <p>面板不给你刷屏：命中关键字的那些行才被推到面前，哪台机器、哪个容器、什么时候开始，一眼看到。</p>
+                <ul class="cine-chips"><li>412 台在管</li><li>ERROR ×3</li><li>WS 实时推送</li></ul>
+              </li>
+              <li class="cine-step" data-i="1">
+                <span class="cine-ts">12:05:09 · COMPUTE</span>
+                <h2>算力在同一根<br /><span class="nw">时间轴上掉了 8 个点</span></h2>
+                <p>不用重新选机器：GPU 利用率、显存、MFU 和日志共用一条时间轴。掉点发生在报错前两秒 —— 因果是看得见的。</p>
+                <ul class="cine-chips"><li>MFU 34.1%</li><li>7 种引擎</li><li>零配置口径</li></ul>
+              </li>
+              <li class="cine-step" data-i="2">
+                <span class="cine-ts">12:05:14 · DOCKER</span>
+                <h2>不切窗口，<br /><span class="nw">直接跳进那台容器</span></h2>
+                <p>Docker over SSH：宿主机零安装、复用现有 SSH 账号。容器列表、实时日志、内嵌终端，全都长在同一个面板里。</p>
+                <ul class="cine-chips"><li>over SSH</li><li>零 agent</li><li>内嵌终端</li></ul>
+              </li>
+              <li class="cine-step" data-i="3">
+                <span class="cine-ts">12:05:22 · AGENT</span>
+                <h2>剩下的事交给 Agent，<br /><span class="nw">你只审一眼 diff</span></h2>
+                <p>读日志、定位到文件行号、改配置、重启、复验，每一步都有记录。交付的不是一段建议，是一个可回滚的变更。</p>
+                <ul class="cine-chips"><li>多步执行</li><li>真实 diff</li><li>全量审计</li></ul>
+              </li>
+            </ol>
+          </div>
+
+          <div class="cine-visual" aria-hidden="true">
+            <div class="cine-frames">
+              <figure class="cine-frame" data-i="0">
+                <div class="browser">
+                  <div class="browser-bar">
+                    <span class="lights"><i></i><i></i><i></i></span>
+                    <span class="browser-url">203.0.113.10:3001<span>/logs</span></span>
+                    <span class="browser-dots">⋯</span>
+                  </div>
+                  <div class="cine-fig">
+                    <div class="mock">
+                      <div class="mock-head">
+                        <span class="mock-title">日志流 · 全量 412 台</span>
+                        <span class="tag err-live"><i class="dot-live"></i>ERROR 命中</span>
+                      </div>
+                      <div class="mock-body">
+                        <div class="m-log"><span class="lv info">INFO</span><span class="ts">12:04:51</span><span class="msg">vllm-qwen3 · model loaded in 8.4s · kv-cache 21.3GB</span></div>
+                        <div class="m-log"><span class="lv info">INFO</span><span class="ts">12:04:59</span><span class="msg">request batch=32 in=1.2k out=380 · 1.83s</span></div>
+                        <div class="m-log warn"><span class="lv warn">WARN</span><span class="ts">12:05:02</span><span class="msg">queue depth 48 &gt; threshold 32</span></div>
+                        <div class="m-log err"><span class="lv err">ERROR</span><span class="ts">12:05:07</span><span class="msg">CUDA out of memory · tried to allocate 2.31 GiB</span></div>
+                        <div class="m-log err"><span class="lv err">ERROR</span><span class="ts">12:05:07</span><span class="msg">engine worker exited with code 1</span></div>
+                        <div class="m-log dim"><span class="lv">DEBUG</span><span class="ts">12:05:12</span><span class="msg">health probe /v1/models → 200</span></div>
+                        <div class="m-log dim"><span class="lv">DEBUG</span><span class="ts">12:05:19</span><span class="msg">kv-cache hit rate 0.87 · reuse 214 blocks</span></div>
+                        <div class="m-log dim"><span class="lv">DEBUG</span><span class="ts">12:05:21</span><span class="msg">router retry → sglang-router:8000 · 1 in flight</span></div>
+                        <div class="m-log dim"><span class="lv">DEBUG</span><span class="ts">12:05:23</span><span class="msg">ssh pool warm · 412 hosts · reuse 100%</span></div>
+                        <div class="m-toast">
+                          <span class="toast-dot"></span>
+                          <span><b>ERROR 命中 3 次</b> · vllm-qwen3 @ 4090服务器</span>
+                          <span class="toast-act">一键跳转 →</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </figure>
+
+              <figure class="cine-frame" data-i="1">
+                <div class="browser">
+                  <div class="browser-bar">
+                    <span class="lights"><i></i><i></i><i></i></span>
+                    <span class="browser-url">203.0.113.10:3001<span>/metrics/gpu</span></span>
+                    <span class="browser-dots">⋯</span>
+                  </div>
+                  <div class="cine-fig">
+                    <div class="mock">
+                      <div class="mock-head">
+                        <span class="mock-title">算力监控 · 4 × A100 80G</span>
+                        <span class="tag blue">MFU 已接入</span>
+                      </div>
+                      <div class="mock-body">
+                        <div class="m-gpu">
+                          <div class="gpu-tile"><span class="gpu-name">GPU 0</span><span class="gpu-val">71<i>%</i></span><span class="gpu-sub">61 / 80 GB · 68°C</span><span class="bar"><i style="width:71%"></i></span></div>
+                          <div class="gpu-tile"><span class="gpu-name">GPU 1</span><span class="gpu-val">97<i>%</i></span><span class="gpu-sub">79 / 80 GB · 79°C</span><span class="bar"><i style="width:97%"></i></span></div>
+                          <div class="gpu-tile"><span class="gpu-name">GPU 2</span><span class="gpu-val">64<i>%</i></span><span class="gpu-sub">58 / 80 GB · 66°C</span><span class="bar"><i style="width:64%"></i></span></div>
+                          <div class="gpu-tile"><span class="gpu-name">GPU 3</span><span class="gpu-val">69<i>%</i></span><span class="gpu-sub">69 / 80 GB · 70°C</span><span class="bar"><i style="width:69%"></i></span></div>
+                          <div class="gpu-tile"><span class="gpu-name">GPU 4</span><span class="gpu-val">88<i>%</i></span><span class="gpu-sub">74 / 80 GB · 73°C</span><span class="bar"><i style="width:88%"></i></span></div>
+                          <div class="gpu-tile"><span class="gpu-name">GPU 5</span><span class="gpu-val">55<i>%</i></span><span class="gpu-sub">42 / 80 GB · 61°C</span><span class="bar"><i style="width:55%"></i></span></div>
+                          <div class="gpu-tile"><span class="gpu-name">GPU 6</span><span class="gpu-val">92<i>%</i></span><span class="gpu-sub">77 / 80 GB · 76°C</span><span class="bar"><i style="width:92%"></i></span></div>
+                          <div class="gpu-tile"><span class="gpu-name">GPU 7</span><span class="gpu-val">78<i>%</i></span><span class="gpu-sub">70 / 80 GB · 71°C</span><span class="bar"><i style="width:78%"></i></span></div>
+                        </div>
+                        <div class="m-spark">
+                          <span class="m-spark-label">近 5 分钟 GPU 利用率 · 12:05 处掉点</span>
+                          <div class="m-chart sm"><i style="height:74%"></i><i style="height:78%"></i><i style="height:81%"></i><i style="height:77%"></i><i style="height:83%"></i><i style="height:88%"></i><i style="height:92%"></i><i style="height:90%"></i><i style="height:86%"></i><i style="height:52%"></i><i style="height:44%"></i><i style="height:61%"></i><i style="height:70%"></i><i style="height:67%"></i><i style="height:73%"></i><i style="height:69%"></i><i style="height:76%"></i><i style="height:72%"></i></div>
+                        </div>
+                        <div class="m-mfu">
+                          <div class="mfu-main"><span class="mfu-num">34.1<i>%</i></span><span class="mfu-label">MFU · 12:05 前为 42.3%</span></div>
+                          <div class="mfu-meta">
+                            <span class="mfu-row"><em>模型</em>qwen3.8-flash-next</span>
+                            <span class="mfu-row"><em>引擎</em>vLLM · SGLang · 7 种适配</span>
+                            <span class="mfu-row"><em>根因</em>排队堆积 → 有效算力被拖低</span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </figure>
+
+              <figure class="cine-frame" data-i="2">
+                <div class="browser">
+                  <div class="browser-bar">
+                    <span class="lights"><i></i><i></i><i></i></span>
+                    <span class="browser-url">203.0.113.10:3001<span>/docker</span></span>
+                    <span class="browser-dots">⋯</span>
+                  </div>
+                  <div class="cine-fig">
+                    <div class="mock">
+                      <div class="mock-head">
+                        <span class="mock-title">Docker · 4090服务器（SSH 桥接）</span>
+                        <span class="tag ok">CONNECTED</span>
+                      </div>
+                      <div class="mock-body">
+                        <div class="m-row head"><span></span><span>容器</span><span>状态</span><span>操作</span></div>
+                        <div class="m-row"><span class="s-dot on"></span><span class="mono">openlog-agent</span><span class="st on">运行中</span><span class="acts"><i>日志</i><i>终端</i></span></div>
+                        <div class="m-row"><span class="s-dot on"></span><span class="mono">vllm-qwen3</span><span class="st on">运行中</span><span class="acts"><i>日志</i><i>终端</i></span></div>
+                        <div class="m-row"><span class="s-dot on"></span><span class="mono">sglang-router</span><span class="st on">运行中</span><span class="acts"><i>日志</i><i>终端</i></span></div>
+                        <div class="m-row"><span class="s-dot err"></span><span class="mono">embedding-api</span><span class="st off">已退出 1</span><span class="acts"><i>启动</i><i>详情</i></span></div>
+                        <div class="m-row"><span class="s-dot off"></span><span class="mono">jupyter-notebook</span><span class="st off">已退出 137</span><span class="acts"><i>启动</i><i>详情</i></span></div>
+                        <div class="m-term">
+                          <span class="t-line"><b>$</b> docker exec -it vllm-qwen3 bash</span>
+                          <span class="t-line dim">[12:05:14] cat /etc/vllm/serve.yaml</span>
+                          <span class="t-line err">[12:05:15] max_num_seqs: 64  # 显存预算超了 2.3 GiB</span>
+                          <span class="t-line dim">[12:05:16] nvidia-smi · GPU 1 79/80 GB</span>
+                        </div>
+                        <div class="m-pool">
+                          <span><em>通道</em>SSH 桥接 · 复用现有账号</span>
+                          <span><em>宿主</em>零 agent 安装</span>
+                          <span><em>延迟</em>12ms · 容器 23 个</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </figure>
+
+              <figure class="cine-frame" data-i="3">
+                <div class="browser">
+                  <div class="browser-bar">
+                    <span class="lights"><i></i><i></i><i></i></span>
+                    <span class="browser-url">203.0.113.10:3001<span>/assistant</span></span>
+                    <span class="browser-dots">⋯</span>
+                  </div>
+                  <div class="cine-fig">
+                    <div class="mock">
+                      <div class="mock-head">
+                        <span class="mock-title">AI 运维助手 · 多步执行</span>
+                        <span class="tag purple">Agent</span>
+                      </div>
+                      <div class="mock-body">
+                        <div class="m-chat">
+                          <p class="bubble user">vllm-qwen3 的 prefill 超时了，定位一下并改掉配置。</p>
+                          <p class="bubble ai">已定位到 <b>serve.yaml: max_num_seqs</b>。按显存预算改成 32，重启并复验。</p>
+                        </div>
+                        <ul class="steps">
+                          <li><span>1</span>读日志 · 命中 ERROR 3 条<em>logs</em></li>
+                          <li><span>2</span>看算力 · MFU 42.3 → 34.1<em>metrics</em></li>
+                          <li><span>3</span>进容器 · 读到 serve.yaml<em>ssh exec</em></li>
+                          <li><span>4</span>改配置 · 写入远端文件<em>file</em></li>
+                          <li class="run"><span>5</span>重启 + 复验 · 进行中<em>verify</em></li>
+                        </ul>
+                        <div class="m-diff">
+                          <span class="d-line del"><i>-</i>max_num_seqs: 64</span>
+                          <span class="d-line add"><i>+</i>max_num_seqs: 32</span>
+                          <span class="d-line del"><i>-</i>gpu_memory_utilization: 0.95</span>
+                          <span class="d-line add"><i>+</i>gpu_memory_utilization: 0.88</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </figure>
+            </div>
+          </div>
+
+          <div class="cine-rail">
+            <span class="cine-hint" id="cine-hint">继续滚动 ↓</span>
+            <div class="cine-segs">
+              <span class="cine-seg"><i></i></span>
+              <span class="cine-seg"><i></i></span>
+              <span class="cine-seg"><i></i></span>
+              <span class="cine-seg"><i></i></span>
+            </div>
+            <span class="cine-count" id="cine-count">01 / 04</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
   <!-- ========== 痛点 ========== -->
   <section id="why">
     <div class="wrap">
