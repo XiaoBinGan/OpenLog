@@ -37,7 +37,8 @@ describe('serverToRow / rowToServer —— 字段映射', () => {
     }, encrypt);
     expect(row.id).toBe('s1');
     expect(row.password).toBe('enc:pw');
-    expect(row.watch_files).toBe('"*.log"');
+    // 这里**不能**是 '"*.log"'：那正是历史膨胀 bug（每存一次多一层转义）
+    expect(row.watch_files).toBe('*.log');
     expect(row.status).toBe('connected');
     expect(row.extra).toBeNull();
   });

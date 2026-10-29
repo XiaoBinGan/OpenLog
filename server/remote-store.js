@@ -59,6 +59,80 @@ CREATE TABLE IF NOT EXISTS ${SERVERS_TABLE} (
 )`;
 }
 
+/** watch_files 字段长度上限：超过就判定为历史膨胀数据，回退默认值 */
+export const MAX_WATCH_FILES_CHARS = 4096;
+/** watch_files 默认值（与 UI 的日志匹配模式一致） */
+export const DEFAULT_WATCH_FILES = '*.log';
+
+/**
+ * 归一化 watch_files 字段（读取时用）。
+ *
+ * ⚠️ 历史大坑：早期 serverToRow 无条件 JSON.stringify(watchFiles)，而 rowToServer 只在
+ * 值以 "[" 开头时才 JSON.parse。于是普通字符串 '*.log' 存成 '"*.log"'，读回来还是
+ * '"*.log"'（带引号），下次保存又 stringify 一遍 —— 每保存一次多一层转义，
+ * 因为每层转义都把上一层的内层引号再转义一次，长度按 2^n 膨胀。
+ * 而 saveServer() 在每次状态变化（每 30s 的状态采集）都会调用，几十分钟就能把一行
+ * 撑到 32MB：/api/remote/servers 返回上百 MB JSON，浏览器直接卡死，
+ * 表现为「服务器连接全没了」，同时写库超时报 Connection terminated。
+ *
+ * 现在：字符串原样存、读取时最多解 8 层历史嵌套，并限制长度。
+ */
+function unwrapLayers(value, maxDepth) {
+  let v = value;
+  for (let depth = 0; depth < maxDepth && typeof v === 'string'; depth++) {
+    // 长度已超限就不再解析：32MB 的 JSON.parse 很贵，而列表请求每次都会走这里
+    if (v.length > MAX_WATCH_FILES_CHARS) break;
+    const t = v.trim();
+    // 只有形如 '"..."' 或 '["..."]' 才可能是 JSON 编码过的历史值
+    if (!(t.startsWith('"') || t.startsWith('['))) break;
+    try {
+      const parsed = JSON.parse(t);
+      if (typeof parsed === 'string' || Array.isArray(parsed)) { v = parsed; continue; }
+    } catch { /* 不是合法 JSON，当普通字符串 */ }
+    break;
+  }
+  if (v == null) return DEFAULT_WATCH_FILES;
+  // 数组是历史写法（旧版按数组存），保留数组语义，别悄悄改成字符串
+  if (Array.isArray(v)) {
+    const arr = v.map(x => String(x));
+    return arr.join(',').length > MAX_WATCH_FILES_CHARS ? DEFAULT_WATCH_FILES : arr;
+  }
+  const str = String(v);
+  if (!str || str.length > MAX_WATCH_FILES_CHARS) return DEFAULT_WATCH_FILES;
+  return str;
+}
+
+/**
+ * 读取时归一化（轻量，列表请求里会用）：最多解 8 层历史嵌套，
+ * 超长脏值直接回退默认值，不做昂贵的深度解析。
+ */
+export function normalizeWatchFiles(value) {
+  return unwrapLayers(value, 8);
+}
+
+/**
+ * 深度归一化：最多解 64 层嵌套。**只给一次性修复用**（启动时 repairServerRows），
+ * 因为膨胀值每层转义长度翻倍，需要多轮才能剥干净，代价较大。
+ */
+export function deepNormalizeWatchFiles(value) {
+  return unwrapLayers(value, 64);
+}
+
+/**
+ * 序列化 watch_files（写入时用）。
+ *
+ * **关键：字符串原样存**，不要再 JSON.stringify —— 那正是膨胀 bug 的来源
+ * （存进去 '"*.log"'，读的时候只认 '[' 开头所以原样返回带引号的字符串，
+ * 下次保存再 stringify 一层，长度按 2^n 涨）。数组是历史写法，仍按 JSON 存。
+ */
+export function serializeWatchFiles(value) {
+  if (Array.isArray(value)) {
+    const arr = value.map(x => String(x));
+    return arr.join(',').length > MAX_WATCH_FILES_CHARS ? DEFAULT_WATCH_FILES : JSON.stringify(arr);
+  }
+  return normalizeWatchFiles(value);
+}
+
 let tableReady = false;
 
 /** 建表（幂等，首次调用执行一次） */
@@ -95,7 +169,7 @@ export function serverToRow(server, encryptPassword) {
     private_key: server.privateKey ?? null,
     private_key_path: server.privateKeyPath ?? null,
     log_path: server.logPath ?? null,
-    watch_files: server.watchFiles != null ? JSON.stringify(server.watchFiles) : null,
+    watch_files: server.watchFiles != null ? serializeWatchFiles(server.watchFiles) : null,
     status: server.status ?? 'disconnected',
     last_error: server.lastError ?? null,
     last_error_at: server.lastErrorAt ?? null,
@@ -113,10 +187,7 @@ export function rowToServer(row, decryptPassword) {
   try {
     if (row.extra) extra = typeof row.extra === 'string' ? JSON.parse(row.extra) : row.extra;
   } catch { extra = {}; }
-  let watchFiles = row.watch_files ?? '*.log';
-  if (typeof watchFiles === 'string' && watchFiles.startsWith('[')) {
-    try { watchFiles = JSON.parse(watchFiles); } catch { /* 保持原样 */ }
-  }
+  const watchFiles = normalizeWatchFiles(row.watch_files);
   return {
     ...extra,
     id: row.id,
@@ -143,6 +214,38 @@ export async function listServerRows() {
   const db = getDb();
   const rows = await db.all(`SELECT ${COLUMNS.join(', ')} FROM ${SERVERS_TABLE}`);
   return Array.isArray(rows) ? rows : [];
+}
+
+/**
+ * 修复历史膨胀行（启动时跑一次，幂等）。
+ *
+ * 只修 watch_files：它被双重编码过，可能已经涨到几十 MB。修复后写库恢复正常大小。
+ * @returns {Promise<{scanned:number, fixed:number, bytesFreed:number}>}
+ */
+export async function repairServerRows() {
+  await ensureServersTable();
+  const db = getDb();
+  let rows = [];
+  try {
+    rows = await db.all(`SELECT id, watch_files FROM ${SERVERS_TABLE}`);
+  } catch {
+    return { scanned: 0, fixed: 0, bytesFreed: 0 };
+  }
+  let fixed = 0;
+  let bytesFreed = 0;
+  for (const row of (rows || [])) {
+    const rawValue = row.watch_files;
+    if (rawValue == null) continue;
+    const normalized = deepNormalizeWatchFiles(rawValue);
+    if (String(rawValue) !== normalized) {
+      bytesFreed += Math.max(0, String(rawValue).length - normalized.length);
+      try {
+        await db.run(`UPDATE ${SERVERS_TABLE} SET watch_files = ? WHERE id = ?`, [normalized, row.id]);
+        fixed++;
+      } catch { /* 单行失败不影响其它行 */ }
+    }
+  }
+  return { scanned: (rows || []).length, fixed, bytesFreed };
 }
 
 export async function countServerRows() {
@@ -290,7 +393,8 @@ export async function migrateLegacyKvServers(encryptedToRow) {
 
 export default {
   SERVERS_TABLE, ensureServersTable, serverToRow, rowToServer,
-  listServerRows, countServerRows, replaceAllServerRows,
+  listServerRows, countServerRows, replaceAllServerRows, repairServerRows,
+  normalizeWatchFiles, deepNormalizeWatchFiles, serializeWatchFiles,
   queueServerWrite, queueServerDelete, flushServerWrites,
   migrateLegacyKvServers,
 };

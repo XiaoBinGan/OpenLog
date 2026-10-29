@@ -8,7 +8,7 @@ import path from 'path';
 import { getDb, getDbType } from './db/index.js';
 import {
   ensureServersTable, listServerRows, countServerRows, rowToServer, serverToRow,
-  queueServerWrite, queueServerDelete, flushServerWrites, migrateLegacyKvServers,
+  queueServerWrite, queueServerDelete, flushServerWrites, migrateLegacyKvServers, repairServerRows,
 } from './remote-store.js';
 import { mapLimit } from './concurrency.js';
 
@@ -155,6 +155,21 @@ export async function loadServers() {
       servers = rows.map(r => rowToServer(r, decryptPassword));
       persistKeyMigration();
       console.log(`[Remote] 从 remote_servers 表加载了 ${servers.length} 台服务器`);
+
+      // 修复历史遗留的 watch_files 双重编码膨胀行（曾把一行撑到 32MB，
+      // 导致 /api/remote/servers 返回上百 MB、前端直接卡死）。
+      try {
+        const repaired = await repairServerRows();
+        if (repaired.fixed > 0) {
+          console.warn(
+            `[Remote] 修复了 ${repaired.fixed} 行 watch_files 膨胀数据，释放 ` +
+            `${Math.round(repaired.bytesFreed / 1024)}KB（历史双重编码 bug）`
+          );
+        }
+      } catch (err) {
+        console.warn('[Remote] watch_files 修复跳过:', errorMessage(err));
+      }
+
       return servers;
     } catch (err) {
       console.warn('[Remote] 从 DB 加载失败，回退到文件:', errorMessage(err));
