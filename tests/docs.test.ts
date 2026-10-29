@@ -111,3 +111,33 @@ describe('README 双语文档', () => {
     }
   });
 });
+
+describe('镜像归档清单格式', () => {
+  const manifestPath = 'deploy/images/MANIFEST.md';
+
+  it('清单存在且有表头', () => {
+    expect(fs.existsSync(path.join(ROOT, manifestPath))).toBe(true);
+    const src = read(manifestPath);
+    expect(src).toContain('| 归档文件 |');
+    expect(src).toContain('|---');
+  });
+
+  it('每条归档独占一行（曾因追加缺换行把两条挤成一行）', () => {
+    const lines = read(manifestPath).split('\n');
+    for (const line of lines) {
+      const hits = line.match(/\|\s*\`openlog-/g) || [];
+      expect(hits.length, `同一行出现多条归档: ${line.slice(0, 80)}`).toBeLessThanOrEqual(1);
+    }
+  });
+
+  it('归档行列数完整（文件/镜像/ID/commit/大小/时间/SHA256/备注/位置）', () => {
+    const rows = read(manifestPath).split('\n').filter(l => /^\|\s*`openlog-/.test(l));
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows) {
+      const cols = row.split('|').slice(1, -1).map(c => c.trim());
+      expect(cols.length, `列数不对: ${row.slice(0, 60)}`).toBe(9);
+      expect(cols[0]).toMatch(/^\`openlog-.*\.tar\.gz\`$/);
+      expect(cols[3]).toMatch(/^\`[0-9a-f]{7,}\`$/); // commit
+    }
+  });
+});

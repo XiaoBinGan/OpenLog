@@ -64,6 +64,11 @@ if [ ! -f "$MANIFEST" ]; then
 HEADER
 fi
 
+# 追加前确保上一行以换行结尾，否则新记录会并进上一行（曾把两条归档挤成一行）
+if [ -s "$MANIFEST" ] && [ -n "$(tail -c 1 "$MANIFEST")" ]; then
+  echo >> "$MANIFEST"
+fi
+
 REL="$(realpath --relative-to="$APP_DIR" "$ARCHIVE" 2>/dev/null || echo "$ARCHIVE")"
 printf '| `%s` | `%s` | `%s` | `%s` | %s | %s | `%s` | %s |\n' \
   "$(basename "$ARCHIVE")" "$IMAGE" "$IMAGE_ID" "$COMMIT" "$SIZE_HUMAN" \
