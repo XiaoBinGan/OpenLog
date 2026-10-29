@@ -258,6 +258,23 @@ OPENLOG_DATABASE_URL=postgres://openlog:密码@127.0.0.1:5432/openlog \
 > PostgreSQL 在 1000 台量级的实测：1000 台服务器批量写入 674ms（分 100 行一批）、读回 86ms、
 > 50 个并发查询 1ms（连接池）；`log_records` 与查询走 `machine_id` / `timestamp` 索引。
 
+**健康检查**：`GET /api/db/info`（需 token）返回当前库类型、连接池水位、探活延迟、存储占用：
+
+```json
+{
+  "type": "postgres", "dialect": "postgresql", "ready": true, "ok": true,
+  "latencyMs": 2,
+  "pool": { "total": 1, "idle": 1, "waiting": 0, "max": 10 },
+  "database": "openlog",
+  "storage": { "kind": "database", "bytes": 8454144 },
+  "timestamp": "2026-10-29T00:24:11.000Z"
+}
+```
+
+`waiting` 持续 > 0 说明池被打满，调大 `OPENLOG_PG_POOL_MAX`；`?counts=1` 额外给出关键表行数
+（大表用方言估算：PG `pg_class.reltuples`、MySQL `information_schema`，不做全表扫描）。
+端点不返回用户名/密码/连接串。
+
 #### 远端访问与访问令牌 | Remote access & token
 
 `GET /api/auth/token` 只允许**回环地址**调用（非 localhost 一律 403），所以从其它机器
@@ -779,6 +796,7 @@ OPENLOG_ENABLE_CONTAINER_EXEC=1   # 或 OPENLOG_ENABLE_REMOTE_EXEC=1 一并开�
 | 方法 | 端点 | 说明 |
 |------|------|------|
 | GET | `/api/monitor/stats` | 系统状态（含 GPU） |
+| GET | `/api/db/info` | 数据库健康检查：库类型 / 连接池水位 / 探活延迟 / 存储占用（`?counts=1` 附关键表行数，不返回凭据） |
 | GET | `/api/remote/servers` | 远程服务器列表 |
 | GET | `/api/remote/servers/:id/stats` | 远程系统状态（含 GPU 进程，命中采集缓存） |
 | GET | `/api/remote/servers/stats` | 全量状态快照（服务端集中采集，`?refresh=1` 或 `?ids=a,b` 可按需补采） |

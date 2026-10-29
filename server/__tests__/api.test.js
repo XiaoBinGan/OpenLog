@@ -194,6 +194,31 @@ describe('核心路由 200 冒烟测试', () => {
     });
   });
 
+  describe('数据库健康检查 (db/info)', () => {
+    it('GET /api/db/info — 返回库类型 / 探活延迟 / 存储占用', async () => {
+      const res = await get('/api/db/info');
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.ok).toBe(true);
+      expect(['sqlite', 'postgres', 'mysql']).toContain(data.type);
+      expect(typeof data.latencyMs).toBe('number');
+      expect(data).toHaveProperty('storage');
+      expect(data).toHaveProperty('timestamp');
+      // 不能泄露凭据
+      expect(JSON.stringify(data)).not.toMatch(/password|PG_PASSWORD|openlogtest/i);
+    });
+
+    it('GET /api/db/info?counts=1 — 附带关键表行数', async () => {
+      const res = await get('/api/db/info?counts=1');
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.counts).toBeTruthy();
+      expect(data.counts).toHaveProperty('kv_store');
+      expect(data.counts).toHaveProperty('remote_servers');
+      expect(data.counts).toHaveProperty('log_records');
+    });
+  });
+
   describe('分析模块 (analysis)', () => {
     it('GET /api/analysis/status — 返回分析队列状态', async () => {
       const res = await get('/api/analysis/status');

@@ -15,7 +15,7 @@ import Database from 'better-sqlite3';
 import { errorMessage } from '../errors.js';
 import mysql from 'mysql2/promise';
 import pg from 'pg';
-import { existsSync, mkdirSync } from 'fs';
+import { existsSync, mkdirSync, statSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 
@@ -331,18 +331,66 @@ export function getDbType() {
   return dbType;
 }
 
-/** 连接池/数据库概况（健康检查用） */
+/**
+ * 数据库概况（健康检查端点用）。
+ *
+ * 连接池水位直接反映「是不是把池打满了」：`waiting > 0` 持续出现说明池太小，
+ * 得调 OPENLOG_PG_POOL_MAX。MySQL 的 mysql2 池把连接数组藏在 `pool.pool._allConnections`
+ * 里，所以在 getDbInfo 里做了兜底读取。
+ */
 export function getDbInfo() {
-  const info = { type: dbType };
+  const info = { type: dbType || null, ready: Boolean(db) };
   if (!rawDb) return info;
-  if (dbType === 'postgres' || dbType === 'mysql') {
+
+  if (dbType === 'postgres') {
+    info.dialect = 'postgresql';
     info.pool = {
-      total: rawDb.totalCount ?? rawDb.pool?._allConnections?.length ?? null,
-      idle: rawDb.idleCount ?? rawDb.pool?._freeConnections?.length ?? null,
-      waiting: rawDb.waitingCount ?? rawDb.pool?._connectionQueue?.length ?? null,
+      total: rawDb.totalCount ?? null,
+      idle: rawDb.idleCount ?? null,
+      waiting: rawDb.waitingCount ?? null,
+      max: rawDb.options?.max ?? null,
     };
+    info.host = rawDb.options?.host || (rawDb.options?.connectionString ? '(URL)' : null);
+    info.database = rawDb.options?.database || null;
+  } else if (dbType === 'mysql') {
+    info.dialect = 'mysql';
+    const inner = rawDb.pool || {};
+    info.pool = {
+      total: inner._allConnections?.length ?? null,
+      idle: inner._freeConnections?.length ?? null,
+      waiting: inner._connectionQueue?.length ?? null,
+      max: inner.config?.connectionLimit ?? null,
+    };
+    info.host = inner.config?.host || null;
+    info.database = inner.config?.database || null;
+  } else if (dbType === 'sqlite') {
+    info.dialect = 'sqlite';
+    info.sqlite = { path: SQLITE_PATH };
+    try {
+      // 页面日志/库大小，方便判断要不要上 PG
+      info.sqlite.fileSize = existsSync(SQLITE_PATH) ? statSync(SQLITE_PATH).size : null;
+    } catch { /* 忽略 */ }
   }
   return info;
+}
+
+/**
+ * 探活：执行一次最轻的查询，返回耗时。
+ * 端点用它区分「进程活着但数据库断了」。
+ */
+export async function pingDb() {
+  if (!db) return { ok: false, error: '数据库未初始化' };
+  const started = Date.now();
+  try {
+    if (dbType === 'postgres' || dbType === 'mysql') {
+      await db.get('SELECT 1 AS ok');
+    } else {
+      db.get('SELECT 1 AS ok');
+    }
+    return { ok: true, latencyMs: Date.now() - started };
+  } catch (err) {
+    return { ok: false, latencyMs: Date.now() - started, error: errorMessage(err) };
+  }
 }
 
 // ─── 迁移 ─────────────────────────────────────────────────────────────────

@@ -30,6 +30,7 @@ import createLogsRouter from './routes/logs.js';
 import createAnalysisRouter from './routes/analysis.js';
 import assistantMemoryRouter from './routes/assistant-memory.js';
 import createModelsRouter from './routes/models.js';
+import createDbRouter from './routes/db-info.js';
 import createRemoteRouter from './routes/remote.js';
 import { createStatsScheduler } from './stats-scheduler.js';
 import { mapLimit } from './concurrency.js';
@@ -1112,6 +1113,9 @@ app.use(assistantMemoryRouter);
 // 可用模型列表 —— 已抽到 server/routes/models.js
 // ============================================================
 app.use(createModelsRouter({ ensureSettings }));
+
+// 数据库健康检查：GET /api/db/info（类型 / 连接池水位 / 探活延迟 / 存储占用）
+app.use(createDbRouter());
 
 // ============================================================
 // LLM 助手聊天 API（流式 SSE）
