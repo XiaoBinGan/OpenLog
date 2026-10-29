@@ -536,6 +536,60 @@ section{position:relative;padding:var(--pad) 0}
   font-size:13.5px;color:var(--text);
 }
 
+/* ============ fde ============ */
+.nav-links a.hot{position:relative;color:var(--text)}
+.nav-links a.hot::after{
+  content:"";position:absolute;left:50%;bottom:-6px;width:4px;height:4px;border-radius:50%;
+  background:var(--accent);transform:translateX(-50%);box-shadow:0 0 0 3px rgba(52,211,153,.18);
+}
+.fde-grid{display:grid;grid-template-columns:minmax(0,1.12fr) minmax(0,.88fr);gap:22px;align-items:start}
+.fde-list{display:flex;flex-direction:column;gap:2px;list-style:none}
+.fde-day{list-style:none}
+.fde-list li{
+  display:grid;grid-template-columns:34px minmax(0,1fr);gap:14px;
+  padding:16px 0;border-top:1px solid rgba(42,49,60,.7);
+}
+.fde-list li:first-child{border-top:0;padding-top:0}
+.fde-no{font:700 11px/1.9 var(--mono);letter-spacing:.1em;color:var(--accent);opacity:.85}
+.fde-list b{display:block;font-size:14.5px;color:var(--text);letter-spacing:-.005em}
+.fde-list p{margin-top:7px;font-size:13px;line-height:1.8;color:var(--sub)}
+.fde-list .fde-ans{
+  margin-top:11px;padding:8px 12px;border-radius:8px;font-size:12.5px;color:var(--dim);
+  border:1px solid rgba(52,211,153,.2);background:rgba(52,211,153,.05);
+}
+.fde-list .fde-ans em{font-style:normal;color:var(--accent)}
+.fde-card{
+  border:1px solid var(--border);border-radius:14px;overflow:hidden;
+  background:linear-gradient(180deg,#10161D,#090E13);
+  box-shadow:0 30px 70px -34px rgba(0,0,0,.85);
+}
+.fde-card-head{
+  display:flex;align-items:center;gap:10px;padding:10px 14px;
+  border-bottom:1px solid rgba(42,49,60,.85);background:rgba(255,255,255,.014);
+}
+.fde-card-head em{font:400 10.5px/1 var(--mono);color:var(--dim);font-style:normal;letter-spacing:.06em;margin-left:auto}
+.fde-card-body{padding:16px 15px 18px;display:flex;flex-direction:column;gap:9px}
+.fde-card-body .c-line{white-space:normal;align-items:flex-start}
+.fde-card-body .c-line b{flex:0 0 auto}
+.fde-card-body .c-line i{flex:0 0 auto;margin-left:auto;padding-left:10px}
+.fde-day{
+  display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;margin-top:34px;
+  counter-reset:none;
+}
+.fde-day li{
+  position:relative;padding:16px 18px 18px;border:1px solid var(--border);border-radius:12px;
+  background:linear-gradient(180deg,rgba(20,27,35,.88),rgba(13,19,25,.8));
+}
+.fde-day span{display:block;font:700 12px/1 var(--mono);letter-spacing:.06em;color:var(--accent)}
+.fde-day b{display:block;margin:10px 0 7px;font-size:13.5px;color:var(--text)}
+.fde-day p{font-size:12px;line-height:1.7;color:var(--dim)}
+.fde-quote{
+  margin-top:28px;padding:20px 26px;border-radius:12px;
+  border-left:2px solid var(--accent);
+  background:linear-gradient(90deg,rgba(52,211,153,.09),transparent 72%);
+  font-size:14.5px;line-height:1.85;color:var(--text);
+}
+
 /* ============ cta ============ */
 .cta{padding:26px 0 108px}
 .cta-card{
@@ -572,6 +626,7 @@ html.js .reveal.in{opacity:1;transform:none}
   .scale-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
   .quality-grid{grid-template-columns:minmax(0,1fr);gap:36px}
   .road-grid{grid-template-columns:minmax(0,1fr)}
+  .fde-grid{grid-template-columns:minmax(0,1fr);gap:28px}
   .band-grid{grid-template-columns:repeat(3,minmax(0,1fr));gap:24px 16px}
   .nav-links{gap:18px}
 }
@@ -592,7 +647,11 @@ html.js .reveal.in{opacity:1;transform:none}
   .nav.open .nav-links{display:flex}
   .nav-links a{padding:13px 2px;font-size:14px;border-bottom:1px solid rgba(42,49,60,.45)}
   .nav-links a:last-child{border-bottom:0}
+  .nav-links a.hot{color:var(--accent)}
+  .nav-links a.hot::after{display:none}
   .pain-grid{grid-template-columns:minmax(0,1fr)}
+  .fde-day{grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+  .fde-ans{word-break:break-word}
   .gate-grid{grid-template-columns:minmax(0,1fr)}
   .layer{grid-template-columns:minmax(0,1fr);gap:12px;padding:16px 18px}
   .layer-name{border-right:0;border-bottom:1px solid rgba(42,49,60,.9);padding-bottom:10px}
@@ -617,6 +676,9 @@ html.js .reveal.in{opacity:1;transform:none}
   .num b{font-size:17px}
   .band-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
   .stat b{font-size:26px}
+  .fde-list li{grid-template-columns:28px minmax(0,1fr);gap:11px}
+  .fde-day{grid-template-columns:minmax(0,1fr)}
+  .fde-quote{padding:16px 18px;font-size:13.5px}
   .cta-card{padding:28px 24px}
   .foot-copy{margin-left:0}
   .sec-head{margin-bottom:32px}

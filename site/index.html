@@ -4,10 +4,10 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>OpenLog · 智能运维监控平台 —— 一个面板管住日志、算力、容器与服务器</title>
-<meta name="description" content="OpenLog 是自托管的智能运维监控平台：日志实时告警、GPU / MFU 监控、Docker over SSH 管理、远程服务器运维、AI 运维助手。1000 台规模压测通过，PostgreSQL 生产运行中，单端口部署。" />
+<meta name="description" content="OpenLog 是自托管的智能运维监控平台：日志实时告警、GPU / MFU 监控、Docker over SSH 管理、远程服务器运维、AI 运维助手。也是 FDE（前沿部署工程师）进客户内网就能直接开工的那块面板。1000 台规模压测通过，PostgreSQL 生产运行中，单端口部署。" />
 <meta name="theme-color" content="#0B0F14" />
 <meta property="og:title" content="OpenLog · 智能运维监控平台" />
-<meta property="og:description" content="一个面板管住「日志 · 算力 · 容器 · 服务器 · AI 排查」" />
+<meta property="og:description" content="一个面板管住「日志 · 算力 · 容器 · 服务器 · AI 排查」，FDE 驻场即战力" />
 <meta property="og:type" content="website" />
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230B0F14'/%3E%3Crect x='6' y='6' width='9' height='20' rx='2' fill='%2334D399'/%3E%3Crect x='17' y='6' width='9' height='9' rx='2' fill='%2310B981' opacity='.65'/%3E%3Crect x='17' y='17' width='9' height='9' rx='2' fill='%2358A6FF' opacity='.7'/%3E%3C/svg%3E" />
 <link rel="stylesheet" href="assets/style.css" />
@@ -25,6 +25,7 @@
     </a>
     <nav class="nav-links" id="nav-links" aria-label="站点导航">
       <a href="#why">为什么</a>
+      <a href="#fde" class="hot">FDE</a>
       <a href="#product">产品</a>
       <a href="#features">能力</a>
       <a href="#arch">架构</a>
@@ -63,6 +64,7 @@
           <li>Docker over SSH</li>
           <li>1000 台就绪</li>
           <li>PostgreSQL</li>
+          <li>FDE 现场就战力</li>
         </ul>
       </div>
 
@@ -336,6 +338,89 @@
       </div>
       <p class="flow reveal">
         <span>日志</span><i>→</i><span>发现异常</span><i>→</i><span>定位机器与容器</span><i>→</i><span>看算力与模型</span><i>→</i><span>让 AI 直接改代码 / 配置</span><i>→</i><span>验证与审计</span>
+      </p>
+    </div>
+  </section>
+
+  <!-- ========== FDE ========== -->
+  <section id="fde">
+    <div class="wrap">
+      <div class="sec-head reveal">
+        <p class="kicker">FDE · Forward Deployed Engineer</p>
+        <h2>FDE 不是什么新头衔，<span class="nw">是「当天就改」</span></h2>
+        <p class="sec-sub">
+          前沿部署工程师是这两年最抢手的岗位：不坐在总部写需求文档，而是直接进客户内网，
+          看真实日志、拿真实权限、把问题改完再走。OpenLog 就是他们随身带的那块面板 ——
+          人一进场，观测和动手就已经就位。
+        </p>
+      </div>
+
+      <div class="fde-grid">
+        <ol class="fde-list">
+          <li class="reveal">
+            <span class="fde-no">01</span>
+            <div>
+              <b>进场 10 分钟就要看到全貌</b>
+              <p>客户环境不能装 agent、不能开外网，一个浏览器标签页就要顶上一整套采集。</p>
+              <p class="fde-ans">面板 · <em>单端口自托管，SSH 账号直连，宿主机零安装</em></p>
+            </div>
+          </li>
+          <li class="reveal">
+            <span class="fde-no">02</span>
+            <div>
+              <b>问题不能被「截图 + 周报」糊过去</b>
+              <p>客户说「模型最近变慢了」，你要当场给出 MFU、显存、队列深度，而不是承诺回去拉数据。</p>
+              <p class="fde-ans">算力 · <em>7 种引擎 MFU 零配置，趋势连续留存</em></p>
+            </div>
+          </li>
+          <li class="reveal">
+            <span class="fde-no">03</span>
+            <div>
+              <b>定位完必须立刻动手</b>
+              <p>现场没人等你排期：改配置、改代码、重启服务、验证结果，最好在同一屏里完成。</p>
+              <p class="fde-ans">Agent · <em>多步执行，用现有 SSH 账号改代码 / 配置</em></p>
+            </div>
+          </li>
+          <li class="reveal">
+            <span class="fde-no">04</span>
+            <div>
+              <b>走之前要把「怎么改的」交接清楚</b>
+              <p>FDE 的价值在于可复制：这次的排障路径要变成下次的资产，而不是只留在个人脑子里。</p>
+              <p class="fde-ans">沉淀 · <em>每次操作留审计，排障流程沉淀为可复用技能</em></p>
+            </div>
+          </li>
+        </ol>
+
+        <aside class="fde-card reveal" aria-label="FDE 现场装备清单">
+          <div class="fde-card-head">
+            <span class="tag ok"><i class="dot-live"></i>ON SITE</span>
+            <em>fde-kit · 随身清单</em>
+          </div>
+          <div class="fde-card-body">
+            <span class="c-dim"># 进客户机房前，确认这 6 件事已就位</span>
+            <span class="c-line"><b>[x]</b> 一个 URL，不占用客户外网 <i class="ok">:3001</i></span>
+            <span class="c-line"><b>[x]</b> 现成 SSH 账号就能接管服务器 <i class="ok">1000 台连接池</i></span>
+            <span class="c-line"><b>[x]</b> 容器不装 agent，也能管生命周期 <i class="ok">docker over ssh</i></span>
+            <span class="c-line"><b>[x]</b> 算力与 MFU 当场可解释 <i class="ok">7 engines</i></span>
+            <span class="c-line"><b>[x]</b> AI 能直接改，而不是只给建议 <i class="ok">multi-step</i></span>
+            <span class="c-line"><b>[x]</b> 每一步都留痕，能交给客户 <i class="ok">audit</i></span>
+            <span class="c-dim"># 人走了，面板留下；下次换个环境，同一套动作复用</span>
+            <span class="c-dim"># 两种交付节奏</span>
+            <span class="c-line"><b>×</b> 调研 3 周 → 排期 1 个月 → 远程改 <i>传统</i></span>
+            <span class="c-line"><b>√</b> 进场当天定位 → 当天改完 → 交接 <i class="ok">FDE</i></span>
+          </div>
+        </aside>
+      </div>
+
+      <ol class="fde-day reveal" aria-label="FDE 的一天">
+        <li><span>09:40</span><b>进客户机房</b><p>只有一个内网 IP 和一个 SSH 账号</p></li>
+        <li><span>10:05</span><b>面板连上 412 台</b><p>日志流、GPU、容器一次铺开</p></li>
+        <li><span>10:20</span><b>AI 定位并改配置</b><p>多步执行，diff 当场可见</p></li>
+        <li><span>10:35</span><b>验证 + 交接</b><p>结论、动作、审计一起交付</p></li>
+      </ol>
+
+      <p class="fde-quote reveal">
+        「PPT 讲不清的问题，进现场十分钟就有答案 —— 前提是你手里有一块能看、也能改的面板。」
       </p>
     </div>
   </section>
