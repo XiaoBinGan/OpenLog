@@ -7,6 +7,10 @@ node_modules/
 .env
 .env.local
 .env.*.local
+# 部署配置（含数据库密码）与部署备份
+deploy.env
+.deploy.json
+backups/
 
 # macOS 系统文件
 # 存储文件夹显示属性，与项目代码无关，会造成不必要的冲突
