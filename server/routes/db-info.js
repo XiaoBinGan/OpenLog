@@ -11,7 +11,6 @@
  * 注意：这是只读诊断端点，不含任何连接串凭据（密码/用户名不返回）。
  */
 import express from 'express';
-import { errorMessage } from '../errors.js';
 import { getDbInfo, getDb, pingDb, getDbType } from '../db/index.js';
 
 /** 这些表行数便宜（很小），直接 COUNT */
@@ -34,6 +33,19 @@ export function createDbRouter() {
       timestamp: new Date().toISOString(),
     };
 
+    // 用连接串配置时 options.database 可能为空，直接问数据库自己
+    if (ping.ok) {
+      try {
+        if (info.type === 'postgres') {
+          const row = await getDb().get(`SELECT current_database() AS db`);
+          payload.database = row?.db ?? payload.database;
+        } else if (info.type === 'mysql') {
+          const row = await getDb().get(`SELECT DATABASE() AS db`);
+          payload.database = row?.db ?? payload.database;
+        }
+      } catch { /* 忽略 */ }
+    }
+
     // 存储占用
     if (info.type === 'postgres') {
       try {
@@ -53,16 +65,21 @@ export function createDbRouter() {
 
     if (wantCounts) {
       const counts = {};
+      const countsMeta = {};
       for (const table of SMALL_TABLES) {
         try {
           const row = await getDb().get(`SELECT COUNT(*) AS n FROM ${table}`);
           counts[table] = Number(row?.n || 0);
-        } catch { counts[table] = null; }
+          countsMeta[table] = 'exact';
+        } catch { counts[table] = null; countsMeta[table] = 'error'; }
       }
       for (const table of LARGE_TABLES) {
-        counts[table] = await estimateLargeTable(table);
+        const r = await estimateLargeTable(table);
+        counts[table] = r.n;
+        countsMeta[table] = r.method;
       }
       payload.counts = counts;
+      payload.countsMeta = countsMeta;
     }
 
     res.json(payload);
@@ -71,11 +88,17 @@ export function createDbRouter() {
   return router;
 }
 
+/** 大表估算时最多数这么多行（没做过 ANALYZE 的库也不能把服务拖死） */
+export const BOUNDED_COUNT_CAP = 200_000;
+
 /**
- * 大表行数估算：
- *  - PostgreSQL：读 pg_class.reltuples（analyze 后的统计值，0 表示还没 analyze）
- *  - MySQL：读 information_schema.TABLES.TABLE_ROWS（InnoDB 估算值）
- *  - SQLite：没有估算，直接 COUNT（SQLite 单机大表 COUNT 也还行，但限流用）
+ * 大表行数：优先用数据库自己的统计值，统计不可用时退到「有上限的精确计数」。
+ *
+ * 之前直接读 `pg_class.reltuples`：从未 ANALYZE 过的表返回 **-1**，
+ * 端点于是吐出 `log_records: -1`（看起来像负数行数，实际是「不知道」）。
+ * 现在 -1/0 一律当作「统计不可用」，改用 `LIMIT cap` 的子查询数一次（代价可控）。
+ *
+ * @returns {Promise<{ n: number|null, method: 'estimate'|'bounded-count'|'exact'|'error' }>}
  */
 async function estimateLargeTable(table) {
   const type = getDbType();
@@ -86,19 +109,30 @@ async function estimateLargeTable(table) {
         `SELECT reltuples::bigint AS n FROM pg_class WHERE relname = ?`,
         table,
       );
-      return row ? Number(row.n) : null;
+      const n = row ? Number(row.n) : null;
+      if (n !== null && n >= 0) return { n, method: 'estimate' };
+      // 统计不可用（-1 = 从未 ANALYZE）→ 有上限的精确计数
+      const capped = await db.get(
+        `SELECT COUNT(*) AS n FROM (SELECT 1 FROM ${table} LIMIT ${BOUNDED_COUNT_CAP}) AS t`,
+      );
+      return { n: Number(capped?.n || 0), method: 'bounded-count' };
     }
     if (type === 'mysql') {
       const row = await db.get(
         `SELECT TABLE_ROWS AS n FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?`,
         table,
       );
-      return row ? Number(row.n) : null;
+      const n = row ? Number(row.n) : null;
+      if (n !== null && n >= 0) return { n, method: 'estimate' };
+      const capped = await db.get(
+        `SELECT COUNT(*) AS n FROM (SELECT 1 FROM ${table} LIMIT ${BOUNDED_COUNT_CAP}) AS t`,
+      );
+      return { n: Number(capped?.n || 0), method: 'bounded-count' };
     }
     const row = await db.get(`SELECT COUNT(*) AS n FROM ${table}`);
-    return Number(row?.n || 0);
+    return { n: Number(row?.n || 0), method: 'exact' };
   } catch (err) {
-    return { error: errorMessage(err) };
+    return { n: null, method: 'error' };
   }
 }
 
