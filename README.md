@@ -218,7 +218,69 @@ npm.cmd start
 
 生产模式强制鉴权：所有 `/api`、`/ws` 请求都需要携带 `OPENLOG_TOKEN`
 （`scripts/start-prod.js` 会把 `NODE_ENV` 默认设为 `production`）。
-容器部署见 `Dockerfile` / `docker-compose.yml`（镜像已内置 `NODE_ENV=production`、`PORT=3011`、`HOST=0.0.0.0`）。
+
+#### 一键部署 | One-command deploy
+
+两种形态，按场景选：
+
+**A. 新机器从零起一套（应用 + PostgreSQL）**
+
+```bash
+cp deploy.env.example .env          # 填 OPENLOG_TOKEN / POSTGRES_PASSWORD
+docker compose up -d --build
+```
+
+`docker-compose.yml` 里带 PostgreSQL 服务和健康检查，起完直接可用。
+
+**B. 已有实例更新（生产推荐）**：一条命令，带备份、健康检查、失败自动回滚。
+
+```bash
+# 开发机：填 .deploy.json（服务器地址/账号，已 gitignore）
+cp scripts/deploy.config.example.json .deploy.json
+node scripts/deploy.mjs              # 或 npm run deploy
+```
+
+它做完整的一串，任何一步失败都不会留半拉子状态：
+
+1. 打 git bundle（服务器通常连不上 GitHub，用 bundle 中转）→ SFTP 上传
+2. 远端 `git fetch` + `reset --hard`
+3. 调服务器上的 `scripts/deploy.sh`：
+   - **备份数据库**（PG → `pg_dump`，SQLite → 在线备份，保留最近 10 份）
+   - 构建镜像，打 `openlog:<commit>` + `openlog:latest`
+   - 从 `deploy.env` 读全部配置启动容器（不再手写一长串 `-e`）
+   - **健康检查**：页面 200 + `/api/db/info` 的 `ok:true`，最多等 90s
+   - **失败自动回滚**到上一个镜像并恢复服务
+   - 清理旧镜像（保留最近 N 个）
+
+```bash
+node scripts/deploy.mjs --dry-run     # 只打印将要执行的动作，不动线上
+node scripts/deploy.mjs --no-build    # 只同步代码+重启（改了 deploy.env 后）
+node scripts/deploy.mjs --skip-backup # 跳过数据库备份
+npm run deploy:logs                   # 只看服务状态/最近日志
+```
+
+服务器侧配置在 `deploy.env`（含数据库密码，已 gitignore）：
+
+```bash
+APP_PORT=3001
+DATA_DIR=/workspace/Openlog-new/data
+LOGS_VOLUME=openlog-logs
+NETWORK_MODE=host
+OPENLOG_DB_TYPE=postgres
+OPENLOG_DATABASE_URL=postgres://openlog:密码@127.0.0.1:5432/openlog
+OPENLOG_ENABLE_CONTAINER_EXEC=1
+```
+
+也可以直接在服务器上跑（不走 SSH）：
+
+```bash
+cd /workspace/Openlog-new && bash scripts/deploy.sh
+```
+
+部署记录写在 `backups/.last-deploy.json`（时间 / commit / 镜像 / 上一个镜像，回滚用）。
+
+> 首次部署前服务器上要准备好 `deploy.env`，之后每次改代码只需 `npm run deploy`。
+> 升级到新版部署脚本时做一次手工同步（`git pull`/bundle），之后就是一条命令。
 
 #### 数据库 | Database
 
