@@ -55,7 +55,8 @@ function loadConfig() {
   }
   let cfg;
   try {
-    cfg = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+    // ?? Windows ??? / PowerShell ??? UTF-8 BOM
+    cfg = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8').replace(/^\uFEFF/, ''));
   } catch (err) {
     fail(`解析 .deploy.json 失败: ${err.message}`);
   }

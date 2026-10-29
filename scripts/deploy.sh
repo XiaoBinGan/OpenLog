@@ -31,8 +31,8 @@ cd "$APP_DIR"
 CONFIG_FILE="${DEPLOY_ENV_FILE:-$APP_DIR/deploy.env}"
 BACKUP_DIR="$APP_DIR/backups"
 STATE_FILE="$BACKUP_DIR/.last-deploy.json"
-IMAGE_NAME="openlog"
-CONTAINER_NAME="openlog"
+IMAGE_NAME="${IMAGE_NAME:-openlog}"
+CONTAINER_NAME="${CONTAINER_NAME:-openlog}"
 KEEP_IMAGES="${KEEP_IMAGES:-5}"
 
 if [ -f "$CONFIG_FILE" ]; then
