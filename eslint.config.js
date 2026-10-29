@@ -17,6 +17,18 @@ export default [
     ],
   },
 
+  // 官网静态页（site/）是浏览器脚本，不是 Node 代码 —— 用浏览器 globals
+  {
+    files: ['site/**/*.js'],
+    languageOptions: {
+      ecmaVersion: 2023,
+      sourceType: 'script',
+      globals: {
+        ...globals.browser,
+      },
+    },
+  },
+
   js.configs.recommended,
 
   {

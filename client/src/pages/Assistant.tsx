@@ -323,6 +323,12 @@ export default function Assistant() {
                   ? { ...m, toolCalls: applyToolResult((m.toolCalls || []) as any, p.tool, p.result) as any }
                   : m
               )));
+            } else if (p.type === 'provider_notice' || p.type === 'context_compacted' || p.type === 'budget_exhausted') {
+              // 降级 / 上下文压缩 / 预算用尽：挂到消息上展示，别只写 console
+              const text = p.message || p.type;
+              setOpsMessages(prev => prev.map((m, i) => i === prev.length - 1
+                ? { ...m, notices: [...((m as any).notices || []), { type: p.type, text }] }
+                : m));
             } else if (p.content) {
               acc += p.content;
             } else if (p.reasoning_content) {
@@ -532,6 +538,21 @@ export default function Assistant() {
                   <div className={`max-w-[78%] rounded-2xl px-4 py-3 text-sm leading-relaxed ${
                     msg.role === 'user' ? 'bg-accent-500/20 text-dark-100 rounded-br-md' : 'bg-dark-900 border border-dark-800 text-dark-200 rounded-bl-md'
                   }`}>
+                    {/* 运行时提示：引擎降级 / 上下文压缩 / 预算用尽 */}
+                    {((msg as any).notices || []).length > 0 && (
+                      <div className="space-y-1 mb-2">
+                        {((msg as any).notices as Array<{ type: string; text: string }>).map((n, i) => (
+                          <div key={i} className={`text-[11px] px-2 py-1 rounded border ${
+                            n.type === 'budget_exhausted'
+                              ? 'bg-yellow-500/10 border-yellow-500/25 text-yellow-300'
+                              : 'bg-dark-800/60 border-dark-700 text-dark-400'
+                          }`}>
+                            {n.type === 'context_compacted' ? '🗜 ' : n.type === 'budget_exhausted' ? '⏱ ' : 'ℹ '}
+                            {n.text}
+                          </div>
+                        ))}
+                      </div>
+                    )}
                     {/* 工具调用状态 */}
                     {(msg as any).toolCalls?.length > 0 && (
                       <div className="space-y-1.5 mb-2">

@@ -1136,7 +1136,10 @@ const DANGEROUS_TOOLS = new Set(['docker_start', 'docker_stop', 'docker_restart'
 async function ensureRemoteConnected(serverId) {
   const s = remote.getServers().find(x => x.id === serverId);
   if (!s) throw new Error(`服务器 ${serverId} 未找到`);
-  if (s.status !== 'connected') await remote.connectServer(serverId);
+  // ⚠️ 不能只看 status：状态可能是 'connected' 但连接池里的连接已被 LRU 回收 /
+  // 被网络中断掉，此时 status 仍是 connected，工具却会报「服务器未连接」。
+  // ensureSshConnection 会校验连接对象并（必要时）按需重连。
+  await remote.ensureSshConnection(serverId);
 }
 
 /** 执行工具调用，返回结果对象 */
@@ -1225,9 +1228,7 @@ async function executeAssistantTool(name, args) {
         const servers = remote.getServers();
         const s = servers.find(x => x.id === args.serverId);
         if (!s) return { error: `服务器 ${args.serverId} 未找到` };
-        if (s.status !== 'connected') {
-          try { await remote.connectServer(args.serverId); } catch (e) { return { error: `连接失败: ${errorMessage(e)}` }; }
-        }
+        try { await remote.ensureSshConnection(args.serverId); } catch (e) { return { error: `连接失败: ${errorMessage(e)}` }; }
         const r = await remote.execRemoteCommand(args.serverId, args.command);
         return r;
       }
@@ -1235,9 +1236,7 @@ async function executeAssistantTool(name, args) {
         const servers = remote.getServers();
         const s = servers.find(x => x.id === args.serverId);
         if (!s) return { error: `服务器 ${args.serverId} 未找到` };
-        if (s.status !== 'connected') {
-          try { await remote.connectServer(args.serverId); } catch (e) { return { error: `连接失败: ${errorMessage(e)}` }; }
-        }
+        try { await remote.ensureSshConnection(args.serverId); } catch (e) { return { error: `连接失败: ${errorMessage(e)}` }; }
         const r = await remote.getRemoteSystemStats(args.serverId);
         return r;
       }
@@ -1245,9 +1244,7 @@ async function executeAssistantTool(name, args) {
         const servers = remote.getServers();
         const s = servers.find(x => x.id === args.serverId);
         if (!s) return { error: `服务器 ${args.serverId} 未找到` };
-        if (s.status !== 'connected') {
-          try { await remote.connectServer(args.serverId); } catch (e) { return { error: `连接失败: ${errorMessage(e)}` }; }
-        }
+        try { await remote.ensureSshConnection(args.serverId); } catch (e) { return { error: `连接失败: ${errorMessage(e)}` }; }
         const r = await remote.listRemoteFiles(args.serverId, args.path || '');
         return r;
       }
@@ -1255,9 +1252,7 @@ async function executeAssistantTool(name, args) {
         const servers = remote.getServers();
         const s = servers.find(x => x.id === args.serverId);
         if (!s) return { error: `服务器 ${args.serverId} 未找到` };
-        if (s.status !== 'connected') {
-          try { await remote.connectServer(args.serverId); } catch (e) { return { error: `连接失败: ${errorMessage(e)}` }; }
-        }
+        try { await remote.ensureSshConnection(args.serverId); } catch (e) { return { error: `连接失败: ${errorMessage(e)}` }; }
         const r = await remote.readRemoteFile(args.serverId, args.filePath, { lines: args.lines || 200 });
         return r;
       }
@@ -1265,9 +1260,7 @@ async function executeAssistantTool(name, args) {
         const servers = remote.getServers();
         const s = servers.find(x => x.id === args.serverId);
         if (!s) return { error: `服务器 ${args.serverId} 未找到` };
-        if (s.status !== 'connected') {
-          try { await remote.connectServer(args.serverId); } catch (e) { return { error: `连接失败: ${errorMessage(e)}` }; }
-        }
+        try { await remote.ensureSshConnection(args.serverId); } catch (e) { return { error: `连接失败: ${errorMessage(e)}` }; }
         const r = await remote.searchRemoteLogs(args.serverId, args.search);
         return r;
       }
