@@ -536,7 +536,22 @@ OPENLOG_RECONNECT_MAX_PER_PASS=128
 
 **标准工作流**（写进了 system prompt）：`remote_servers` 定位机器 → `remote_grep` 搜报错 →
 `remote_read_file` 读代码 → 说明方案 → `remote_edit_file` 改 → **验证**（读回复核 / 跑测试 / 重启后看日志）→ 失败则回滚。
-最多 10 轮工具调用。
+
+**长任务不会半路死掉**（默认 30 轮 / 10 分钟，可配）：
+
+| 机制 | 作用 |
+|---|---|
+| 轮数预算 30 轮 | 旧实现硬编码 10 轮，长任务必被砍；现在可 `OPENLOG_ASSISTANT_MAX_ROUNDS` 调整 |
+| 时长预算 10 分钟 | `OPENLOG_ASSISTANT_MAX_WALL_MS`，超时也先给阶段性总结 |
+| **上下文压缩** | 每轮请求前估算 token，超预算就把早期工具结果压成一行摘要（保留工具名/关键字段/错误），近几轮保持完整；实测 43 次工具调用需压缩一次（17k tokens） |
+| **超限重试** | 模型真返回 `exceeds the context window` 时深度压缩后再试一次，而不是直接报错 |
+| **优雅收尾** | 预算用尽不让模型「请简化问题重试」，而是让它基于已拿到的结果写阶段性总结（已确认什么/还差什么/建议怎么做） |
+| 单轮模型超时 | `OPENLOG_ASSISTANT_ROUND_TIMEOUT_MS`（默认 180s），超时重试一次，连续两次才收尾 |
+| SSE 心跳 | 每 15s 发注释帧，防止长时间等模型时被代理/浏览器掐断连接 |
+| 连接自愈 | 工具执行前 `ensureSshConnection` 校验真实连接（状态显示 connected 但连接已被 LRU 回收时会自动重连） |
+
+前端会显示三类提示：引擎降级（`provider_notice`）、上下文压缩（`context_compacted`）、
+预算用尽（`budget_exhausted`）——用户能明确知道「发生了什么」和「回一句继续就能接着做」。
 
 其他：
 
