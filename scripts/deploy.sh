@@ -226,11 +226,16 @@ health_check() {
   return 1
 }
 
-log "健康检查（最多 90s）"
-if health_check "$CONTAINER_NAME"; then
+if [ "$DRY_RUN" = "1" ]; then
+  warn "dry-run：跳过健康检查与回滚（不会动线上容器）"
   HEALTHY=1
 else
-  HEALTHY=0
+  log "健康检查（最多 90s）"
+  if health_check "$CONTAINER_NAME"; then
+    HEALTHY=1
+  else
+    HEALTHY=0
+  fi
 fi
 
 # ─── 5. 失败回滚 ───────────────────────────────────────────────────────
