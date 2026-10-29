@@ -22,7 +22,7 @@ import {
   isToolUnsupportedError, looksLikeUncalledToolUse, TOOL_PROTOCOL_PROMPT, renderToolsAsText,
   parseToolProtocol, renderToolResultForTextProtocol, extractDelta,
 } from '../llm-provider.js';
-import { compactMessages, messagesTokens, isContextOverflowError } from './chat-context.js';
+import { compactMessages, isContextOverflowError, stripToolCallBlocks, isOnlyToolCallText } from './chat-context.js';
 
 const CONFIRM_TIMEOUT_MS = 3 * 60 * 1000;
 
@@ -188,8 +188,10 @@ export function createChatRunner({ ensureSettings, executeAssistantTool, pending
 
     /** 预算/异常收尾：先让模型总结已有成果，别让用户白等一场 */
     async function summarizeAndFinish(reason) {
+      // 键必须和调用方传的 reason 完全一致（曾因 rounds/round 不一致，
+      // 用户看到的是「任务提前结束」这种没信息量的兜底文案）
       const notice = {
-        round: { text: '已达到步数上限（可用 OPENLOG_ASSISTANT_MAX_ROUNDS 调整），先给你一份阶段性结论。', type: 'rounds' },
+        rounds: { text: '已达到步数上限（可用 OPENLOG_ASSISTANT_MAX_ROUNDS 调整），先给你一份阶段性结论。', type: 'rounds' },
         time: { text: '已达到单次任务时长上限，先给你一份阶段性结论。', type: 'time' },
         context: { text: '会话上下文接近模型上限，已压缩历史后给你阶段性结论。', type: 'context' },
       }[reason] || { text: '任务提前结束，这里是当前进展。', type: 'unknown' };
@@ -204,21 +206,21 @@ export function createChatRunner({ ensureSettings, executeAssistantTool, pending
           max_tokens: maxTokens,
         });
         let acc = '';
-        const f = new ThinkingStreamFilter(ensureSettings);
+        // 聚合后再剥离工具调用 XML：流式逐段剥会把跨 chunk 的标签切坏
         for await (const chunk of stream) {
           const { content } = extractDelta(chunk.choices?.[0]?.delta);
-          if (!content) continue;
-          acc += content;
-          const filtered = f.feed(content);
-          if (filtered) sse({ content: filtered });
+          if (content) acc += content;
         }
-        const tail = f.flush();
-        if (tail) sse({ content: tail });
-        if (acc.trim()) {
+        const f = new ThinkingStreamFilter(ensureSettings);
+        const cleaned = stripToolCallBlocks(f.feed(acc) + f.flush());
+        if (cleaned) {
           sse({ type: 'budget_exhausted', reason, message: notice.text });
+          sse({ content: cleaned });
           finish();
           return { rounds: round, mode, exhausted: true, reason };
         }
+        // 模型只吐了工具调用 XML，没有总结 —— 不算成功，走下面的兜底提示
+        console.warn('[Chat] 收尾总结只返回了工具调用 XML，已丢弃');
       } catch (err) {
         console.warn('[Chat] 收尾总结失败:', errorMessage(err));
       }
@@ -436,7 +438,14 @@ export function createChatRunner({ ensureSettings, executeAssistantTool, pending
       // ── 原生模式但没 tool_calls：正常回答 ──
       const f = new ThinkingStreamFilter(ensureSettings);
       const filtered = f.feed(contentAcc) + f.flush();
-      if (filtered) sse({ content: filtered });
+      // 模型有时把「打算调用什么」写成 XML 正文，剥掉再展示
+      const visible = stripToolCallBlocks(filtered);
+      if (visible) {
+        sse({ content: visible });
+      } else if (isOnlyToolCallText(filtered)) {
+        console.warn('[Chat] 模型只输出工具调用 XML，无有效正文');
+        sse({ type: 'provider_notice', message: '模型返回了无法执行的工具调用格式，已忽略。可以再问一次或换个模型。' });
+      }
       finish();
       return { rounds: round, mode };
     }

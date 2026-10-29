@@ -173,7 +173,42 @@ export function isContextOverflowError(err) {
   return /context (window|length|size)|exceeds the context|maximum context|prompt is too long|too many tokens|reduce the length/.test(msg);
 }
 
+/**
+ * 去掉正文里混进来的「工具调用 XML」。
+ *
+ * 真实问题：让模型做收尾总结时（已禁用 tools），有些模型仍会把
+ *   <tool_call><function=remote_grep><parameter=path>…</parameter></function></tool_call>
+ * 当正文吐出来，用户看到的就是一堆 XML。同理，原生模式下模型偶尔也会把
+ * 「打算调用什么」写进 content。
+ *
+ * 这里把成对的 `<tool_call>` 块、以及 `<function=...>` 块一起剥掉；
+ * 剥完如果只剩空白，返回空串（调用方据此判断「总结没生成出来」）。
+ */
+export function stripToolCallBlocks(text) {
+  let out = String(text ?? '');
+  // 成对的 <tool_call> ... </tool_call>（跨行、贪婪到最近闭合）
+  out = out.replace(/<tool_call>[\s\S]*?<\/tool_call>/gi, '');
+  // 没有闭合标签时，从 <tool_call> 删到结尾（常见于被截断的输出）
+  out = out.replace(/<tool_call>[\s\S]*$/i, '');
+  // 独立的 <function=...>...</function> 段（有些模型不加外层 tool_call）
+  out = out.replace(/<function=[\s\S]*?<\/function>/gi, '');
+  // 单独残留的 <parameter=...> 段
+  out = out.replace(/<parameter=[\s\S]*?<\/parameter>/gi, '');
+  // 代码围栏里的 tool_call 片段
+  out = out.replace(/```(?:xml|tool_call)?\s*<tool_call>[\s\S]*?```/gi, '');
+  return out.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+/** 判断一段输出是不是「只有工具调用、没有真正的回答」 */
+export function isOnlyToolCallText(text) {
+  const raw = String(text ?? '').trim();
+  if (!raw) return false;
+  if (!/<tool_call>|<function=|<parameter=/i.test(raw)) return false;
+  return stripToolCallBlocks(raw).length === 0;
+}
+
 export default {
   estimateTokens, messageTokens, messagesTokens,
-  summarizeToolResult, compactMessages, isContextOverflowError, TOOL_RESULT_KEEP_CHARS,
+  summarizeToolResult, compactMessages, isContextOverflowError,
+  stripToolCallBlocks, isOnlyToolCallText, TOOL_RESULT_KEEP_CHARS,
 };

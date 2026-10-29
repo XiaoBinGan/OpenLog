@@ -3,6 +3,7 @@ import { describe, it, expect } from 'vitest';
 const {
   estimateTokens, messageTokens, messagesTokens, summarizeToolResult,
   compactMessages, isContextOverflowError,
+  stripToolCallBlocks, isOnlyToolCallText,
 } = await import('../routes/chat-context.js');
 
 describe('estimateTokens —— 粗估（只用于预算判断）', () => {
@@ -158,5 +159,46 @@ describe('isContextOverflowError —— 识别模型上下文超限', () => {
     expect(isContextOverflowError({ message: 'rate limit', status: 429 })).toBe(false);
     expect(isContextOverflowError({ message: 'invalid api key', status: 401 })).toBe(false);
     expect(isContextOverflowError({ message: 'tools is not supported', status: 400 })).toBe(false);
+  });
+});
+
+
+describe('stripToolCallBlocks —— 剥掉正文里的工具调用 XML（真实问题）', () => {
+  const sample = '<tool_call>\n<function=remote_grep>\n<parameter=path>\n/app/x.js\n</parameter>\n<parameter=pattern>\nexport function\n</parameter>\n</function>\n</tool_call>';
+
+  it('单块剥离后为空', () => {
+    expect(stripToolCallBlocks(sample)).toBe('');
+  });
+
+  it('多个块一起剥离', () => {
+    expect(stripToolCallBlocks(sample + sample)).toBe('');
+  });
+
+  it('保留块外的真正回答', () => {
+    const out = stripToolCallBlocks('先看一下文件。\n' + sample + '\n结论：没有导出。');
+    expect(out).toContain('先看一下文件');
+    expect(out).toContain('结论：没有导出');
+    expect(out).not.toContain('<tool_call>');
+  });
+
+  it('被截断的未闭合块删到结尾', () => {
+    expect(stripToolCallBlocks('正常文字\n<tool_call><function=remote_ls>\n<parameter=x>')).toContain('正常文字');
+  });
+
+  it('普通正文原样返回', () => {
+    expect(stripToolCallBlocks('磁盘用了 42%，内存正常。')).toBe('磁盘用了 42%，内存正常。');
+  });
+});
+
+describe('isOnlyToolCallText —— 判断是不是只有工具调用', () => {
+  it('只有 XML → true', () => {
+    expect(isOnlyToolCallText('<tool_call><function=remote_ls></function></tool_call>')).toBe(true);
+  });
+  it('带正文 → false', () => {
+    expect(isOnlyToolCallText('先看看<tool_call><function=remote_ls></function></tool_call>')).toBe(false);
+  });
+  it('普通文本 → false', () => {
+    expect(isOnlyToolCallText('一切正常')).toBe(false);
+    expect(isOnlyToolCallText('')).toBe(false);
   });
 });
