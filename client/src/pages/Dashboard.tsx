@@ -120,7 +120,6 @@ function DraggablePanel({
 
   return (
     <div
-      draggable
       onDragStart={(e) => onDragStart(e, index)}
       onDragOver={(e) => onDragOver(e, index)}
       onDrop={(e) => onDrop(e, index)}
@@ -137,8 +136,9 @@ function DraggablePanel({
       {title && (
         <div className="flex items-center gap-2 mb-2 group/drag">
           <div
+            draggable
+            title="按住拖动排序"
             className="cursor-grab active:cursor-grabbing p-1 -ml-1 rounded opacity-0 group-hover/drag:opacity-100 transition-opacity text-dark-500 hover:text-dark-300"
-            title="拖拽排序"
           >
             <GripIcon />
           </div>

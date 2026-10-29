@@ -689,7 +689,6 @@ export default function Docker() {
             return (
               <div
                 key={key}
-                draggable
                 onDragStart={(e) => handleDragStart(e, key)}
                 onDragOver={handleDragOver}
                 onDragEnter={handleDragEnter}
@@ -706,8 +705,10 @@ export default function Docker() {
               >
                 {/* Container row */}
                 <div className="flex items-center gap-3 px-4 py-3 min-w-0">
-                  {/* Drag handle */}
+                  {/* Drag handle —— 只有这里可拖，卡片其余区域（日志/诊断/终端）保持文字可选中 */}
                   <div
+                    draggable
+                    title="按住拖动排序"
                     className="flex-shrink-0 text-dark-700 opacity-0 group-hover:opacity-100 hover:text-dark-300 cursor-grab active:cursor-grabbing transition-opacity"
                     onMouseDown={(e) => e.stopPropagation()}
                   >
@@ -1041,7 +1042,17 @@ interface TermPanelProps {
 
 function TerminalPanel({ panelKey, containerName, cmds, cmdInput, setCmdInput, onRun, onClear, execLoading }: TermPanelProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
+  const [copied, setCopied] = useState(false);
   useEffect(() => { bottomRef.current?.scrollIntoView({ block: 'nearest' }); }, [cmds]);
+
+  const copyAll = async () => {
+    const text = cmds.map(l => `$ ${l.cmd}\n${l.output || '(无输出)'}`).join('\n\n');
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch { /* 无剪贴板权限就算了，手动框选仍然可用 */ }
+  };
 
   return (
     <div className="border-t border-dark-800 bg-[#0d1117] w-full max-w-full min-w-0 overflow-hidden">
@@ -1052,6 +1063,14 @@ function TerminalPanel({ panelKey, containerName, cmds, cmdInput, setCmdInput, o
         <span className="text-xs text-dark-600">容器内执行命令</span>
         <span className="text-[10px] text-dark-700 border border-dark-800 rounded px-1">只读</span>
         <div className="ml-auto flex gap-1">
+          <button
+            onClick={(e) => { e.preventDefault(); e.stopPropagation(); copyAll(); }}
+            className="text-xs px-2 py-0.5 rounded text-dark-500 hover:text-dark-200 border border-dark-800 hover:border-dark-600 transition-colors flex items-center gap-1"
+            title="复制全部输出"
+          >
+            {copied ? <Check className="w-3 h-3 text-green-400" /> : <Copy className="w-3 h-3" />}
+            {copied ? '已复制' : '复制'}
+          </button>
           <button
             onClick={(e) => { e.preventDefault(); e.stopPropagation(); onClear(); }}
             className="text-xs px-2 py-0.5 rounded text-dark-600 hover:text-dark-400 border border-dark-800 hover:border-dark-700 transition-colors"
@@ -1130,12 +1149,38 @@ function LiveLogPanel({ panelKey, containerName, lines, paused, connecting, onPa
   const bottomRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [autoScroll, setAutoScroll] = useState(true);
+  const [copied, setCopied] = useState(false);
 
-  // 自动滚动到底部（仅在未暂停且自动滚动开启时）
-  useEffect(() => {
-    if (!paused && autoScroll && bottomRef.current) {
-      bottomRef.current.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  // 复制全部日志（支持手动框选，也提供一键复制 —— 有些浏览器/远程桌面里框选很别扭）
+  const copyAll = async () => {
+    const text = lines
+      .map(l => `${l.timestamp ? `${l.timestamp} ` : ''}[${l.level}] ${l.content || l.line}`)
+      .join('\n');
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // 非 HTTPS / 无剪贴板权限时退回到临时 textarea
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand('copy'); setCopied(true); setTimeout(() => setCopied(false), 2000); } catch { /* 忽略 */ }
+      document.body.removeChild(ta);
     }
+  };
+
+  // 自动滚动到底部（仅在未暂停、自动滚动开启、且用户没有正在选中文字时）
+  // 注意：用 behavior:'auto' 而不是 'smooth' —— 平滑滚动会在用户框选日志时
+  // 把选中区域滚走，表现为「选不中 / 一闪就没了」。
+  useEffect(() => {
+    if (paused || !autoScroll || !bottomRef.current) return;
+    const sel = window.getSelection();
+    if (sel && !sel.isCollapsed && sel.toString().trim()) return; // 正在选中，别抢滚动
+    bottomRef.current.scrollIntoView({ behavior: 'auto', block: 'nearest' });
   }, [lines, paused, autoScroll]);
 
   // 检测用户手动滚动
@@ -1178,6 +1223,14 @@ function LiveLogPanel({ panelKey, containerName, lines, paused, connecting, onPa
             </button>
           )}
           <button
+            onClick={(e) => { e.preventDefault(); e.stopPropagation(); copyAll(); }}
+            className="text-xs px-2 py-0.5 rounded text-dark-500 hover:text-dark-200 border border-dark-800 hover:border-dark-600 transition-colors flex items-center gap-1"
+            title="复制全部日志"
+          >
+            {copied ? <Check className="w-3 h-3 text-green-400" /> : <Copy className="w-3 h-3" />}
+            {copied ? '已复制' : '复制'}
+          </button>
+          <button
             onClick={(e) => { e.preventDefault(); e.stopPropagation(); onClear(); }}
             className="text-xs px-2 py-0.5 rounded text-dark-600 hover:text-dark-400 border border-dark-800 hover:border-dark-700 transition-colors"
             title="清空"
@@ -1198,7 +1251,7 @@ function LiveLogPanel({ panelKey, containerName, lines, paused, connecting, onPa
       <div
         ref={scrollRef}
         onScroll={handleScroll}
-        className="h-80 overflow-y-auto overflow-x-hidden px-4 py-2 font-mono text-xs leading-relaxed min-w-0 max-w-full"
+        className="h-80 overflow-y-auto overflow-x-hidden px-4 py-2 font-mono text-xs leading-relaxed min-w-0 max-w-full select-text"
       >
         {connecting && lines.length === 0 ? (
           <div className="flex items-center justify-center py-8 text-dark-600">
@@ -1209,7 +1262,7 @@ function LiveLogPanel({ panelKey, containerName, lines, paused, connecting, onPa
         ) : (
           lines.map((l, i) => (
             <div key={i} className={`flex gap-2 py-px min-w-0 max-w-full overflow-hidden hover:bg-dark-800/30 ${LEVEL_COLORS[l.level] || 'text-dark-300'}`}>
-              <span className="text-dark-700 flex-shrink-0 w-44 select-none">
+              <span className="text-dark-700 flex-shrink-0 w-44">
                 {l.timestamp?.slice(0, 23) || l.timestamp?.slice(0, 19) || '-'}
               </span>
               <span className="flex-shrink-0 w-12 font-semibold">
@@ -1247,11 +1300,14 @@ interface DiagnosisPanelProps {
 function DiagnosisPanel({ panelKey, containerName, loading, text, copied, onCopy, onClose }: DiagnosisPanelProps) {
   const contentRef = useRef<HTMLDivElement>(null);
 
-  // Auto-scroll 内容区底部（流式输出时）
+  // Auto-scroll 内容区底部（流式输出时）。
+  // 用户正在框选诊断内容时不要抢滚动，否则选中区域会被滚走。
   useEffect(() => {
-    if (contentRef.current && text) {
-      contentRef.current.scrollTop = contentRef.current.scrollHeight;
-    }
+    const el = contentRef.current;
+    if (!el || !text) return;
+    const sel = window.getSelection();
+    if (sel && !sel.isCollapsed && sel.toString().trim() && el.contains(sel.anchorNode)) return;
+    el.scrollTop = el.scrollHeight;
   }, [text]);
 
   return (
