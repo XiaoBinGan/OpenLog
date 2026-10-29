@@ -85,10 +85,14 @@ export function createChatRunner({ ensureSettings, executeAssistantTool, pending
    * 走一次确认闸门 + 执行 + 审计。
    * @returns {Promise<{result: object}>} result.error 表示被拒或执行失败
    */
-  async function runToolWithGuard(tc, args, res) {
+  async function runToolWithGuard(tc, args, res, approvedOps) {
     const risk = classifyToolRisk(tc.name, args);
+    // 只读命令（ls/cat/grep/ps 等）直接执行，不弹确认；
+    // 同一次任务里「完全相同的写操作」确认过一次就不再问（避免反复点批准）。
+    const opKey = `${tc.name}:${JSON.stringify(args)}`;
+    const alreadyApproved = risk.risk !== 'read' && approvedOps?.has(opKey);
 
-    if (risk.risk !== 'read') {
+    if (risk.risk !== 'read' && !alreadyApproved) {
       const confirmId = `cf-${Date.now().toString(36)}-${nextConfirmId()}`;
       const preview = tc.name === 'remote_edit_file'
         ? buildEditPreview(args.oldString, args.newString, args.replaceAll)
@@ -111,6 +115,7 @@ export function createChatRunner({ ensureSettings, executeAssistantTool, pending
         res.write(`data: ${JSON.stringify({ type: 'tool_result', tool: tc.name, result: denied })}\n\n`);
         return { result: denied };
       }
+      approvedOps?.add(opKey);
     }
 
     res.write(`data: ${JSON.stringify({ type: 'tool_start', tool: tc.name, args })}\n\n`);
@@ -230,6 +235,9 @@ export function createChatRunner({ ensureSettings, executeAssistantTool, pending
       finish();
       return { rounds: round, mode, exhausted: true, reason };
     }
+
+    /** 本次任务内已批准过的写操作（完全相同才跳过确认） */
+    const approvedOps = new Set();
 
     let round = 0;
     /** 上下文超限只做一次深度压缩，避免死循环 */
@@ -407,7 +415,7 @@ export function createChatRunner({ ensureSettings, executeAssistantTool, pending
           let args = {};
           try { args = JSON.parse(tc.arguments); } catch { args = {}; }
           const toolStartedAt = Date.now();
-          const { result } = await runToolWithGuard(tc, args, res);
+          const { result } = await runToolWithGuard(tc, args, res, approvedOps);
           const toolMs = Date.now() - toolStartedAt;
           if (toolMs > 10_000) console.warn(`[Chat] 工具 ${tc.name} 耗时 ${toolMs}ms`);
           messages.push({ role: 'tool', tool_call_id: tc.id, content: JSON.stringify(result).slice(0, toolResultChars) });
@@ -424,7 +432,7 @@ export function createChatRunner({ ensureSettings, executeAssistantTool, pending
 
         if (parsed.kind === 'tool') {
           messages.push({ role: 'assistant', content: contentAcc || null });
-          const { result } = await runToolWithGuard({ name: parsed.tool, arguments: JSON.stringify(parsed.args) }, parsed.args, res);
+          const { result } = await runToolWithGuard({ name: parsed.tool, arguments: JSON.stringify(parsed.args) }, parsed.args, res, approvedOps);
           messages.push({ role: 'user', content: renderToolResultForTextProtocol(parsed.tool, result) });
           continue;
         }

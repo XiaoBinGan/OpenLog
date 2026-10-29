@@ -445,6 +445,15 @@ openlog/
 ---
 
 ## 🕒 更新记录
+### 2026-10-29 · 只读命令不再反复弹确认
+
+- 新增 `server/security/command-risk.js`：引号感知解析 Shell 命令，判断是否为只读。
+  `remote_exec` / `docker_exec` 的只读查询（ls/cat/grep/ps/df/ss/docker ps/docker logs/systemctl status/nginx -T…）
+  **直接执行、不弹确认**；写文件、改配置、启停服务、`sudo`、命令替换等仍然确认。
+- 同一次任务里完全相同的写操作只确认一次（批准记忆），减少重复点击。
+- 判定保守：任一段管道/分号子命令不在只读白名单、或出现写重定向/`tee`/`sed -i`/`find -exec`/`xargs`/`sudo`/命令替换，
+  都按需确认处理 —— 宁可多问一次，不误放行。
+
 ### 2026-10-29 · 修复拖动排序与日志选中的冲突
 
 - Docker 页容器卡片原来整体设成 `draggable`，浏览器原生拖拽会劫持鼠标拖动 —— 卡片内**实时日志、AI 诊断、终端输出全部选不中、复制不了**。改成只有左侧手柄可拖（`dragstart` 冒泡，排序/投放逻辑不变），Dashboard 和 Monitor 的卡片同样修正。
@@ -593,12 +602,17 @@ OPENLOG_RECONNECT_MAX_PER_PASS=128
 | `remote_write_file` | 整份写入（新建或覆盖） |
 | `remote_rollback_file` | 用最近一次自动备份回滚 |
 | `remote_restart_service` | 重启 systemd 服务 |
-| `remote_exec` / `docker_exec` / `docker_start/stop/restart` | 执行命令与容器操作 |
+| `remote_exec` / `docker_exec` 的**非只读**命令、`docker_start/stop/restart` | 执行命令与容器操作 |
 
 **三道安全闸**
 
 1. **服务端确认**：`write` / `danger` 类工具调用会暂停，前端弹出确认条（显示文件路径、命令、diff 预览），
-   点「允许执行」才真正跑；**3 分钟不操作视为拒绝**，拒绝结果会回灌给模型让它换方案（只靠 prompt 说「先问用户」不可靠，所以放在代码里拦）
+   点「允许执行」才真正跑；**3 分钟不操作视为拒绝**，拒绝结果会回灌给模型让它换方案（只靠 prompt 说「先问用户」不可靠，所以放在代码里拦）。
+   **只读查询命令自动放行**：`remote_exec` / `docker_exec` 会先解析命令（`server/security/command-risk.js`）——
+   `ls` / `cat` / `grep` / `ps` / `df` / `ss` / `docker ps` / `docker logs` / `systemctl status` / `nginx -T` / `journalctl` 等，
+   以及它们用 `|` `;` `&&` 拼出的只读组合（重定向到 `/dev/null` 也算）都直接执行，不弹框；
+   写文件重定向、`tee`、`sed -i`、`find -exec`、启停服务、`docker run/rm/restart`、`sudo`、命令替换一律仍需确认。
+   同一次任务里**完全相同**的写操作只确认一次。
 2. **自动备份**：写/改之前把原文件复制成 `<文件>.openlog-bak.<时间戳>`，改错可一键回滚
 3. **路径与命令校验**：只接受绝对路径、拒绝引号/换行；`/etc`、`/root`、`~/.ssh` 等关键路径的写入升级为红色 danger 提示；
    删除/格式化/`dd` 等破坏性命令单独标注

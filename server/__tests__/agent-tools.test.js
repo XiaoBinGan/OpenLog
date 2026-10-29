@@ -146,6 +146,44 @@ describe('buildReadFileCommand —— 读文件命令', () => {
   });
 });
 
+describe('classifyToolRisk —— 命令执行类按内容分级（只读免确认）', () => {
+  it('只读查询命令不再要求确认（真实用户反馈的痛点）', () => {
+    for (const command of [
+      'ls -la /usr/share/nginx/html',
+      'cat /etc/nginx/conf.d/default.conf',
+      `grep -rn "metrics" /app/server 2>/dev/null | head -20`,
+      'ps -w',
+      `nginx -T | sed -n '1,200p'`,
+      'docker ps -a',
+      'docker logs --tail 100 openlog',
+      'systemctl status nginx',
+      'df -h; free -m',
+    ]) {
+      expect(classifyToolRisk('remote_exec', { command }).risk, command).toBe('read');
+      expect(classifyToolRisk('docker_exec', { command }).risk, command).toBe('read');
+    }
+  });
+
+  it('写 / 破坏性命令仍然要确认', () => {
+    for (const command of [
+      'rm -rf /tmp/x',
+      "sed -i 's/a/b/' app.js",
+      'echo x > /etc/hosts',
+      'docker restart openlog',
+      'systemctl restart nginx',
+      'sudo ls',
+    ]) {
+      expect(classifyToolRisk('remote_exec', { command }).risk, command).toBe('danger');
+      expect(classifyToolRisk('docker_exec', { command }).risk, command).toBe('danger');
+    }
+  });
+
+  it('没有命令参数时按危险处理（保守）', () => {
+    expect(classifyToolRisk('remote_exec', {}).risk).toBe('danger');
+    expect(classifyToolRisk('docker_exec', {}).risk).toBe('danger');
+  });
+});
+
 describe('classifyToolRisk —— 风险分级', () => {
   it('读类自动执行', () => {
     for (const name of [
@@ -165,8 +203,10 @@ describe('classifyToolRisk —— 风险分级', () => {
     expect(classifyToolRisk('remote_edit_file', { filePath: '/etc/nginx/nginx.conf' }).risk).toBe('danger');
   });
 
-  it('任意命令/删除/重启服务都是 danger', () => {
-    expect(classifyToolRisk('remote_exec', { command: 'ls' }).risk).toBe('danger');
+  it('只读命令放行，破坏性/未知命令仍是 danger', () => {
+    // 行为变更：只读查询不再是 danger（否则一次排查要弹十几次确认框）
+    expect(classifyToolRisk('remote_exec', { command: 'ls' }).risk).toBe('read');
+    expect(classifyToolRisk('remote_exec', { command: 'bash -c "id"' }).risk).toBe('danger');
     expect(classifyToolRisk('remote_exec', { command: 'rm -rf /tmp/x' }).reason).toContain('破坏性');
     expect(classifyToolRisk('remote_delete_file', {}).risk).toBe('danger');
     expect(classifyToolRisk('remote_restart_service', {}).risk).toBe('danger');

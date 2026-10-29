@@ -14,6 +14,8 @@
  */
 
 /** 读写文件大小上限，防止把几百 MB 的文件塞进 LLM 上下文 */
+import { classifyCommandRisk } from './security/command-risk.js';
+
 export const MAX_READ_BYTES = 200 * 1024;
 export const MAX_WRITE_BYTES = 512 * 1024;
 /** grep 结果上限 */
@@ -187,12 +189,18 @@ const DANGER_TOOLS = new Set([
  */
 export function classifyToolRisk(name, args = {}) {
   if (DANGER_TOOLS.has(name)) {
-    if (name === 'remote_exec') {
+    // 命令执行类工具：按命令内容分级。
+    // 只读查询（ls/cat/grep/ps/curl GET/docker ps/nginx -T…）不改变系统状态，
+    // 直接执行 —— 否则一次排查要弹十几次确认框，人被点烦了就会盲点「批准」，
+    // 反而削弱了确认机制的意义。写操作/破坏性命令仍然必须确认。
+    if (name === 'remote_exec' || name === 'docker_exec') {
       const cmd = String(args.command || '');
+      const verdict = classifyCommandRisk(cmd);
+      if (verdict.readonly) return { risk: 'read', reason: verdict.reason };
       if (/(rm\s+-[a-zA-Z]*[rf]|mkfs|dd\s+[^|]*of=|shutdown|reboot|>\/etc\/|iptables\s+-F)/.test(cmd)) {
         return { risk: 'danger', reason: '疑似破坏性命令' };
       }
-      return { risk: 'danger', reason: '任意命令执行' };
+      return { risk: 'danger', reason: verdict.reason || '会改变系统状态' };
     }
     if (name === 'remote_delete_file') return { risk: 'danger', reason: '删除文件' };
     if (name === 'remote_restart_service') return { risk: 'danger', reason: '重启系统服务' };

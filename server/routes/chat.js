@@ -31,11 +31,11 @@ const ASSISTANT_TOOLS = [
   { type: 'function', function: { name: 'docker_start', description: '⚠️ 启动一个已停止的容器。需要用户确认后才能调用。', parameters: { type: 'object', properties: { containerId: { type: 'string' }, sourceId: { type: 'string' } }, required: ['containerId'] } } },
   { type: 'function', function: { name: 'docker_stop', description: '⚠️ 停止一个运行中的容器。需要用户确认后才能调用。', parameters: { type: 'object', properties: { containerId: { type: 'string' }, sourceId: { type: 'string' } }, required: ['containerId'] } } },
   { type: 'function', function: { name: 'docker_restart', description: '⚠️ 重启容器。需要用户确认后才能调用。', parameters: { type: 'object', properties: { containerId: { type: 'string' }, sourceId: { type: 'string' } }, required: ['containerId'] } } },
-  { type: 'function', function: { name: 'docker_exec', description: '⚠️ 在容器内执行命令。需要用户确认后才能调用。', parameters: { type: 'object', properties: { containerId: { type: 'string' }, command: { type: 'string', description: '要执行的命令' }, sourceId: { type: 'string' } }, required: ['containerId', 'command'] } } },
+  { type: 'function', function: { name: 'docker_exec', description: '在容器内执行命令。只读命令（cat/ls/grep/ps/nginx -T 等）会直接执行、无需确认；会修改容器状态的命令需要用户确认。', parameters: { type: 'object', properties: { containerId: { type: 'string' }, command: { type: 'string', description: '要执行的命令' }, sourceId: { type: 'string' } }, required: ['containerId', 'command'] } } },
   { type: 'function', function: { name: 'docker_health_check', description: '执行所有容器健康诊断（检查退出状态、OOM、异常退出等）', parameters: { type: 'object', properties: {} } } },
   // ── 远程服务器工具 ──
   { type: 'function', function: { name: 'remote_servers', description: '列出已配置的远程服务器及其连接状态', parameters: { type: 'object', properties: {} } } },
-  { type: 'function', function: { name: 'remote_exec', description: '⚠️ 在远程服务器执行Shell命令。需要用户确认后才能调用。', parameters: { type: 'object', properties: { serverId: { type: 'string', description: '服务器ID' }, command: { type: 'string', description: 'Shell命令' } }, required: ['serverId', 'command'] } } },
+  { type: 'function', function: { name: 'remote_exec', description: '在远程服务器执行 Shell 命令。只读命令（ls/cat/grep/ps/df/ss/docker ps/日志查看等）会直接执行、无需确认；写文件、改配置、启停服务等命令需要用户确认。', parameters: { type: 'object', properties: { serverId: { type: 'string', description: '服务器ID' }, command: { type: 'string', description: 'Shell命令' } }, required: ['serverId', 'command'] } } },
   { type: 'function', function: { name: 'remote_system_stats', description: '获取远程服务器系统状态（CPU/内存/磁盘/网络/进程/GPU）', parameters: { type: 'object', properties: { serverId: { type: 'string' } }, required: ['serverId'] } } },
   { type: 'function', function: { name: 'remote_list_files', description: '列出远程服务器的日志文件目录', parameters: { type: 'object', properties: { serverId: { type: 'string' }, path: { type: 'string', description: '目录路径（可选，默认服务器配置的日志目录）' } }, required: ['serverId'] } } },
   { type: 'function', function: { name: 'remote_read_file', description: '读取远程服务器上的日志文件内容', parameters: { type: 'object', properties: { serverId: { type: 'string' }, filePath: { type: 'string' }, lines: { type: 'number', description: '读取最后N行，默认200' } }, required: ['serverId', 'filePath'] } } },
@@ -284,12 +284,17 @@ export default function createChatRouter({
 - docker_list / docker_logs / docker_inspect / docker_health_check — 容器排查
 - local_system_stats / local_log_files / local_read_log — OpenLog 所在机器
 
+**查（命令执行类，只读命令自动放行，不用等确认）**
+- remote_exec / docker_exec — 执行查询命令：ls/cat/grep/ps/df/ss/docker ps/systemctl status/nginx -T/journalctl 等，
+  以及用管道/分号/&& 拼出来的只读组合（重定向到 /dev/null 也算只读）。
+  会弹确认的：写文件重定向、tee、sed -i、find -exec、启停服务、docker run/rm/restart、sudo、命令替换。
+
 **改（需要用户在界面上点确认）**
 - remote_edit_file — 精确替换（改代码/改配置的首选，old_string 必须唯一）
 - remote_write_file — 整份写入（新建文件或必须整体替换时用）
 - remote_rollback_file — 用自动备份回滚
 - remote_restart_service — 重启 systemd 服务（nginx/docker 等）
-- remote_exec / docker_exec / docker_start / docker_stop / docker_restart — 执行命令与容器操作
+- remote_exec / docker_exec 的非只读命令、docker_start / docker_stop / docker_restart — 容器操作与系统变更
 
 ## 🎯 定位并修复问题的标准流程
 1. **确认目标**：remote_servers 拿 serverId；不确定服务在哪台机器时先问或看上下文。

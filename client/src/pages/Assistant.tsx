@@ -659,7 +659,7 @@ export default function Assistant() {
                     >
                       拒绝
                     </button>
-                    <span className="text-[10px] text-dark-500">3 分钟不操作视为拒绝 · 写前会自动备份</span>
+                    <span className="text-[10px] text-dark-500">只读查询已自动放行 · 3 分钟不操作视为拒绝 · 写前自动备份</span>
                   </div>
                 </div>
               </div>
