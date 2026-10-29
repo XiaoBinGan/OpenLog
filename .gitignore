@@ -9,8 +9,13 @@ node_modules/
 .env.*.local
 # 部署配置（含数据库密码）与部署备份
 deploy.env
+deploy/deploy.env
 .deploy.json
+deploy/.deploy.json
 backups/
+# 镜像归档（体积大，不进 git；只保留清单 MANIFEST.md 和脚本）
+deploy/images/*.tar
+deploy/images/*.tar.gz
 
 # macOS 系统文件
 # 存储文件夹显示属性，与项目代码无关，会造成不必要的冲突

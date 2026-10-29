@@ -1,5 +1,5 @@
 /**
- * scripts/deploy.mjs — 从开发机一键部署到远端服务器（Windows / macOS / Linux 通用）。
+ * deploy/deploy.mjs — 从开发机一键部署到远端服务器（Windows / macOS / Linux 通用）。
  *
  * 解决的问题：之前「部署」是手工 6 步（打 bundle → SFTP 上传 → git reset → docker build
  * → docker rm/run 一长串 -e → 肉眼确认），既容易漏参数，也没法回滚。
@@ -11,7 +11,7 @@
  *   1. 打 git bundle（服务器通常连不上 GitHub，用 bundle 中转）
  *   2. SFTP 上传到服务器 /tmp
  *   3. 远程 git fetch + reset（代码更新）
- *   4. 调用服务器上的 scripts/deploy.sh → 备份 / 构建 / 启动 / 健康检查 / 失败回滚
+ *   4. 调用服务器上的 deploy/deploy.sh → 备份 / 构建 / 启动 / 健康检查 / 失败回滚
  *
  * 依赖配置文件 `.deploy.json`（开发机本地，已 gitignore）：
  * {
@@ -39,7 +39,10 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.join(__dirname, '..');
-const CONFIG_PATH = path.join(ROOT, '.deploy.json');
+// 配置优先 deploy/.deploy.json，兼容旧的根目录 .deploy.json
+const CONFIG_PATH = fs.existsSync(path.join(ROOT, 'deploy', '.deploy.json'))
+  ? path.join(ROOT, 'deploy', '.deploy.json')
+  : path.join(ROOT, '.deploy.json');
 
 const argv = new Set(process.argv.slice(2));
 const has = (flag) => argv.has(flag);
@@ -94,6 +97,28 @@ async function main() {
   const remote = (cmd, opts = {}) => ssh.execCommand(cmd, { execTimeout: 1_200_000, ...opts });
 
   try {
+    // ── 镜像归档（服务器上执行 save-image.sh）──
+    if (has('--save-image')) {
+      console.log('\n▶ 归档服务器上的镜像');
+      const r = await remote(`cd ${appDir} && bash deploy/scripts/save-image.sh 2>&1`);
+      console.log(r.stdout || r.stderr);
+      if (r.code !== 0) fail('镜像归档失败');
+      return;
+    }
+
+    // ── 从归档恢复镜像 ──
+    if (has('--load-image')) {
+      const idx = process.argv.indexOf('--load-image');
+      const archive = process.argv[idx + 1];
+      if (!archive) fail('用法: node deploy/deploy.mjs --load-image deploy/images/<file>.tar.gz [新tag]');
+      console.log(`\n▶ 恢复镜像 ${archive}`);
+      const newTag = process.argv[idx + 2] && !process.argv[idx + 2].startsWith('--') ? process.argv[idx + 2] : '';
+      const r = await remote(`cd ${appDir} && bash deploy/scripts/load-image.sh ${archive} ${newTag} 2>&1`);
+      console.log(r.stdout || r.stderr);
+      if (r.code !== 0) fail('镜像恢复失败');
+      return;
+    }
+
     // ── 只查看状态 ──
     if (has('--logs')) {
       const r = await remote(`
@@ -142,7 +167,7 @@ docker logs --tail 40 openlog 2>&1 | tail -40
     if (has('--dry-run')) passthrough.push('--dry-run');
 
     console.log(`\n▶ 执行远端部署${passthrough.length ? ` (${passthrough.join(' ')})` : ''}\n`);
-    const deploy = await remote(`cd ${appDir} && bash scripts/deploy.sh ${passthrough.join(' ')}`);
+    const deploy = await remote(`cd ${appDir} && bash deploy/deploy.sh ${passthrough.join(' ')}`);
     // 流式输出远端脚本结果
     console.log(deploy.stdout || '');
     if (deploy.stderr) console.log(deploy.stderr);

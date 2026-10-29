@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # ─── OpenLog 服务端一键部署脚本 ───────────────────────────────────────────
 #
-# 在服务器上执行（通常由 scripts/deploy.mjs 从开发机远程调用）：
-#     bash scripts/deploy.sh
+# 在服务器上执行（通常由 deploy/deploy.mjs 从开发机远程调用）：
+#     bash deploy/deploy.sh
 #
 # 它做完整的一套，任何一步失败都不会留下半拉子状态：
 #   1. 读配置（deploy.env，含数据库连接串等敏感信息，不进 git）
@@ -14,10 +14,10 @@
 #   7. 清理旧镜像（保留最近 N 个）
 #
 # 用法：
-#   bash scripts/deploy.sh                 # 正常部署（当前工作区代码）
-#   bash scripts/deploy.sh --no-build      # 只重启容器（改配置后用）
-#   bash scripts/deploy.sh --skip-backup   # 跳过数据库备份
-#   bash scripts/deploy.sh --dry-run       # 只打印将要执行的动作
+#   bash deploy/deploy.sh                  # 正常部署（当前工作区代码）
+#   bash deploy/deploy.sh --no-build       # 只重启容器（改配置后用）
+#   bash deploy/deploy.sh --skip-backup    # 跳过数据库备份
+#   bash deploy/deploy.sh --dry-run        # 只打印将要执行的动作
 #
 # 退出码：0 = 部署成功；非 0 = 失败（已尝试回滚）
 
@@ -28,7 +28,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$APP_DIR"
 
-CONFIG_FILE="${DEPLOY_ENV_FILE:-$APP_DIR/deploy.env}"
+# 配置文件优先 deploy/deploy.env，兼容旧位置（根目录 deploy.env）
+if [ -n "${DEPLOY_ENV_FILE:-}" ]; then
+  CONFIG_FILE="$DEPLOY_ENV_FILE"
+elif [ -f "$APP_DIR/deploy/deploy.env" ]; then
+  CONFIG_FILE="$APP_DIR/deploy/deploy.env"
+else
+  CONFIG_FILE="$APP_DIR/deploy.env"
+fi
 BACKUP_DIR="$APP_DIR/backups"
 STATE_FILE="$BACKUP_DIR/.last-deploy.json"
 IMAGE_NAME="${IMAGE_NAME:-openlog}"

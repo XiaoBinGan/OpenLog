@@ -17,8 +17,10 @@
     "lint:all": "npm run lint && npm run lint:client",
     "start": "node scripts/start-prod.js",
     "start:posix": "NODE_ENV=production node server/index.js",
-    "deploy": "node scripts/deploy.mjs",
-    "deploy:logs": "node scripts/deploy.mjs --logs"
+    "deploy": "node deploy/deploy.mjs",
+    "deploy:logs": "node deploy/deploy.mjs --logs",
+    "deploy:image:save": "bash deploy/scripts/save-image.sh",
+    "deploy:image:load": "bash deploy/scripts/load-image.sh"
   },
   "engines": {
     "node": ">=22.22"

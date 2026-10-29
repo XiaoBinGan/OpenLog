@@ -226,7 +226,7 @@ npm.cmd start
 **A. 新机器从零起一套（应用 + PostgreSQL）**
 
 ```bash
-cp deploy.env.example .env          # 填 OPENLOG_TOKEN / POSTGRES_PASSWORD
+cp deploy/deploy.env.example .env    # 填 OPENLOG_TOKEN / POSTGRES_PASSWORD
 docker compose up -d --build
 ```
 
@@ -236,7 +236,7 @@ docker compose up -d --build
 
 ```bash
 # 开发机：填 .deploy.json（服务器地址/账号，已 gitignore）
-cp scripts/deploy.config.example.json .deploy.json
+cp deploy/deploy.config.example.json deploy/.deploy.json
 node scripts/deploy.mjs              # 或 npm run deploy
 ```
 
@@ -244,10 +244,10 @@ node scripts/deploy.mjs              # 或 npm run deploy
 
 1. 打 git bundle（服务器通常连不上 GitHub，用 bundle 中转）→ SFTP 上传
 2. 远端 `git fetch` + `reset --hard`
-3. 调服务器上的 `scripts/deploy.sh`：
+3. 调服务器上的 `deploy/deploy.sh`：
    - **备份数据库**（PG → `pg_dump`，SQLite → 在线备份，保留最近 10 份）
    - 构建镜像，打 `openlog:<commit>` + `openlog:latest`
-   - 从 `deploy.env` 读全部配置启动容器（不再手写一长串 `-e`）
+   - 从 `deploy/deploy.env` 读全部配置启动容器（不再手写一长串 `-e`）
    - **健康检查**：页面 200 + `/api/db/info` 的 `ok:true`，最多等 90s
    - **失败自动回滚**到上一个镜像并恢复服务
    - 清理旧镜像（保留最近 N 个）
@@ -259,7 +259,7 @@ node scripts/deploy.mjs --skip-backup # 跳过数据库备份
 npm run deploy:logs                   # 只看服务状态/最近日志
 ```
 
-服务器侧配置在 `deploy.env`（含数据库密码，已 gitignore）：
+服务器侧配置在 `deploy/deploy.env`（含数据库密码，已 gitignore）：
 
 ```bash
 APP_PORT=3001
@@ -274,12 +274,13 @@ OPENLOG_ENABLE_CONTAINER_EXEC=1
 也可以直接在服务器上跑（不走 SSH）：
 
 ```bash
-cd /workspace/Openlog-new && bash scripts/deploy.sh
+cd /workspace/Openlog-new && bash deploy/deploy.sh
 ```
 
 部署记录写在 `backups/.last-deploy.json`（时间 / commit / 镜像 / 上一个镜像，回滚用）。
 
-> 首次部署前服务器上要准备好 `deploy.env`，之后每次改代码只需 `npm run deploy`。
+> 首次部署前服务器上要准备好 `deploy/deploy.env`，之后每次改代码只需 `npm run deploy`。
+> 完整部署手册（首次部署 / 镜像归档 / 备份恢复 / 回滚 / 排障）：**[deploy/MANUAL.md](deploy/MANUAL.md)**
 > 升级到新版部署脚本时做一次手工同步（`git pull`/bundle），之后就是一条命令。
 
 #### 数据库 | Database

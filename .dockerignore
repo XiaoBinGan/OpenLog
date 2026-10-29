@@ -15,3 +15,10 @@ _deploy
 *.log
 .DS_Store
 Thumbs.db
+# 部署配置与镜像归档不进镜像（含数据库密码 / 几百 MB 的 tar）
+deploy/deploy.env
+deploy/.deploy.json
+deploy.env
+.deploy.json
+deploy/images
+backups
