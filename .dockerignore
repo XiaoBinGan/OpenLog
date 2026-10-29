@@ -22,3 +22,8 @@ deploy.env
 .deploy.json
 deploy/images
 backups
+# 测试代码不进生产镜像（挂载/泄漏用例，且 vitest 是 devDependency 根本跑不了）
+server/__tests__
+client/src/**/*.test.ts
+**/*.test.js
+**/*.test.ts
