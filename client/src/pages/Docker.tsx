@@ -709,7 +709,7 @@ export default function Docker() {
                   <div
                     draggable
                     title="按住拖动排序"
-                    className="flex-shrink-0 text-dark-700 opacity-0 group-hover:opacity-100 hover:text-dark-300 cursor-grab active:cursor-grabbing transition-opacity"
+                    className="flex-shrink-0 text-dark-700 opacity-30 group-hover:opacity-100 hover:text-dark-300 cursor-grab active:cursor-grabbing transition-opacity"
                     onMouseDown={(e) => e.stopPropagation()}
                   >
                     <GripVertical className="w-4 h-4" />
