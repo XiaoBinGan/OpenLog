@@ -592,6 +592,14 @@ openlog/
 - SSH connections (password / private key / key path) sharing one pooled implementation
 - File browsing, log viewing, file editing, upload/download (including chunked upload)
 - Embedded PTY terminal and AI Shell
+- **Truthful status**: `GET /api/remote/servers` reports the state of the **live** SSH pool.
+  A persisted `connected` from a previous process is downgraded to `disconnected` until the
+  connection is re-established — the UI can no longer show green while every operation fails.
+- **Lazy reconnect**: file browsing, log reading, command execution and stats re-establish a
+  missing connection on demand instead of returning `500 服务器未连接`.
+- **Batch operations**: the Remote page supports multi-select with select-all plus
+  one-click *Reconnect* / *Disconnect*, and a `Reconnect all (N)` shortcut for every host
+  that is currently not connected.
 - **Automatic reconnection**: unreachable hosts retry on an exponential backoff
   `5s → 10s → 20s → … → 5min` and return to `connected` by themselves
   (early versions only reconnected once at process start, so a host that went down and came back
@@ -1053,7 +1061,9 @@ instead of a cryptic error.
 |--------|----------|-------------|
 | GET | `/api/monitor/stats` | System stats (incl. GPU) |
 | GET | `/api/db/info` | Database health: backend, pool occupancy, latency, storage (`?counts=1` adds key table row counts; no credentials) |
-| GET | `/api/remote/servers` | Remote server list |
+| GET | `/api/remote/servers` | Remote server list (status reflects the **live** SSH pool, not a persisted flag) |
+| POST | `/api/remote/servers/batch/connect` | Reconnect many servers at once (`{ids:[...]}`, bounded concurrency, per-id result) |
+| POST | `/api/remote/servers/batch/disconnect` | Disconnect many servers at once (`{ids:[...]}`) |
 | GET | `/api/remote/servers/:id/stats` | Remote system stats (incl. GPU processes; served from the collection cache) |
 | GET | `/api/remote/servers/stats` | Full stats snapshot (server-side collection; `?refresh=1` or `?ids=a,b` to refresh on demand) |
 | GET | `/api/remote/servers/:id/mfu` | Remote model MFU (reads the engine `/metrics`) |

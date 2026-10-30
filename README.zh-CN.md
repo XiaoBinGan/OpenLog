@@ -551,6 +551,12 @@ openlog/
 - SSH 连接（密码 / 私钥 / 密钥路径），连接池复用同一份实现
 - 文件浏览、日志查看、文件编辑、上传下载（含分块上传）
 - 内嵌终端（PTY）与 AI Shell
+- **状态可信**：`GET /api/remote/servers` 返回的是**连接池实况**。上个进程持久化的
+  `connected` 会降级成 `disconnected`，不会再出现「页面显示绿灯、一操作就报服务器未连接」。
+- **按需重连**：浏览文件、读日志、执行命令、取状态时若连接不存在，会自动重建，
+  而不是直接返回 `500 服务器未连接`。
+- **批量操作**：远程页支持勾选/全选 + 一键重连 / 一键断开，另有「全部重连(N)」
+  一次连上所有未连接的机器。
 - **断线自动重连**：连不上的机器按 `5s → 10s → 20s → … → 5min` 指数退避持续重试，
   恢复后自动回到 `connected`，不需要人工点（早期版本只在进程启动时重连一次，
   机器下线再上线就永远是红灯）
@@ -952,7 +958,9 @@ OPENLOG_ENABLE_CONTAINER_EXEC=1   # 或 OPENLOG_ENABLE_REMOTE_EXEC=1 一并开�
 |------|------|------|
 | GET | `/api/monitor/stats` | 系统状态（含 GPU） |
 | GET | `/api/db/info` | 数据库健康检查：库类型 / 连接池水位 / 探活延迟 / 存储占用（`?counts=1` 附关键表行数，不返回凭据） |
-| GET | `/api/remote/servers` | 远程服务器列表 |
+| GET | `/api/remote/servers` | 远程服务器列表（状态取自**连接池实况**，不是持久化的旧值） |
+| POST | `/api/remote/servers/batch/connect` | 批量重连（`{ids:[...]}`，限并发，逐台返回结果） |
+| POST | `/api/remote/servers/batch/disconnect` | 批量断开（`{ids:[...]}`） |
 | GET | `/api/remote/servers/:id/stats` | 远程系统状态（含 GPU 进程，命中采集缓存） |
 | GET | `/api/remote/servers/stats` | 全量状态快照（服务端集中采集，`?refresh=1` 或 `?ids=a,b` 可按需补采） |
 | GET | `/api/remote/servers/:id/mfu` | 远程模型 MFU（读 vLLM `/metrics`） |
