@@ -78,7 +78,20 @@ log "检查环境"
 command -v docker >/dev/null 2>&1 || die "没装 docker"
 docker info >/dev/null 2>&1 || die "docker 守护进程不可用（服务没起或当前用户无权限）"
 command -v tar >/dev/null 2>&1 || die "没装 tar"
-ok "docker $(docker version --format '{{.Server.Version}}' 2>/dev/null || echo '?')"
+DOCKER_VER="$(docker version --format '{{.Server.Version}}' 2>/dev/null || echo '?')"
+ok "docker $DOCKER_VER"
+# 19.03 及更早没有 `docker compose` 子命令（20.10+ 才是官方 v2 插件）。
+# 本脚本用纯 docker run，不需要 compose —— 这里只把差异说清楚，免得你以为必须装 compose。
+# ⚠️ 此行文案不能带反引号：它在双引号里会被 shell 当命令替换执行（实测会打印
+#    "docker: 'compose' is not a docker command."）。
+DOCKER_MAJOR="${DOCKER_VER%%.*}"
+case "$DOCKER_MAJOR" in
+  ''|*[!0-9]*) DOCKER_MAJOR=0 ;;
+esac
+if [ "$DOCKER_MAJOR" -lt 20 ]; then
+  warn "docker $DOCKER_VER 没有 docker compose 子命令（需 20.10+）；本脚本不需要 compose，继续"
+  warn "如确实要用 compose，请用 deploy/docker-compose.offline.yml（格式 2.4，兼容 docker-compose v1）"
+fi
 for tool in curl wget; do
   command -v "$tool" >/dev/null 2>&1 && { ok "健康检查用 $tool"; break; }
 done || warn "宿主机没有 curl/wget，健康检查会退回到容器内 node（仍可用）"
@@ -90,7 +103,7 @@ if [ -z "${IMAGE_ARCHIVE:-}" ]; then
 fi
 [ -n "${IMAGE_ARCHIVE:-}" ] || die "deploy/images/ 下没有 openlog-*.tar.gz，请确认部署包完整（或用 --image 指定）"
 [ -f "$IMAGE_ARCHIVE" ] || die "镜像归档不存在: $IMAGE_ARCHIVE"
-ok "$(basename "$IMAGE_ARCHIVE")（$(du -h "$IMAGE_ARCHIVE" | cut -f1)）"
+ok "$(basename "$IMAGE_ARCHIVE")（$(du -hL "$IMAGE_ARCHIVE" 2>/dev/null | cut -f1 || echo "?")）"
 
 # ── 3. 校验（有 SHA256SUMS 就校验）──
 if [ -f "$PKG_DIR/SHA256SUMS" ]; then

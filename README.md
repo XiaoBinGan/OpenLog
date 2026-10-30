@@ -266,6 +266,10 @@ docker compose up -d --build
 
 `docker-compose.yml` ships a PostgreSQL service with health checks; it is ready once up.
 
+> ⚠️ Compose needs Docker **20.10+** (`docker compose`) or `docker-compose` **v1.27+**.
+> Docker 19.03 and older have neither (`docker: 'compose' is not a docker command.`) —
+> there, use `bash deploy/install.sh` (plain `docker run`, no compose needed).
+
 **B. Updating an existing instance (recommended for production)** — one command with backup,
 health check and automatic rollback on failure:
 

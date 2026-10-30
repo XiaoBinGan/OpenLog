@@ -3,6 +3,13 @@
 # 适合：新机器从零起一套（应用 + PostgreSQL 一起）。
 # 不适合：已有的生产实例 —— 生产更新用 scripts/deploy.sh（会备份+健康检查+失败回滚）。
 #
+# ⚠️ 本文件用 compose 规范 v3（`services:` 顶层键 + `depends_on.condition`），需要：
+#    - Docker **20.10+** 的 `docker compose` 子命令，或
+#    - 独立的 `docker-compose` **v1.27+**
+#    Docker 19.03 及更早没有该子命令（实测报 `docker: 'compose' is not a docker command.`），
+#    请改用 `bash deploy/install.sh`（纯 docker run，不需要 compose）；
+#    或离线包里的 `deploy/docker-compose.offline.yml`（格式 2.4，兼容 docker-compose v1）。
+#
 # 用法：
 #   cp deploy.env.example .env      # 填 OPENLOG_TOKEN / POSTGRES_PASSWORD
 #   docker compose up -d --build

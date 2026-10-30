@@ -1,0 +1,64 @@
+# ─── OpenLog Docker Compose（离线包用 / 旧版 docker-compose 兼容）──────
+#
+# ⚠️ 版本要求：`docker compose` 子命令是 Docker **20.10+** 的 v2 插件；
+#    Docker 19.03 及更早**没有**这个子命令（只有独立的 `docker-compose` v1）。
+#    19.03 上请直接用 `bash deploy/install.sh`（纯 docker run，不需要 compose）。
+#
+# 本文件用 **compose 文件格式 2.4**，兼容：
+#    - docker-compose v1.27+（Python 独立版，19.03 时代常见的搭配）
+#    - docker compose v2（20.10+）
+# 用 2.4 而不是 3.x：3.x 不支持 `depends_on.condition`，v1 又把 3.x 当 v3 处理。
+#
+# 用法（离线包内，镜像已 docker load 过）：
+#     docker compose -f deploy/docker-compose.offline.yml up -d
+#     docker-compose -f deploy/docker-compose.offline.yml up -d     # 旧版
+#
+# 变量：OPENLOG_PORT / POSTGRES_PASSWORD 可放同目录 .env 或命令行传入。
+
+version: "2.4"
+
+services:
+  openlog:
+    # 用的是已导入的镜像，不 build（离线机器上没有源码）
+    image: ${OPENLOG_IMAGE:-openlog:latest}
+    container_name: ${OPENLOG_CONTAINER:-openlog}
+    # 用 host 网络：容器要和宿主机同栈访问 127.0.0.1 的服务（Docker-over-SSH 桥、宿主机 sshd）
+    network_mode: host
+    restart: unless-stopped
+    volumes:
+      - ${OPENLOG_DATA_DIR:-./data}:/app/data
+      - openlog-logs:/app/logs
+    environment:
+      - NODE_ENV=production
+      - PORT=${OPENLOG_PORT:-3001}
+      - HOST=0.0.0.0
+      - OPENLOG_DB_TYPE=postgres
+      - OPENLOG_DATABASE_URL=postgres://openlog:${POSTGRES_PASSWORD:?必须设置 POSTGRES_PASSWORD}@127.0.0.1:${POSTGRES_PORT:-5432}/openlog
+      - OPENLOG_PG_POOL_MAX=${OPENLOG_PG_POOL_MAX:-10}
+      - OPENLOG_ENABLE_CONTAINER_EXEC=${OPENLOG_ENABLE_CONTAINER_EXEC:-1}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  postgres:
+    image: ${POSTGRES_IMAGE:-postgres:16-alpine}
+    container_name: ${POSTGRES_CONTAINER:-openlog-pg}
+    restart: unless-stopped
+    # 只监听回环，避免数据库暴露到内网
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    environment:
+      - POSTGRES_USER=openlog
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?必须设置 POSTGRES_PASSWORD}
+      - POSTGRES_DB=openlog
+    volumes:
+      - openlog-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U openlog -d openlog"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  openlog-logs:
+  openlog-pgdata:

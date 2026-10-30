@@ -257,6 +257,10 @@ docker compose up -d --build
 
 `docker-compose.yml` 里带 PostgreSQL 服务和健康检查，起完直接可用。
 
+> ⚠️ compose 需要 Docker **20.10+**（`docker compose` 子命令）或 `docker-compose` **v1.27+**。
+> Docker 19.03 及更早两者都没有（实测报 `docker: 'compose' is not a docker command.`），
+> 用 `bash deploy/install.sh`（纯 docker run，不需要 compose）。
+
 **B. 已有实例更新（生产推荐）**：一条命令，带备份、健康检查、失败自动回滚。
 
 ```bash
