@@ -736,7 +736,10 @@ AI Shell 是一个**会自己动手的多步 agent**，不是「生成一条命�
 ### 🔧 技能管理
 
 - 标准 Markdown 格式（Purpose / Workflow / Constraints / Output）
-- 8 个内置运维技能（受保护，不可删除）
+- 9 个内置技能（受保护，不可删除），含**「应用部署与发布」**——一份部署 runbook：
+  读手册 → 找回滚点 → 优先 `docker load` 而不是慢构建 → 跑 `deploy/deploy.sh` →
+  验证页面 200 / `/api/db/info` / 日志 → 失败回滚。这样助手是按固定流程走，不是临场发挥。
+  内置技能在启动时按 id 幂等补齐，新增技能能进到已部署实例。
 - JSON 导入/导出
 - 一键在运维助手/AI Shell 中使用
 

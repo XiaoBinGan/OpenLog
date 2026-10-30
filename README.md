@@ -809,7 +809,11 @@ AI Shell is a **multi-step agent that actually acts**, not a "generate one comma
 ### 🔧 Skills
 
 - Standard Markdown format (Purpose / Workflow / Constraints / Output)
-- 8 built-in ops skills (protected, not deletable)
+- 9 built-in skills (protected, not deletable), including **「应用部署与发布」** — a
+  deployment runbook (read the manual → find the rollback point → prefer `docker load` over a
+  slow build → run `deploy/deploy.sh` → verify page 200 / `/api/db/info` / logs → roll back)
+  so the assistant follows a fixed procedure instead of improvising.
+  Built-in skills are seeded by id at startup, so new ones reach existing deployments.
 - JSON import/export
 - One click to use in the assistant or AI Shell
 
