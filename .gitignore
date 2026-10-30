@@ -16,6 +16,9 @@ backups/
 # 镜像归档（体积大，不进 git；只保留清单 MANIFEST.md 和脚本）
 deploy/images/*.tar
 deploy/images/*.tar.gz
+# 分发用部署包（含镜像，体积大，按需生成）
+openlog-deploy-*.tar
+openlog-deploy-*.tar.gz
 
 # macOS 系统文件
 # 存储文件夹显示属性，与项目代码无关，会造成不必要的冲突

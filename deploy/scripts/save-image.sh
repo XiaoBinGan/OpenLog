@@ -70,9 +70,9 @@ if [ -s "$MANIFEST" ] && [ -n "$(tail -c 1 "$MANIFEST")" ]; then
 fi
 
 REL="$(realpath --relative-to="$APP_DIR" "$ARCHIVE" 2>/dev/null || echo "$ARCHIVE")"
-printf '| `%s` | `%s` | `%s` | `%s` | %s | %s | `%s` | %s |\n' \
+printf '| `%s` | `%s` | `%s` | `%s` | %s | %s | `%s` | %s | %s |\n' \
   "$(basename "$ARCHIVE")" "$IMAGE" "$IMAGE_ID" "$COMMIT" "$SIZE_HUMAN" \
-  "$(date '+%Y-%m-%d %H:%M')" "$(echo "$SHA" | cut -c1-16)…" "${NOTE:-—}" >> "$MANIFEST"
+  "$(date '+%Y-%m-%d %H:%M')" "$(echo "$SHA" | cut -c1-16)…" "${NOTE:-—}" "${LOCATION:-服务器}" >> "$MANIFEST"
 
 echo "  ✅ $SIZE_HUMAN | sha256 ${SHA:0:16}… | commit $COMMIT"
 echo "  清单: $REL"
