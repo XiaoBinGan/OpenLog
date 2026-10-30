@@ -41,7 +41,8 @@ import { AGENT_TOOLS, AGENT_TOOL_NAMES, executeAgentTool } from './agent-tools.j
 import createAuthRouter from './routes/auth.js';
 import { isLoopbackAddress } from './security/loopback.js';
 import { migrateWatchSourceFields } from './settings-migrations.js';
-import { initDb, getDb, getKv, setKv, insertLogRecord, getAlertConfig, closeDb, pruneOldRecords, checkpoint } from './db/index.js';
+import { initDb, getDb, getKv, setKv, insertLogRecord, getAlertConfig, closeDb, pruneOldRecords, checkpoint, ensureBuiltinSkills } from './db/index.js';
+import { BUILTIN_SKILLS } from './default-skills.js';
 import { resolveDockerTransport } from './docker-transport.js';
 import { getRemoteMfu } from './gpu-mfu.js';
 
@@ -222,6 +223,17 @@ async function initDatabase() {
     await initDb();
     console.log('[DB] 数据库初始化完成');
     ensureSettings();
+
+    // 内置技能按 id 幂等补齐：新增的内置技能（如「应用部署与发布」）能进到已部署实例，
+    // 而不是像以前那样因为「库里已有内置技能」被整体跳过。
+    try {
+      const { added, skipped } = await ensureBuiltinSkills(BUILTIN_SKILLS);
+      if (added.length) console.log(`[Skills] 补入内置技能 ${added.length} 个: ${added.join('、')}`);
+      else console.log(`[Skills] 内置技能齐全（${skipped} 个）`);
+    } catch (err) {
+      console.warn('[Skills] 内置技能补齐失败:', errorMessage(err));
+    }
+
     await remote.loadServers();
   } catch (err) {
     console.error('[DB] 初始化失败:', errorMessage(err));

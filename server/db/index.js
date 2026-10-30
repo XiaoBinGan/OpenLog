@@ -749,6 +749,30 @@ export function deleteSkill(id) {
   return db.run(`DELETE FROM skills WHERE id = ?`, id);
 }
 
+/**
+ * 幂等补齐内置技能（启动时调用）。
+ *
+ * 为什么要这一步：内置技能原先只在 scripts/init-db.js 里「库里没有内置技能时才播种」，
+ * 于是**新增的内置技能对已部署实例永远不生效**（老库有技能 → 跳过播种）。
+ * 这里改成按 id 检查：缺哪个补哪个，已存在的不动（不覆盖用户可见的旧内容）。
+ *
+ * @param {Array<object>} skills 内置技能清单
+ * @returns {Promise<{added: string[], skipped: number}>}
+ */
+export async function ensureBuiltinSkills(skills) {
+  const list = Array.isArray(skills) ? skills : [];
+  const added = [];
+  let skipped = 0;
+  for (const skill of list) {
+    if (!skill?.id || !skill?.name) continue;
+    const existing = await db.get('SELECT id FROM skills WHERE id = ?', skill.id);
+    if (existing) { skipped++; continue; }
+    await createSkill({ ...skill, is_default: 1 });
+    added.push(skill.name);
+  }
+  return { added, skipped };
+}
+
 /** kv 列表（内存缓存；prefix 过滤） */
 export function listKv(prefix = '') {
   const out = [];

@@ -271,6 +271,7 @@ export default function Skills() {
     '日志': 'bg-yellow-500/10 text-yellow-400',
     '数据库': 'bg-cyan-500/10 text-cyan-400',
     '网络': 'bg-pink-500/10 text-pink-400',
+    '部署': 'bg-orange-500/10 text-orange-400',
   };
 
   return (
