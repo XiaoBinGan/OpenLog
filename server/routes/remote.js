@@ -12,6 +12,7 @@
 import express from 'express';
 import { errorMessage } from '../errors.js';
 import * as remote from '../remote.js';
+import { mapLimit } from '../concurrency.js';
 import { getRemoteMfu } from '../gpu-mfu.js';
 import {
   hasShellMetaChars, rejectUnlessRemoteExecEnabled,
@@ -134,6 +135,67 @@ router.post('/api/remote/test', async (req, res) => {
     console.warn('[Remote/test] 异常:', errorMessage(err));
     res.status(400).json({ success: false, error: errorMessage(err) });
   }
+});
+
+// ─── 批量连接 / 断开（页面「一键重连」「一键断开」「全选」）────────────────
+// ⚠️ 必须注册在 /api/remote/servers/:id/connect 之前：
+// Express 按注册顺序匹配，否则 "batch" 会被当作 :id 抢走。
+
+/** 批量操作的最大并发：1000 台同时握手会打满 CPU 和目标机 sshd */
+const BATCH_CONNECT_CONCURRENCY = Number(process.env.OPENLOG_BATCH_CONNECT_CONCURRENCY) || 12;
+
+/** 校验并去重 ids 参数 */
+function normalizeIds(body) {
+  const rawList = Array.isArray(body?.ids) ? body.ids : [];
+  const ids = [...new Set(rawList.map(v => String(v || '').trim()).filter(Boolean))];
+  return ids;
+}
+
+/**
+ * 批量连接：对每台调 connectServer，限并发，返回逐台结果。
+ * 单台失败不影响其它台（用户可能就是想"能连的都连上"）。
+ */
+router.post('/api/remote/servers/batch/connect', async (req, res) => {
+  const ids = normalizeIds(req.body);
+  if (ids.length === 0) return res.status(400).json({ error: '缺少 ids' });
+  const known = new Set(remote.getServers().map(s => s.id));
+  const unknown = ids.filter(id => !known.has(id));
+
+  const t0 = Date.now();
+  const results = await mapLimit(ids.filter(id => known.has(id)), BATCH_CONNECT_CONCURRENCY, async (id) => {
+    try {
+      await remote.connectServer(id);
+      return { id, ok: true };
+    } catch (err) {
+      return { id, ok: false, error: errorMessage(err) };
+    }
+  });
+  const ok = results.filter(r => r.ok).length;
+  console.log(`[Remote] 批量连接: ${ok}/${results.length} 成功，耗时 ${Date.now() - t0}ms`);
+  res.json({ total: ids.length, ok, failed: results.length - ok, unknown, results, durationMs: Date.now() - t0 });
+});
+
+/**
+ * 批量断开：对每台调 disconnectServer。
+ * 断开原本就是本地清理（不依赖网络），串行也很快，但仍限并发避免同时 dispose 太多连接。
+ */
+router.post('/api/remote/servers/batch/disconnect', async (req, res) => {
+  const ids = normalizeIds(req.body);
+  if (ids.length === 0) return res.status(400).json({ error: '缺少 ids' });
+  const known = new Set(remote.getServers().map(s => s.id));
+  const unknown = ids.filter(id => !known.has(id));
+
+  const results = await mapLimit(ids.filter(id => known.has(id)), BATCH_CONNECT_CONCURRENCY, async (id) => {
+    try {
+      await remote.disconnectServer(id);
+      return { id, ok: true };
+    } catch (err) {
+      return { id, ok: false, error: errorMessage(err) };
+    }
+  });
+  const ok = results.filter(r => r.ok).length;
+  console.log(`[Remote] 批量断开: ${ok}/${results.length} 成功`);
+  res.json({ total: ids.length, ok, failed: results.length - ok, unknown, results });
 });
 
 // Connect to a remote server

@@ -318,6 +318,23 @@ export const _cryptoInternals = { encryptPassword, decryptPassword, decryptWithK
 /**
  * 获取所有服务器配置（不返回密码）
  */
+/**
+ * 服务器**真实**状态。
+ *
+ * ⚠️ 这里必须看连接池，不能只信 s.status：
+ * status 是持久化在数据库里的，进程重启后 DB 里还写着 connected，但内存连接池是空的。
+ * 旧实现直接返回 s.status，于是页面显示绿色「已连接」，一点开文件/日志就是 500
+ * 「服务器未连接」——用户看到的就是「状态按钮显示已连接，但实际是断的」。
+ */
+export function liveStatus(s) {
+  if (!s) return 'disconnected';
+  const ssh = sshConnections.get(s.id);
+  if (ssh && ssh.isConnected()) return 'connected';
+  // 池里没有连接：如果之前是 connected，那只是持久化的旧值，按断开处理
+  if (s.status === 'connected') return 'disconnected';
+  return s.status || 'disconnected';
+}
+
 export function getServers() {
   return servers.map(s => ({
     id: s.id,
@@ -328,7 +345,7 @@ export function getServers() {
     logPath: s.logPath,
     watchFiles: s.watchFiles,
     lastConnected: s.lastConnected,
-    status: s.status,
+    status: liveStatus(s),
     lastError: s.lastError || null,
     lastErrorAt: s.lastErrorAt || null,
     // 自动重连状态：下次尝试时间与连续失败次数，方便 UI 显示「N 秒后重试」
@@ -696,10 +713,8 @@ export async function disconnectAll() {
  * 返回一个 Promise，resolve 时返回命令输出
  */
 export async function execShellCommand(id, command, timeout = 30000) {
-  const ssh = sshConnections.get(id);
-  if (!ssh) {
-    throw new Error('服务器未连接');
-  }
+  // 按需重连：连接可能因空闲回收/网络中断/进程重启而消失，直接抛错会让用户看到 500
+  const ssh = await ensureSshConnection(id);
   
   try {
     const result = await ssh.execCommand(command, { execOptions: { timeout } });
@@ -719,10 +734,8 @@ export async function execShellCommand(id, command, timeout = 30000) {
  * 使用 PTY 模式，支持交互式命令
  */
 export async function createShellSession(id, ws) {
-  const ssh = sshConnections.get(id);
-  if (!ssh) {
-    throw new Error('服务器未连接');
-  }
+  // 按需重连：连接可能因空闲回收/网络中断/进程重启而消失，直接抛错会让用户看到 500
+  const ssh = await ensureSshConnection(id);
   
   const server = servers.find(s => s.id === id);
   if (!server) {
@@ -776,10 +789,8 @@ export async function createShellSession(id, ws) {
  * 列出远程日志文件
  */
 export async function listRemoteFiles(id, subPath = '') {
-  const ssh = sshConnections.get(id);
-  if (!ssh) {
-    throw new Error('服务器未连接');
-  }
+  // 按需重连：连接可能因空闲回收/网络中断/进程重启而消失，直接抛错会让用户看到 500
+  const ssh = await ensureSshConnection(id);
 
   const server = servers.find(s => s.id === id);
   const basePath = subPath || server.logPath;
@@ -838,8 +849,13 @@ export async function listRemoteFiles(id, subPath = '') {
  * 通过 execCommand cat 方式，避免 SFTP 兼容性问题
  */
 export async function readRemoteFileRaw(id, filePath) {
-  const ssh = sshConnections.get(id);
-  if (!ssh) return { error: '服务器未连接' };
+  // 按需重连（同 readRemoteFileRaw 的说明）
+  let ssh;
+  try {
+    ssh = await ensureSshConnection(id);
+  } catch (err) {
+    return { error: `连接失败: ${errorMessage(err)}` };
+  }
 
   try {
     const result = await ssh.execCommand(`cat "${filePath}"`, { encoding: 'utf8' });
@@ -857,8 +873,13 @@ export async function readRemoteFileRaw(id, filePath) {
  * 通过 base64 编码传输，避免 shell 转义问题
  */
 export async function writeRemoteFile(id, filePath, content) {
-  const ssh = sshConnections.get(id);
-  if (!ssh) return { error: '服务器未连接' };
+  // 按需重连（同 readRemoteFileRaw 的说明）
+  let ssh;
+  try {
+    ssh = await ensureSshConnection(id);
+  } catch (err) {
+    return { error: `连接失败: ${errorMessage(err)}` };
+  }
 
   try {
     // base64 编码内容，避免 shell 转义
@@ -882,8 +903,13 @@ export async function writeRemoteFile(id, filePath, content) {
  * 通过 base64 编码传输
  */
 export async function uploadRemoteFile(id, localFileBuffer, remotePath) {
-  const ssh = sshConnections.get(id);
-  if (!ssh) return { error: '服务器未连接' };
+  // 按需重连（同 readRemoteFileRaw 的说明）
+  let ssh;
+  try {
+    ssh = await ensureSshConnection(id);
+  } catch (err) {
+    return { error: `连接失败: ${errorMessage(err)}` };
+  }
 
   try {
     const b64 = localFileBuffer.toString('base64');
@@ -906,8 +932,13 @@ const CHUNK_SIZE = 2 * 1024 * 1024; // 2MB
 
 // 初始化分片上传会话
 export async function initChunkedUpload(id, remotePath, fileSize) {
-  const ssh = sshConnections.get(id);
-  if (!ssh) return { error: '服务器未连接' };
+  // 按需重连（同 readRemoteFileRaw 的说明）
+  let ssh;
+  try {
+    ssh = await ensureSshConnection(id);
+  } catch (err) {
+    return { error: `连接失败: ${errorMessage(err)}` };
+  }
 
   const uploadId = `up_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   const safePath = remotePath.replace(/'/g, "'\\''");
@@ -933,8 +964,13 @@ export async function initChunkedUpload(id, remotePath, fileSize) {
 
 // 上传单个分片
 export async function uploadChunk(id, uploadId, chunkIndex, base64Data) {
-  const ssh = sshConnections.get(id);
-  if (!ssh) return { error: '服务器未连接' };
+  // 按需重连（同 readRemoteFileRaw 的说明）
+  let ssh;
+  try {
+    ssh = await ensureSshConnection(id);
+  } catch (err) {
+    return { error: `连接失败: ${errorMessage(err)}` };
+  }
 
   const session = UPLOAD_SESSIONS.get(uploadId);
   if (!session) return { error: '上传会话不存在或已过期' };
@@ -960,8 +996,13 @@ export async function uploadChunk(id, uploadId, chunkIndex, base64Data) {
 
 // 完成分片上传：合并分片 + 校验 + 清理
 export async function completeChunkedUpload(id, uploadId, totalChunks) {
-  const ssh = sshConnections.get(id);
-  if (!ssh) return { error: '服务器未连接' };
+  // 按需重连（同 readRemoteFileRaw 的说明）
+  let ssh;
+  try {
+    ssh = await ensureSshConnection(id);
+  } catch (err) {
+    return { error: `连接失败: ${errorMessage(err)}` };
+  }
 
   const session = UPLOAD_SESSIONS.get(uploadId);
   if (!session) return { error: '上传会话不存在或已过期' };
@@ -1023,10 +1064,8 @@ setInterval(() => {
  * 读取远程日志文件
  */
 export async function readRemoteFile(id, filePath, options = {}) {
-  const ssh = sshConnections.get(id);
-  if (!ssh) {
-    throw new Error('服务器未连接');
-  }
+  // 按需重连：连接可能因空闲回收/网络中断/进程重启而消失，直接抛错会让用户看到 500
+  const ssh = await ensureSshConnection(id);
   
   const {
     lines = 200,      // 读取最后 N 行
@@ -1081,10 +1120,8 @@ export async function readRemoteFile(id, filePath, options = {}) {
  * 实时监控远程日志（tail -f）
  */
 export async function* tailRemoteFile(id, filePath) {
-  const ssh = sshConnections.get(id);
-  if (!ssh) {
-    throw new Error('服务器未连接');
-  }
+  // 按需重连：连接可能因空闲回收/网络中断/进程重启而消失，直接抛错会让用户看到 500
+  const ssh = await ensureSshConnection(id);
   
   // 使用 tail -f 获取实时日志
   const stream = await ssh.execCommand(`tail -f "${filePath}"`, { execOptions: { pty: true } });
@@ -1110,10 +1147,8 @@ export async function* tailRemoteFile(id, filePath) {
  * 在远程服务器执行命令
  */
 export async function execRemoteCommand(id, command) {
-  const ssh = sshConnections.get(id);
-  if (!ssh) {
-    throw new Error('服务器未连接');
-  }
+  // 按需重连：连接可能因空闲回收/网络中断/进程重启而消失，直接抛错会让用户看到 500
+  const ssh = await ensureSshConnection(id);
   
   try {
     const result = await ssh.execCommand(command);
@@ -1146,8 +1181,8 @@ export async function execRemoteCommand(id, command) {
  */
 export async function execRemoteCommandStream(id, command, opts = {}) {
   const { onStdout, onStderr, timeoutMs = 120_000, signal } = opts;
-  const ssh = sshConnections.get(id);
-  if (!ssh) throw new Error('服务器未连接');
+  // 按需重连：连接可能因空闲回收/网络中断/进程重启而消失，直接抛错会让用户看到 500
+  const ssh = await ensureSshConnection(id);
 
   return new Promise((resolve) => {
     let channel = null;
@@ -1226,10 +1261,8 @@ function parseRemoteLogLine(line, source, index = 0) {
  * 返回与 MonitorStats 接口兼容的结构
  */
 export async function getRemoteSystemStats(id) {
-  const ssh = sshConnections.get(id);
-  if (!ssh) {
-    throw new Error('服务器未连接');
-  }
+  // 按需重连：连接可能因空闲回收/网络中断/进程重启而消失，直接抛错会让用户看到 500
+  const ssh = await ensureSshConnection(id);
   
   try {
     // 一次性获取所有指标
@@ -1395,10 +1428,8 @@ export async function getRemoteSystemStats(id) {
  * 搜索远程日志
  */
 export async function searchRemoteLogs(id, search, options = {}) {
-  const ssh = sshConnections.get(id);
-  if (!ssh) {
-    throw new Error('服务器未连接');
-  }
+  // 按需重连：连接可能因空闲回收/网络中断/进程重启而消失，直接抛错会让用户看到 500
+  const ssh = await ensureSshConnection(id);
   
   const server = servers.find(s => s.id === id);
   const {

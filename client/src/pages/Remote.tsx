@@ -13,7 +13,7 @@ import {
   ChevronLeft, Search, Terminal, Check, X, AlertCircle, Loader,
   Cpu, MemoryStick, HardDrive, Clock, Home, Eye, EyeOff, Upload,
   Code2, Save, Pencil, Wifi, WifiOff, PanelLeftClose,
-  PanelLeftOpen, ArrowUp, FileCode, FolderOpen, FileJson, Sparkles, Download,
+  PanelLeftOpen, ArrowUp, FileCode, FolderOpen, FileJson, Sparkles, Download, PowerOff,
 } from 'lucide-react';
 import { useRemote } from '../contexts/RemoteContext';
 import { apiFetch, apiJson } from '../api/client';
@@ -197,9 +197,11 @@ function FileEditor({
 }
 
 // 单个服务器卡片组件
-const ServerCard = ({ server, isActive, onConnect, onDisconnect, onEdit, onDelete, onShell, onAIShell, onSelect, aiShellOpening, connecting }: {
+const ServerCard = ({ server, isActive, selected, onToggleSelect, onConnect, onDisconnect, onEdit, onDelete, onShell, onAIShell, onSelect, aiShellOpening, connecting }: {
   server: RemoteServer;
   isActive: boolean;
+  selected: boolean;
+  onToggleSelect: (e: React.MouseEvent) => void;
   onConnect: () => void;
   onDisconnect: () => void;
   onEdit: () => void;
@@ -212,12 +214,25 @@ const ServerCard = ({ server, isActive, onConnect, onDisconnect, onEdit, onDelet
   connecting: boolean;
 }) => (
   <div
-    className={`glass rounded-xl p-3 transition-all group cursor-pointer ${isActive ? 'ring-2 ring-accent-500/60 bg-accent-500/5' : 'hover:bg-dark-800/40'}`}
+    className={`glass rounded-xl p-3 transition-all group cursor-pointer ${
+      selected ? 'ring-1 ring-blue-400/50 bg-blue-500/5'
+        : isActive ? 'ring-2 ring-accent-500/60 bg-accent-500/5'
+        : 'hover:bg-dark-800/40'
+    }`}
     onClick={onSelect}
   >
     {/* 服务器基本信息 */}
     <div className="flex items-start justify-between mb-2">
       <div className="flex items-center gap-2 min-w-0">
+        {/* 多选：批量重连/断开用；选中态常显，未选中 hover 才显，避免列表太吵 */}
+        <input
+          type="checkbox"
+          checked={selected}
+          onClick={onToggleSelect}
+          onChange={() => {}}
+          title="选中以批量操作"
+          className={`w-3 h-3 flex-shrink-0 accent-accent-500 cursor-pointer transition-opacity ${selected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}
+        />
         <span className={`w-2 h-2 rounded-full flex-shrink-0 ${server.status === 'connected' ? 'bg-green-500' : server.status === 'error' ? 'bg-red-500' : 'bg-dark-600'}`} />
         <span className="text-sm font-medium truncate">{server.name}</span>
       </div>
@@ -303,6 +318,9 @@ export default function Remote() {
   const [showAIShell, setShowAIShell] = useState(false);
   const [aiShellOpening, setAiShellOpening] = useState(false);
   const [connectingId, setConnectingId] = useState<string | null>(null);
+  // 多选 + 批量操作（一键重连 / 一键断开 / 全选）
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [batchBusy, setBatchBusy] = useState<'connect' | 'disconnect' | null>(null);
   const [logLines, setLogLines] = useState(200);
   const [logSearch, setLogSearch] = useState('');
   const [showServerList, setShowServerList] = useState(true);
@@ -447,8 +465,78 @@ export default function Remote() {
   };
 
   // 过滤 + 窗口化（纯函数，见 client/src/utils/serverList.ts，有单测）
+  // 注意：必须放在 runBatch/toggleSelectAll 之前 —— 它们引用了 filteredServers，
+  // 而 const 有暂时性死区（TDZ），放后面会编译报 "used before its declaration"。
   const filteredServers = filterServers(servers, { search: serverSearch, status: statusFilter });
   const { visible: renderedServers, remaining: remainingServers } = windowServers(filteredServers, visibleCount);
+
+  // ─── 多选 + 批量重连/断开 ────────────────────────────────────
+  const toggleSelect = (id: string) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  /** 批量操作：只对当前筛选结果里选中的机器动手，避免"全选"误伤被搜索过滤掉的 */
+  const runBatch = async (action: 'connect' | 'disconnect', explicitIds?: string[]) => {
+    const ids = explicitIds ?? [...selectedIds].filter(id => filteredServers.some(s => s.id === id));
+    if (ids.length === 0) {
+      showToast('先勾选服务器（可点「全选」）', 'info');
+      return;
+    }
+    if (batchBusy) return;
+    setBatchBusy(action);
+    try {
+      const data = await apiJson<{ ok: number; failed: number; total: number; results: Array<{ id: string; ok: boolean; error?: string }> }>(
+        `/api/remote/servers/batch/${action}`, 'POST', { ids },
+      );
+      const failedList = (data.results || []).filter(r => !r.ok);
+      if (data.failed === 0) {
+        showToast(`${action === 'connect' ? '重连' : '断开'}成功：${data.ok} 台`, 'success');
+      } else {
+        const firstErr = failedList[0]?.error || '';
+        showToast(`${action === 'connect' ? '重连' : '断开'}：${data.ok} 成功 / ${data.failed} 失败${firstErr ? ` · ${firstErr.slice(0, 60)}` : ''}`, 'error');
+      }
+      await refreshServers();
+      loadedRef.current = null;
+      if (action === 'disconnect' && activeServer && ids.includes(activeServer.id)) {
+        setActiveServer(null);
+      }
+    } catch (e: any) {
+      showToast(`批量操作失败: ${e.message}`, 'error');
+    } finally {
+      setBatchBusy(null);
+    }
+  };
+
+  /** 「全部重连」：所有未连接的（不受搜索筛选影响，用户意图是"把断的都连上"） */
+  const runBatchConnectAll = () => {
+    const ids = servers.filter(s => s.status !== 'connected').map(s => s.id);
+    if (ids.length === 0) {
+      showToast('所有服务器都是连接状态', 'info');
+      return;
+    }
+    void runBatch('connect', ids);
+  };
+
+  const disconnectedCount = servers.filter(s => s.status !== 'connected').length;
+
+  // 全选/取消全选：只作用于当前筛选结果
+  const allVisibleSelected = filteredServers.length > 0 && filteredServers.every(s => selectedIds.has(s.id));
+  const toggleSelectAll = () => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (allVisibleSelected) {
+        for (const s of filteredServers) next.delete(s.id);
+      } else {
+        for (const s of filteredServers) next.add(s.id);
+      }
+      return next;
+    });
+  };
 
   return (
     <div className="flex h-[calc(100vh-8rem)] animate-fade-in gap-4">
@@ -469,6 +557,62 @@ export default function Remote() {
             <button onClick={() => refreshServers()} className="p-1.5 rounded-lg hover:bg-dark-800 text-dark-500 hover:text-dark-300 transition-colors" title="刷新">
               <RefreshCw className="w-4 h-4" />
             </button>
+          </div>
+
+          {/* 批量操作条：全选 + 一键重连 / 一键断开（面板刷新后状态是断的，一键全连） */}
+          <div className="flex items-center gap-1.5 flex-wrap rounded-lg border border-dark-800 bg-dark-900/40 px-2 py-1.5">
+            <label className="flex items-center gap-1.5 text-[11px] text-dark-400 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={allVisibleSelected}
+                onChange={toggleSelectAll}
+                className="w-3 h-3 accent-accent-500 cursor-pointer"
+              />
+              全选
+            </label>
+            <span className="text-[11px] text-dark-600">
+              {selectedIds.size > 0 ? `已选 ${selectedIds.size}` : '未选'}
+            </span>
+            <div className="ml-auto flex items-center gap-1">
+              <button
+                onClick={() => runBatch('connect')}
+                disabled={batchBusy !== null || selectedIds.size === 0}
+                title="重连选中服务器"
+                className="flex items-center gap-1 px-2 py-1 rounded text-[11px] bg-green-500/15 text-green-400 hover:bg-green-500/25 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              >
+                {batchBusy === 'connect' ? <Loader className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+                重连
+              </button>
+              <button
+                onClick={() => runBatch('disconnect')}
+                disabled={batchBusy !== null || selectedIds.size === 0}
+                title="断开选中服务器"
+                className="flex items-center gap-1 px-2 py-1 rounded text-[11px] bg-dark-800 text-dark-300 hover:bg-red-500/20 hover:text-red-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              >
+                {batchBusy === 'disconnect' ? <Loader className="w-3 h-3 animate-spin" /> : <PowerOff className="w-3 h-3" />}
+                断开
+              </button>
+              {disconnectedCount > 0 && (
+                <button
+                  onClick={runBatchConnectAll}
+                  disabled={batchBusy !== null}
+                  title="连接所有当前未连接的服务器"
+                  className="flex items-center gap-1 px-2 py-1 rounded text-[11px] bg-accent-500/15 text-accent-400 hover:bg-accent-500/25 disabled:opacity-40 transition-colors"
+                >
+                  {batchBusy === 'connect' ? <Loader className="w-3 h-3 animate-spin" /> : <Wifi className="w-3 h-3" />}
+                  全部重连({disconnectedCount})
+                </button>
+              )}
+              {selectedIds.size > 0 && (
+                <button
+                  onClick={() => setSelectedIds(new Set())}
+                  className="px-1.5 py-1 rounded text-[11px] text-dark-600 hover:text-dark-300 transition-colors"
+                  title="清除选择"
+                >
+                  清空
+                </button>
+              )}
+            </div>
           </div>
 
           {/* 1000 台规模：搜索 + 状态筛选（放在导入/导出按钮上方，先说清"为什么列表不全"） */}
@@ -557,6 +701,8 @@ export default function Remote() {
                 key={server.id}
                 server={server}
                 isActive={activeServer?.id === server.id}
+                selected={selectedIds.has(server.id)}
+                onToggleSelect={(e) => { e.preventDefault(); e.stopPropagation(); toggleSelect(server.id); }}
                 onConnect={() => handleConnect(server)}
                 onDisconnect={() => disconnect(server.id)}
                 onEdit={() => openEdit(server)}
