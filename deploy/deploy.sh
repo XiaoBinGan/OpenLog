@@ -194,6 +194,49 @@ run "docker run -d --name '$CONTAINER_NAME' \
   '$NEW_IMAGE' >/dev/null"
 ok "容器已启动"
 
+# ─── HTTP 探测（离线机器上可能没有 curl）──────────────────────────────
+# 三级回退：curl → wget → 容器内 node fetch。
+# 为什么要这么麻烦：部署目标常常是内网精简系统，curl 不一定装；
+# 而部署脚本跑在宿主机上，没 curl 就没法做健康检查，也就无法判断该不该回滚。
+http_code() {
+  local url="$1"
+  if command -v curl >/dev/null 2>&1; then
+    curl -s -o /dev/null -w '%{http_code}' -m 5 "$url" 2>/dev/null || echo 000
+  elif command -v wget >/dev/null 2>&1; then
+    if wget -q -O /dev/null -T 5 "$url" >/dev/null 2>&1; then echo 200; else echo 000; fi
+  elif docker inspect "$CONTAINER_NAME" >/dev/null 2>&1; then
+    # 容器是 host 网络，容器内访问 127.0.0.1 就是宿主机
+    docker exec "$CONTAINER_NAME" node -e "
+      fetch(process.argv[1]).then(r => { console.log(r.status); process.exit(0); })
+        .catch(() => { console.log('000'); process.exit(0); });
+    " "$url" 2>/dev/null || echo 000
+  else
+    echo 000
+  fi
+}
+
+# 带 Authorization 的 GET（取 /api/auth/token 与 /api/db/info）
+http_get() {
+  local url="$1"
+  # 调用方经常只传 1 个参数；`set -u` 下直接写 $2 会报 unbound variable（实测踩到：
+  # 取 token 时脚本报错 → token 为空 → 数据库健康检查被静默跳过）
+  local auth="${2:-}"
+  if command -v curl >/dev/null 2>&1; then
+    if [ -n "$auth" ]; then curl -s -m 8 -H "Authorization: Bearer $auth" "$url" 2>/dev/null || true
+    else curl -s -m 8 "$url" 2>/dev/null || true; fi
+  elif command -v wget >/dev/null 2>&1; then
+    if [ -n "$auth" ]; then wget -q -O - -T 8 --header="Authorization: Bearer $auth" "$url" 2>/dev/null || true
+    else wget -q -O - -T 8 "$url" 2>/dev/null || true; fi
+  elif docker inspect "$CONTAINER_NAME" >/dev/null 2>&1; then
+    docker exec "$CONTAINER_NAME" node -e "
+      const [url, auth] = process.argv.slice(1);
+      fetch(url, auth ? { headers: { Authorization: 'Bearer ' + auth } } : undefined)
+        .then(r => r.text()).then(t => { console.log(t); process.exit(0); })
+        .catch(() => process.exit(0));
+    " "$url" "$auth" 2>/dev/null || true
+  fi
+}
+
 # ─── 4. 健康检查（失败自动回滚）──────────────────────────────────────────
 health_check() {
   local container="$1"
@@ -206,15 +249,14 @@ health_check() {
     fi
     # 页面
     local page
-    page=$(curl -s -o /dev/null -w '%{http_code}' -m 5 "http://127.0.0.1:$APP_PORT/" || echo 000)
+    page=$(http_code "http://127.0.0.1:$APP_PORT/")
     if [ "$page" = "200" ]; then
       # 数据库探活（回环可取 token，不需要额外配置）
       local tok body
-      tok=$(curl -s -m 5 "http://127.0.0.1:$APP_PORT/api/auth/token" 2>/dev/null \
+      tok=$(http_get "http://127.0.0.1:$APP_PORT/api/auth/token" \
         | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
       if [ -n "$tok" ]; then
-        body=$(curl -s -m 8 -H "Authorization: Bearer $tok" \
-          "http://127.0.0.1:$APP_PORT/api/db/info" 2>/dev/null || echo '')
+        body=$(http_get "http://127.0.0.1:$APP_PORT/api/db/info" "$tok")
         if echo "$body" | grep -q '"ok":true'; then
           echo "  ✅ 页面 200 / 数据库正常（$DB_TYPE）"
           return 0

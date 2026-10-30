@@ -6,6 +6,7 @@
 deploy/
 ├── README.md                    # 本文件：目录导航
 ├── MANUAL.md                    # 📖 部署手册（从零到运维的完整流程）
+├── install.sh                   # ★ 离线一键部署（校验 → 导入镜像 → 生成配置 → 启动 → 健康检查）
 ├── deploy.sh                    # 服务端部署脚本（备份 → 构建 → 启动 → 健康检查 → 回滚）
 ├── deploy.mjs                   # 开发机一键部署（bundle 上传 + 远程调用 deploy.sh）
 ├── deploy.env.example           # 服务端部署配置模板（复制成 deploy.env 并填密码）
@@ -21,7 +22,8 @@ deploy/
 ## 三个常用命令
 
 ```bash
-npm run deploy            # 一键部署（推荐）
+bash deploy/install.sh    # 离线机器一键部署（自带镜像、无外网可用）
+npm run deploy            # 开发机一键部署（走 SSH，推荐）
 npm run deploy:logs       # 看部署状态 / 最近日志
 npm run deploy:image:save # 归档当前镜像（离线部署/长期回滚用）
 ```

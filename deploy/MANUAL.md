@@ -142,6 +142,22 @@ git clone -b node https://github.com/XiaoBinGan/Openlog.git /workspace/Openlog-n
 
 ### 3.3 首次部署
 
+**离线机器（无外网）**：把部署包拷进去后一条命令即可，脚本会自己导入镜像、
+生成 `deploy.env`、按需拉起 PostgreSQL、启动并做健康检查：
+
+```bash
+tar xf openlog-deploy-<commit>.tar && cd openlog-deploy-<commit>
+bash deploy/install.sh --yes                              # 默认 SQLite
+bash deploy/install.sh --with-postgres --yes              # 用 PostgreSQL（自动导镜像/起容器）
+bash deploy/install.sh --port 8080 --data-dir /data/openlog --yes
+bash deploy/install.sh --dry-run                          # 只打印动作
+```
+
+> 不需要外网、不需要 `docker pull`、不需要 `curl`（健康检查会退回到容器内 node）。
+> 同机多实例用 `--container-name` / `--pg-container` / `--pg-port` 区分。
+
+**有仓库的机器**：
+
 在开发机（推荐）：
 
 ```bash
