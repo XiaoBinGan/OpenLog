@@ -10,6 +10,7 @@
 #     bash deploy/install.sh --with-postgres       # 用 PostgreSQL（需本机已有 postgres:16-alpine 镜像）
 #     bash deploy/install.sh --db-url 'postgres://user:pw@127.0.0.1:5432/openlog'  # 用现成的 PG
 #     bash deploy/install.sh --data-dir /data/openlog --container-name openlog-2 --port 3002
+#     bash deploy/install.sh --port 3031 --env-file /etc/openlog/instance2.env   # 同机多实例
 #     bash deploy/install.sh --dry-run             # 只打印将要做什么
 #
 # 为什么默认 SQLite：离线机器上没有 postgres 镜像就起不来 PG；SQLite 零依赖，
