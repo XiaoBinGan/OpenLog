@@ -37,18 +37,27 @@ PG_IMAGE="postgres:16-alpine"
 PG_CONTAINER="openlog-pg"
 PG_PORT=5432
 PG_VOLUME="openlog-pgdata"
+# 显式指定过实例参数（端口/容器名/数据目录/数据库）时，必须重写 deploy.env，
+# 否则会静默沿用旧配置 —— 实测踩到：用 --port 3031 --container-name xxx --with-postgres
+# 起「第二个实例」，结果 deploy.sh 仍按旧 deploy.env 在 3001 上重建了第一个实例，
+# 健康检查也打到了第一个实例，看起来"成功"其实什么都没改。
+EXPLICIT_CONFIG=0
+# 每实例独立的配置文件（默认 deploy/deploy.env）。
+# 一个包目录跑多个实例时必须分开，否则后一次会覆盖前一次的配置。
+ENV_FILE_OVERRIDE=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --port)            APP_PORT="$2"; shift 2 ;;
-    --data-dir)        DATA_DIR="$2"; shift 2 ;;
-    --container-name)  CONTAINER_NAME="$2"; shift 2 ;;
+    --port)            APP_PORT="$2"; EXPLICIT_CONFIG=1; shift 2 ;;
+    --data-dir)        DATA_DIR="$2"; EXPLICIT_CONFIG=1; shift 2 ;;
+    --container-name)  CONTAINER_NAME="$2"; EXPLICIT_CONFIG=1; shift 2 ;;
     --logs-volume)     LOGS_VOLUME="$2"; shift 2 ;;
-    --with-postgres)   WITH_POSTGRES=1; DB_MODE="postgres"; shift ;;
+    --with-postgres)   WITH_POSTGRES=1; DB_MODE="postgres"; EXPLICIT_CONFIG=1; shift ;;
     --pg-container)    PG_CONTAINER="$2"; shift 2 ;;
     --pg-port)         PG_PORT="$2"; shift 2 ;;
     --pg-volume)       PG_VOLUME="$2"; shift 2 ;;
-    --db-url)          DB_URL="$2"; DB_MODE="postgres"; shift 2 ;;
+    --env-file)        ENV_FILE_OVERRIDE="$2"; EXPLICIT_CONFIG=1; shift 2 ;;
+    --db-url)          DB_URL="$2"; DB_MODE="postgres"; EXPLICIT_CONFIG=1; shift 2 ;;
     --image)           IMAGE_ARCHIVE="$2"; shift 2 ;;
     --skip-load)       SKIP_LOAD=1; shift ;;
     --dry-run)         DRY_RUN=1; shift ;;
@@ -151,10 +160,19 @@ if [ "$DB_MODE" = "postgres" ]; then
       fi
     fi
     if ! docker image inspect "$PG_IMAGE" >/dev/null 2>&1; then
-      die "本机没有 $PG_IMAGE 镜像（离线机器无法拉取）。
-     解决：把 deploy/images/postgres-16-alpine.tar.gz 一起拷进来（本部署包默认已包含），
-           或手动 docker load -i postgres-16-alpine.tar.gz；
-           也可以直接用默认 SQLite（去掉 --with-postgres）。"
+      # 兜底：机器有外网时直接拉（离线机器会失败，属于预期）
+      warn "本机没有 $PG_IMAGE，尝试 docker pull（无外网会失败）"
+      if docker pull "$PG_IMAGE" >/dev/null 2>&1; then
+        ok "已拉取 $PG_IMAGE"
+      fi
+    fi
+    if ! docker image inspect "$PG_IMAGE" >/dev/null 2>&1; then
+      die "本机没有 $PG_IMAGE 镜像，且无法拉取（离线环境）。
+     解决其一：
+       1) 把 deploy/images/postgres-16-alpine.tar.gz 一起拷进来（本部署包默认已包含），
+          重跑本脚本会自动 docker load；
+       2) 手动 docker load -i postgres-16-alpine.tar.gz 后重跑；
+       3) 不用 PG，去掉 --with-postgres 走默认 SQLite。"
     fi
     PG_PASSWORD="$(head -c 18 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 20)"
     run "docker volume create '$PG_VOLUME' >/dev/null 2>&1 || true"
@@ -175,10 +193,25 @@ if [ "$DB_MODE" = "postgres" ]; then
 fi
 
 # ── 6. 生成 deploy.env ──
-ENV_FILE="$SCRIPT_DIR/deploy.env"
-if [ -f "$ENV_FILE" ]; then
-  warn "deploy.env 已存在，保留不动（删掉它可重新生成）"
+if [ -n "$ENV_FILE_OVERRIDE" ]; then
+  ENV_FILE="$ENV_FILE_OVERRIDE"
 else
+  ENV_FILE="$SCRIPT_DIR/deploy.env"
+fi
+if [ -f "$ENV_FILE" ] && [ "$EXPLICIT_CONFIG" = "1" ]; then
+  # 显式指定了参数：备份旧配置后重写，保证命令行参数真正生效
+  ENV_BACKUP="$ENV_FILE.bak.$(date +%Y%m%d-%H%M%S)"
+  cp "$ENV_FILE" "$ENV_BACKUP"
+  warn "deploy.env 已存在，已备份到 $(basename "$ENV_BACKUP")，按本次参数重写"
+  rm -f "$ENV_FILE"
+  NEED_WRITE=1
+elif [ -f "$ENV_FILE" ]; then
+  warn "deploy.env 已存在，保留不动（想按新参数重建实例，请显式传 --port/--container-name/--with-postgres 等）"
+  NEED_WRITE=0
+else
+  NEED_WRITE=1
+fi
+if [ "$NEED_WRITE" = "1" ]; then
   log "生成部署配置 $ENV_FILE"
   {
     echo "# 由 deploy/install.sh 于 $(date '+%Y-%m-%d %H:%M:%S') 生成"
@@ -211,8 +244,16 @@ log "启动服务"
 if [ "$DRY_RUN" = "1" ]; then
   echo "  [dry-run] bash $SCRIPT_DIR/deploy.sh --no-build --skip-backup"
 else
-  if ! bash "$SCRIPT_DIR/deploy.sh" --no-build --skip-backup; then
-    die "部署失败（deploy.sh 已尝试回滚）。排查：docker logs --tail 80 $CONTAINER_NAME"
+  if ! DEPLOY_ENV_FILE="$ENV_FILE" bash "$SCRIPT_DIR/deploy.sh" --no-build --skip-backup; then
+    echo ""
+    warn "deploy.sh 非零退出。若报错发生在「启动容器」之前，并没有发生回滚（首次部署本就没有上一个镜像）。"
+    if docker inspect --type container "$CONTAINER_NAME" >/dev/null 2>&1; then
+      warn "容器存在，最后 20 行日志："
+      docker logs --tail 20 "$CONTAINER_NAME" 2>&1 | sed 's/^/    /'
+    else
+      warn "容器未创建，说明失败在启动之前；请把上面输出完整贴出来排查。"
+    fi
+    die "部署失败"
   fi
 fi
 

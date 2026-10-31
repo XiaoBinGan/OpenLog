@@ -132,9 +132,15 @@ fi
 
 # 记录当前镜像，供回滚
 PREV_IMAGE=""
-if docker inspect "$CONTAINER_NAME" >/dev/null 2>&1; then
-  PREV_IMAGE="$(docker inspect "$CONTAINER_NAME" --format '{{.Image}}')"
-  echo "  当前镜像: $PREV_IMAGE"
+# 注意：--type container 不能省。不带 type 时 docker 会回退去找同名**镜像**，
+# 首次部署（镜像已导入、容器还没建）就是这样踩的坑，见上方注释。
+if docker inspect --type container "$CONTAINER_NAME" >/dev/null 2>&1; then
+  PREV_IMAGE="$(docker inspect --type container "$CONTAINER_NAME" --format '{{.Image}}' 2>/dev/null || true)"
+  if [ -n "$PREV_IMAGE" ]; then
+    echo "  当前镜像: $PREV_IMAGE"
+  else
+    warn "取不到当前镜像 ID，跳过回滚点记录（首次部署属正常）"
+  fi
 fi
 
 # ─── 2. 构建镜像 ───────────────────────────────────────────────────────
@@ -204,7 +210,7 @@ http_code() {
     curl -s -o /dev/null -w '%{http_code}' -m 5 "$url" 2>/dev/null || echo 000
   elif command -v wget >/dev/null 2>&1; then
     if wget -q -O /dev/null -T 5 "$url" >/dev/null 2>&1; then echo 200; else echo 000; fi
-  elif docker inspect "$CONTAINER_NAME" >/dev/null 2>&1; then
+  elif docker inspect --type container "$CONTAINER_NAME" >/dev/null 2>&1; then
     # 容器是 host 网络，容器内访问 127.0.0.1 就是宿主机
     docker exec "$CONTAINER_NAME" node -e "
       fetch(process.argv[1]).then(r => { console.log(r.status); process.exit(0); })
@@ -227,7 +233,7 @@ http_get() {
   elif command -v wget >/dev/null 2>&1; then
     if [ -n "$auth" ]; then wget -q -O - -T 8 --header="Authorization: Bearer $auth" "$url" 2>/dev/null || true
     else wget -q -O - -T 8 "$url" 2>/dev/null || true; fi
-  elif docker inspect "$CONTAINER_NAME" >/dev/null 2>&1; then
+  elif docker inspect --type container "$CONTAINER_NAME" >/dev/null 2>&1; then
     docker exec "$CONTAINER_NAME" node -e "
       const [url, auth] = process.argv.slice(1);
       fetch(url, auth ? { headers: { Authorization: 'Bearer ' + auth } } : undefined)
