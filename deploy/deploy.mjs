@@ -178,7 +178,15 @@ docker logs --tail 40 openlog 2>&1 | tail -40
 
     // ── 4. 汇总 ──
     const port = cfg.port_http || 3001;
+    // 令牌从容器里读回来一并打印：省得部署完再 SSH 上去 cat data/.auth_token。
+    // 读不到（旧部署/容器没起）就退回提示路径，不影响部署结论。
+    let token = '';
+    try {
+      const r = await remote(`docker exec ${cfg.containerName || 'openlog'} cat /app/data/.auth_token 2>/dev/null || true`);
+      token = (r.stdout || '').trim();
+    } catch { /* 读令牌失败不影响部署结果 */ }
     console.log(`\n✅ 部署完成：http://${cfg.host}:${port}/`);
+    console.log(`   访问令牌: ${token || `（见 ${appDir}/data/.auth_token）`}`);
     console.log(`   部署前工作区: ${dirty ? '有未提交改动' : '干净'}`);
   } finally {
     try { await ssh.dispose(); } catch { /* 忽略 */ }
