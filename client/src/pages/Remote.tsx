@@ -55,6 +55,10 @@ function Toast({ toast, onClose }: { toast: NonNullable<ReturnType<typeof useRem
   );
 }
 
+// 表单输入统一样式（弹窗里的输入框全部复用，避免每个框一套颜色/焦点环）
+const INPUT_CLASS = 'w-full px-3 py-2 bg-dark-900 border border-dark-700 rounded-lg text-sm text-dark-200 placeholder-dark-600 transition-colors focus:border-accent-500/60 focus:ring-2 focus:ring-accent-500/15 focus:outline-none';
+const LABEL_CLASS = 'block text-xs text-dark-400 mb-1';
+
 // 添加/编辑服务器弹窗
 function ServerModal({
   editingServer, onSave, onTest, onClose, formData, setFormData, testResult, testing, pwKey,
@@ -70,39 +74,47 @@ function ServerModal({
   const [showPw, setShowPw] = useState(false);
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={onClose}>
-      <div className="glass rounded-2xl p-6 w-full max-w-md animate-scale-in" onClick={e => e.stopPropagation()}>
-        <h2 className="text-lg font-semibold mb-5 flex items-center gap-2">
-          <Server className="w-5 h-5 text-accent-500" />
-          {editingServer ? '编辑服务器' : '添加服务器'}
-        </h2>
+      <div className="glass animate-scale-in rounded-2xl p-6 w-full max-w-md max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+        <div className="mb-5 flex items-center gap-2">
+          <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-accent-500/15">
+            <Server className="h-4 w-4 text-accent-400" />
+          </span>
+          <div className="min-w-0">
+            <h2 className="text-base font-semibold text-dark-100">{editingServer ? '编辑服务器' : '添加服务器'}</h2>
+            <p className="text-[11px] text-dark-500">SSH 连接信息，保存后可在左侧列表一键连接</p>
+          </div>
+          <button onClick={onClose} className="ml-auto rounded-lg p-1.5 text-dark-500 transition-colors hover:bg-dark-800 hover:text-dark-200" title="关闭">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
         <div className="space-y-3">
           <div>
-            <label className="block text-xs text-dark-400 mb-1">名称</label>
+            <label className={LABEL_CLASS}>名称</label>
             <input type="text" value={formData.name} onChange={e => setFormData({ ...formData, name: e.target.value })}
-              placeholder="我的服务器" className="w-full px-3 py-2 bg-dark-900 border border-dark-700 rounded-lg text-sm focus:border-accent-500 focus:outline-none" />
+              placeholder="我的服务器" className={INPUT_CLASS} />
           </div>
           <div className="grid grid-cols-3 gap-2">
             <div className="col-span-2">
-              <label className="block text-xs text-dark-400 mb-1">主机地址</label>
+              <label className={LABEL_CLASS}>主机地址</label>
               <input type="text" value={formData.host} onChange={e => setFormData({ ...formData, host: e.target.value })}
-                placeholder="192.168.1.100" className="w-full px-3 py-2 bg-dark-900 border border-dark-700 rounded-lg text-sm focus:border-accent-500 focus:outline-none" />
+                placeholder="192.168.1.100" className={INPUT_CLASS} />
             </div>
             <div>
-              <label className="block text-xs text-dark-400 mb-1">端口</label>
+              <label className={LABEL_CLASS}>端口</label>
               <input type="number" value={formData.port} onChange={e => setFormData({ ...formData, port: Number(e.target.value) })}
-                className="w-full px-3 py-2 bg-dark-900 border border-dark-700 rounded-lg text-sm focus:border-accent-500 focus:outline-none" />
+                className={INPUT_CLASS} />
             </div>
           </div>
           <div>
-            <label className="block text-xs text-dark-400 mb-1">用户名</label>
+            <label className={LABEL_CLASS}>用户名</label>
             <input type="text" value={formData.username} onChange={e => setFormData({ ...formData, username: e.target.value })}
-              placeholder="root" className="w-full px-3 py-2 bg-dark-900 border border-dark-700 rounded-lg text-sm focus:border-accent-500 focus:outline-none" />
+              placeholder="root" className={INPUT_CLASS} />
           </div>
           <div>
-            <label className="block text-xs text-dark-400 mb-1">密码</label>
+            <label className={LABEL_CLASS}>密码</label>
             <div className="relative">
               <input type={showPw ? 'text' : 'password'} value={formData.password} onChange={e => setFormData({ ...formData, password: e.target.value })}
-                placeholder={editingServer ? '留空则不修改密码' : 'SSH 密码'} autoComplete="new-password" name={pwKey} className="w-full px-3 py-2 pr-10 bg-dark-900 border border-dark-700 rounded-lg text-sm focus:border-accent-500 focus:outline-none" />
+                placeholder={editingServer ? '留空则不修改密码' : 'SSH 密码'} autoComplete="new-password" name={pwKey} className={`${INPUT_CLASS} pr-10`} />
               <button type="button" onClick={() => setShowPw(v => !v)}
                 className="absolute right-2 top-1/2 -translate-y-1/2 text-dark-500 hover:text-dark-300">
                 {showPw ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
@@ -111,26 +123,36 @@ function ServerModal({
           </div>
           <div className="grid grid-cols-2 gap-2">
             <div>
-              <label className="block text-xs text-dark-400 mb-1">日志目录</label>
+              <label className={LABEL_CLASS}>日志目录</label>
               <input type="text" value={formData.logPath} onChange={e => setFormData({ ...formData, logPath: e.target.value })}
-                placeholder="/var/log" className="w-full px-3 py-2 bg-dark-900 border border-dark-700 rounded-lg text-sm focus:border-accent-500 focus:outline-none" />
+                placeholder="/var/log" className={INPUT_CLASS} />
             </div>
             <div>
-              <label className="block text-xs text-dark-400 mb-1">文件匹配</label>
+              <label className={LABEL_CLASS}>文件匹配</label>
               <input type="text" value={formData.watchFiles} onChange={e => setFormData({ ...formData, watchFiles: e.target.value })}
-                placeholder="*.log" className="w-full px-3 py-2 bg-dark-900 border border-dark-700 rounded-lg text-sm focus:border-accent-500 focus:outline-none" />
+                placeholder="*.log" className={INPUT_CLASS} />
             </div>
           </div>
           <button onClick={onTest} disabled={testing || !formData.host}
-            className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-dark-700 hover:bg-dark-600 text-sm disabled:opacity-50 transition-colors">
+            className="flex w-full items-center justify-center gap-2 rounded-lg border border-dark-700 bg-dark-800/60 px-3 py-2 text-sm text-dark-200 transition-colors hover:border-accent-500/30 hover:bg-dark-800 disabled:cursor-not-allowed disabled:opacity-40">
             {testing ? <><Loader className="w-4 h-4 animate-spin" /> 测试中...</> : <><Terminal className="w-4 h-4" /> 测试连接</>}
           </button>
-          {testResult?.success && <div className="text-xs text-green-400 bg-green-500/10 rounded p-2 truncate">{testResult.info?.system}</div>}
-          {testResult?.error && <div className="text-xs text-red-400 bg-red-500/10 rounded p-2">{testResult.error}</div>}
+          {testResult?.success && (
+            <div className="flex items-start gap-1.5 rounded-lg border border-green-500/20 bg-green-500/10 px-2 py-1.5 text-xs text-green-300">
+              <Check className="mt-0.5 w-3 h-3 flex-shrink-0" />
+              <span className="line-clamp-2 break-all">{testResult.info?.system}</span>
+            </div>
+          )}
+          {testResult?.error && (
+            <div className="flex items-start gap-1.5 rounded-lg border border-red-500/20 bg-red-500/10 px-2 py-1.5 text-xs text-red-300">
+              <AlertCircle className="mt-0.5 w-3 h-3 flex-shrink-0" />
+              <span className="line-clamp-2 break-all">{testResult.error}</span>
+            </div>
+          )}
         </div>
-        <div className="flex justify-end gap-2 mt-5">
-          <button onClick={onClose} className="px-4 py-2 rounded-lg bg-dark-700 hover:bg-dark-600 text-sm transition-colors">取消</button>
-          <button onClick={onSave} disabled={!formData.host} className="px-4 py-2 rounded-lg bg-gradient-to-r from-accent-600 to-accent-500 hover:from-accent-500 hover:to-accent-400 text-sm disabled:opacity-50 transition-all">
+        <div className="mt-5 flex justify-end gap-2 border-t border-dark-800 pt-4">
+          <button onClick={onClose} className="rounded-lg border border-dark-700 px-4 py-2 text-sm text-dark-300 transition-colors hover:bg-dark-800 hover:text-dark-100">取消</button>
+          <button onClick={onSave} disabled={!formData.host} className="rounded-lg bg-accent-500 px-4 py-2 text-sm font-medium text-dark-950 transition-colors hover:bg-accent-400 disabled:cursor-not-allowed disabled:opacity-40">
             保存
           </button>
         </div>
@@ -214,78 +236,84 @@ const ServerCard = ({ server, isActive, selected, onToggleSelect, onConnect, onD
   connecting: boolean;
 }) => (
   <div
-    className={`glass rounded-xl p-3 transition-all group cursor-pointer ${
-      selected ? 'ring-1 ring-blue-400/50 bg-blue-500/5'
-        : isActive ? 'ring-2 ring-accent-500/60 bg-accent-500/5'
-        : 'hover:bg-dark-800/40'
+    className={`group cursor-pointer rounded-xl border p-2.5 transition-all ${
+      selected ? 'border-blue-400/40 bg-blue-500/10'
+        : isActive ? 'border-accent-500/50 bg-accent-500/10'
+        : 'border-dark-800/80 bg-dark-900/50 hover:border-dark-700 hover:bg-dark-800/50'
     }`}
     onClick={onSelect}
   >
-    {/* 服务器基本信息 */}
-    <div className="flex items-start justify-between mb-2">
-      <div className="flex items-center gap-2 min-w-0">
-        {/* 多选：批量重连/断开用；选中态常显，未选中 hover 才显，避免列表太吵 */}
-        <input
-          type="checkbox"
-          checked={selected}
-          onClick={onToggleSelect}
-          onChange={() => {}}
-          title="选中以批量操作"
-          className={`w-3 h-3 flex-shrink-0 accent-accent-500 cursor-pointer transition-opacity ${selected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}
-        />
-        <span className={`w-2 h-2 rounded-full flex-shrink-0 ${server.status === 'connected' ? 'bg-green-500' : server.status === 'error' ? 'bg-red-500' : 'bg-dark-600'}`} />
-        <span className="text-sm font-medium truncate">{server.name}</span>
-      </div>
+    {/* 名称行：勾选框 + 状态点 + 名称 + hover 才出现的编辑/删除 */}
+    <div className="flex items-center gap-2">
+      {/* 多选：批量重连/断开用；选中态常显，未选中也保留淡显，避免用户不知道能选 */}
+      <input
+        type="checkbox"
+        checked={selected}
+        onClick={onToggleSelect}
+        onChange={() => {}}
+        title="选中以批量操作"
+        className={`h-3 w-3 flex-shrink-0 cursor-pointer accent-accent-500 transition-opacity ${selected ? 'opacity-100' : 'opacity-40 group-hover:opacity-100'}`}
+      />
+      <span className={`h-2 w-2 flex-shrink-0 rounded-full ${
+        server.status === 'connected'
+          ? 'bg-green-500 shadow-[0_0_0_3px_rgba(34,197,94,0.15)]'
+          : server.status === 'error'
+            ? 'bg-red-500 shadow-[0_0_0_3px_rgba(239,68,68,0.15)]'
+            : 'bg-dark-600'
+      }`} />
+      <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-dark-200">{server.name}</span>
       {/* 编辑/删除按钮：阻止冒泡，避免触发 onSelect */}
-      <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-        <button onClick={e => { e.stopPropagation(); onEdit(); }} className="p-1 rounded hover:bg-dark-700 text-dark-500 hover:text-dark-300">
+      <div className="flex flex-shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+        <button onClick={e => { e.stopPropagation(); onEdit(); }} className="rounded p-1 text-dark-500 transition-colors hover:bg-dark-700 hover:text-dark-200" title="编辑">
           <Pencil className="w-3.5 h-3.5" />
         </button>
-        <button onClick={e => { e.stopPropagation(); onDelete(); }} className="p-1 rounded hover:bg-red-500/20 text-dark-500 hover:text-red-400">
+        <button onClick={e => { e.stopPropagation(); onDelete(); }} className="rounded p-1 text-dark-500 transition-colors hover:bg-red-500/20 hover:text-red-400" title="删除">
           <Trash2 className="w-3.5 h-3.5" />
         </button>
       </div>
     </div>
 
-    <div className="text-xs text-dark-500 font-mono mb-2 truncate">{server.host}:{server.port}</div>
-    <div className="text-xs text-dark-600 truncate mb-3">{server.logPath}</div>
+    {/* 地址与日志目录合并成一行，省掉两行留白 */}
+    <div className="mt-1 flex items-center gap-1.5 pl-[18px] text-[11px] text-dark-500">
+      <span className="truncate font-mono">{server.host}:{server.port}</span>
+      <span className="text-dark-700">·</span>
+      <span className="truncate font-mono text-dark-600">{server.logPath}</span>
+    </div>
 
     {/* 失败原因 + 自动重连倒计时：让「红灯」变得可诊断 */}
     {server.status === 'error' && (
-      <div className="mb-2 px-2 py-1.5 rounded-lg bg-red-500/10 border border-red-500/20">
-        <p className="text-[11px] text-red-300 break-all line-clamp-2" title={server.lastError || ''}>
+      <div className="mt-2 rounded-md border border-red-500/20 bg-red-500/10 px-2 py-1.5">
+        <p className="text-[11px] leading-snug text-red-300 break-all line-clamp-2" title={server.lastError || ''}>
           {server.lastError || '连接失败'}
         </p>
-        <p className="text-[10px] text-dark-500 mt-0.5">
+        <p className="mt-0.5 text-[10px] text-dark-500">
           {server.lastErrorAt ? `${new Date(server.lastErrorAt).toLocaleTimeString()} 失败` : ''}
           {server.retryCount ? ` · 已重试 ${server.retryCount} 次，自动重连中` : ' · 自动重连中'}
         </p>
       </div>
     )}
     {server.status === 'disconnected' && server.lastConnected && (
-      <p className="text-[10px] text-dark-600 mb-2">
+      <p className="mt-1 pl-[18px] text-[10px] text-dark-600">
         上次在线：{new Date(server.lastConnected).toLocaleString()}
       </p>
     )}
 
-    {/* 操作按钮 */}
+    {/* 操作按钮：统一 h-7 / text-[11px]，三种状态都用同一套尺寸 */}
     {server.status === 'connected' ? (
-      <div className="flex gap-1" onClick={e => e.stopPropagation()}>
-        <button onClick={onDisconnect} className="flex-1 px-2 py-1.5 text-xs rounded bg-yellow-500/20 text-yellow-400 hover:bg-yellow-500/30 transition-colors flex items-center justify-center gap-1">
+      <div className="mt-2 flex gap-1" onClick={e => e.stopPropagation()}>
+        <button onClick={onDisconnect} className="flex h-7 flex-1 items-center justify-center gap-1 rounded-md border border-dark-800 bg-dark-800/50 text-[11px] text-dark-300 transition-colors hover:border-red-500/30 hover:bg-red-500/10 hover:text-red-400">
           <WifiOff className="w-3 h-3" /> 断开
         </button>
-        <button onClick={onShell} className="flex-1 px-2 py-1.5 text-xs rounded bg-green-500/20 text-green-400 hover:bg-green-500/30 transition-colors flex items-center justify-center gap-1">
+        <button onClick={onShell} className="flex h-7 flex-1 items-center justify-center gap-1 rounded-md border border-dark-800 bg-dark-800/50 text-[11px] text-dark-300 transition-colors hover:border-accent-500/30 hover:bg-accent-500/10 hover:text-accent-300">
           <Terminal className="w-3 h-3" /> Shell
         </button>
-        <button onClick={onAIShell} disabled={aiShellOpening} className={`flex-1 px-2 py-1.5 text-xs rounded bg-purple-500/20 text-purple-400 hover:bg-purple-500/30 transition-colors flex items-center justify-center gap-1 ${aiShellOpening ? 'opacity-60 cursor-wait' : ''}`}>
+        <button onClick={onAIShell} disabled={aiShellOpening} className="flex h-7 flex-1 items-center justify-center gap-1 rounded-md border border-purple-500/25 bg-purple-500/10 text-[11px] text-purple-300 transition-colors hover:bg-purple-500/20 disabled:cursor-wait disabled:opacity-50">
           {aiShellOpening ? <Loader className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
-          {aiShellOpening ? '启动中...' : 'AI Shell'}
+          {aiShellOpening ? '启动中' : 'AI Shell'}
         </button>
       </div>
     ) : (
-      <button onClick={onConnect} disabled={connecting} className={`w-full px-2 py-1.5 text-xs rounded transition-colors flex items-center justify-center gap-1 ${
-        connecting ? 'bg-green-500/10 text-green-400/50 cursor-wait' : 'bg-green-500/20 text-green-400 hover:bg-green-500/30'
-      }`}>
+      <button onClick={onConnect} disabled={connecting} className="mt-2 flex h-7 w-full items-center justify-center gap-1 rounded-md border border-green-500/25 bg-green-500/10 text-[11px] text-green-400 transition-colors hover:bg-green-500/20 disabled:cursor-wait disabled:opacity-50">
         {connecting ? <Loader className="w-3 h-3 animate-spin" /> : <Wifi className="w-3 h-3" />}
         {connecting ? '连接中...' : '连接'}
       </button>
@@ -523,6 +551,7 @@ export default function Remote() {
   };
 
   const disconnectedCount = servers.filter(s => s.status !== 'connected').length;
+  const connectedCount = servers.filter(s => s.status === 'connected').length;
 
   // 全选/取消全选：只作用于当前筛选结果
   const allVisibleSelected = filteredServers.length > 0 && filteredServers.every(s => selectedIds.has(s.id));
@@ -545,40 +574,61 @@ export default function Remote() {
 
       {/* 左侧：服务器列表 */}
       {showServerList && (
-        <div className="w-72 flex-shrink-0 flex flex-col gap-3">
+        <div className="w-80 flex-shrink-0 flex flex-col gap-3">
           <div className="flex flex-col gap-2">
-          <div className="flex items-center justify-between">
-            <h2 className="text-sm font-semibold text-dark-400 px-1">
+          <div className="flex items-center justify-between px-1">
+            <h2 className="flex items-baseline gap-1.5 text-sm font-semibold text-dark-300">
               服务器
-              <span className="text-dark-600 font-normal ml-1">
-                {countLabel(servers.length, filteredServers.length)}
-              </span>
+              <span className="text-xs font-normal text-dark-600">{countLabel(servers.length, filteredServers.length)}</span>
+              {connectedCount > 0 && (
+                <span className="inline-flex items-center gap-1 rounded-full bg-green-500/10 px-1.5 py-0.5 text-[10px] font-normal text-green-400">
+                  <span className="h-1 w-1 rounded-full bg-green-500" />
+                  {connectedCount} 在线
+                </span>
+              )}
             </h2>
-            <button onClick={() => refreshServers()} className="p-1.5 rounded-lg hover:bg-dark-800 text-dark-500 hover:text-dark-300 transition-colors" title="刷新">
-              <RefreshCw className="w-4 h-4" />
+            <button
+              onClick={() => refreshServers()}
+              className="rounded-lg p-1.5 text-dark-500 transition-colors hover:bg-dark-800 hover:text-dark-200"
+              title="刷新列表"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
             </button>
           </div>
 
-          {/* 批量操作条：全选 + 一键重连 / 一键断开（面板刷新后状态是断的，一键全连） */}
-          <div className="flex items-center gap-1.5 flex-wrap rounded-lg border border-dark-800 bg-dark-900/40 px-2 py-1.5">
-            <label className="flex items-center gap-1.5 text-[11px] text-dark-400 cursor-pointer select-none">
-              <input
-                type="checkbox"
-                checked={allVisibleSelected}
-                onChange={toggleSelectAll}
-                className="w-3 h-3 accent-accent-500 cursor-pointer"
-              />
-              全选
-            </label>
-            <span className="text-[11px] text-dark-600">
-              {selectedIds.size > 0 ? `已选 ${selectedIds.size}` : '未选'}
-            </span>
-            <div className="ml-auto flex items-center gap-1">
+          {/* 批量操作条：状态一行 + 三个等宽按钮一行，窄面板里也不会换行 */}
+          <div className="rounded-lg border border-dark-800 bg-dark-900/40 p-1.5">
+            <div className="flex items-center justify-between px-0.5">
+              <label className="flex cursor-pointer select-none items-center gap-1.5 text-[11px] text-dark-300">
+                <input
+                  type="checkbox"
+                  checked={allVisibleSelected}
+                  onChange={toggleSelectAll}
+                  className="h-3 w-3 cursor-pointer accent-accent-500"
+                />
+                全选
+              </label>
+              <div className="flex items-center gap-2">
+                <span className={`text-[11px] tabular-nums ${selectedIds.size > 0 ? 'text-accent-400' : 'text-dark-600'}`}>
+                  {selectedIds.size > 0 ? `已选 ${selectedIds.size} 台` : '未选'}
+                </span>
+                {selectedIds.size > 0 && (
+                  <button
+                    onClick={() => setSelectedIds(new Set())}
+                    className="text-[11px] text-dark-500 transition-colors hover:text-dark-200"
+                    title="清除选择"
+                  >
+                    清空
+                  </button>
+                )}
+              </div>
+            </div>
+            <div className="mt-1.5 grid grid-cols-3 gap-1">
               <button
                 onClick={() => runBatch('connect')}
                 disabled={batchBusy !== null || selectedIds.size === 0}
                 title="重连选中服务器"
-                className="flex items-center gap-1 px-2 py-1 rounded text-[11px] bg-green-500/15 text-green-400 hover:bg-green-500/25 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                className="flex h-7 items-center justify-center gap-1 rounded-md border border-green-500/25 bg-green-500/10 text-[11px] text-green-400 transition-colors hover:bg-green-500/20 disabled:cursor-not-allowed disabled:border-dark-800 disabled:bg-dark-800/30 disabled:text-dark-600"
               >
                 {batchBusy === 'connect' ? <Loader className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
                 重连
@@ -587,44 +637,36 @@ export default function Remote() {
                 onClick={() => runBatch('disconnect')}
                 disabled={batchBusy !== null || selectedIds.size === 0}
                 title="断开选中服务器"
-                className="flex items-center gap-1 px-2 py-1 rounded text-[11px] bg-dark-800 text-dark-300 hover:bg-red-500/20 hover:text-red-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                className="flex h-7 items-center justify-center gap-1 rounded-md border border-dark-800 bg-dark-800/50 text-[11px] text-dark-300 transition-colors hover:border-red-500/30 hover:bg-red-500/10 hover:text-red-400 disabled:cursor-not-allowed disabled:border-dark-800 disabled:bg-dark-800/30 disabled:text-dark-600"
               >
                 {batchBusy === 'disconnect' ? <Loader className="w-3 h-3 animate-spin" /> : <PowerOff className="w-3 h-3" />}
                 断开
               </button>
-              {disconnectedCount > 0 && (
-                <button
-                  onClick={runBatchConnectAll}
-                  disabled={batchBusy !== null}
-                  title="连接所有当前未连接的服务器"
-                  className="flex items-center gap-1 px-2 py-1 rounded text-[11px] bg-accent-500/15 text-accent-400 hover:bg-accent-500/25 disabled:opacity-40 transition-colors"
-                >
-                  {batchBusy === 'connect' ? <Loader className="w-3 h-3 animate-spin" /> : <Wifi className="w-3 h-3" />}
-                  全部重连({disconnectedCount})
-                </button>
-              )}
-              {selectedIds.size > 0 && (
-                <button
-                  onClick={() => setSelectedIds(new Set())}
-                  className="px-1.5 py-1 rounded text-[11px] text-dark-600 hover:text-dark-300 transition-colors"
-                  title="清除选择"
-                >
-                  清空
-                </button>
-              )}
+              <button
+                onClick={runBatchConnectAll}
+                disabled={batchBusy !== null || disconnectedCount === 0}
+                title="连接所有当前未连接的服务器"
+                className="flex h-7 items-center justify-center gap-1 rounded-md border border-accent-500/30 bg-accent-500/15 text-[11px] text-accent-300 transition-colors hover:bg-accent-500/25 disabled:cursor-not-allowed disabled:border-dark-800 disabled:bg-dark-800/30 disabled:text-dark-600"
+              >
+                {batchBusy === 'connect' ? <Loader className="w-3 h-3 animate-spin" /> : <Wifi className="w-3 h-3" />}
+                全部重连{disconnectedCount > 0 ? `(${disconnectedCount})` : ''}
+              </button>
             </div>
           </div>
 
           {/* 1000 台规模：搜索 + 状态筛选（放在导入/导出按钮上方，先说清"为什么列表不全"） */}
           <div className="flex flex-col gap-1.5">
-            <input
-              type="search"
-              value={serverSearch}
-              onChange={e => { setServerSearch(e.target.value); setVisibleCount(DEFAULT_VISIBLE_COUNT); }}
-              placeholder="搜索名称 / IP / 用户"
-              className="w-full px-2.5 py-1.5 rounded-lg bg-dark-900 border border-dark-800 text-xs text-dark-200 placeholder-dark-600 focus:outline-none focus:border-accent-500/50"
-            />
-            <div className="flex items-center gap-1 flex-wrap">
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-dark-600" />
+              <input
+                type="search"
+                value={serverSearch}
+                onChange={e => { setServerSearch(e.target.value); setVisibleCount(DEFAULT_VISIBLE_COUNT); }}
+                placeholder="搜索名称 / IP / 用户"
+                className="w-full rounded-lg border border-dark-800 bg-dark-900 py-1.5 pl-8 pr-2.5 text-xs text-dark-200 placeholder-dark-600 focus:border-accent-500/50 focus:outline-none"
+              />
+            </div>
+            <div className="grid grid-cols-4 gap-0.5 rounded-lg border border-dark-800 bg-dark-900/50 p-0.5">
               {([
                 ['all', '全部'],
                 ['connected', '已连接'],
@@ -634,10 +676,10 @@ export default function Remote() {
                 <button
                   key={value}
                   onClick={() => { setStatusFilter(value); setVisibleCount(DEFAULT_VISIBLE_COUNT); }}
-                  className={`px-2 py-0.5 rounded text-[11px] border transition-colors ${
+                  className={`rounded-md py-1 text-[11px] transition-colors ${
                     statusFilter === value
-                      ? 'bg-accent-500/20 text-accent-400 border-accent-500/40'
-                      : 'text-dark-500 border-dark-800 hover:text-dark-300 hover:border-dark-700'
+                      ? 'bg-accent-500/20 font-medium text-accent-300'
+                      : 'text-dark-500 hover:bg-dark-800/60 hover:text-dark-300'
                   }`}
                 >
                   {label}
@@ -645,7 +687,7 @@ export default function Remote() {
               ))}
             </div>
           </div>
-          <div className="flex items-center gap-1.5 flex-wrap">
+          <div className="grid grid-cols-3 gap-1">
             <input
               type="file"
               id="import-finalshell"
@@ -654,7 +696,7 @@ export default function Remote() {
               multiple
               onChange={e => importFinalShell(e.target.files)}
             />
-            <label htmlFor="import-finalshell" className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-purple-500/20 text-purple-400 text-xs hover:bg-purple-500/30 transition-colors cursor-pointer">
+            <label htmlFor="import-finalshell" className="flex h-7 cursor-pointer items-center justify-center gap-1 rounded-md border border-dark-800 bg-dark-800/40 text-[11px] text-dark-300 transition-colors hover:bg-dark-800 hover:text-dark-100">
               <FileJson className="w-3.5 h-3.5" /> 导入
             </label>
             <button onClick={async () => {
@@ -670,10 +712,10 @@ export default function Remote() {
                             } catch (e: any) {
                               showToast('导出失败: ' + e.message, 'error');
                             }
-                          }} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-500/20 text-blue-400 text-xs hover:bg-blue-500/30 transition-colors">
+                          }} className="flex h-7 items-center justify-center gap-1 rounded-md border border-dark-800 bg-dark-800/40 text-[11px] text-dark-300 transition-colors hover:bg-dark-800 hover:text-dark-100">
               <Download className="w-3.5 h-3.5" /> 导出
             </button>
-            <button onClick={() => { resetForm(); setShowAddModal(true); }} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-accent-500/20 text-accent-400 text-xs hover:bg-accent-500/30 transition-colors">
+            <button onClick={() => { resetForm(); setShowAddModal(true); }} className="flex h-7 items-center justify-center gap-1 rounded-md border border-accent-500/30 bg-accent-500/15 text-[11px] text-accent-300 transition-colors hover:bg-accent-500/25">
               <Plus className="w-3.5 h-3.5" /> 添加
             </button>
             </div>
@@ -744,11 +786,15 @@ export default function Remote() {
         {!activeServer ? (
           <div className="flex-1 glass rounded-xl flex flex-col items-center justify-center text-dark-500">
             <Server className="w-16 h-16 opacity-20 mb-4" />
-            <p className="text-lg font-medium mb-1">未连接任何服务器</p>
-            <p className="text-sm text-dark-600 mb-4">从左侧选择一个服务器并连接</p>
-            <button onClick={() => setShowServerList(true)} className="px-4 py-2 rounded-lg bg-accent-500/20 text-accent-400 text-sm hover:bg-accent-500/30 transition-colors flex items-center gap-2">
-              <PanelLeftOpen className="w-4 h-4" /> 显示服务器列表
-            </button>
+            <p className="text-lg font-medium mb-1 text-dark-300">未连接任何服务器</p>
+            <p className="mb-4 text-sm text-dark-600">
+              {showServerList ? '在左侧服务器列表点「连接」，或勾选多台后点「全部重连」' : '先从左侧打开服务器列表'}
+            </p>
+            {!showServerList && (
+              <button onClick={() => setShowServerList(true)} className="flex items-center gap-2 rounded-lg border border-accent-500/30 bg-accent-500/15 px-4 py-2 text-sm text-accent-300 transition-colors hover:bg-accent-500/25">
+                <PanelLeftOpen className="w-4 h-4" /> 显示服务器列表
+              </button>
+            )}
           </div>
         ) : (
           <>
@@ -817,21 +863,24 @@ export default function Remote() {
             ) : (
               <>
                 {/* 路径导航 */}
-                <div className="flex items-center gap-3">
-                  <div className="flex items-center gap-1 flex-1 min-w-0 bg-dark-900 border border-dark-800 rounded-lg px-3 py-2">
-                    <button onClick={goUp} disabled={activeServer.files.currentPath === '/'} className="p-1 rounded hover:bg-dark-700 disabled:opacity-30 transition-colors flex-shrink-0">
-                      <ChevronLeft className="w-4 h-4" />
+                <div className="flex items-center gap-2">
+                  <div className="flex h-8 flex-1 min-w-0 items-center gap-0.5 rounded-lg border border-dark-800 bg-dark-900/70 px-1.5">
+                    <button onClick={goUp} disabled={activeServer.files.currentPath === '/'} title="上一级"
+                      className="flex-shrink-0 rounded p-1 text-dark-400 transition-colors hover:bg-dark-800 hover:text-dark-100 disabled:cursor-not-allowed disabled:opacity-30">
+                      <ChevronLeft className="w-3.5 h-3.5" />
                     </button>
-                    <button onClick={() => loadFiles('/')} className="p-1 rounded hover:bg-dark-700 transition-colors flex-shrink-0" title="根目录">
-                      <Home className="w-4 h-4" />
+                    <button onClick={() => loadFiles('/')} title="根目录"
+                      className="flex-shrink-0 rounded p-1 text-dark-400 transition-colors hover:bg-dark-800 hover:text-dark-100">
+                      <Home className="w-3.5 h-3.5" />
                     </button>
-                    <span className="text-xs text-dark-500 font-mono truncate ml-2">{activeServer.files.currentPath}</span>
-                    <button onClick={() => loadFiles(activeServer.files.currentPath)} className="p-1 rounded hover:bg-dark-700 transition-colors flex-shrink-0 ml-auto">
-                      <RefreshCw className="w-4 h-4" />
+                    <span className="ml-1 min-w-0 flex-1 truncate font-mono text-[11px] text-dark-400">{activeServer.files.currentPath}</span>
+                    <button onClick={() => loadFiles(activeServer.files.currentPath)} title="刷新目录"
+                      className="flex-shrink-0 rounded p-1 text-dark-400 transition-colors hover:bg-dark-800 hover:text-dark-100">
+                      <RefreshCw className="w-3.5 h-3.5" />
                     </button>
                   </div>
-                  <label className="flex items-center gap-2 px-3 py-2 rounded-lg bg-accent-500/20 text-accent-400 text-xs hover:bg-accent-500/30 transition-colors cursor-pointer">
-                    <Upload className="w-3.5 h-3.5" /> 上传文件
+                  <label className="flex h-8 cursor-pointer items-center gap-1.5 rounded-lg border border-accent-500/30 bg-accent-500/15 px-3 text-xs text-accent-300 transition-colors hover:bg-accent-500/25">
+                    <Upload className="w-3.5 h-3.5" /> 上传
                     <input type="file" multiple className="hidden" onChange={e => handleFiles(e.target.files)} />
                   </label>
                 </div>
@@ -936,25 +985,25 @@ export default function Remote() {
                       </div>
                       <div className="flex items-center gap-2">
                         <select value={logLines} onChange={e => { setLogLines(Number(e.target.value)); loadLogs(activeServer.selectedFile!, Number(e.target.value), logSearch); }}
-                          className="px-2 py-1 rounded bg-dark-800 text-xs border border-dark-700">
+                          className="h-6 rounded-md border border-dark-700 bg-dark-800 px-1.5 text-[11px] text-dark-300 focus:border-accent-500/50 focus:outline-none">
                           <option value={100}>100 行</option>
                           <option value={200}>200 行</option>
                           <option value={500}>500 行</option>
                           <option value={1000}>1000 行</option>
                         </select>
                         <div className="relative">
-                          <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-dark-500" />
+                          <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3 text-dark-500" />
                           <input type="text" placeholder="搜索..." value={logSearch} onChange={e => setLogSearch(e.target.value)}
                             onKeyDown={e => e.key === 'Enter' && loadLogs(activeServer.selectedFile!, logLines, logSearch)}
-                            className="pl-7 pr-2 py-1 rounded bg-dark-800 text-xs border border-dark-700 w-36 focus:outline-none focus:border-accent-500/50" />
+                            className="h-6 w-36 rounded-md border border-dark-700 bg-dark-800 pl-7 pr-2 text-[11px] text-dark-200 placeholder-dark-600 focus:border-accent-500/50 focus:outline-none" />
                         </div>
                         <button onClick={() => loadLogs(activeServer.selectedFile!, logLines, logSearch)}
-                          className="px-2 py-1 rounded bg-dark-700 hover:bg-dark-600 text-xs transition-colors">
-                          刷新
+                          className="flex h-6 items-center gap-1 rounded-md border border-dark-700 bg-dark-800 px-2 text-[11px] text-dark-300 transition-colors hover:bg-dark-700 hover:text-dark-100">
+                          <RefreshCw className="w-3 h-3" /> 刷新
                         </button>
                         <button onClick={() => openInEditor(activeServer.selectedFile!)}
-                          className="flex items-center gap-1 px-2 py-1 rounded bg-accent-500/20 text-accent-400 text-xs hover:bg-accent-500/30 transition-colors">
-                          <Code2 className="w-3.5 h-3.5" /> 编辑
+                          className="flex h-6 items-center gap-1 rounded-md border border-accent-500/30 bg-accent-500/15 px-2 text-[11px] text-accent-300 transition-colors hover:bg-accent-500/25">
+                          <Code2 className="w-3 h-3" /> 编辑
                         </button>
                       </div>
                     </div>
