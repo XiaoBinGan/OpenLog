@@ -53,27 +53,29 @@ export function dedupeDisks(disks) {
   // 1) 同一设备名只留一条（容器里同一块盘会被 bind mount 重复列出）
   const byName = new Map();
   for (const d of list) {
-    const key = d.name || `#${d.total}`;
+    // 没有设备名时用 total+used 兜底，避免把两块同容量的真实磁盘并成一块
+    const key = d.name || `#${d.total}:${d.used}`;
     const prev = byName.get(key);
     if (!prev || d.used > prev.used) byName.set(key, d);
   }
 
-  // 2) 总容量相同的视为同一块物理盘的不同视角，只留一条
-  const bySize = new Map();
+  // 2) total 和 used 都完全相同的条目 = 同一块盘的另一个视角（如容器里的 overlay 与 /dev/sda3），
+  //    只留一条，优先真实设备名。
+  //    注意：只按 total 去重会错误合并"两块同容量的真实磁盘"（used 几乎不可能字节相同）。
+  const byView = new Map();
   for (const d of byName.values()) {
-    const key = String(d.total);
-    const prev = bySize.get(key);
+    const key = `${d.total}:${d.used}`;
+    const prev = byView.get(key);
     if (!prev) {
-      bySize.set(key, d);
+      byView.set(key, d);
       continue;
     }
     const prevVirtual = isVirtual(prev.name);
     const nextVirtual = isVirtual(d.name);
-    if (prevVirtual && !nextVirtual) bySize.set(key, d);
-    else if (prevVirtual === nextVirtual && d.used > prev.used) bySize.set(key, d);
+    if (prevVirtual && !nextVirtual) byView.set(key, d);
   }
 
-  return [...bySize.values()];
+  return [...byView.values()];
 }
 
 /**
@@ -81,19 +83,32 @@ export function dedupeDisks(disks) {
  *
  * 只在 dedupeDisks 之后使用才有意义：对重复条目求和会算出 >100% 的值。
  *
- * @param {Array<{used?: number, total?: number}>} disks
+ * percent 优先按各盘的 usePercent 汇总（df 口径：used/(used+avail)，已扣掉 root 保留块），
+ * 这样和用户 `df -h` 看到的数字一致；只有拿不到 usePercent 时才退回 used/total。
+ *
+ * @param {Array<{used?: number, total?: number, usePercent?: number}>} disks
  * @returns {{used: number, total: number, percent: number}}
  */
 export function summarizeDisks(disks) {
   const list = Array.isArray(disks) ? disks : [];
   let used = 0;
   let total = 0;
+  let weightedPct = 0;
+  let pctKnown = 0;
   for (const d of list) {
     const t = num(d?.total);
     if (t <= 0) continue;
     total += t;
     used += Math.min(num(d?.used), t);
+    if (Number.isFinite(Number(d?.usePercent))) {
+      weightedPct += Math.min(100, Math.max(0, Number(d.usePercent))) * t;
+      pctKnown += t;
+    }
   }
-  const percent = total > 0 ? Math.min(100, (used / total) * 100) : 0;
+  const percent = total <= 0
+    ? 0
+    : pctKnown > 0
+      ? Math.min(100, weightedPct / pctKnown)
+      : Math.min(100, (used / total) * 100);
   return { used, total, percent };
 }

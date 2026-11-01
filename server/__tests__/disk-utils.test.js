@@ -25,11 +25,25 @@ describe('dedupeDisks', () => {
     expect(out[0].usePercent).toBeCloseTo(79.4, 1);
   });
 
-  it('汇总后的百分比不会超过 100%', () => {
+  it('汇总后的百分比不会超过 100%，且与 df 的 Use% 一致', () => {
     const { percent } = summarizeDisks(T4_SHAPE);
     expect(percent).toBeGreaterThan(70);
     expect(percent).toBeLessThanOrEqual(100);
-    expect(percent).toBeCloseTo((346 / 436) * 100, 1);
+    // df 的 Use% = used/(used+avail)（扣掉 root 保留块），比 used/total 略高
+    expect(percent).toBeCloseTo(79.4, 1);
+  });
+
+  it('拿不到 usePercent 时退回 used/total', () => {
+    const { percent } = summarizeDisks([{ name: '/dev/sda1', used: 30 * GB, total: 100 * GB }]);
+    expect(percent).toBeCloseTo(30, 5);
+  });
+
+  it('多块盘按容量加权平均 usePercent', () => {
+    const { percent } = summarizeDisks([
+      { name: '/dev/sda1', used: 90 * GB, total: 100 * GB, usePercent: 90 },
+      { name: '/dev/sdb1', used: 10 * GB, total: 100 * GB, usePercent: 10 },
+    ]);
+    expect(percent).toBeCloseTo(50, 5);
   });
 
   it('保留容量不同的多块真实磁盘', () => {
@@ -78,11 +92,20 @@ describe('dedupeDisks', () => {
     expect(summarizeDisks(null)).toEqual({ used: 0, total: 0, percent: 0 });
   });
 
-  it('无设备名时按总容量去重（远程 df 解析可能拿不到设备名）', () => {
+  it('无设备名时按 total+used 去重（远程 df 解析可能拿不到设备名）', () => {
     const out = dedupeDisks([
       { used: 100 * GB, total: 200 * GB },
       { used: 100 * GB, total: 200 * GB },
     ]);
     expect(out).toHaveLength(1);
+  });
+
+  it('两块同容量但用量不同的真实磁盘不会被错误合并', () => {
+    const out = dedupeDisks([
+      { name: '/dev/sda1', used: 10 * GB, total: 500 * GB },
+      { name: '/dev/sdb1', used: 300 * GB, total: 500 * GB },
+    ]);
+    expect(out).toHaveLength(2);
+    expect(summarizeDisks(out).percent).toBeCloseTo(((10 + 300) / (500 + 500)) * 100, 5);
   });
 });

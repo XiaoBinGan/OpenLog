@@ -35,41 +35,62 @@ const toNumber = (v: unknown, fallback = 0): number => {
 export function dedupeDisks(disks: DiskEntryLike[] | null | undefined): DiskEntryLike[] {
   const list = (Array.isArray(disks) ? disks : []).filter((d) => d && toNumber(d.total) > 0);
 
-  const byKey = new Map<string, DiskEntryLike>();
+  const byName = new Map<string, DiskEntryLike>();
   for (const d of list) {
     const total = toNumber(d.total);
-    // 同一块盘的不同视角总容量相同，用总容量做 key 就能收敛；
-    // 有设备名时用设备名，避免不同容量盘被误合并
+    // 同一块盘被 bind mount 重复列出时设备名相同，用设备名收敛；
+    // 没有设备名时用"The 总容量 + 已用量"兜底，避免把两块同容量盘并成一块
     const name = String(d.name ?? '').trim();
-    const key = name ? `n:${name}` : `t:${total}`;
-    const prev = byKey.get(key);
-    if (!prev || toNumber(d.used) > toNumber(prev.used)) byKey.set(key, d);
+    const key = name ? `n:${name}` : `a:${total}:${toNumber(d.used)}`;
+    const prev = byName.get(key);
+    if (!prev || toNumber(d.used) > toNumber(prev.used)) byName.set(key, d);
   }
 
-  const bySize = new Map<number, DiskEntryLike>();
-  for (const d of byKey.values()) {
-    const total = toNumber(d.total);
-    const prev = bySize.get(total);
-    if (!prev || toNumber(d.used) > toNumber(prev.used)) bySize.set(total, d);
+  // 同一块盘的另一视角：total 与 used 完全一致（容器里 overlay 与 /dev/sda3 就是这种关系）
+  // 只按 total 合并会把"两块同容量的真实磁盘"错误合并，所以必须连 used 一起比。
+  const byView = new Map<string, DiskEntryLike>();
+  for (const d of byName.values()) {
+    const key = `${toNumber(d.total)}:${toNumber(d.used)}`;
+    const prev = byView.get(key);
+    if (!prev) {
+      byView.set(key, d);
+      continue;
+    }
+    // 名字带 /dev/ 或盘符的是真实设备，优先保留
+    const isReal = (x: DiskEntryLike) => /^\/dev\/|^[A-Za-z]:/.test(String(x.name ?? ''));
+    if (!isReal(prev) && isReal(d)) byView.set(key, d);
   }
 
-  return [...bySize.values()];
+  return [...byView.values()];
 }
 
 /**
  * 汇总多块盘的整体占用（先去重再求和，避免重复计数）。
  * 只有一块盘时就是这块盘的占用率。
+ *
+ * percent 优先按 usePercent 加权（df 口径，已扣掉 root 保留块，和 `df -h` 一致），
+ * 拿不到 usePercent 时才退回 used/total。
  */
 export function summarizeDisks(disks: DiskEntryLike[] | null | undefined): DiskSummary {
   const unique = dedupeDisks(disks);
   let used = 0;
   let total = 0;
+  let weightedPct = 0;
+  let pctKnown = 0;
   for (const d of unique) {
     const t = toNumber(d.total);
     if (t <= 0) continue;
     total += t;
     used += Math.min(Math.max(0, toNumber(d.used)), t);
+    if (Number.isFinite(Number(d.usePercent))) {
+      weightedPct += Math.min(100, Math.max(0, Number(d.usePercent))) * t;
+      pctKnown += t;
+    }
   }
-  const percent = total > 0 ? Math.min(100, (used / total) * 100) : 0;
+  const percent = total <= 0
+    ? 0
+    : pctKnown > 0
+      ? Math.min(100, weightedPct / pctKnown)
+      : Math.min(100, (used / total) * 100);
   return { disks: unique, used, total, percent };
 }

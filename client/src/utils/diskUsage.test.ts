@@ -18,8 +18,22 @@ describe('summarizeDisks', () => {
   it('同一块盘的重复条目只算一次，不会出现 476.9%', () => {
     const s = summarizeDisks(duplicated);
     expect(s.disks).toHaveLength(1);
-    expect(s.percent).toBeCloseTo((346 / 436) * 100, 1);
+    // 与 df 的 Use% 口径一致
+    expect(s.percent).toBeCloseTo(79.4, 1);
     expect(s.percent).toBeLessThanOrEqual(100);
+  });
+
+  it('没有 usePercent 时退回 used/total', () => {
+    const s = summarizeDisks([{ name: '/dev/sda1', used: 30 * GB, total: 100 * GB }]);
+    expect(s.percent).toBeCloseTo(30, 5);
+  });
+
+  it('多块盘按容量加权平均 usePercent', () => {
+    const s = summarizeDisks([
+      { name: '/dev/sda1', used: 90 * GB, total: 100 * GB, usePercent: 90 },
+      { name: '/dev/sdb1', used: 10 * GB, total: 100 * GB, usePercent: 10 },
+    ]);
+    expect(s.percent).toBeCloseTo(50, 5);
   });
 
   it('多块真实磁盘按容量加权汇总', () => {
@@ -63,12 +77,20 @@ describe('dedupeDisks', () => {
     expect(out[0].used).toBe(50 * GB);
   });
 
-  it('总容量相同但名字不同（macOS APFS / overlay）也只留一条', () => {
+  it('同一块盘的两个视角（total 与 used 都相同，如 overlay 与 /dev/sda3）只留一条', () => {
     const out = dedupeDisks([
-      { name: '/', used: 100 * GB, total: 500 * GB },
-      { name: '/System/Volumes/Data', used: 300 * GB, total: 500 * GB },
+      { name: 'overlay', used: 100 * GB, total: 500 * GB },
+      { name: '/dev/sda3', used: 100 * GB, total: 500 * GB },
     ]);
     expect(out).toHaveLength(1);
-    expect(out[0].used).toBe(300 * GB);
+    expect(out[0].name).toBe('/dev/sda3');
+  });
+
+  it('两块同容量但用量不同的真实磁盘不会被错误合并', () => {
+    const out = dedupeDisks([
+      { name: '/dev/sda1', used: 10 * GB, total: 500 * GB },
+      { name: '/dev/sdb1', used: 300 * GB, total: 500 * GB },
+    ]);
+    expect(out).toHaveLength(2);
   });
 });
