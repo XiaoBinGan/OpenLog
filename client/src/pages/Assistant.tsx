@@ -809,17 +809,6 @@ export default function Assistant() {
             />
           )}
 
-          <div className="mb-2.5">
-            <ContextUsageBar
-              usage={opsContextUsage}
-              config={effConfig}
-              warnings={ctxWarnings}
-              sessionOverridden={Object.keys(opsContextSettings).length > 0}
-              open={gearOpen}
-              onToggle={() => setGearOpen(v => !v)}
-            />
-          </div>
-
           {gearOpen && (
             <ContextSettingsPanel
               config={effConfig}
@@ -830,7 +819,10 @@ export default function Assistant() {
             />
           )}
 
-          <div className="flex items-end gap-2">
+          {/* 输入框与发送按钮放在同一个容器里：边框只画一层，两者天然同一水平线，
+              输入变高时按钮跟着底部对齐（items-end），不会出现"按钮悬空"的观感 */}
+          <div className="flex items-end gap-1.5 rounded-xl border border-dark-800 bg-dark-900 p-1.5
+            transition-colors focus-within:border-accent-500/50">
             <div className="relative flex-1">
               <textarea
                 ref={inputRef}
@@ -839,9 +831,9 @@ export default function Assistant() {
                 onKeyDown={e => { handleAtKey(e); if (e.key === 'Enter' && !e.shiftKey && !atOpen && !(e.nativeEvent as any).isComposing) { e.preventDefault(); sendMessage(); } }}
                 placeholder="输入问题，Shift+Enter 换行，@ 引用分析历史..."
                 rows={1}
-                className="w-full px-4 py-3 bg-dark-900 border border-dark-800 rounded-xl text-sm text-dark-200 placeholder-dark-600
-                  focus:outline-none focus:border-accent-500/50 resize-none"
-                style={{ minHeight: '48px', maxHeight: '120px' }}
+                className="block w-full resize-none border-0 bg-transparent px-2.5 py-2 text-sm text-dark-200
+                  placeholder-dark-600 focus:outline-none"
+                style={{ minHeight: '36px', maxHeight: '120px' }}
                 onInput={e => { const el = e.currentTarget; el.style.height = 'auto'; el.style.height = Math.min(el.scrollHeight, 120) + 'px'; }}
               />
               {/* @ 提及下拉 */}
@@ -867,16 +859,28 @@ export default function Assistant() {
               )}
             </div>
             {loading ? (
-              <button onClick={stopGeneration}
-                className="flex-shrink-0 w-12 h-12 rounded-xl bg-red-500/20 text-red-400 hover:bg-red-500/30 transition-colors flex items-center justify-center">
-                <Square className="w-4 h-4" />
+              <button onClick={stopGeneration} title="停止生成"
+                className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg bg-red-500/20 text-red-400 transition-colors hover:bg-red-500/30">
+                <Square className="h-4 w-4" />
               </button>
             ) : (
-              <button onClick={() => sendMessage()} disabled={!input.trim()}
-                className="flex-shrink-0 w-12 h-12 rounded-xl bg-accent-500 text-white hover:bg-accent-600 transition-colors flex items-center justify-center disabled:opacity-40 disabled:cursor-not-allowed">
-                <Send className="w-4 h-4" />
+              <button onClick={() => sendMessage()} disabled={!input.trim()} title="发送"
+                className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg bg-accent-500 text-white transition-colors hover:bg-accent-600 disabled:cursor-not-allowed disabled:opacity-40">
+                <Send className="h-4 w-4" />
               </button>
             )}
+          </div>
+
+          {/* 上下文用量条：放在输入框下方作为状态栏（原先是压在输入区上方，视觉太挤） */}
+          <div className="mt-2 px-0.5">
+            <ContextUsageBar
+              usage={opsContextUsage}
+              config={effConfig}
+              warnings={ctxWarnings}
+              sessionOverridden={Object.keys(opsContextSettings).length > 0}
+              open={gearOpen}
+              onToggle={() => setGearOpen(v => !v)}
+            />
           </div>
         </div>
       </div>
