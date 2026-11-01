@@ -55,3 +55,6 @@ _deploy/
 
 # 截图/调试用的无头浏览器 profile（eslint 会扫到里面的浏览器扩展）
 .edge-profile*
+
+# ������־����֤��ͼ
+logs/
