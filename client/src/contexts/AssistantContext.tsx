@@ -10,12 +10,44 @@ export interface AssistantMessage {
   toolCalls?: { tool: string; args: any; status: string; result: any }[];
 }
 
+/** 会话级上下文覆盖（齿轮面板改的），留空项表示沿用设置页/默认值 */
+export interface ContextSettings {
+  windowTokens?: number;
+  budgetTokens?: number;
+  maxOutputTokens?: number;
+  autoCompact?: boolean;
+  compactAt?: number;
+  warnAt?: number;
+  maxRounds?: number;
+  maxWallMs?: number;
+  toolResultChars?: number;
+}
+
+/** 最近一次请求的上下文用量（后端 SSE context_usage 推来，用于底部用量条） */
+export interface ContextUsage {
+  used: number;
+  budget: number;
+  window: number;
+  percent: number;
+  breakdown?: { system: number; tools: number; messages: number };
+  rounds?: number;
+  compacted?: number;
+  /** true = 后端没有真实 usage，用估算值（前端显示 ~ 号） */
+  estimated?: boolean;
+  providerUsage?: { promptTokens?: number; completionTokens?: number; totalTokens?: number } | null;
+  at: number;
+}
+
 export interface AssistantConversation {
   id: string;
   title: string;
   messages: AssistantMessage[];
   createdAt: number;
   updatedAt: number;
+  /** 本会话的上下文覆盖（随会话保存，切回来还在） */
+  contextSettings?: ContextSettings;
+  /** 本会话最近一次的上下文用量（会话列表可显示百分比） */
+  contextUsage?: ContextUsage;
 }
 
 export interface AssistantTip {
@@ -50,6 +82,11 @@ interface AssistantContextValue {
   switchOpsConv: (id: string) => void;
   deleteOpsConv: (id: string) => void;
   renameOpsConv: (id: string, title: string) => void;
+  /** 当前会话的上下文覆盖 + 最近用量 */
+  opsContextSettings: ContextSettings;
+  opsContextUsage: ContextUsage | null;
+  setOpsContextSettings: (patch: ContextSettings | null) => void;
+  setOpsContextUsage: (usage: ContextUsage | null) => void;
   // 文档助手
   docConvs: AssistantConversation[];
   docActiveId: string | null;
@@ -228,6 +265,32 @@ export function AssistantProvider({ children }: { children: React.ReactNode }) {
     setStore(s => ({ ...s, opsConvs: s.opsConvs.map(c => c.id === id ? { ...c, title } : c) }));
   }, []);
 
+  // ── 上下文设置/用量（会话级）──────────────────────────────────────
+  const activeOpsConv = store.opsConvs.find(c => c.id === store.opsActiveId);
+  const opsContextSettings: ContextSettings = activeOpsConv?.contextSettings || {};
+  const opsContextUsage: ContextUsage | null = activeOpsConv?.contextUsage || null;
+
+  const setOpsContextSettings = useCallback((patch: ContextSettings | null) => {
+    setStore(s => ({
+      ...s,
+      opsConvs: s.opsConvs.map(c => {
+        if (c.id !== s.opsActiveId) return c;
+        if (patch === null) {
+          const { contextSettings: _drop, ...rest } = c;
+          return rest;
+        }
+        return { ...c, contextSettings: { ...(c.contextSettings || {}), ...patch } };
+      }),
+    }));
+  }, []);
+
+  const setOpsContextUsage = useCallback((usage: ContextUsage | null) => {
+    setStore(s => ({
+      ...s,
+      opsConvs: s.opsConvs.map(c => (c.id === s.opsActiveId ? { ...c, contextUsage: usage || undefined } : c)),
+    }));
+  }, []);
+
   // 文档助手消息
   const docMessages: AssistantMessage[] = (() => {
     const c = store.docConvs.find(x => x.id === store.docActiveId);
@@ -282,6 +345,10 @@ export function AssistantProvider({ children }: { children: React.ReactNode }) {
       switchOpsConv,
       deleteOpsConv,
       renameOpsConv,
+      opsContextSettings,
+      opsContextUsage,
+      setOpsContextSettings,
+      setOpsContextUsage,
       docConvs: store.docConvs,
       docActiveId: store.docActiveId,
       docMessages,

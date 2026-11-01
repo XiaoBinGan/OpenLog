@@ -20,6 +20,7 @@ import {
   normalizeBaseUrl, guessEngine, ENGINE_HINTS, isToolUnsupportedError, setCachedToolSupport,
 } from '../llm-provider.js';
 import { createChatRunner } from './chat-runner.js';
+import { resolveContextConfig, CONTEXT_DEFAULTS, CONTEXT_BOUNDS, pickPersistableConfig } from './context-config.js';
 
 // ─── 运维助手 Tool Calling ──────────────────────────────────────────
 
@@ -232,13 +233,39 @@ export default function createChatRouter({
     });
   });
 
+  /**
+   * 当前生效的上下文配置（齿轮面板 / 设置页初始化用）。
+   *
+   * 支持把前端「本会话的临时覆盖」带上来算一遍，这样面板显示的就是
+   * 「如果现在发消息会用多少」而不是全局默认值。
+   * 同时返回边界值，前端可直接用来做输入框范围限制。
+   */
+  router.get('/api/chat/context-config', (req, res) => {
+    const s = ensureSettings();
+    let override = {};
+    if (req.query.override) {
+      try { override = JSON.parse(String(req.query.override)) || {}; } catch { override = {}; }
+    }
+    const { config, warnings, sources } = resolveContextConfig(s, override);
+    res.json({
+      config,
+      warnings,
+      sources,
+      persisted: pickPersistableConfig((s && s.assistantContext) || {}),
+      defaults: CONTEXT_DEFAULTS,
+      bounds: CONTEXT_BOUNDS,
+    });
+  });
+
   router.post('/api/chat', async (req, res) => {
-    const { messages } = req.body;
+    const { messages, contextOverride } = req.body;
     if (!messages || !Array.isArray(messages) || messages.length === 0) {
       return res.status(400).json({ error: 'messages required' });
     }
 
     const settings = ensureSettings();
+    // 三级优先级：会话覆盖 > 设置页全局 > 环境变量默认；越界会夹紧并给 warnings
+    const resolved = resolveContextConfig(settings, contextOverride);
     const apiKey = settings.openaiApiKey;
     // 归一成带 /v1 的地址：vLLM / SGLang / Strata / Ollama 都按这个规则
     const baseUrl = normalizeBaseUrl(settings.openaiBaseUrl || 'http://localhost:11434/v1');
@@ -340,6 +367,8 @@ ${buildAssistantContext()}`;
         systemPrompt,
         isLocalModel,
         res,
+        contextConfig: resolved.config,
+        contextWarnings: resolved.warnings,
       });
     } catch (err) {
       console.error('Chat API error:', errorMessage(err));

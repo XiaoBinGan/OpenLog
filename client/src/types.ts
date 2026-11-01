@@ -214,6 +214,18 @@ export interface Settings {
   containerPatrolLevels?: string[];
   containerLogWatchEnabled?: boolean;
   containerLogWatchInterval?: number;
+  /** 运维助手上下文配置（模型窗口 / 预算 / 压缩阈值 / 轮数 / 时长） */
+  assistantContext?: {
+    windowTokens?: number;
+    budgetTokens?: number;
+    maxOutputTokens?: number;
+    autoCompact?: boolean;
+    compactAt?: number;
+    warnAt?: number;
+    maxRounds?: number;
+    maxWallMs?: number;
+    toolResultChars?: number;
+  };
 }
 
 export interface WebSocketMessage {

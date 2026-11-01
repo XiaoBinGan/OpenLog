@@ -155,7 +155,33 @@ export function compactMessages(messages, opts = {}) {
         break;
       }
     }
-    if (dropStart === -1) break;
+    if (dropStart === -1) {
+      // 纯文本对话（没有 tool_calls）也要能压缩。
+      // 真实 bug：原实现找不到 assistant(tool_calls) 就直接 break，于是
+      // 「一问一答」型长会话（最常见的情况）永远不会被压缩 —— 用量一路涨到
+      // 超预算，最后只能靠模型报上下文超限来兜底。
+      // 这里退化成「按整轮（user+assistant）从最早开始丢」，同样保住最后 4 条。
+      const keepTail = 4;
+      let removable = 0;
+      while (removable < out.length - keepTail) {
+        const m = out[removable];
+        // 从头开始，一直删到遇到第一条 user 消息为止（保证不留下无主的回答）
+        if (m?.role === 'user') break;
+        removable += 1;
+      }
+      if (removable === 0) {
+        // 第一条就是 user：把它和紧随的 assistant 一起丢掉（成对丢，不拆散问答）
+        removable = Math.min(
+          out.length - keepTail,
+          out[0]?.role === 'user' && out[1]?.role === 'assistant' ? 2 : 1,
+        );
+      }
+      if (removable <= 0) break;
+      out = out.slice(removable);
+      dropped += removable;
+      tokens = messagesTokens(out);
+      continue;
+    }
     const removed = out.slice(dropStart, dropEnd);
     out = [...out.slice(0, dropStart), ...out.slice(dropEnd)];
     dropped += removed.length;
@@ -171,6 +197,20 @@ export function isContextOverflowError(err) {
   const status = Number(err?.status || err?.response?.status || 0);
   if (status && status !== 400 && status !== 413 && status !== 422) return false;
   return /context (window|length|size)|exceeds the context|maximum context|prompt is too long|too many tokens|reduce the length/.test(msg);
+}
+
+/**
+ * 引擎不认 `stream_options`（想拿真实 token 用量时才会带）。
+ *
+ * 真实场景：部分老版本 vLLM / SGLang / 自建网关会对未识别的请求参数直接 400，
+ * 报 "unknown field stream_options" / "extra fields not permitted"。
+ * 命中后应该**去掉该参数重试**，而不是让整轮对话失败。
+ */
+export function isStreamOptionsUnsupported(err) {
+  const msg = String(err?.message || err || '').toLowerCase();
+  const status = Number(err?.status || err?.response?.status || 0);
+  if (status && status >= 500) return false;
+  return /stream_options|include_usage|unknown field|unrecognized|extra fields? not permitted|invalid_request_error.*stream/.test(msg);
 }
 
 /**

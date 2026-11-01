@@ -16,6 +16,7 @@
  */
 import express from 'express';
 import * as docker from '../docker.js';
+import { clampContextConfig, pickPersistableConfig } from './context-config.js';
 
 /** 需要脱敏、且拒绝把脱敏值写回配置的字段。 */
 export const SENSITIVE_KEYS = ['openaiApiKey'];
@@ -51,12 +52,25 @@ export default function createSettingsRouter({
   });
 
   router.put('/api/settings', (req, res) => {
-    const updates = req.body;
+    const updates = req.body || {};
 
     const currentSettings = ensureSettings();
+    // 助手上下文配置是嵌套对象：先与现值合并再夹紧，避免只传部分字段时把其它项清掉
+    let contextWarnings = [];
+    let nextAssistantContext = null;
+    if (updates.assistantContext && typeof updates.assistantContext === 'object') {
+      const merged = { ...(currentSettings.assistantContext || {}), ...updates.assistantContext };
+      const clamped = clampContextConfig(merged);
+      nextAssistantContext = pickPersistableConfig(clamped.config);
+      contextWarnings = clamped.warnings;
+    }
     for (const [key, value] of Object.entries(updates)) {
       // 拒绝保存脱敏后的敏感字段（含 *** 占位符）
       if (SENSITIVE_KEYS.includes(key) && typeof value === 'string' && value.includes('***') && value.length < 30) {
+        continue;
+      }
+      if (key === 'assistantContext') {
+        if (nextAssistantContext) currentSettings.assistantContext = nextAssistantContext;
         continue;
       }
       currentSettings[key] = value;
@@ -105,7 +119,11 @@ export default function createSettingsRouter({
     // 注意：这里曾写作 res.json({ success: true, settings })，引用了一个只有
     // index.js 模块作用域里才存在的 settings 绑定 —— 文件搬家后就成了 ReferenceError。
     // 现在显式取当前值，并且与 GET 一样脱敏。
-    res.json({ success: true, settings: sanitizeSettings(ensureSettings()) });
+    res.json({
+      success: true,
+      settings: sanitizeSettings(ensureSettings()),
+      contextWarnings,
+    });
   });
 
   return router;

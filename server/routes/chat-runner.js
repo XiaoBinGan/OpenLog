@@ -22,7 +22,8 @@ import {
   isToolUnsupportedError, looksLikeUncalledToolUse, TOOL_PROTOCOL_PROMPT, renderToolsAsText,
   parseToolProtocol, renderToolResultForTextProtocol, extractDelta,
 } from '../llm-provider.js';
-import { compactMessages, isContextOverflowError, stripToolCallBlocks, isOnlyToolCallText } from './chat-context.js';
+import { compactMessages, isContextOverflowError, isStreamOptionsUnsupported, stripToolCallBlocks, isOnlyToolCallText, estimateTokens, messagesTokens } from './chat-context.js';
+import { CONTEXT_DEFAULTS, STREAM_USAGE_ENGINES } from './context-config.js';
 
 const CONFIRM_TIMEOUT_MS = 3 * 60 * 1000;
 
@@ -150,8 +151,9 @@ export function createChatRunner({ ensureSettings, executeAssistantTool, pending
    * @param {any} opts.res express 响应（SSE）
    * @param {number} [opts.maxRounds]
    * @param {number} [opts.maxWallMs] 总时长预算
-   * @param {number} [opts.contextBudget] 上下文 token 预算
+   * @param {number} [opts.contextBudget] 上下文 token 预算（旧参数，保留兼容）
    * @param {number} [opts.maxTokens]
+   * @param {object} [opts.contextConfig] 已解析的上下文配置（优先于上面两个旧参数）
    */
   async function run({
     openai, baseUrl, model, messages, tools, systemPrompt, isLocalModel, res,
@@ -161,10 +163,43 @@ export function createChatRunner({ ensureSettings, executeAssistantTool, pending
     roundTimeoutMs = DEFAULT_ROUND_TIMEOUT_MS,
     maxTokens = 4096,
     toolResultChars = DEFAULT_TOOL_RESULT_CHARS,
+    contextConfig = null,
+    contextWarnings = [],
   }) {
     const settings = ensureSettings();
     const engine = guessEngine(baseUrl, model);
     const startedAt = Date.now();
+
+    // 上下文配置：优先用调用方解析好的（三级优先级已合并 + 夹紧），
+    // 否则退回旧参数构造一份，保证单独调用 run() 的老路径行为不变。
+    const cfg = {
+      windowTokens: contextConfig?.windowTokens ?? CONTEXT_DEFAULTS.windowTokens,
+      budgetTokens: contextConfig?.budgetTokens ?? contextBudget,
+      maxOutputTokens: contextConfig?.maxOutputTokens ?? maxTokens,
+      autoCompact: contextConfig?.autoCompact ?? true,
+      compactAt: contextConfig?.compactAt ?? CONTEXT_DEFAULTS.compactAt,
+      warnAt: contextConfig?.warnAt ?? CONTEXT_DEFAULTS.warnAt,
+      maxRounds: contextConfig?.maxRounds ?? maxRounds,
+      maxWallMs: contextConfig?.maxWallMs ?? maxWallMs,
+      toolResultChars: contextConfig?.toolResultChars ?? toolResultChars,
+    };
+    const budgetTokens = cfg.budgetTokens;
+    const outputTokens = cfg.maxOutputTokens;
+    const toolChars = cfg.toolResultChars;
+    maxRounds = cfg.maxRounds;
+    maxWallMs = cfg.maxWallMs;
+
+    /** 工具定义本身也占上下文（原生 tools 模式要算进去，否则前端数字偏小） */
+    let toolsTokensCache = -1;
+    const toolsTokens = () => {
+      if (toolsTokensCache >= 0) return toolsTokensCache;
+      try {
+        toolsTokensCache = estimateTokens(JSON.stringify(tools || []));
+      } catch {
+        toolsTokensCache = 0;
+      }
+      return toolsTokensCache;
+    };
 
     // 已知不支持原生 tools（上次探测结论）就直接走文本协议
     let mode = getCachedToolSupport(baseUrl, model) === false ? 'text' : 'native';
@@ -175,6 +210,71 @@ export function createChatRunner({ ensureSettings, executeAssistantTool, pending
     const baseSystemPrompt = systemPrompt;
 
     const sse = (obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
+
+    // ── 上下文用量上报 ────────────────────────────────────────────────
+    // 每次请求模型前推一条 context_usage：前端据此画用量条。
+    // 为什么在请求前而不是响应后：这一轮真正发给模型的量才是「会不会被截断」的依据。
+    let compactedCount = 0;
+    /** 固定开销（system+工具）已超预算的提示只发一次 */
+    let fixedOverheadWarned = false;
+    /** 连续「压缩了但没省下来」的次数：防止无限压缩死循环 */
+    let ineffectiveCompactions = 0;
+    let warnedAtPercent = 0;      // 已经提示过的档位（避免每轮重复弹）
+    let providerUsage = null;     // 引擎返回的真实 usage（有就用它校准）
+    let lastUsage = null;
+
+    const buildUsage = ({ systemContent, useNative, roundNo, estimated = true }) => {
+      const sysTokens = estimateTokens(systemContent);
+      const toolsTok = useNative ? toolsTokens() : 0;
+      const msgTok = messagesTokens(messages);
+      // 有引擎实测的 prompt_tokens 就**以它为准**（这才是模型真正看到的量，
+      // 也是会不会被截断的唯一可靠依据）；没有才退回本地估算。
+      const estimateTotal = sysTokens + toolsTok + msgTok;
+      const used = providerUsage?.promptTokens > 0 ? providerUsage.promptTokens : estimateTotal;
+      const percent = budgetTokens > 0 ? Math.round((used / budgetTokens) * 1000) / 10 : 0;
+      return {
+        type: 'context_usage',
+        used,
+        budget: budgetTokens,
+        window: cfg.windowTokens,
+        percent,
+        breakdown: { system: sysTokens, tools: toolsTok, messages: msgTok },
+        compactAt: cfg.compactAtTokens ?? Math.floor(budgetTokens * cfg.compactAt),
+        warnAt: cfg.warnAtTokens ?? Math.floor(budgetTokens * cfg.warnAt),
+        rounds: roundNo,
+        compacted: compactedCount,
+        estimated: estimated && !providerUsage,
+        providerUsage: providerUsage || null,
+      };
+    };
+
+    const emitUsage = (ctx) => {
+      const usage = buildUsage(ctx);
+      lastUsage = usage;
+      sse(usage);
+      // 预警：只发**当前最高档**。
+      // 真实踩到的坑：阈值调低后同一时刻 warn 和 critical 都满足，前端会同时弹两条
+      // 提示（一条说"偏高"、一条说"即将压缩"），看起来像重复告警。
+      const pct = usage.percent / 100;
+      const level = pct >= cfg.compactAt ? 2 : (pct >= cfg.warnAt ? 1 : 0);
+      if (level > warnedAtPercent) {
+        warnedAtPercent = level;
+        sse({
+          type: 'context_warning',
+          level: level === 2 ? 'critical' : 'warn',
+          percent: usage.percent,
+          used: usage.used,
+          budget: usage.budget,
+          window: usage.window,
+          suggestion: level === 2 ? 'compact' : 'new_session',
+          message: level === 2
+            ? `上下文已用 ${usage.percent}%，即将自动压缩历史（较早的细节会丢失）。建议开启新会话继续。`
+            : `上下文已用 ${usage.percent}%，建议开启新会话；若长期需要更大上下文，可切换到窗口更大的模型。`,
+        });
+      }
+      return usage;
+    };
+
 
     // SSE 心跳：等模型/工具时可能几十秒没有事件，代理或浏览器会掐掉空闲连接。
     // 用注释帧（`:` 开头）保活，客户端解析时会忽略。
@@ -196,19 +296,22 @@ export function createChatRunner({ ensureSettings, executeAssistantTool, pending
       // 键必须和调用方传的 reason 完全一致（曾因 rounds/round 不一致，
       // 用户看到的是「任务提前结束」这种没信息量的兜底文案）
       const notice = {
-        rounds: { text: '已达到步数上限（可用 OPENLOG_ASSISTANT_MAX_ROUNDS 调整），先给你一份阶段性结论。', type: 'rounds' },
-        time: { text: '已达到单次任务时长上限，先给你一份阶段性结论。', type: 'time' },
+        rounds: { text: `已达到步数上限（可在助手齿轮面板或设置页调整，当前 ${maxRounds} 轮），先给你一份阶段性结论。`, type: 'rounds' },
+        time: { text: `已达到单次任务时长上限（当前 ${Math.round(maxWallMs / 60000)} 分钟），先给你一份阶段性结论。`, type: 'time' },
         context: { text: '会话上下文接近模型上限，已压缩历史后给你阶段性结论。', type: 'context' },
       }[reason] || { text: '任务提前结束，这里是当前进展。', type: 'unknown' };
 
       try {
-        const compacted = compactMessages(messages, { maxTokens: Math.floor(contextBudget * 0.6), keepRecentTurns: 6 });
+        const compacted = compactMessages(messages, {
+          maxTokens: Math.max(2_000, Math.floor(budgetTokens * 0.6)),
+          keepRecentTurns: 6,
+        });
         const summaryPrompt = `${baseSystemPrompt}\n\n【系统提示】${notice.text}请立刻基于**已经拿到的工具结果**写一份阶段性总结：已经确认了什么、还差什么没查、接下来建议怎么做（不要再调用工具，直接输出回答）。`;
         const stream = await openai.chat.completions.create({
           model,
           messages: [{ role: 'system', content: summaryPrompt }, ...compacted.messages],
           stream: true,
-          max_tokens: maxTokens,
+          max_tokens: outputTokens,
         });
         let acc = '';
         // 聚合后再剥离工具调用 XML：流式逐段剥会把跨 chunk 的标签切坏
@@ -222,7 +325,7 @@ export function createChatRunner({ ensureSettings, executeAssistantTool, pending
           sse({ type: 'budget_exhausted', reason, message: notice.text });
           sse({ content: cleaned });
           finish();
-          return { rounds: round, mode, exhausted: true, reason };
+          return { rounds: round, mode, exhausted: true, reason, usage: lastUsage };
         }
         // 模型只吐了工具调用 XML，没有总结 —— 不算成功，走下面的兜底提示
         console.warn('[Chat] 收尾总结只返回了工具调用 XML，已丢弃');
@@ -233,11 +336,32 @@ export function createChatRunner({ ensureSettings, executeAssistantTool, pending
       sse({ type: 'budget_exhausted', reason, message: notice.text });
       sse({ content: `\n\n⚠️ ${notice.text}\n（阶段总结生成失败，请回复「继续」让我接着做，或缩小任务范围。）` });
       finish();
-      return { rounds: round, mode, exhausted: true, reason };
+      return { rounds: round, mode, exhausted: true, reason, usage: lastUsage };
     }
 
     /** 本次任务内已批准过的写操作（完全相同才跳过确认） */
     const approvedOps = new Set();
+
+    // 先把生效配置推给前端：齿轮面板/用量条要立刻知道窗口与预算，
+    // 不能等第一轮模型返回（大 prompt 时可能几十秒）。
+    sse({
+      type: 'context_config',
+      config: {
+        windowTokens: cfg.windowTokens,
+        budgetTokens: cfg.budgetTokens,
+        maxOutputTokens: cfg.maxOutputTokens,
+        autoCompact: cfg.autoCompact,
+        compactAt: cfg.compactAt,
+        warnAt: cfg.warnAt,
+        maxRounds: cfg.maxRounds,
+        maxWallMs: cfg.maxWallMs,
+        compactAtTokens: cfg.compactAtTokens ?? Math.floor(budgetTokens * cfg.compactAt),
+        warnAtTokens: cfg.warnAtTokens ?? Math.floor(budgetTokens * cfg.warnAt),
+      },
+      engine,
+      model,
+      warnings: Array.isArray(contextWarnings) ? contextWarnings : [],
+    });
 
     let round = 0;
     /** 上下文超限只做一次深度压缩，避免死循环 */
@@ -255,29 +379,85 @@ export function createChatRunner({ ensureSettings, executeAssistantTool, pending
       const systemContent = useNative ? baseSystemPrompt : `${baseSystemPrompt}${textProtocolSuffix}`;
 
       // 每次请求前做上下文压缩：超出预算就压缩旧工具结果（长任务的根因之一）
-      const systemTokens = Math.ceil(systemContent.length / 2);
-      const compacted = compactMessages(messages, {
-        maxTokens: Math.max(4_000, contextBudget - systemTokens - maxTokens),
-      });
-      if (compacted.compressed) {
-        messages = compacted.messages;
-        sse({
-          type: 'context_compacted',
-          tokens: compacted.tokens,
-          dropped: compacted.dropped,
-          message: `上下文接近上限，已压缩早期工具结果（约 ${Math.round(compacted.tokens / 1000)}k tokens）`,
-        });
+      // 阈值来自配置：默认在预算的 85% 触发，给「压缩后还能继续干活」留余量。
+      const systemTokens = estimateTokens(systemContent);
+      const toolsTok = useNative ? toolsTokens() : 0;
+      /** system + 工具定义是压不掉的固定开销；它俩超预算时压缩再多次也没用 */
+      const fixedOverhead = systemTokens + toolsTok;
+      const beforeTokens = fixedOverhead + messagesTokens(messages);
+
+      // 固定开销已经吃掉预算的大半 → 说明配置本身不合理（预算太小或工具太多），
+      // 直接告诉用户怎么改，而不是每轮徒劳压缩。
+      if (fixedOverhead >= budgetTokens * 0.9) {
+        if (!fixedOverheadWarned) {
+          fixedOverheadWarned = true;
+          sse({
+            type: 'context_warning',
+            level: 'critical',
+            percent: Math.round((beforeTokens / Math.max(1, budgetTokens)) * 1000) / 10,
+            used: beforeTokens,
+            budget: budgetTokens,
+            window: cfg.windowTokens,
+            suggestion: 'raise_budget',
+            message: `系统提示 + 工具定义已占约 ${Math.round(fixedOverhead / 100) / 10}k tokens，接近当前预算 ${Math.round(budgetTokens / 1000)}k，压缩历史无法腾出空间。`
+              + `请在设置页或齿轮面板把「上下文预算」调大到至少 ${Math.ceil((fixedOverhead * 2) / 1000)}k（模型窗口允许的话）。`,
+          });
+        }
+      } else {
+        // 只在**真正越过阈值**时压缩，而不是每轮都压。
+        // 之前每轮都拿「阈值对应的目标」去压，导致一越过 85% 就每轮压缩一次
+        // （实测 30 轮出现 30 次压缩，每次都截断历史，长任务体验很差）。
+        // 现在：越过 compactAt 才触发，且一次压到 60% 左右留出余量。
+        const triggerTokens = Math.floor(budgetTokens * (cfg.autoCompact ? cfg.compactAt : 0.99));
+        const targetMessagesTokens = Math.max(
+          500,
+          Math.min(
+            Math.floor(budgetTokens * 0.6) - fixedOverhead,
+            budgetTokens - fixedOverhead - outputTokens,
+          ),
+        );
+        const compacted = beforeTokens > triggerTokens
+          ? compactMessages(messages, { maxTokens: targetMessagesTokens })
+          : { messages, tokens: messagesTokens(messages), compressed: false, dropped: 0 };
+        if (compacted.compressed) {
+          messages = compacted.messages;
+          compactedCount += 1;
+          const afterTokens = fixedOverhead + messagesTokens(messages);
+          const saved = beforeTokens - afterTokens;
+          // 压缩无效（几乎没省）也算一次：连续两次说明压不动了，别无限循环
+          if (saved < 200) ineffectiveCompactions += 1;
+          else ineffectiveCompactions = 0;
+          sse({
+            type: 'context_compacted',
+            before: beforeTokens,
+            after: afterTokens,
+            tokens: compacted.tokens,
+            dropped: compacted.dropped,
+            count: compactedCount,
+            trigger: 'budget',
+            message: saved >= 200
+              ? `上下文接近上限，已压缩早期工具结果（${compacted.dropped} 条，约省 ${Math.round(saved / 1000)}k tokens）`
+              : '上下文已压缩，但可压缩内容有限（早期消息已很精简）',
+          });
+          if (ineffectiveCompactions >= 2) return summarizeAndFinish('context');
+        }
       }
 
       // 每次重建消息头，保证 system prompt 与当前模式一致
       const roundMessages = [{ role: 'system', content: systemContent }, ...messages];
 
+      // 请求前上报用量（前端用量条/预警依赖它）
+      emitUsage({ systemContent, useNative, roundNo: round });
+
       const params = {
         model,
         messages: roundMessages,
         stream: true,
-        max_tokens: maxTokens,
+        max_tokens: outputTokens,
       };
+      // 让引擎顺带返回真实 token 用量（部分引擎不支持，失败会自动降级重试）
+      let requestStreamUsage = STREAM_USAGE_ENGINES.has(engine);
+      if (requestStreamUsage) params.stream_options = { include_usage: true };
       if (isLocalModel) params.temperature = 0.7;
       if (useNative) {
         params.tools = tools;
@@ -295,6 +475,13 @@ export function createChatRunner({ ensureSettings, executeAssistantTool, pending
         stream = await openai.chat.completions.create(params, { signal: abortCtl.signal });
       } catch (err) {
         clearTimeout(roundTimer);
+        // 引擎不认 stream_options（部分 vLLM/SGLang 老版本会 400）→ 去掉重试本轮
+        if (requestStreamUsage && isStreamOptionsUnsupported(err)) {
+          requestStreamUsage = false;
+          sse({ type: 'provider_notice', message: '当前推理服务不支持返回 token 用量，已改用本地估算（不影响使用）', engine });
+          round--;
+          continue;
+        }
         // 引擎不支持 tools → 缓存结论，切文本协议重试本轮（不消耗轮次预算）
         if (useNative && isToolUnsupportedError(err)) {
           setCachedToolSupport(baseUrl, model, false);
@@ -306,20 +493,26 @@ export function createChatRunner({ ensureSettings, executeAssistantTool, pending
           }
           continue;
         }
-        // 上下文超限（模型侧硬限制）→ 压缩到 60% 预算后重试一次，别直接失败
+        // 上下文超限（模型侧硬限制）→ 深度压缩后重试一次，别直接失败
         if (isContextOverflowError(err) && !contextRetried) {
           contextRetried = true;
+          const beforeTokens = messagesTokens(messages);
           const harder = compactMessages(messages, {
-            maxTokens: Math.max(2_000, Math.floor(contextBudget * 0.5)),
+            maxTokens: Math.max(2_000, Math.floor(budgetTokens * 0.5)),
             keepRecentTurns: 4,
             keepChars: 600,
           });
           messages = harder.messages;
           round--;
+          compactedCount += 1;
           sse({
             type: 'context_compacted',
+            before: beforeTokens,
+            after: harder.tokens,
             tokens: harder.tokens,
             dropped: harder.dropped,
+            count: compactedCount,
+            trigger: 'overflow',
             message: `模型上下文超限，已深度压缩历史（约 ${Math.round(harder.tokens / 1000)}k tokens）后重试`,
           });
           continue;
@@ -342,6 +535,16 @@ export function createChatRunner({ ensureSettings, executeAssistantTool, pending
 
       try {
         for await (const chunk of stream) {
+          // 引擎返回的真实用量（stream_options.include_usage）：这类 chunk 通常没有 choices，
+          // 必须在 `continue` 之前捕获，否则永远拿不到。
+          if (chunk?.usage) {
+            const u = chunk.usage;
+            providerUsage = {
+              promptTokens: Number(u.prompt_tokens) || 0,
+              completionTokens: Number(u.completion_tokens) || 0,
+              totalTokens: Number(u.total_tokens) || 0,
+            };
+          }
           const delta = chunk.choices?.[0]?.delta;
           if (!delta) continue;
           const { content, reasoning } = extractDelta(delta);
@@ -369,6 +572,12 @@ export function createChatRunner({ ensureSettings, executeAssistantTool, pending
         throw err;
       } finally {
         clearTimeout(roundTimer);
+      }
+
+      // 引擎返回了真实 prompt_tokens 时补发一条校准后的用量：
+      // 否则前端一直显示估算值（首轮是在请求**前**上报的，那时还没有 usage）。
+      if (providerUsage && providerUsage.promptTokens > 0) {
+        emitUsage({ systemContent, useNative, roundNo: round, estimated: false });
       }
 
       const llmMs = Date.now() - llmStartedAt;
@@ -418,7 +627,7 @@ export function createChatRunner({ ensureSettings, executeAssistantTool, pending
           const { result } = await runToolWithGuard(tc, args, res, approvedOps);
           const toolMs = Date.now() - toolStartedAt;
           if (toolMs > 10_000) console.warn(`[Chat] 工具 ${tc.name} 耗时 ${toolMs}ms`);
-          messages.push({ role: 'tool', tool_call_id: tc.id, content: JSON.stringify(result).slice(0, toolResultChars) });
+          messages.push({ role: 'tool', tool_call_id: tc.id, content: JSON.stringify(result).slice(0, toolChars) });
         }
         continue;
       }

@@ -377,6 +377,19 @@ const defaultSettings = {
   // 容器日志实时错误提醒（增量 tail，命中 ERROR/FATAL 立即弹框）
   containerLogWatchEnabled: true,
   containerLogWatchInterval: 5000,    // ms，实时轮询间隔
+  // 运维助手上下文配置（默认值与 server/routes/context-config.js 保持一致）
+  // 为什么要落到设置里：原先只能靠环境变量，改一次要重启容器，界面上也看不到用量。
+  assistantContext: {
+    windowTokens: Number(process.env.OPENLOG_ASSISTANT_CONTEXT_WINDOW) || 65536,
+    budgetTokens: Number(process.env.OPENLOG_ASSISTANT_CONTEXT_TOKENS) || 48000,
+    maxOutputTokens: Number(process.env.OPENLOG_ASSISTANT_MAX_OUTPUT_TOKENS) || 4096,
+    autoCompact: true,
+    compactAt: 0.85,
+    warnAt: 0.7,
+    maxRounds: Number(process.env.OPENLOG_ASSISTANT_MAX_ROUNDS) || 30,
+    maxWallMs: Number(process.env.OPENLOG_ASSISTANT_MAX_WALL_MS) || 10 * 60 * 1000,
+    toolResultChars: Number(process.env.OPENLOG_ASSISTANT_TOOL_RESULT_CHARS) || 6000,
+  },
 };
 
 // Settings - 懒加载，数据库初始化完成后加载

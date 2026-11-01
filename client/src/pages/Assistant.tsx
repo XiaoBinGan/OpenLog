@@ -4,13 +4,20 @@ import {
   Send, Bot, User, Trash2, Square, Loader, Sparkles, Terminal,
   BookOpen, Plus, X, FileText, Save,
   MessageSquare, Pencil, Sidebar, History, ArrowRight,
+  SlidersHorizontal, AlertTriangle, Gauge, RotateCcw,
 } from 'lucide-react';
 import { useAssistantContext } from '../contexts/AssistantContext';
+import type { ContextSettings, ContextUsage } from '../contexts/AssistantContext';
 import { marked } from 'marked';
 import { sanitizeHtml } from '../utils/sanitize';
 import { apiFetch } from '../api/client';
 import { createSSELineSplitter, parseSSEDataLine } from '../utils/sseLines';
 import { applyToolResult, settleToolCalls, toolCallTone } from '../utils/toolCallState';
+import {
+  buildUsageAdvice, usageLevel, usageSummary, usageBreakdownText,
+  estimateTextTokens, trimHistoryToBudget, USAGE_LEVEL_STYLES, formatTokens, formatDuration,
+  type ContextConfigLike,
+} from '../utils/contextUsage';
 
 const QUICK_PROMPTS = [
   '如何排查 CPU 飙高问题？',
@@ -30,9 +37,16 @@ function renderMarkdown(text: string): string {
 }
 
 // ── 对话列表项 ──
-function ConvItem({ title, isActive, onSelect, onDelete }: {
+function ConvItem({ title, isActive, onSelect, onDelete, usagePercent }: {
   title: string; isActive: boolean; onSelect: () => void; onDelete: () => void;
+  /** 本会话最近一次上下文占用百分比（让用户一眼看出哪个会话该清了） */
+  usagePercent?: number;
 }) {
+  const tone = usagePercent === undefined
+    ? 'text-dark-600'
+    : usageLevel(usagePercent) === 'over' || usageLevel(usagePercent) === 'critical'
+      ? 'text-orange-400'
+      : usageLevel(usagePercent) === 'warn' ? 'text-yellow-500' : 'text-dark-600';
   return (
     <div
       className={`group flex items-center gap-2 px-3 py-2.5 rounded-lg cursor-pointer transition-all ${
@@ -42,6 +56,11 @@ function ConvItem({ title, isActive, onSelect, onDelete }: {
     >
       <MessageSquare className="w-4 h-4 flex-shrink-0 opacity-60" />
       <span className="flex-1 text-sm truncate">{title}</span>
+      {usagePercent !== undefined && (
+        <span className={`text-[10px] flex-shrink-0 ${tone}`} title="本会话最近一次上下文占用">
+          {Math.round(usagePercent)}%
+        </span>
+      )}
       <button
         onClick={e => { e.stopPropagation(); onDelete(); }}
         className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-red-500/20 text-dark-500 hover:text-red-400 transition-all flex-shrink-0"
@@ -61,6 +80,7 @@ export default function Assistant() {
   const {
     opsConvs, opsActiveId, opsMessages, setOpsMessages,
     createOpsConv, switchOpsConv, deleteOpsConv, renameOpsConv,
+    opsContextSettings, opsContextUsage, setOpsContextSettings, setOpsContextUsage,
     memoryFiles, reloadMemory, deleteMemory, saveMemory,
   } = useAssistantContext();
 
@@ -79,6 +99,17 @@ export default function Assistant() {
   const [showNewForm, setShowNewForm] = useState(false);
   const [editingConvTitle, setEditingConvTitle] = useState<string | null>(null);
   const [convTitleInput, setConvTitleInput] = useState('');
+
+  // ── 上下文配置 / 用量（齿轮面板 + 底部用量条）──
+  // config 是「最终生效值」：设置页全局 + 本会话覆盖，由后端计算（含越界夹紧），
+  // 前端不自己算，避免两边规则不一致。
+  const [ctxConfig, setCtxConfig] = useState<ContextConfigLike | null>(null);
+  const [ctxWarnings, setCtxWarnings] = useState<string[]>([]);
+  const [gearOpen, setGearOpen] = useState(false);
+  const [gearDraft, setGearDraft] = useState<Partial<ContextSettings>>({});
+  const [gearSaving, setGearSaving] = useState(false);
+  const [adviceDismissed, setAdviceDismissed] = useState(false);
+  const [sseWarning, setSseWarning] = useState<{ level: string; message: string } | null>(null);
 
   // 待用户确认的写操作（改代码/改配置/重启服务/执行命令）
   const [pendingConfirm, setPendingConfirm] = useState<{
@@ -107,6 +138,39 @@ export default function Assistant() {
 
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [opsMessages]);
   useEffect(() => { inputRef.current?.focus(); }, [opsActiveId]);
+
+  /**
+   * 拉取「当前生效」的上下文配置。
+   * 会话级覆盖作为 override 传上去，后端合并 + 夹紧后返回最终值，
+   * 这样齿轮面板显示的就是「现在发消息真正会用到的」配置。
+   */
+  const reloadCtxConfig = useCallback(async () => {
+    try {
+      const override = Object.keys(opsContextSettings || {}).length
+        ? `?override=${encodeURIComponent(JSON.stringify(opsContextSettings))}`
+        : '';
+      const data = await apiFetch<{ config?: ContextConfigLike; warnings?: string[] }>(
+        `/api/chat/context-config${override}`,
+      );
+      if (data?.config) setCtxConfig(data.config);
+      setCtxWarnings(Array.isArray(data?.warnings) ? data.warnings : []);
+    } catch { /* 配置拉取失败不影响聊天，用量条退化为不显示 */ }
+  }, [JSON.stringify(opsContextSettings)]);
+
+  useEffect(() => { reloadCtxConfig(); }, [reloadCtxConfig]);
+
+  // 齿轮面板：打开时用「当前生效值」初始化草稿
+  useEffect(() => {
+    if (!gearOpen) return;
+    setGearDraft({
+      windowTokens: ctxConfig?.windowTokens,
+      budgetTokens: ctxConfig?.budgetTokens,
+      autoCompact: ctxConfig?.autoCompact ?? true,
+      compactAt: ctxConfig?.compactAt ?? 0.85,
+      maxRounds: ctxConfig?.maxRounds ?? 30,
+      maxWallMs: ctxConfig?.maxWallMs ?? 600_000,
+    });
+  }, [gearOpen]);  // eslint-disable-line react-hooks/exhaustive-deps
 
   // 加载分析历史摘要（@ 提及用）
   const loadBrief = useCallback(async () => {
@@ -248,7 +312,17 @@ export default function Assistant() {
     try {
       // 构建历史 — 包含工具调用信息（OpenAI 格式）
       const history: any[] = [];
-      const recentMsgs = opsMessages.filter(m => !m.streaming).slice(-12);
+      // 历史不再硬砍成 12 条：按当前上下文预算动态挑选。
+      // 老实现 `.slice(-12)` 是「上下文用不长」的直接原因之一 —— 窗口更大的模型
+      // 也用不上更多历史。现在按预算（留 25% 给 system/工具/输出）从新往旧保留，
+      // 且整段丢弃 tool 消息时不会拆散 tool_calls 配对。
+      const allHistory = opsMessages.filter(m => !m.streaming);
+      const historyBudget = Math.max(4_000, Math.floor((ctxConfig?.budgetTokens ?? 48_000) * 0.75));
+      const { kept: recentMsgs } = trimHistoryToBudget(
+        allHistory,
+        m => estimateTextTokens((m.content || '') + JSON.stringify((m as any).toolCalls || [])) + 8,
+        historyBudget,
+      );
       for (const m of recentMsgs) {
         if (m.role === 'assistant' && (m as any).toolCalls?.length > 0) {
           // Assistant 消息 + tool_calls
@@ -281,7 +355,11 @@ export default function Assistant() {
       const res = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Accept': 'text/event-stream' },
-        body: JSON.stringify({ messages: history }),
+        body: JSON.stringify({
+          messages: history,
+          // 本会话的上下文覆盖（齿轮面板改的）：空对象就不传，走后端默认
+          contextOverride: Object.keys(opsContextSettings || {}).length ? opsContextSettings : undefined,
+        }),
         signal: abortRef.current.signal,
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -329,6 +407,27 @@ export default function Assistant() {
               setOpsMessages(prev => prev.map((m, i) => i === prev.length - 1
                 ? { ...m, notices: [...((m as any).notices || []), { type: p.type, text }] }
                 : m));
+            } else if (p.type === 'context_config') {
+              // 服务端最终生效的配置（含夹紧后的值 + 校正说明）
+              if (p.config) setCtxConfig(p.config as ContextConfigLike);
+              setCtxWarnings(Array.isArray(p.warnings) ? p.warnings : []);
+            } else if (p.type === 'context_usage') {
+              // 每轮请求模型前的真实用量：驱动底部用量条
+              setOpsContextUsage({
+                used: p.used,
+                budget: p.budget,
+                window: p.window,
+                percent: p.percent,
+                breakdown: p.breakdown,
+                rounds: p.rounds,
+                compacted: p.compacted,
+                estimated: !!p.estimated,
+                providerUsage: p.providerUsage || null,
+                at: Date.now(),
+              });
+            } else if (p.type === 'context_warning') {
+              // 后端判定「该换会话 / 该换模型」：显示为横幅提示
+              setSseWarning({ level: p.level || 'warn', message: p.message || '' });
             } else if (p.content) {
               acc += p.content;
             } else if (p.reasoning_content) {
@@ -389,7 +488,55 @@ export default function Assistant() {
 
   const stopGeneration = () => abortRef.current?.abort();
   const clearChat = () => { if (opsMessages.length > 0) setOpsMessages([]); };
-  const handleNewConv = () => { createOpsConv(); };
+  const handleNewConv = () => { createOpsConv(); setSseWarning(null); setAdviceDismissed(false); };
+
+  // ── 上下文用量派生值 ────────────────────────────────────────────
+  const effConfig: ContextConfigLike = ctxConfig || {
+    windowTokens: 65_536, budgetTokens: 48_000, autoCompact: true, compactAt: 0.85, warnAt: 0.7,
+    maxRounds: 30, maxWallMs: 600_000,
+  };
+  const usagePct = opsContextUsage?.percent ?? 0;
+  const levelStyle = USAGE_LEVEL_STYLES[usageLevel(usagePct, effConfig)];
+  const advice = buildUsageAdvice(opsContextUsage, effConfig, { dismissed: adviceDismissed });
+  /** 后端 SSE 的紧急提示优先于本地计算（服务端知道真实压缩时机） */
+  const bannerAdvice = sseWarning
+    ? { show: true, level: sseWarning.level === 'critical' ? 'critical' as const : 'warn' as const, text: sseWarning.message, action: 'new_session' as const, actionLabel: '开启新会话' }
+    : advice;
+
+  /** 把本会话的覆盖写进 localStorage（随会话保存，不落服务端） */
+  const applyGearDraft = async (persistToSettings: boolean) => {
+    const patch: ContextSettings = {};
+    if (gearDraft.windowTokens !== undefined) patch.windowTokens = Number(gearDraft.windowTokens);
+    if (gearDraft.budgetTokens !== undefined) patch.budgetTokens = Number(gearDraft.budgetTokens);
+    if (gearDraft.autoCompact !== undefined) patch.autoCompact = gearDraft.autoCompact;
+    if (gearDraft.compactAt !== undefined) patch.compactAt = Number(gearDraft.compactAt);
+    if (gearDraft.maxRounds !== undefined) patch.maxRounds = Number(gearDraft.maxRounds);
+    if (gearDraft.maxWallMs !== undefined) patch.maxWallMs = Number(gearDraft.maxWallMs);
+
+    setOpsContextSettings(patch);
+    setGearSaving(true);
+    try {
+      if (persistToSettings) {
+        // 存成全局默认：之后新建的会话都用这套
+        await apiFetch('/api/settings', {
+          method: 'PUT',
+          body: JSON.stringify({ assistantContext: { ...effConfig, ...patch } }),
+        });
+      }
+      // 用后端合并+夹紧后的结果刷新显示（前端不自己猜越界处理）
+      const data = await apiFetch<{ config?: ContextConfigLike; warnings?: string[] }>('/api/chat/context-config');
+      if (data?.config) setCtxConfig(data.config);
+      setCtxWarnings(Array.isArray(data?.warnings) ? data.warnings : []);
+      setGearOpen(false);
+    } catch { /* 保存失败不回滚本地草稿，下次打开还能再试 */ }
+    finally { setGearSaving(false); }
+  };
+
+  /** 恢复默认：清掉本会话覆盖，回到设置页/默认值 */
+  const resetGear = () => {
+    setOpsContextSettings(null);
+    setGearOpen(false);
+  };
 
   const startRenameConv = (id: string, title: string) => { setEditingConvTitle(id); setConvTitleInput(title); };
   const commitRenameConv = () => {
@@ -439,6 +586,7 @@ export default function Assistant() {
               </div>
             ) : opsConvs.map(conv => (
               <ConvItem key={conv.id} title={conv.title} isActive={conv.id === opsActiveId}
+                usagePercent={conv.contextUsage?.percent}
                 onSelect={() => switchOpsConv(conv.id)}
                 onDelete={() => opsConvs.length > 1 && deleteOpsConv(conv.id)} />
             ))}
@@ -665,6 +813,174 @@ export default function Assistant() {
               </div>
             </div>
           )}
+
+          {/* 上下文提示横幅：该换会话 / 该换更大窗口的模型 */}
+          {bannerAdvice.show && (
+            <div className={`mb-1.5 flex items-start gap-2 rounded-lg border px-2.5 py-1.5 ${
+              bannerAdvice.level === 'critical'
+                ? 'bg-red-500/10 border-red-500/30'
+                : bannerAdvice.level === 'warn'
+                  ? 'bg-yellow-500/10 border-yellow-500/30'
+                  : 'bg-dark-800 border-dark-700'
+            }`}>
+              <AlertTriangle className={`w-3.5 h-3.5 flex-shrink-0 mt-0.5 ${
+                bannerAdvice.level === 'critical' ? 'text-red-400' : bannerAdvice.level === 'warn' ? 'text-yellow-400' : 'text-dark-400'
+              }`} />
+              <span className={`flex-1 text-[11px] leading-relaxed ${
+                bannerAdvice.level === 'critical' ? 'text-red-300' : bannerAdvice.level === 'warn' ? 'text-yellow-300' : 'text-dark-300'
+              }`}>{bannerAdvice.text}</span>
+              {bannerAdvice.action === 'new_session' && (
+                <button onClick={handleNewConv}
+                  className="flex-shrink-0 px-2 py-0.5 rounded bg-accent-500/20 text-accent-400 text-[11px] hover:bg-accent-500/30 transition-colors">
+                  {bannerAdvice.actionLabel || '开启新会话'}
+                </button>
+              )}
+              {bannerAdvice.action === 'switch_model' && (
+                <a href="/settings"
+                  className="flex-shrink-0 px-2 py-0.5 rounded bg-accent-500/20 text-accent-400 text-[11px] hover:bg-accent-500/30 transition-colors">
+                  去设置
+                </a>
+              )}
+              <button onClick={() => { setAdviceDismissed(true); setSseWarning(null); }}
+                className="flex-shrink-0 p-0.5 rounded hover:bg-dark-700 text-dark-500 hover:text-dark-300">
+                <X className="w-3 h-3" />
+              </button>
+            </div>
+          )}
+
+          {/* 上下文用量条：常驻显示「还剩多少」，hover 看明细 */}
+          <div className="mb-1.5 flex items-center gap-2">
+            <div className="relative flex-1 min-w-0 group/usage">
+              <div className="flex items-center gap-1.5">
+                <Gauge className={`w-3.5 h-3.5 flex-shrink-0 ${levelStyle.text}`} />
+                <span className={`text-[11px] font-medium ${levelStyle.text}`}>
+                  上下文 {opsContextUsage ? usageSummary(opsContextUsage, { estimatedPrefix: true }) : '—'}
+                </span>
+                <span className="text-[10px] text-dark-600">窗口 {formatTokens(effConfig.windowTokens)}</span>
+                {opsContextUsage?.compacted ? (
+                  <span className="text-[10px] text-dark-500">已压缩 {opsContextUsage.compacted} 次</span>
+                ) : null}
+                {ctxWarnings.length > 0 && (
+                  <span className="text-[10px] text-yellow-500 cursor-help" title={ctxWarnings.join('\n')}>
+                    ⚠ 配置已校正
+                  </span>
+                )}
+                {Object.keys(opsContextSettings).length > 0 && (
+                  <span className="text-[10px] text-accent-400" title="本会话有独立的上下文设置">会话覆盖</span>
+                )}
+              </div>
+              <div className="mt-1 h-1 rounded-full bg-dark-800 overflow-hidden">
+                <div className={`h-full ${levelStyle.bar} transition-all duration-300`}
+                  style={{ width: `${Math.min(100, Math.max(0, usagePct))}%` }} />
+              </div>
+              {/* hover 明细：拆分 + 实测/估算来源 */}
+              <div className="pointer-events-none absolute bottom-full left-0 mb-1.5 hidden group-hover/usage:block z-40
+                whitespace-nowrap rounded-lg border border-dark-700 bg-dark-800 px-2.5 py-1.5 text-[10px] text-dark-300 shadow-xl">
+                {usageBreakdownText(opsContextUsage) || '还没有用量数据'}
+              </div>
+            </div>
+            <button
+              onClick={() => setGearOpen(v => !v)}
+              title="上下文设置（模型窗口 / 预算 / 压缩阈值）"
+              className={`flex-shrink-0 p-1.5 rounded-lg transition-colors ${
+                gearOpen ? 'bg-accent-500/20 text-accent-400' : 'hover:bg-dark-800 text-dark-500 hover:text-dark-300'
+              }`}>
+              <SlidersHorizontal className="w-4 h-4" />
+            </button>
+          </div>
+
+          {/* 齿轮面板：只改本会话，can 保存为全局默认 */}
+          {gearOpen && (
+            <div className="absolute bottom-full right-0 mb-2 w-[22rem] bg-dark-800 border border-dark-700 rounded-xl shadow-2xl p-3 z-50 animate-scale-in">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-xs font-semibold text-dark-100">上下文设置</span>
+                <button onClick={() => setGearOpen(false)} className="p-0.5 rounded hover:bg-dark-700 text-dark-500">
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+              <p className="text-[10px] text-dark-500 mb-2 leading-relaxed">
+                当前只影响**本会话**；想作为默认值，点底部「保存到设置页」。
+              </p>
+              <div className="space-y-2">
+                <label className="block">
+                  <span className="text-[11px] text-dark-400">模型上下文窗口</span>
+                  <input type="number" min={8000} max={1048576} step={1024}
+                    value={gearDraft.windowTokens ?? effConfig.windowTokens}
+                    onChange={e => setGearDraft(d => ({ ...d, windowTokens: Number(e.target.value) }))}
+                    className="mt-0.5 w-full px-2 py-1 bg-dark-900 border border-dark-700 rounded text-xs text-dark-200
+                      focus:outline-none focus:border-accent-500/50" />
+                  <span className="text-[10px] text-dark-600">按你实际用的模型填（如 32k / 128k）</span>
+                </label>
+                <label className="block">
+                  <span className="text-[11px] text-dark-400">上下文预算（给消息用）</span>
+                  <input type="number" min={4000} max={1048576} step={1024}
+                    value={gearDraft.budgetTokens ?? effConfig.budgetTokens}
+                    onChange={e => setGearDraft(d => ({ ...d, budgetTokens: Number(e.target.value) }))}
+                    className="mt-0.5 w-full px-2 py-1 bg-dark-900 border border-dark-700 rounded text-xs text-dark-200
+                      focus:outline-none focus:border-accent-500/50" />
+                </label>
+                <div className="flex items-center gap-2">
+                  <label className="flex items-center gap-1.5 flex-1">
+                    <input type="checkbox"
+                      checked={gearDraft.autoCompact ?? effConfig.autoCompact ?? true}
+                      onChange={e => setGearDraft(d => ({ ...d, autoCompact: e.target.checked }))}
+                      className="accent-accent-500" />
+                    <span className="text-[11px] text-dark-400">自动压缩历史</span>
+                  </label>
+                  <label className="flex items-center gap-1">
+                    <span className="text-[11px] text-dark-400">阈值</span>
+                    <input type="number" min={30} max={98} step={1}
+                      value={Math.round((gearDraft.compactAt ?? effConfig.compactAt ?? 0.85) * 100)}
+                      onChange={e => setGearDraft(d => ({ ...d, compactAt: Number(e.target.value) / 100 }))}
+                      className="w-14 px-1.5 py-1 bg-dark-900 border border-dark-700 rounded text-xs text-dark-200
+                        focus:outline-none focus:border-accent-500/50" />
+                    <span className="text-[10px] text-dark-500">%</span>
+                  </label>
+                </div>
+                <div className="flex items-center gap-2">
+                  <label className="flex-1">
+                    <span className="text-[11px] text-dark-400">最大轮数</span>
+                    <input type="number" min={1} max={200}
+                      value={gearDraft.maxRounds ?? effConfig.maxRounds ?? 30}
+                      onChange={e => setGearDraft(d => ({ ...d, maxRounds: Number(e.target.value) }))}
+                      className="mt-0.5 w-full px-2 py-1 bg-dark-900 border border-dark-700 rounded text-xs text-dark-200
+                        focus:outline-none focus:border-accent-500/50" />
+                  </label>
+                  <label className="flex-1">
+                    <span className="text-[11px] text-dark-400">最大时长（分钟）</span>
+                    <input type="number" min={1} max={120}
+                      value={Math.round((gearDraft.maxWallMs ?? effConfig.maxWallMs ?? 600000) / 60000)}
+                      onChange={e => setGearDraft(d => ({ ...d, maxWallMs: Number(e.target.value) * 60000 }))}
+                      className="mt-0.5 w-full px-2 py-1 bg-dark-900 border border-dark-700 rounded text-xs text-dark-200
+                        focus:outline-none focus:border-accent-500/50" />
+                  </label>
+                </div>
+              </div>
+              <div className="mt-2 pt-2 border-t border-dark-700/60 flex items-center gap-1.5">
+                <button onClick={() => applyGearDraft(false)} disabled={gearSaving}
+                  className="flex-1 px-2 py-1.5 rounded-lg bg-accent-500 text-white text-[11px] font-medium
+                    hover:bg-accent-600 transition-colors disabled:opacity-50">
+                  {gearSaving ? '保存中…' : '应用到本会话'}
+                </button>
+                <button onClick={() => applyGearDraft(true)} disabled={gearSaving}
+                  title="写入设置页，之后新建的会话都用这套"
+                  className="px-2 py-1.5 rounded-lg bg-dark-700 text-dark-200 text-[11px]
+                    hover:bg-dark-600 transition-colors disabled:opacity-50">
+                  保存到设置页
+                </button>
+                <button onClick={resetGear} title="清掉本会话覆盖，回到全局设置"
+                  className="p-1.5 rounded-lg text-dark-500 hover:text-dark-300 hover:bg-dark-700 transition-colors">
+                  <RotateCcw className="w-3.5 h-3.5" />
+                </button>
+              </div>
+              <p className="mt-1.5 text-[10px] text-dark-500">
+                当前生效：窗口 {formatTokens(effConfig.windowTokens)} · 预算 {formatTokens(effConfig.budgetTokens)}
+                {' · '}压缩阈值 {Math.round((effConfig.compactAt ?? 0.85) * 100)}%
+                {' · '}轮数 {effConfig.maxRounds ?? 30} · 时长 {formatDuration(effConfig.maxWallMs ?? 600000)}
+              </p>
+            </div>
+          )}
+
           <div className="flex items-end gap-2">
             <div className="relative flex-1">
               <textarea
