@@ -24,11 +24,13 @@
  * }
  *
  * 用法：
- *   node scripts/deploy.mjs                 # 完整部署
- *   node scripts/deploy.mjs --no-build      # 只同步代码+重启（改 deploy.env 后）
- *   node scripts/deploy.mjs --skip-backup   # 跳过数据库备份
- *   node scripts/deploy.mjs --dry-run       # 只打印远程将执行的命令
- *   node scripts/deploy.mjs --logs          # 只看服务状态/日志，不部署
+ *   node deploy/deploy.mjs                    # 完整部署
+ *   node deploy/deploy.mjs --no-build         # 只同步代码+重启（改 deploy.env 后）
+ *   node deploy/deploy.mjs --skip-backup      # 跳过数据库备份
+ *   node deploy/deploy.mjs --dry-run          # 只打印远程将执行的命令
+ *   node deploy/deploy.mjs --logs             # 只看服务状态/日志，不部署
+ *   node deploy/deploy.mjs --save-image [tag] # 归档镜像到服务器 deploy/images/（默认 openlog:latest）
+ *   node deploy/deploy.mjs --load-image <归档> [新tag]
  */
 
 import { execFileSync } from 'node:child_process';
@@ -99,8 +101,13 @@ async function main() {
   try {
     // ── 镜像归档（服务器上执行 save-image.sh）──
     if (has('--save-image')) {
-      console.log('\n▶ 归档服务器上的镜像');
-      const r = await remote(`cd ${appDir} && bash deploy/scripts/save-image.sh 2>&1`);
+      // 可选镜像 tag：node deploy/deploy.mjs --save-image openlog:<sha>
+      // 带 tag 归档出来的文件名是 openlog-<sha>-<时间>.tar.gz，install.sh 靠文件名
+      // 反推 IMAGE_TAG（openlog-<sha>-…），所以离线包要用带 sha 的 tag，别用 :latest。
+      const idx = process.argv.indexOf('--save-image');
+      const imageTag = process.argv[idx + 1] && !process.argv[idx + 1].startsWith('--') ? process.argv[idx + 1] : '';
+      console.log(`\n▶ 归档服务器上的镜像${imageTag ? ` ${imageTag}` : ''}`);
+      const r = await remote(`cd ${appDir} && bash deploy/scripts/save-image.sh ${imageTag} 2>&1`);
       console.log(r.stdout || r.stderr);
       if (r.code !== 0) fail('镜像归档失败');
       return;

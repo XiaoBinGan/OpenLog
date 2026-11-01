@@ -78,8 +78,11 @@ echo "  ✅ $SIZE_HUMAN | sha256 ${SHA:0:16}… | commit $COMMIT"
 echo "  清单: $REL"
 
 # 清理旧归档（按修改时间）
+# 只清 openlog-*.tar.gz：images/ 里还放着 postgres-16-alpine.tar.gz 这类
+# 离线部署必需的非应用归档，用 *.tar.gz 通配会把它们当旧应用镜像删掉
+# （实测踩到：服务器上的 postgres 归档被清理掉，离线包就不完整了）。
 if [ "$KEEP_ARCHIVES" -gt 0 ]; then
-  OLD="$(ls -1t "$IMAGES_DIR"/*.tar.gz 2>/dev/null | tail -n +$((KEEP_ARCHIVES + 1)) || true)"
+  OLD="$(ls -1t "$IMAGES_DIR"/openlog-*.tar.gz 2>/dev/null | tail -n +$((KEEP_ARCHIVES + 1)) || true)"
   if [ -n "$OLD" ]; then
     echo "▶ 清理旧归档（保留最近 $KEEP_ARCHIVES 个）"
     echo "$OLD" | while read -r f; do
