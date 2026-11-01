@@ -765,11 +765,30 @@ The UI surfaces three kinds of notices: engine downgrade (`provider_notice`), co
 (`context_compacted`) and budget exhaustion (`budget_exhausted`) — so users know what happened and
 that replying "continue" resumes the work.
 
+**Context length is configurable and visible** (it used to be an env var baked in at startup, with no
+way to see usage — so users could not tell whether to start a new conversation or switch to a model
+with a larger window):
+
+| Where | What it controls |
+|---|---|
+| Settings → 运维助手上下文 | Persistent defaults: model window, context budget, compaction threshold, auto-compact, max rounds, max duration |
+| Gear in the assistant composer | Same knobs, scoped to **one conversation** (saved with it in localStorage); "保存到设置页" promotes them to the global default |
+| Bottom usage bar | Always visible: `12.3k / 48k · 26%` with colour levels, window size, compaction count, and a hover breakdown (system prompt / tool definitions / messages) |
+| Advice banner | At 70% it suggests starting a new session; at the compaction threshold it warns that history is about to be trimmed; if the model window is ≤32k it suggests a larger-window model instead |
+
+Precedence is **session override → settings page → environment variable**
+(`OPENLOG_ASSISTANT_CONTEXT_TOKENS` / `..._CONTEXT_WINDOW` still work as fallbacks). The server clamps
+everything: the budget can never exceed `window − maxOutputTokens`, and the warning threshold is forced
+below the compaction threshold. Usage comes from the engine's real `prompt_tokens` when the inference
+server reports them, and falls back to a local CJK-aware estimate (shown with a `~`) when it does not.
+
 Also:
 
 - SSE streaming with live tool-call status and diff visualization
 - `@`-mentions pull analysis history into context; patrol reports can be injected for analysis
 - Conversation history is persisted locally
+- Conversation history is loaded up to the configured budget instead of a hardcoded last 12 messages
+  (which used to make a large context window useless)
 
 **Audit trail**: every write/danger operation (executed, failed, denied) is recorded and queryable
 via `GET /api/chat/audit?limit=50` — tool, server, path, command, result, timestamp. Only metadata
