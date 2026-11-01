@@ -1,5 +1,6 @@
 import { createContext, useContext, useState, useCallback, type ReactNode } from 'react';
 import { X, CheckCircle, AlertCircle, Info, AlertTriangle } from 'lucide-react';
+import { useLocation } from 'react-router-dom';
 
 type ToastType = 'success' | 'error' | 'info' | 'warning';
 
@@ -51,6 +52,9 @@ const colorMap = {
 
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [toasts, setToasts] = useState<ToastMsg[]>([]);
+  // 助手页底部是输入区 + 上下文用量条，toast 需要上移才不会压住它们
+  const routeLocation = useLocation();
+  const onAssistantPage = routeLocation.pathname === '/assistant';
 
   const addToast = useCallback((type: ToastType, message: string, opts?: ToastOptions) => {
     const action = opts?.action;
@@ -99,7 +103,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     <ToastContext.Provider value={{ toast: addToast, success, error, info, warning }}>
       {children}
       {/* Toast 容器 */}
-      <div className="fixed bottom-6 right-6 z-[9999] flex flex-col-reverse gap-2 pointer-events-none">
+      <div className={`pointer-events-none fixed z-[9999] flex gap-2 ${onAssistantPage ? 'bottom-6 left-6 flex-col' : 'bottom-6 right-6 flex-col-reverse'}`}>
         {toasts.map(t => {
           const Icon = iconMap[t.type];
           return (

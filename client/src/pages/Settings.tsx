@@ -711,100 +711,162 @@ export default function Settings() {
         </div>
       )}
 
-      {/* 运维助手上下文配置 —— 原先只能改环境变量并重启容器，这里改成可持久化配置 */}
+      {/* 运维助手上下文 —— 原先是环境变量 + 重启才能改，现在可持久化配置 */}
       <div className="glass rounded-xl p-6">
-        <h2 className="text-lg font-semibold mb-1 flex items-center gap-2">
-          <SlidersHorizontal className="w-5 h-5 text-cyan-400" />
-          运维助手上下文
-        </h2>
-        <p className="text-xs text-dark-500 mb-4">
-          控制助手能「记住多少」。长任务/大文件排查建议把模型窗口和预算调大；
-          助手里的小齿轮可以给单个会话临时覆盖，这里的值是全局默认。
-        </p>
+        <div className="mb-5 flex items-start gap-3">
+          <div className="rounded-lg bg-cyan-500/15 p-2">
+            <SlidersHorizontal className="h-4 w-4 text-cyan-400" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <h2 className="text-base font-semibold text-dark-100">运维助手上下文</h2>
+            <p className="mt-0.5 text-xs leading-relaxed text-dark-500">
+              控制助手能「记住多少」。长任务或大文件排查建议调大窗口与预算；
+              助手里的小齿轮可以只对单个会话临时覆盖，这里保存的是全局默认。
+            </p>
+          </div>
+        </div>
+
         {(() => {
           const ctx = settings.assistantContext || {};
-          const win = ctx.windowTokens ?? 65536;
-          const budget = ctx.budgetTokens ?? 48000;
+          const win = ctx.windowTokens ?? 65_536;
+          const budget = ctx.budgetTokens ?? 48_000;
+          const autoCompact = ctx.autoCompact !== false;
+          const compactAt = ctx.compactAt ?? 0.85;
+          const maxBudget = Math.max(4_000, win - (ctx.maxOutputTokens ?? 4_096));
+          const clamped = Math.min(budget, maxBudget);
+          const invalid = budget > maxBudget;
+          const budgetPct = win > 0 ? Math.round((clamped / win) * 100) : 0;
           const setCtx = (patch: Record<string, unknown>) =>
-            setSettings(p => ({ ...p, assistantContext: { ...(p.assistantContext || {}), ...patch } }));
-          const invalid = budget > win;
+            setSettings(prev => ({ ...prev, assistantContext: { ...(prev.assistantContext || {}), ...patch } }));
           return (
-            <div className="space-y-4">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm text-dark-400 mb-2">模型上下文窗口（tokens）</label>
-                  <input type="number" min={8000} max={1048576} step={1024}
+            <div className="space-y-5">
+              {/* 窗口 */}
+              <div>
+                <div className="mb-2 flex items-center justify-between">
+                  <label className="text-sm text-dark-300">模型上下文窗口</label>
+                  <span className="tabular-nums text-xs text-dark-500">{(win / 1024).toFixed(0)}k tokens</span>
+                </div>
+                <div className="grid grid-cols-4 gap-2">
+                  {[32_768, 65_536, 131_072, 262_144].map(v => (
+                    <button
+                      key={v}
+                      onClick={() => { setCtx({ windowTokens: v, budgetTokens: Math.min(clamped, Math.max(4_000, v - 4_096)) }); setSaved(false); }}
+                      className={`rounded-lg border px-2 py-2 text-xs font-medium transition-all ${
+                        win === v
+                          ? 'border-cyan-500/40 bg-cyan-500/10 text-cyan-300'
+                          : 'border-dark-800 bg-dark-900/60 text-dark-400 hover:border-dark-700 hover:text-dark-200'
+                      }`}
+                    >
+                      {v / 1024}k
+                    </button>
+                  ))}
+                </div>
+                <div className="mt-2 flex items-center gap-2">
+                  <input
+                    type="number" min={8_000} max={1_048_576} step={1024}
                     value={win}
                     onChange={e => { setCtx({ windowTokens: Number(e.target.value) }); setSaved(false); }}
-                    className="w-full px-4 py-2.5 bg-dark-900 border border-dark-800 rounded-lg text-dark-200 focus:outline-none focus:border-accent-500" />
-                  <div className="flex gap-1.5 mt-2">
-                    {[32768, 65536, 131072, 262144].map(v => (
-                      <button key={v} onClick={() => { setCtx({ windowTokens: v }); setSaved(false); }}
-                        className={`px-2 py-0.5 rounded text-[11px] transition-colors ${
-                          win === v ? 'bg-accent-500/20 text-accent-400' : 'bg-dark-800 text-dark-400 hover:text-dark-200'
-                        }`}>
-                        {v / 1024}k
+                    className="flex-1 rounded-lg border border-dark-800 bg-dark-900 px-3 py-2 text-sm tabular-nums text-dark-200 outline-none transition-colors focus:border-cyan-500/50"
+                  />
+                  <span className="text-xs text-dark-600">按模型真实上限填（如 Qwen3-128k 填 131072）</span>
+                </div>
+              </div>
+
+              {/* 预算 */}
+              <div>
+                <div className="mb-2 flex items-center justify-between">
+                  <label className="text-sm text-dark-300">上下文预算</label>
+                  <span className={`tabular-nums text-xs ${invalid ? 'text-yellow-500' : 'text-dark-500'}`}>
+                    {(clamped / 1000).toFixed(0)}k / {(win / 1000).toFixed(0)}k（占窗口 {budgetPct}%）
+                  </span>
+                </div>
+                <input
+                  type="range" min={4_000} max={maxBudget} step={1024}
+                  value={clamped}
+                  onChange={e => { setCtx({ budgetTokens: Number(e.target.value) }); setSaved(false); }}
+                  className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-dark-800 accent-cyan-500
+                    [&::-webkit-slider-thumb]:h-3.5 [&::-webkit-slider-thumb]:w-3.5 [&::-webkit-slider-thumb]:appearance-none
+                    [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-cyan-400
+                    [&::-webkit-slider-thumb]:shadow-[0_0_0_4px_rgba(34,211,238,0.16)]"
+                />
+                <p className={`mt-1.5 text-xs ${invalid ? 'text-yellow-500' : 'text-dark-600'}`}>
+                  {invalid
+                    ? `超出窗口可容纳上限，保存时会自动压到 ${(maxBudget / 1000).toFixed(0)}k（窗口 − 输出上限）`
+                    : '建议留 15%~25% 给模型输出；预算越接近窗口，压缩越频繁'}
+                </p>
+              </div>
+
+              {/* 压缩与运行上限 */}
+              <div className="space-y-4 rounded-xl border border-dark-800/70 bg-dark-900/40 p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <div className="text-sm text-dark-300">自动压缩历史</div>
+                    <p className="mt-0.5 text-xs text-dark-600">关闭后超预算会中断任务</p>
+                  </div>
+                  <button
+                    onClick={() => { setCtx({ autoCompact: !autoCompact }); setSaved(false); }}
+                    className="relative h-6 w-11 shrink-0 rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-cyan-500/40"
+                    style={{ background: autoCompact ? 'rgb(34 211 238)' : '#374151' }}
+                    aria-pressed={autoCompact}
+                  >
+                    <span
+                      className="absolute top-0.5 h-5 w-5 rounded-full bg-white shadow-sm transition-all"
+                      style={{ transform: autoCompact ? 'translateX(22px)' : 'translateX(2px)' }}
+                    />
+                  </button>
+                </div>
+
+                <div>
+                  <div className="mb-2 flex items-center justify-between">
+                    <span className="text-sm text-dark-300">压缩触发阈值</span>
+                    <span className="tabular-nums text-xs text-dark-500">{Math.round(compactAt * 100)}%</span>
+                  </div>
+                  <div className="grid grid-cols-4 gap-2">
+                    {[0.7, 0.8, 0.85, 0.9].map(v => (
+                      <button
+                        key={v}
+                        onClick={() => { setCtx({ compactAt: v }); setSaved(false); }}
+                        className={`rounded-lg border px-2 py-1.5 text-xs tabular-nums transition-all ${
+                          Math.abs(compactAt - v) < 0.001
+                            ? 'border-cyan-500/40 bg-cyan-500/10 text-cyan-300'
+                            : 'border-dark-800 text-dark-400 hover:border-dark-700 hover:text-dark-200'
+                        }`}
+                      >
+                        {Math.round(v * 100)}%
                       </button>
                     ))}
                   </div>
                 </div>
-                <div>
-                  <label className="block text-sm text-dark-400 mb-2">上下文预算（给消息用，tokens）</label>
-                  <input type="number" min={4000} max={1048576} step={1024}
-                    value={budget}
-                    onChange={e => { setCtx({ budgetTokens: Number(e.target.value) }); setSaved(false); }}
-                    className={`w-full px-4 py-2.5 bg-dark-900 border rounded-lg text-dark-200 focus:outline-none focus:border-accent-500 ${
-                      invalid ? 'border-red-500/60' : 'border-dark-800'
-                    }`} />
-                  <p className={`text-[11px] mt-2 ${invalid ? 'text-red-400' : 'text-dark-500'}`}>
-                    {invalid
-                      ? `预算不能超过窗口（${Math.round(win / 1024)}k），保存时会自动压到 ${Math.round((win - 4096) / 1024)}k`
-                      : `建议留出 15%~25% 给模型输出（当前约占 ${Math.round((budget / win) * 100)}% 窗口）`}
-                  </p>
-                </div>
-              </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                <div>
-                  <label className="block text-sm text-dark-400 mb-2">压缩触发阈值</label>
-                  <div className="flex items-center gap-2">
-                    <input type="number" min={30} max={98} step={1}
-                      value={Math.round((ctx.compactAt ?? 0.85) * 100)}
-                      onChange={e => { setCtx({ compactAt: Number(e.target.value) / 100 }); setSaved(false); }}
-                      className="w-20 px-3 py-2.5 bg-dark-900 border border-dark-800 rounded-lg text-dark-200 focus:outline-none focus:border-accent-500" />
-                    <span className="text-xs text-dark-500">% 预算</span>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="mb-1.5 block text-sm text-dark-300">最大轮数</label>
+                    <input
+                      type="number" min={1} max={200}
+                      value={ctx.maxRounds ?? 30}
+                      onChange={e => { setCtx({ maxRounds: Number(e.target.value) }); setSaved(false); }}
+                      className="w-full rounded-lg border border-dark-800 bg-dark-900 px-3 py-2 text-sm tabular-nums text-dark-200 outline-none transition-colors focus:border-cyan-500/50"
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1.5 block text-sm text-dark-300">最大时长（分钟）</label>
+                    <input
+                      type="number" min={1} max={120}
+                      value={Math.round((ctx.maxWallMs ?? 600_000) / 60_000)}
+                      onChange={e => { setCtx({ maxWallMs: Number(e.target.value) * 60_000 }); setSaved(false); }}
+                      className="w-full rounded-lg border border-dark-800 bg-dark-900 px-3 py-2 text-sm tabular-nums text-dark-200 outline-none transition-colors focus:border-cyan-500/50"
+                    />
                   </div>
                 </div>
-                <div>
-                  <label className="block text-sm text-dark-400 mb-2">最大轮数</label>
-                  <input type="number" min={1} max={200}
-                    value={ctx.maxRounds ?? 30}
-                    onChange={e => { setCtx({ maxRounds: Number(e.target.value) }); setSaved(false); }}
-                    className="w-full px-4 py-2.5 bg-dark-900 border border-dark-800 rounded-lg text-dark-200 focus:outline-none focus:border-accent-500" />
-                </div>
-                <div>
-                  <label className="block text-sm text-dark-400 mb-2">最大时长（分钟）</label>
-                  <input type="number" min={1} max={120}
-                    value={Math.round((ctx.maxWallMs ?? 600000) / 60000)}
-                    onChange={e => { setCtx({ maxWallMs: Number(e.target.value) * 60000 }); setSaved(false); }}
-                    className="w-full px-4 py-2.5 bg-dark-900 border border-dark-800 rounded-lg text-dark-200 focus:outline-none focus:border-accent-500" />
-                </div>
               </div>
 
-              <label className="flex items-center gap-2">
-                <input type="checkbox"
-                  checked={ctx.autoCompact !== false}
-                  onChange={e => { setCtx({ autoCompact: e.target.checked }); setSaved(false); }}
-                  className="accent-accent-500" />
-                <span className="text-sm text-dark-300">自动压缩历史（关闭后超预算会直接中断任务）</span>
-              </label>
-
-              <div className="rounded-lg bg-dark-900/60 border border-dark-800 px-3 py-2 text-[11px] text-dark-400 leading-relaxed">
-                助手输入框上方会实时显示用量。达到 <b className="text-dark-200">{Math.round((ctx.warnAt ?? 0.7) * 100)}%</b> 时提示开启新会话，
-                达到 <b className="text-dark-200">{Math.round((ctx.compactAt ?? 0.85) * 100)}%</b> 时自动压缩或按配置中断。
-                <br />
-                窗口填的是<b className="text-dark-200">模型真实上限</b>（如 Qwen3 128k 填 131072，本地 32k 模型填 32768）；
-                填大了会被模型拒绝，填小了会白白浪费上下文。
+              <div className="flex items-start gap-2 rounded-lg border border-cyan-500/15 bg-cyan-500/[0.04] px-3 py-2 text-xs leading-relaxed text-dark-400">
+                <span className="mt-0.5 shrink-0 text-cyan-400">💡</span>
+                <span>
+                  助手输入框上方会实时显示用量条。达到 <b className="text-dark-200">{Math.round((ctx.warnAt ?? 0.7) * 100)}%</b> 提示开启新会话，
+                  达到 <b className="text-dark-200">{Math.round(compactAt * 100)}%</b> 自动压缩历史。
+                  填大了会被模型拒绝，填小了会白白浪费上下文。
+                </span>
               </div>
             </div>
           );

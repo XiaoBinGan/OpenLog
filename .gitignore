@@ -52,3 +52,6 @@ coverage/
 
 # 本地部署临时文件（git bundle / 部署脚本）
 _deploy/
+
+# 截图/调试用的无头浏览器 profile（eslint 会扫到里面的浏览器扩展）
+.edge-profile*

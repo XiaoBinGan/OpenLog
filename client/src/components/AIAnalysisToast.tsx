@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { Brain, AlertTriangle, CheckCircle, XCircle, X, Loader, ChevronRight, Send, BookOpen } from 'lucide-react';
 import { sanitizeHtml } from '../utils/sanitize';
 
@@ -31,6 +31,7 @@ export default function AIAnalysisToast({ wsRef, onViewLogs }: AIAnalysisToastPr
   const [assistantTips, setAssistantTips] = useState<AssistantTip[]>([]);
   const prevToasts = useRef<Map<string, ToastData>>(new Map());
   const navigate = useNavigate();
+  const location = useLocation();
 
   // 监听所有助手回答完成事件
   useEffect(() => {
@@ -71,11 +72,14 @@ export default function AIAnalysisToast({ wsRef, onViewLogs }: AIAnalysisToastPr
   const dismiss = (id: string) => setToasts(prev => prev.filter(t => t.id !== id));
 
   const goToAssistant = () => navigate('/assistant');
+  const onAssistantPage = location.pathname === '/assistant';
 
   if (toasts.length === 0 && assistantTips.length === 0) return null;
 
   return (
-    <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2 max-w-md">
+    <div
+      className={`fixed z-50 flex max-w-md flex-col gap-2 ${onAssistantPage ? 'bottom-20 left-4' : 'bottom-4 right-4'}`}
+    >
       {/* 助手回答完成通知 */}
       {assistantTips.map((tip) => (
         <div
