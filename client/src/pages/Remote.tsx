@@ -726,7 +726,7 @@ export default function Remote() {
               <div className="glass rounded-xl p-6 text-center text-dark-500 flex-1 flex flex-col items-center justify-center">
                 <Server className="w-10 h-10 opacity-30 mb-3" />
                 <p className="text-sm">暂无服务器</p>
-                <p className="text-xs mt-1 text-dark-600">点击右上角添加</p>
+                <p className="text-xs mt-1 text-dark-600">点上方「添加」新建</p>
               </div>
             ) : filteredServers.length === 0 ? (
               <div className="glass rounded-xl p-6 text-center text-dark-500">
@@ -788,9 +788,17 @@ export default function Remote() {
             <Server className="w-16 h-16 opacity-20 mb-4" />
             <p className="text-lg font-medium mb-1 text-dark-300">未连接任何服务器</p>
             <p className="mb-4 text-sm text-dark-600">
-              {showServerList ? '在左侧服务器列表点「连接」，或勾选多台后点「全部重连」' : '先从左侧打开服务器列表'}
+              {servers.length === 0
+                ? '先在左侧点「添加」新建一台服务器'
+                : showServerList
+                  ? '在左侧服务器列表点「连接」，或勾选多台后点「全部重连」'
+                  : '先从左侧打开服务器列表'}
             </p>
-            {!showServerList && (
+            {servers.length === 0 ? (
+              <button onClick={() => { resetForm(); setShowAddModal(true); }} className="flex items-center gap-2 rounded-lg border border-accent-500/30 bg-accent-500/15 px-4 py-2 text-sm text-accent-300 transition-colors hover:bg-accent-500/25">
+                <Plus className="w-4 h-4" /> 添加服务器
+              </button>
+            ) : !showServerList && (
               <button onClick={() => setShowServerList(true)} className="flex items-center gap-2 rounded-lg border border-accent-500/30 bg-accent-500/15 px-4 py-2 text-sm text-accent-300 transition-colors hover:bg-accent-500/25">
                 <PanelLeftOpen className="w-4 h-4" /> 显示服务器列表
               </button>
