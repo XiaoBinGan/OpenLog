@@ -1330,10 +1330,15 @@ export async function getRemoteSystemStats(id) {
     const diskLines = lines.filter(l => l.startsWith('DISK:'));
     const SKIP_NAMES = ['/dev', '/dev/shm', '/dev/run', '/sys', '/proc', '/run'];
     const disks = [];
+    // 同一块设备可能被多个挂载点重复列出（bind mount、docker 的单文件挂载都会这样），
+    // 重复条目会让前端把占用率重复相加（T4 上出现过 476.9%），这里按设备名去重。
+    const seenDevices = new Set();
     for (const rawLine of diskLines) {
       const line = rawLine.replace('DISK:', '').trim();
       const parts = line.split(/\s+/);
       if (parts.length < 6) continue;
+      // 第 0 列是设备名（Filesystem）
+      const device = parts[0];
       // 最后一列是挂载点，倒数第二列是 Use%（带%），倒数第三是 Avail，倒数第四是 Used，倒数第五是 Size
       const n = parts.length;
       const mount = parts[n - 1];
@@ -1342,13 +1347,17 @@ export async function getRemoteSystemStats(id) {
       const total = parts[n - 5]; // Size
       const used = parts[n - 4];  // Used
       if (SKIP_NAMES.includes(mount)) continue;
+      if (device) {
+        if (seenDevices.has(device)) continue;
+        seenDevices.add(device);
+      }
       const parseSize = (s) => {
         const m = s.match(/^([\d.]+)([BKMGT])?$/);
         if (!m) return 0;
         const scale = { B: 1, K: 1024, M: 1024**2, G: 1024**3, T: 1024**4 };
         return parseFloat(m[1]) * (scale[m[2]] || 1);
       };
-      disks.push({ name: mount, used: parseSize(used), total: parseSize(total), usePercent: pct });
+      disks.push({ name: mount, device, used: parseSize(used), total: parseSize(total), usePercent: pct });
     }
     
     // 解析网络流量

@@ -23,6 +23,7 @@ import * as docker from './docker.js';
 import { ContainerLogWatcher, detectSelfContainerId } from './container-log-watch.js';
 import { parseLogLevel } from './log-level.js';
 import { warnIfUnconfigured as warnIfHostGpuUnconfigured } from './gpu-host-ssh.js';
+import { dedupeDisks } from './disk-utils.js';
 import gpuRouter from './routes/gpu.js';
 import skillsRouter from './routes/skills.js';
 import createMonitorRouter from './routes/monitor.js';
@@ -1306,7 +1307,7 @@ async function executeAssistantTool(name, args) {
         return {
           cpu: { load: cpu.currentLoad || 0 },
           memory: { used: mem.used || 0, total: mem.total || 1, free: mem.free || 0, usePercent: mem.total > 0 ? ((mem.used / mem.total) * 100).toFixed(1) : 0 },
-          disk: disksData.map(d => ({ name: d.fs, used: d.used, total: d.size, usePercent: d.use })),
+          disk: dedupeDisks(disksData.map(d => ({ name: d.fs, used: d.used, total: d.size, usePercent: d.use }))),
           network: (network || []).slice(0, 3).map(n => ({ iface: n.iface, rx: n.rx_sec, tx: n.tx_sec })),
           processes: (processes?.list || []).slice(0, 10).map(p => ({ pid: p.pid, name: p.name, cpu: p.cpu, mem: p.mem })),
           gpus,

@@ -4,6 +4,7 @@ import {
   Sparkles, Check, TriangleAlert,
 } from 'lucide-react';
 import type { ContextSettings } from '../contexts/AssistantContext';
+import Toggle from './Toggle';
 import {
   type ContextConfigLike, type ContextUsageLike,
   USAGE_LEVEL_STYLES, usageLevel, usageSummary, formatTokens, formatDuration,
@@ -315,18 +316,14 @@ export function ContextSettingsPanel({
               <label className="text-[11px] font-medium text-dark-300">自动压缩历史</label>
               <p className="mt-0.5 text-[10px] text-dark-600">关闭后超预算会直接中断任务</p>
             </div>
-            <button
-              type="button"
-              onClick={() => setAutoCompact(v => !v)}
-              className="relative h-5 w-9 shrink-0 rounded-full transition-colors focus:outline-none"
-              style={{ background: autoCompact ? 'rgb(20 184 166)' : '#374151' }}
-              aria-pressed={autoCompact}
-            >
-              <span
-                className="absolute top-0.5 h-4 w-4 rounded-full bg-white shadow-sm transition-all"
-                style={{ transform: autoCompact ? 'translateX(18px)' : 'translateX(2px)' }}
-              />
-            </button>
+            <Toggle
+              checked={autoCompact}
+              onChange={setAutoCompact}
+              size="sm"
+              color="rgb(20 184 166)"
+              title="自动压缩历史"
+              aria-label="自动压缩历史"
+            />
           </div>
           {autoCompact && (
             <div className="mt-2 flex items-center gap-1">

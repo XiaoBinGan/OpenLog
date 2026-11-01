@@ -20,6 +20,7 @@ import { withWsToken } from '../api/auth';
 import { apiFetch } from '../api/client';
 
 import type { MonitorStats, MonitorHistory, Log, RemoteServer } from '../types';
+import { summarizeDisks } from '../utils/diskUsage';
 
 // ─── Panel drag-and-drop system ───────────────────────────────────────────
 
@@ -312,9 +313,7 @@ export default function Dashboard() {
             timestamp: new Date(now - (29 - i) * 5000).toISOString(),
             cpu: remoteStats.cpu.load * (0.8 + Math.random() * 0.4),
             memory: (remoteStats.memory.used / remoteStats.memory.total) * 100 * (0.9 + Math.random() * 0.2),
-            disk: remoteStats.disk.length > 0
-              ? remoteStats.disk.reduce((s, d) => s + (d.usePercent || 0), 0) / remoteStats.disk.length
-              : 0,
+            disk: remoteStats.disk.length > 0 ? summarizeDisks(remoteStats.disk).percent : 0,
             network: remoteNetworkBps
           }));
           setHistory(mockHistory);
@@ -439,67 +438,46 @@ export default function Dashboard() {
               </div>
             </div>
 
-            {/* Disk */}
-            <div className="glass rounded-xl p-4">
-              <div className="flex items-center justify-between mb-2">
-                <HardDrive className="w-5 h-5 text-orange-500" />
-                <span className="text-xs text-dark-400">磁盘</span>
-              </div>
-              <div className="text-2xl font-bold">
-                {(() => {
-                  const pcts = stats?.disk?.map(d => d.usePercent) || [];
-                  return pcts.length > 0
-                    ? (pcts.reduce((a, b) => a + b, 0) / pcts.length).toFixed(1)
-                    : 0;
-                })()}%
-              </div>
-              <div className="text-xs text-dark-500 mt-0.5">
-                {stats && stats.disk.length > 0
-                  ? stats.disk.map(d => `${d.name} ${d.usePercent}%`).join(' / ')
-                  : '无数据'}
-              </div>
-              <div className="mt-2 h-1 bg-dark-800 rounded-full overflow-hidden">
-                <div
-                  className={`h-full transition-all duration-500 ${
-                    (() => { const p=stats?.disk?.map(d=>d.usePercent)||[]; return p.length>0?p.reduce((a,b)=>a+b,0)/p.length:0; })() > 90 ? 'bg-red-500' :
-                    (() => { const p=stats?.disk?.map(d=>d.usePercent)||[]; return p.length>0?p.reduce((a,b)=>a+b,0)/p.length:0; })() > 70 ? 'bg-yellow-500' :
-                    'bg-gradient-to-r from-orange-500 to-orange-400'
-                  }`}
-                  style={{ width: `${(() => { const p=stats?.disk?.map(d=>d.usePercent)||[]; return p.length>0?p.reduce((a,b)=>a+b,0)/p.length:0; })()}%` }}
-                />
-              </div>
-              {stats?.disk && stats.disk.length > 0 ? (() => {
-                // macOS APFS 卷共享同一个物理磁盘，total 值相同，需要去重
-                const uniqueTotals = [...new Set(stats.disk.map(d => d.total))];
-                const totalAll = uniqueTotals.length === 1 
-                  ? uniqueTotals[0]  // APFS 单物理磁盘
-                  : stats.disk.reduce((s, d) => s + (d.total || 0), 0);  // 多物理磁盘
-                const totalUsed = uniqueTotals.length === 1
-                  ? stats.disk.reduce((s, d) => s + (d.used || 0), 0)  // APFS：累加所有卷的使用量
-                  : stats.disk.reduce((s, d) => s + (d.used || 0), 0);  // 多磁盘
-                const totalPct = totalAll > 0 ? (totalUsed / totalAll) * 100 : 0;
-                return (
-                  <>
-                    <div className="text-2xl font-bold">{formatBytes(totalAll)}</div>
-                    <div className="text-xs text-dark-400 mt-1">
-                      已用 {formatBytes(totalUsed)} ({totalPct.toFixed(1)}%) · {stats.disk.length} 个分区
-                    </div>
-                    <div className="mt-2 h-1.5 bg-dark-800 rounded-full overflow-hidden">
+            {/* Disk —— 先去重再统计：容器/APFS 会把同一块盘重复列成多条，
+                直接按条数求平均或求和都会算出 >100% 的值 */}
+            {(() => {
+              const summary = summarizeDisks(stats?.disk);
+              const tone = summary.percent > 90
+                ? 'bg-red-500'
+                : summary.percent > 70
+                  ? 'bg-yellow-500'
+                  : 'bg-gradient-to-r from-orange-500 to-orange-400';
+              return (
+                <div className="glass rounded-xl p-4">
+                  <div className="flex items-center justify-between mb-2">
+                    <HardDrive className="w-5 h-5 text-orange-500" />
+                    <span className="text-xs text-dark-400">磁盘</span>
+                  </div>
+                  {summary.disks.length > 0 ? (
+                    <>
+                      <div className="text-2xl font-bold">{summary.percent.toFixed(1)}%</div>
                       <div
-                        className={`h-full transition-all duration-500 ${
-                          totalPct > 90 ? 'bg-red-500' :
-                          totalPct > 70 ? 'bg-yellow-500' :
-                          'bg-gradient-to-r from-orange-500 to-orange-400'
-                        }`}
-                        style={{ width: `${Math.min(totalPct, 100)}%` }}
-                      />
-                    </div>
-                  </>
-                );
-              })() : (
-                <div className="text-2xl font-bold">-</div>
-              )}
-            </div>
+                        className="text-xs text-dark-500 mt-0.5 truncate"
+                        title={summary.disks.map(d => `${d.name} ${(d.usePercent ?? 0).toFixed(1)}%`).join(' / ')}
+                      >
+                        {summary.disks.map(d => `${d.name} ${Math.round(d.usePercent ?? 0)}%`).join(' / ')}
+                      </div>
+                      <div className="mt-2 h-1.5 bg-dark-800 rounded-full overflow-hidden">
+                        <div
+                          className={`h-full transition-all duration-500 ${tone}`}
+                          style={{ width: `${Math.min(summary.percent, 100)}%` }}
+                        />
+                      </div>
+                      <div className="text-xs text-dark-400 mt-1">
+                        已用 {formatBytes(summary.used)} / {formatBytes(summary.total)} · {summary.disks.length} 个分区
+                      </div>
+                    </>
+                  ) : (
+                    <div className="text-2xl font-bold">-</div>
+                  )}
+                </div>
+              );
+            })()}
 
             {/* Network */}
             <div className="glass rounded-xl p-4">

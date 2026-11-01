@@ -13,6 +13,9 @@ export default [
       'data/**',
       'coverage/**',
       'dist/**',
+      // 本地无头浏览器验收留下的 profile（内含 Edge 扩展的压缩脚本），不属于项目代码
+      '.edge-*/**',
+      'logs/**',
       '**/*.min.js',
     ],
   },

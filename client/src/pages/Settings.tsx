@@ -24,6 +24,7 @@ import {
   Bell
 } from 'lucide-react';
 import type { Settings as SettingsType } from '../types';
+import Toggle from '../components/Toggle';
 
 const providers = [
   { id: 'openai', name: 'OpenAI', baseUrl: 'https://api.openai.com/v1', models: ['gpt-4o-mini', 'gpt-4o', 'gpt-4-turbo', 'gpt-3.5-turbo'], icon: Cloud },
@@ -636,16 +637,14 @@ export default function Settings() {
                   </p>
                 </div>
               </div>
-              <button
-                onClick={() => { setSettings(p => ({ ...p, thinkingEnabled: !p.thinkingEnabled })); setSaved(false); }}
-                className="relative w-11 h-6 rounded-full transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-purple-500/50"
-                style={{ background: settings.thinkingEnabled ? '#a855f7' : '#374151' }}
-              >
-                <div
-                  className="absolute top-0.5 w-5 h-5 rounded-full bg-white shadow-sm transition-all duration-200"
-                  style={{ transform: settings.thinkingEnabled ? 'translateX(22px)' : 'translateX(2px)' }}
-                />
-              </button>
+              <Toggle
+                checked={settings.thinkingEnabled}
+                onChange={next => { setSettings(p => ({ ...p, thinkingEnabled: next })); setSaved(false); }}
+                size="md"
+                color="#a855f7"
+                ring="focus:ring-2 focus:ring-purple-500/50"
+                aria-label="显示思维过程"
+              />
             </div>
             {/* Thinking Test */}
             <div className="flex items-center gap-3">
@@ -803,17 +802,14 @@ export default function Settings() {
                     <div className="text-sm text-dark-300">自动压缩历史</div>
                     <p className="mt-0.5 text-xs text-dark-600">关闭后超预算会中断任务</p>
                   </div>
-                  <button
-                    onClick={() => { setCtx({ autoCompact: !autoCompact }); setSaved(false); }}
-                    className="relative h-6 w-11 shrink-0 rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-cyan-500/40"
-                    style={{ background: autoCompact ? 'rgb(34 211 238)' : '#374151' }}
-                    aria-pressed={autoCompact}
-                  >
-                    <span
-                      className="absolute top-0.5 h-5 w-5 rounded-full bg-white shadow-sm transition-all"
-                      style={{ transform: autoCompact ? 'translateX(22px)' : 'translateX(2px)' }}
-                    />
-                  </button>
+                  <Toggle
+                    checked={autoCompact}
+                    onChange={next => { setCtx({ autoCompact: next }); setSaved(false); }}
+                    size="md"
+                    color="rgb(34 211 238)"
+                    ring="focus:ring-2 focus:ring-cyan-500/40"
+                    aria-label="自动压缩历史"
+                  />
                 </div>
 
                 <div>
@@ -950,16 +946,14 @@ export default function Settings() {
           </div>
 
           {/* Master Toggle */}
-          <button
-            onClick={() => setSettings(p => ({ ...p, autoAnalysis: !p.autoAnalysis }))}
-            className="relative w-14 h-7 rounded-full transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-accent-500/50"
-            style={{ background: settings.autoAnalysis ? '#10b981' : '#374151' }}
-          >
-            <div
-              className="absolute top-1 w-5 h-5 rounded-full bg-white shadow-sm transition-all duration-200"
-              style={{ transform: settings.autoAnalysis ? 'translateX(28px)' : 'translateX(4px)' }}
-            />
-          </button>
+          <Toggle
+            checked={settings.autoAnalysis}
+            onChange={next => { setSettings(p => ({ ...p, autoAnalysis: next })); setSaved(false); }}
+            size="lg"
+            color="#10b981"
+            ring="focus:ring-2 focus:ring-accent-500/50"
+            aria-label="主动分析"
+          />
         </div>
 
         {/* Multi-service sources */}
@@ -1025,21 +1019,18 @@ export default function Settings() {
                     </span>
 
                     {/* Toggle */}
-                    <button
-                      onClick={() => {
+                    <Toggle
+                      checked={src.enabled}
+                      onChange={next => {
                         const updated = [...(settings.watchSources || [])];
-                        updated[idx] = { ...src, enabled: !src.enabled };
+                        updated[idx] = { ...src, enabled: next };
                         setSettings(p => ({ ...p, watchSources: updated }));
                         setSaved(false);
                       }}
-                      className="relative w-10 h-5 rounded-full transition-all duration-200 focus:outline-none"
-                      style={{ background: src.enabled ? '#10b981' : '#374151' }}
-                    >
-                      <div
-                        className="absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all duration-200"
-                        style={{ transform: src.enabled ? 'translateX(20px)' : 'translateX(2px)' }}
-                      />
-                    </button>
+                      size="sm"
+                      color="#10b981"
+                      aria-label={`${src.name || '日志服务'} 启用`}
+                    />
 
                     {/* Delete */}
                     {(settings.watchSources || []).length > 1 && (
@@ -1153,20 +1144,18 @@ export default function Settings() {
                   }`}>
                     {ds.autoAnalysis && ds.enabled ? 'AI 分析' : '已关闭'}
                   </span>
-                  <button
-                    onClick={() => {
+                  <Toggle
+                    checked={ds.enabled}
+                    onChange={next => {
                       const updated = [...(settings.dockerSources || [])];
-                      updated[idx] = { ...ds, enabled: !ds.enabled };
+                      updated[idx] = { ...ds, enabled: next };
                       setSettings(p => ({ ...p, dockerSources: updated }));
                       setSaved(false);
                     }}
-                    className="relative w-10 h-5 rounded-full transition-all duration-200"
-                    style={{ background: ds.enabled ? '#3b82f6' : '#374151' }}
-                  >
-                    <div className="absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all duration-200"
-                      style={{ transform: ds.enabled ? 'translateX(20px)' : 'translateX(2px)' }}
-                    />
-                  </button>
+                    size="sm"
+                    color="#3b82f6"
+                    aria-label={`${ds.name || 'Docker 数据源'} 启用`}
+                  />
                   {(settings.dockerSources || []).length > 1 && (
                     <button
                       onClick={() => {
@@ -1824,16 +1813,13 @@ export default function Settings() {
                     }`}>
                       {cfg.enabled ? '告警中' : '已关闭'}
                     </span>
-                    <button
-                      onClick={() => updateAlertConfig(machine.id, 'enabled', cfg.enabled ? 0 : 1)}
-                      className="relative w-10 h-5 rounded-full transition-all duration-200 focus:outline-none"
-                      style={{ background: cfg.enabled ? '#ef4444' : '#374151' }}
-                    >
-                      <div
-                        className="absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all duration-200"
-                        style={{ transform: cfg.enabled ? 'translateX(20px)' : 'translateX(2px)' }}
-                      />
-                    </button>
+                    <Toggle
+                      checked={cfg.enabled}
+                      onChange={() => updateAlertConfig(machine.id, 'enabled', cfg.enabled ? 0 : 1)}
+                      size="sm"
+                      color="#ef4444"
+                      aria-label={`${machine.host} 告警`}
+                    />
                   </div>
 
                   {/* Card body */}

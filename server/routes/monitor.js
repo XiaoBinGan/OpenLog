@@ -15,6 +15,7 @@ import { errorMessage } from '../errors.js';
 import { execFileSync } from 'child_process';
 import * as si from 'systeminformation';
 import { queryHostGpu } from '../gpu-host-ssh.js';
+import { dedupeDisks } from '../disk-utils.js';
 
 const NO_CACHE_HEADERS = (res) => {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
@@ -75,7 +76,9 @@ export default function createMonitorRouter({ monitorHistory }) {
       res.json({
         cpu: { load: cpu.currentLoad || 0, cores: cpu.cpus.map((c) => c.load) },
         memory: { used: mem.used || 0, total: mem.total || 1, free: mem.free || 0 },
-        disk: disks.map((d) => ({ name: d.fs, used: d.used, total: d.size, usePercent: d.use })),
+        // 容器里同一块盘会被 bind mount 重复列出（T4 上 /dev/sda3 出现过 6 次），
+        // 不去重的话前端把 6 条加起来会显示 476.9%。这里统一收敛成"一块盘一条"。
+        disk: dedupeDisks(disks.map((d) => ({ name: d.fs, used: d.used, total: d.size, usePercent: d.use }))),
         network: network.map((n) => ({ iface: n.iface, rx: n.rx_sec, tx: n.tx_sec })),
         processes: processes.list.slice(0, 10).map((p) => ({ pid: p.pid, name: p.name, cpu: p.cpu, mem: p.mem })),
         gpus,

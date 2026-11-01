@@ -1,6 +1,7 @@
 import { Monitor, Server, Activity, HardDrive, Cpu, ChevronDown } from 'lucide-react';
 import { useDevice } from '../contexts/DeviceContext';
 import { apiFetch } from '../api/client';
+import { summarizeDisks } from '../utils/diskUsage';
 import { useState, useEffect } from 'react';
 
 interface QuickStats {
@@ -63,13 +64,9 @@ export default function GlobalStatusBar() {
           if (data.disk) {
             // 新格式: [{usePercent: 23}] 或旧格式: "388G/1.8T (23%)"
             if (Array.isArray(data.disk)) {
-              // macOS APFS 卷共享同一个物理磁盘，total 值相同，需要去重
-              const uniqueTotals = [...new Set(data.disk.map((d: any) => d.total))];
-              const totalAll = uniqueTotals.length === 1 
-                ? uniqueTotals[0]  // APFS 单物理磁盘
-                : data.disk.reduce((s: number, d: any) => s + (d.total || 0), 0);  // 多物理磁盘
-              const totalUsed = data.disk.reduce((s: number, d: any) => s + (d.used || 0), 0);
-              disk = totalAll > 0 ? (totalUsed / totalAll) * 100 : 0;
+              // 同一块盘的重复条目（bind mount / APFS 卷）由 summarizeDisks 去重，
+              // 直接求和会算出 476.9% 这类不可能的值
+              disk = summarizeDisks(data.disk).percent;
             } else {
               const match = String(data.disk).match(/(\d+)%/);
               if (match) disk = parseFloat(match[1]);
@@ -88,15 +85,8 @@ export default function GlobalStatusBar() {
           setStats({
             cpu: data.cpu?.load || 0,
             memory: data.memory ? (data.memory.used / (data.memory.total || 1)) * 100 : 0,
-            disk: disks.length > 0 ? (() => {
-              // macOS APFS 卷共享同一个物理磁盘，total 值相同，需要去重
-              const uniqueTotals = [...new Set(disks.map((d) => d.total))];
-              const totalAll = uniqueTotals.length === 1
-                ? uniqueTotals[0] ?? 0  // APFS 单物理磁盘
-                : disks.reduce((s, d) => s + (d.total || 0), 0);  // 多物理磁盘
-              const totalUsed = disks.reduce((s, d) => s + (d.used || 0), 0);
-              return totalAll > 0 ? (totalUsed / totalAll) * 100 : 0;
-            })() : 0,
+            // 服务端已去重，这里再兜一层（旧版服务端 / 重复 bind mount 都不会算成 >100%）
+            disk: summarizeDisks(disks).percent,
           });
         }
       } catch {
