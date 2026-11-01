@@ -174,7 +174,8 @@ bash deploy/deploy.sh
 ```
 
 首次会建表、生成访问令牌。完成后访问 `http://<host>:3001/`，
-首次需要输入令牌（`docker exec openlog cat /app/data/.auth_token`）。
+首次需要输入令牌——`deploy.sh` 结束时会把「访问令牌」直接打印在最后几行，
+不用再登服务器翻目录；也可以手动取（`docker exec openlog cat /app/data/.auth_token`）。
 
 ### 3.4 如果从 SQLite 迁移过来的数据
 
@@ -315,13 +316,17 @@ bash deploy/deploy.sh --no-build
 
 ### 访问令牌
 
-在 `data/.auth_token`（bind mount，重建容器不丢）：
+`deploy.sh` / `install.sh` 成功结束时都会在最后打印「访问令牌」，直接从部署输出里复制即可。
+需要再次查看时，令牌存在 `data/.auth_token`（bind mount，重建容器不丢）：
 
 ```bash
 docker exec openlog cat /app/data/.auth_token
 # 或
 cat data/.auth_token
 ```
+
+令牌不会写进 `backups/.last-deploy.json`（状态文件会被备份/同步，避免长期凭据扩散）；
+固定令牌用 `OPENLOG_TOKEN` 环境变量，改令牌删文件重启即可（会重新生成）。
 
 想换令牌：删文件重启（会重新生成），或用 `OPENLOG_TOKEN` 环境变量固定。
 

@@ -335,10 +335,23 @@ if [ "$DRY_RUN" = "0" ]; then
 JSON
 fi
 
+# ─── 8. 打印访问令牌 ───────────────────────────────────────────────────
+# 令牌只输出到部署终端，不写进 .last-deploy.json（状态文件会被备份/同步，
+# 写进去等于把长期凭据摊到多处）。优先用显式配置的 OPENLOG_TOKEN，否则读
+# 宿主机数据目录里自动生成的 .auth_token；都读不到时回退到容器内读取
+# （旧部署可能把 data 放在别的挂载点）。
+if [ -n "${OPENLOG_TOKEN:-}" ]; then
+  ACCESS_TOKEN="$OPENLOG_TOKEN"
+else
+  ACCESS_TOKEN="$(cat "$DATA_DIR/.auth_token" 2>/dev/null || true)"
+  [ -n "$ACCESS_TOKEN" ] || ACCESS_TOKEN="$(docker exec "$CONTAINER_NAME" cat /app/data/.auth_token 2>/dev/null || true)"
+fi
+
 log "部署成功"
 echo "  版本:     $SHORT_SHA"
 echo "  镜像:     $NEW_IMAGE"
 echo "  数据库:   $DB_TYPE"
 echo "  地址:     http://<host>:$APP_PORT/"
+echo "  访问令牌: ${ACCESS_TOKEN:-（见 $DATA_DIR/.auth_token）}"
 echo "  回滚镜像: ${PREV_IMAGE:-无}"
 echo "  状态文件: $STATE_FILE"
