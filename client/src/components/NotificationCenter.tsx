@@ -102,9 +102,11 @@ export default function NotificationCenter() {
         >
           <Bell className="w-4 h-4" />
           {unread > 0 && (
-            <span className="absolute -top-0.5 -right-0.5 min-w-[14px] h-[14px] px-0.5 rounded-full bg-red-500 text-[9px] font-bold text-white flex items-center justify-center leading-none">
-              {unread > 99 ? '99+' : unread}
-            </span>
+            // 只要一个小红点（用户要求「小红点代表有未处理的内容」），数量在抽屉标题里看
+            <span
+              className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-red-500 ring-2 ring-dark-950"
+              aria-label={`${unread} 条未读`}
+            />
           )}
         </button>
       </div>

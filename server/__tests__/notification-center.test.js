@@ -52,10 +52,12 @@ describe('ToastContext —— 2 秒后进通知列表', () => {
 });
 
 describe('NotificationCenter —— 铃铛与右侧列表', () => {
-  it('铃铛有未读小红点，仅有图标没有文字', () => {
+  it('铃铛有未读小红点（纯圆点，不是文字），仅有图标没有文字', () => {
     expect(bell).toContain('<Bell');
     expect(bell).toContain('unread > 0');
-    expect(bell).toContain('rounded-full bg-red-500');
+    expect(bell).toContain('w-2 h-2 rounded-full bg-red-500');
+    // 小红点里不放数字
+    expect(bell).not.toContain('min-w-[14px]');
     // 铃铛按钮本身只有图标（抽屉标题里可以有「通知」两个字；title 提示文本不算可见文字）
     const btnStart = bell.indexOf('onClick={() => setOpen');
     const btnEnd = bell.indexOf('</button>', btnStart);
