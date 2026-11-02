@@ -197,14 +197,60 @@ export default function Assistant() {
     } catch { /* 浏览器不支持剪贴板时静默失败 */ }
   };
 
-  /** 某一步工具失败后，把失败信息发回给助手，让它换方式重试（不用用户手打） */
-  const retryFailedTool = (tc: { tool: string; args?: any; result?: any }) => {
-    if (loading) return;
-    const err = String(tc?.result?.error || '执行失败').slice(0, 200);
-    const what = tc?.args?.command
-      ? `命令 \`${String(tc.args.command).slice(0, 120)}\``
-      : (tc?.args?.filePath || tc?.args?.path || tc?.tool || '这一步');
-    sendMessage(`刚才的 ${what} 失败了（${err}），请换个方式重试这一步。`);
+  /** 就地更新某条消息里第 n 个工具调用（重试用） */
+  const patchToolCall = (msgIdx: number, toolIdx: number, patch: Record<string, any>) => {
+    setOpsMessages(prev => prev.map((m, mi) => {
+      if (mi !== msgIdx) return m;
+      const calls = (m.toolCalls || []) as any[];
+      if (!calls[toolIdx]) return m;
+      const next = calls.map((t, ti) => (ti === toolIdx ? { ...t, ...patch } : t));
+      return { ...m, toolCalls: next as any };
+    }));
+  };
+
+  /**
+   * 只重跑这一步工具（不经过模型）。
+   *
+   * 失败的工具卡上点「重试」→ 直接调 /api/chat/tool-retry 用同样参数再执行一次。
+   * 只读工具服务端直接放行；写/危险操作会被服务端 403 拒绝，这时退回
+   * 「让助手重来一轮」的旧路子（那条会走对话里的确认闸门）。
+   */
+  const retryFailedTool = async (msgIdx: number, toolIdx: number) => {
+    const tc = (opsMessages[msgIdx]?.toolCalls || [])[toolIdx] as any;
+    if (!tc || loading) return;
+    patchToolCall(msgIdx, toolIdx, { status: 'running', result: null, durationMs: undefined, liveOutput: undefined });
+    try {
+      const res = await fetch('/api/chat/tool-retry', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tool: tc.tool, args: tc.args || {} }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.status === 403) {
+        // 需要确认的写操作：回滚卡片状态，交给对话流程
+        patchToolCall(msgIdx, toolIdx, {
+          status: 'failed',
+          result: { error: data?.error || '该操作需要确认，已转给助手重试' },
+        });
+        const what = tc?.args?.command
+          ? `命令 \`${String(tc.args.command).slice(0, 120)}\``
+          : (tc?.args?.filePath || tc?.args?.path || tc?.tool || '这一步');
+        sendMessage(`刚才的 ${what} 需要重试（${data?.reason || '写操作'}），请走确认流程帮我重做这一步。`);
+        return;
+      }
+      if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
+      patchToolCall(msgIdx, toolIdx, {
+        status: 'done',
+        result: data.result,
+        durationMs: data.durationMs,
+        liveOutput: undefined,
+      });
+    } catch (e: any) {
+      patchToolCall(msgIdx, toolIdx, {
+        status: 'failed',
+        result: { error: String(e?.message || e).slice(0, 300) },
+      });
+    }
   };
 
 
@@ -784,14 +830,15 @@ export default function Assistant() {
                     {/* 工具步骤卡：执行了什么、输出什么、花了多久（对齐 AI Shell 体验） */}
                     {(msg as any).toolCalls?.length > 0 && (
                       <div className="space-y-1 mb-2">
-                        {(msg as any).toolCalls.map((tc: any, i: number) => (
+                        {(msg as any).toolCalls.map((tc: any, ti: number) => (
                           <ToolCallCard
-                            key={i}
+                            key={ti}
                             tc={tc}
                             // 最近的几条消息默认展开失败步骤；更早的历史一律折叠（点开可看）
                             defaultOpen={tc.status !== 'running' && !!(tc.result?.error)}
                             openOverride={isOldMessage ? false : undefined}
-                            onRetry={retryFailedTool}
+                            // 只重跑这一步（只读工具直跑；写操作自动退回对话确认流程）
+                            onRetry={() => retryFailedTool(i, ti)}
                           />
                         ))}
                       </div>

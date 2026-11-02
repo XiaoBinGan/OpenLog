@@ -158,6 +158,37 @@ describe('核心路由 200 冒烟测试', () => {
     });
   });
 
+  describe('重跑单步工具 (/api/chat/tool-retry)', () => {
+    it('只读工具直接执行，返回结果 + 耗时', async () => {
+      const res = await post('/api/chat/tool-retry', { tool: 'remote_servers', args: {} });
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data).toHaveProperty('result');
+      expect(Array.isArray(data.result.servers)).toBe(true);
+      expect(typeof data.durationMs).toBe('number');
+    });
+
+    it('写操作被拒绝（必须走对话确认流程，不能靠按钮绕过闸门）', async () => {
+      const res = await post('/api/chat/tool-retry', {
+        tool: 'remote_edit_file',
+        args: { serverId: 's1', filePath: '/tmp/a', oldString: 'a', newString: 'b' },
+      });
+      expect(res.status).toBe(403);
+      const data = await res.json();
+      expect(data.risk).toMatch(/write|danger/);
+    });
+
+    it('未知工具 400', async () => {
+      const res = await post('/api/chat/tool-retry', { tool: 'not_a_real_tool', args: {} });
+      expect(res.status).toBe(400);
+    });
+
+    it('缺 tool / args 不是对象 → 400', async () => {
+      expect((await post('/api/chat/tool-retry', {})).status).toBe(400);
+      expect((await post('/api/chat/tool-retry', { tool: 'remote_servers', args: [1, 2] })).status).toBe(400);
+    });
+  });
+
   describe('告警模块 (alerts)', () => {
     it('GET /api/alerts — 返回告警配置', async () => {
       const res = await get('/api/alerts');

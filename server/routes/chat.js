@@ -14,7 +14,7 @@
 import express from 'express';
 import { errorMessage } from '../errors.js';
 import * as remote from '../remote.js';
-import { AGENT_TOOLS } from '../agent-tools.js';
+import { AGENT_TOOLS, classifyToolRisk } from '../agent-tools.js';
 import { listAgentActions } from '../agent-audit.js';
 import {
   normalizeBaseUrl, guessEngine, ENGINE_HINTS, isToolUnsupportedError, setCachedToolSupport,
@@ -405,5 +405,40 @@ ${buildAssistantContext()}`;
       else { res.write(`data: ${JSON.stringify({ error: hint })}\n\n`); res.end(); }
     }
   });
+
+  /**
+   * 重跑单步工具（失败步骤的「重试」按钮用）。
+   *
+   * 为什么不走对话：用户只是想把失败的那一条命令再跑一次，让模型重新组织
+   * 一次回答既慢又费 token（还会引入新的不确定性）。这里直接调用同一个工具执行器。
+   *
+   * 安全边界：**只允许只读工具**。写/危险操作必须走对话里的确认流程 ——
+   * 否则前端一个按钮就能绕过 `tool_confirm` 闸门，那是真安全漏洞。
+   */
+  router.post('/api/chat/tool-retry', async (req, res) => {
+    const { tool, args } = req.body || {};
+    if (!tool || typeof tool !== 'string') return res.status(400).json({ error: 'tool required' });
+    if (args !== undefined && (typeof args !== 'object' || args === null || Array.isArray(args))) {
+      return res.status(400).json({ error: 'args 必须是对象' });
+    }
+    const known = ASSISTANT_TOOLS.find(t => t.function?.name === tool);
+    if (!known) return res.status(400).json({ error: `未知工具: ${tool}` });
+    const risk = classifyToolRisk(tool, args || {});
+    if (risk.risk !== 'read') {
+      return res.status(403).json({
+        error: '这一步会修改系统状态（写操作/危险操作），需要走对话里的确认流程',
+        risk: risk.risk,
+        reason: risk.reason,
+      });
+    }
+    const startedAt = Date.now();
+    try {
+      const result = await executeAssistantTool(tool, args || {});
+      res.json({ result, durationMs: Date.now() - startedAt });
+    } catch (err) {
+      res.status(500).json({ error: errorMessage(err), durationMs: Date.now() - startedAt });
+    }
+  });
+
   return router;
 }

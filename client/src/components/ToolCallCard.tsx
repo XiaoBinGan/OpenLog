@@ -106,7 +106,7 @@ export default function ToolCallCard({ tc, defaultOpen = false, openOverride, on
         )}
       </div>
 
-      {/* 失败原因不用展开也看得到；同时给「让助手重试」入口 */}
+      {/* 失败原因不用展开也看得到；同时给「重试」入口（只重跑这一步） */}
       {!open && tc.result?.error && (
         <div className="flex items-start gap-2 px-2.5 pb-1.5">
           <div className="flex-1 text-[11px] text-red-300/80 font-mono break-all">
@@ -116,9 +116,10 @@ export default function ToolCallCard({ tc, defaultOpen = false, openOverride, on
             <button
               type="button"
               onClick={() => onRetry(tc)}
+              title="用同样参数只重跑这一步（写操作会自动转给助手确认）"
               className="flex-shrink-0 text-[10px] px-1.5 py-0.5 rounded border border-red-500/30 text-red-300 hover:bg-red-500/10 transition-colors"
             >
-              让助手重试
+              重试
             </button>
           )}
         </div>
@@ -155,9 +156,10 @@ export default function ToolCallCard({ tc, defaultOpen = false, openOverride, on
               <button
                 type="button"
                 onClick={() => onRetry(tc)}
+                title="用同样参数只重跑这一步（写操作会自动转给助手确认）"
                 className="text-[10px] px-2 py-1 rounded border border-red-500/30 text-red-300 hover:bg-red-500/10 transition-colors"
               >
-                让助手重试这一步
+                只重跑这一步
               </button>
             </div>
           )}

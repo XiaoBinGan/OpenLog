@@ -107,10 +107,18 @@ describe('客户端 —— 目标服务器 / 历史 / 复制 接线', () => {
     expect(card).toContain('navigator.clipboard.writeText');
   });
 
-  it('失败步骤有「让助手重试」入口', () => {
+  it('失败步骤有「只重跑这一步」入口（直连工具，不走模型）', () => {
     expect(assistant).toContain('retryFailedTool');
-    expect(card).toContain('让助手重试');
+    expect(assistant).toContain('/api/chat/tool-retry');
+    expect(card).toContain('只重跑这一步');
     expect(card).toContain('onRetry');
+  });
+
+  it('重跑只允许只读工具（写操作退回对话确认）', () => {
+    expect(chat).toContain("router.post('/api/chat/tool-retry'");
+    expect(chat).toContain("risk.risk !== 'read'");
+    expect(chat).toContain('需要走对话里的确认流程');
+    expect(assistant).toContain('res.status === 403');
   });
 
   it('历史消息的步骤卡自动折叠（openOverride）', () => {
