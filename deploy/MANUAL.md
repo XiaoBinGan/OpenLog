@@ -409,7 +409,35 @@ docker exec openlog cat /app/data/.auth_token
 docker ps --filter name=openlog-pg          # 是否在跑
 docker exec openlog-pg pg_isready -U openlog -d openlog
 docker exec openlog-pg psql -U openlog -d openlog -c '\dt'   # 看表
+docker logs openlog | grep -E '\[DB\]|数据库'
+
+### PG 密码认证失败（`password authentication failed for user "openlog"`）
+
+这是重复安装最常见的坑：**`POSTGRES_PASSWORD` 只在数据卷首次初始化时生效**。
+容器被 `docker rm` 后重建、但数据卷 `openlog-pgdata` 还在，脚本换了新密码，
+卷里仍是旧密码 → 应用连不上。
+
+```bash
+# 1) 读旧容器的密码（容器还在的话）
+docker inspect --type container openlog-pg \
+  --format '{{range .Config.Env}}{{println .}}{{end}}' | grep POSTGRES_PASSWORD
+
+# 2) 用这个密码改 deploy.env
+sed -i 's#^OPENLOG_DATABASE_URL=.*#OPENLOG_DATABASE_URL=postgres://openlog:<旧密码>@127.0.0.1:5432/openlog#' deploy/deploy.env
+
+# 3) 重起应用（不用重新构建）
+bash deploy/deploy.sh --no-build
+
+# 找不到旧密码时：旧实例的 deploy.env.bak.* 里通常还有
+ls -lt deploy/deploy.env.bak.* | head
+
+# 确认数据可丢才这么做（会清空库）
+docker rm -f openlog-pg && docker volume rm openlog-pgdata
 ```
+
+> 新版 `install.sh` 已经自动处理：只要 `openlog-pg` 容器还在（running 或
+> stopped）就复用它的密码，并在启动前 `psql` 真连一次验证；卷里残留旧密码
+> 时会直接报错并给出三条出路，不会留下「容器起来了但数据库连不上」的半死状态。
 
 ### 磁盘被镜像占满
 
