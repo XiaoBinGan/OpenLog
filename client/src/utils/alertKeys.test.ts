@@ -6,7 +6,7 @@
  * 同一个容器 -> 同一个键；不同容器 -> 不同键。
  */
 import { describe, it, expect } from 'vitest';
-import { containerToastGroup, analysisToastKey } from './alertKeys';
+import { containerToastGroup, analysisToastKey, dockerContainerLink } from './alertKeys';
 
 describe('containerToastGroup —— 每个容器一个告警键', () => {
   it('同一来源 + 同一容器 => 同键（退出 / 巡检 / 日志告警会合并成一条）', () => {
@@ -60,5 +60,30 @@ describe('analysisToastKey —— AI 分析 toast 去重键', () => {
     expect(() => analysisToastKey(null)).not.toThrow();
     expect(() => analysisToastKey(undefined)).not.toThrow();
     expect(analysisToastKey(null)).toBe('::default');
+  });
+});
+
+describe('dockerContainerLink —— 通知点开直达容器日志', () => {
+  it('带上 sourceId / containerId / openLog=1', () => {
+    const link = dockerContainerLink('src1', 'abc123');
+    expect(link.startsWith('/docker?')).toBe(true);
+    const q = new URLSearchParams(link.split('?')[1]);
+    expect(q.get('sourceId')).toBe('src1');
+    expect(q.get('containerId')).toBe('abc123');
+    expect(q.get('openLog')).toBe('1');
+  });
+
+  it('缺参数时不产生空值键（避免 Docker 页匹配失败）', () => {
+    const q = new URLSearchParams(dockerContainerLink(undefined, undefined).split('?')[1]);
+    expect(q.get('sourceId')).toBeNull();
+    expect(q.get('containerId')).toBeNull();
+    expect(q.get('openLog')).toBe('1');
+  });
+
+  it('特殊字符被正确编码', () => {
+    const link = dockerContainerLink('a b', 'c/d');
+    const q = new URLSearchParams(link.split('?')[1]);
+    expect(q.get('sourceId')).toBe('a b');
+    expect(q.get('containerId')).toBe('c/d');
   });
 });

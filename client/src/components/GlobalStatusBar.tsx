@@ -3,6 +3,7 @@ import { useDevice } from '../contexts/DeviceContext';
 import { apiFetch } from '../api/client';
 import { summarizeDisks } from '../utils/diskUsage';
 import { useState, useEffect } from 'react';
+import NotificationCenter from './NotificationCenter';
 
 interface QuickStats {
   cpu: number;
@@ -139,6 +140,9 @@ export default function GlobalStatusBar() {
             {stats.disk.toFixed(1)}%
           </span>
         </div>
+
+        {/* 通知中心：铃铛 + 未读红点（仅图标，放在磁盘右侧） */}
+        <NotificationCenter />
       </div>
 
       {/* 分隔线 */}

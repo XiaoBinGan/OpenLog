@@ -3,7 +3,7 @@ import { Outlet, NavLink, useNavigate, useLocation } from 'react-router-dom';
 import { AssistantProvider } from '../contexts/AssistantContext';
 import { useToast } from '../contexts/ToastContext';
 import { apiFetch } from '../api/client';
-import { containerToastGroup } from '../utils/alertKeys';
+import { containerToastGroup, dockerContainerLink } from '../utils/alertKeys';
 import {
   LayoutDashboard,
   FileText,
@@ -68,11 +68,12 @@ function LayoutContent() {
             for (const r of results) {
               const cName = r.containerName || r.containerId?.slice(0, 12);
               const count = r.totalUnique || r.uniqueCount;
+              const link = r.containerId ? dockerContainerLink(r.sourceId, r.containerId) : '/analytics?autoPatrol=1';
               toast.warning(
                 `🐳 ${cName} · ${count} 种异常`,
-                { action: { label: '分析 →', onClick: () => navigate('/analytics?autoPatrol=1') },
-                  persistent: true,
-                  group: containerToastGroup(r.sourceId, r.containerId, cName) }
+                { action: { label: '查看容器 →', onClick: () => navigate(link) },
+                  group: containerToastGroup(r.sourceId, r.containerId, cName),
+                  nav: r.containerId ? link : undefined }
               );
             }
           }
@@ -116,11 +117,15 @@ function LayoutContent() {
             });
             toast.error(`${name} ${label}${code}`, {
               action: { label: '诊断 →', onClick: () => navigate(`/analytics?${params.toString()}`) },
-              persistent: true,
               group: containerToastGroup(sourceId, containerId, name),
+              // 通知列表里点它 → 直接打开这个容器的日志视图（不用再手选服务器）
+              nav: containerId ? dockerContainerLink(sourceId, containerId) : undefined,
             });
           } else {
-            toast.error(`${name} ${label}${code}`, { persistent: true, group: containerToastGroup(sourceId, containerId, name) });
+            toast.error(`${name} ${label}${code}`, {
+              group: containerToastGroup(sourceId, containerId, name),
+              nav: containerId ? dockerContainerLink(sourceId, containerId) : undefined,
+            });
           }
         }
         if (data.type === 'container_patrol') {
@@ -129,11 +134,12 @@ function LayoutContent() {
             for (const r of results) {
               const cName = r.containerName || r.containerId?.slice(0, 12);
               const count = r.totalUnique || r.uniqueCount;
+              const link = r.containerId ? dockerContainerLink(r.sourceId, r.containerId) : '/analytics?autoPatrol=1';
               toast.warning(
                 `🐳 ${cName} · ${count} 种异常`,
-                { action: { label: '分析 →', onClick: () => navigate('/analytics?autoPatrol=1') },
-                  persistent: true,
-                  group: containerToastGroup(r.sourceId, r.containerId, cName) }
+                { action: { label: '查看容器 →', onClick: () => navigate(link) },
+                  group: containerToastGroup(r.sourceId, r.containerId, cName),
+                  nav: r.containerId ? link : undefined }
               );
             }
           }
@@ -146,15 +152,13 @@ function LayoutContent() {
           const text = String(d.content || d.line || '').replace(/\s+/g, ' ').slice(0, 160);
           const extra = d.suppressed > 0 ? `（同批还有 ${d.suppressed} 条）` : '';
           const notify = level === 'FATAL' ? toast.error : toast.warning;
+          const link = dockerContainerLink(d.sourceId, d.containerId);
           notify(`🐳 ${cName} · ${level}`, {
             description: text + extra,
-            action: {
-              label: '查看日志 →',
-              onClick: () => navigate(`/docker?sourceId=${encodeURIComponent(d.sourceId || '')}&containerId=${encodeURIComponent(d.containerId || '')}&openLog=1`),
-            },
-            persistent: true,
+            action: { label: '查看日志 →', onClick: () => navigate(link) },
             // 同一个容器的 ERROR/警告都合并到一条（不再按 level 拆成两条）
             group: containerToastGroup(d.sourceId, d.containerId, cName),
+            nav: link,
           });
         }
       } catch {}

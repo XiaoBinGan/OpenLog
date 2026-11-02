@@ -22,3 +22,15 @@ export function analysisToastKey(data: { sourceId?: string; log?: any } | null |
   const origin = log.containerName || log.source || log.file || 'default';
   return `${sourceId}::${origin}`;
 }
+
+/**
+ * 容器深链：直接打开 Docker 页对应容器的日志视图。
+ * 用户点通知里的「错误」时不用再手动切服务器列表、找容器、点开日志。
+ */
+export function dockerContainerLink(sourceId?: string, containerId?: string): string {
+  const q = new URLSearchParams();
+  if (sourceId) q.set('sourceId', sourceId);
+  if (containerId) q.set('containerId', containerId);
+  q.set('openLog', '1');
+  return `/docker?${q.toString()}`;
+}
