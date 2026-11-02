@@ -17,16 +17,38 @@ export interface ToolCall {
   args?: any;
   status: ToolCallStatus;
   result?: any;
+  /** 这一步耗时（毫秒），后端 tool_result 里带 */
+  durationMs?: number;
+  /** 流式输出（remote_exec 等）：后端 tool_progress 推来的片段 */
+  liveOutput?: string;
 }
 
 /**
  * 把一次工具结果回填给「第一个还没结果的同名调用」。
  * 找不到可回填的调用时原样返回（避免乱配）。
+ * @param durationMs 可选，后端 tool_result 里带回来的耗时
  */
-export function applyToolResult<T extends ToolCall>(calls: T[], tool: string, result: any): T[] {
+export function applyToolResult<T extends ToolCall>(calls: T[], tool: string, result: any, durationMs?: number): T[] {
   const idx = calls.findIndex(c => c.tool === tool && c.status === 'running');
   if (idx === -1) return calls;
-  return calls.map((c, i) => (i === idx ? { ...c, status: 'done' as const, result } : c));
+  return calls.map((c, i) => (i === idx
+    ? { ...c, status: 'done' as const, result, ...(typeof durationMs === 'number' ? { durationMs } : {}) }
+    : c));
+}
+
+/**
+ * 追加一段流式输出到「第一个还在运行的调用」。
+ *
+ * 为什么要追加而不是覆盖：远端 exec 的输出是按 chunk 推的
+ * （tool_progress），步骤卡要像终端一样滚出完整输出。
+ * 没有运行中的调用时原样返回（迟到的 chunk 直接丢弃）。
+ */
+export function appendToolProgress<T extends ToolCall>(calls: T[], tool: string, chunk: string): T[] {
+  const text = String(chunk ?? '');
+  if (!text) return calls;
+  const idx = calls.findIndex(c => c.tool === tool && c.status === 'running');
+  if (idx === -1) return calls;
+  return calls.map((c, i) => (i === idx ? { ...c, liveOutput: `${c.liveOutput || ''}${text}` } : c));
 }
 
 /**

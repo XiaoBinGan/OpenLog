@@ -11,7 +11,9 @@ import { marked } from 'marked';
 import { sanitizeHtml } from '../utils/sanitize';
 import { apiFetch } from '../api/client';
 import { createSSELineSplitter, parseSSEDataLine } from '../utils/sseLines';
-import { applyToolResult, settleToolCalls, toolCallTone } from '../utils/toolCallState';
+import { applyToolResult, appendToolProgress, settleToolCalls } from '../utils/toolCallState';
+import { toolLabel } from '../utils/toolCallView';
+import ToolCallCard from '../components/ToolCallCard';
 import {
   buildUsageAdvice, estimateTextTokens, trimHistoryToBudget, usageLevel,
   type ContextConfigLike,
@@ -384,7 +386,14 @@ export default function Assistant() {
               // 只收尾「第一个还没结果」的同名调用（同一工具可能被连调多次）
               setOpsMessages(prev => prev.map((m, i) => (
                 i === prev.length - 1
-                  ? { ...m, toolCalls: applyToolResult((m.toolCalls || []) as any, p.tool, p.result) as any }
+                  ? { ...m, toolCalls: applyToolResult((m.toolCalls || []) as any, p.tool, p.result, p.durationMs) as any }
+                  : m
+              )));
+            } else if (p.type === 'tool_progress') {
+              // 流式输出（remote_exec 等）：像终端一样滚进步骤卡
+              setOpsMessages(prev => prev.map((m, i) => (
+                i === prev.length - 1
+                  ? { ...m, toolCalls: appendToolProgress((m.toolCalls || []) as any, p.tool, p.chunk) as any }
                   : m
               )));
             } else if (p.type === 'provider_notice' || p.type === 'context_compacted' || p.type === 'budget_exhausted') {
@@ -444,16 +453,6 @@ export default function Assistant() {
     setLoading(false);
     abortRef.current = null;
   };
-
-  // 工具名 → 中文标签
-  const toolLabel = (t: string) =>
-    ({ docker_list: '列出容器', docker_logs: '读取日志', docker_inspect: '查看容器',
-       docker_start: '启动容器', docker_stop: '停止容器', docker_restart: '重启容器',
-       docker_exec: '执行命令', docker_health_check: '健康诊断',
-       remote_servers: '远程服务器', remote_exec: '远程执行', remote_system_stats: '系统状态',
-       remote_list_files: '文件列表', remote_read_file: '读取文件', remote_search_logs: '搜索日志',
-       local_system_stats: '本机状态', local_log_files: '日志文件', local_read_log: '读取日志',
-    } as Record<string, string>)[t] || t;
 
   /** 回传确认结果给后端（允许/拒绝一次写操作） */
   const respondConfirm = async (approved: boolean) => {
@@ -681,45 +680,17 @@ export default function Assistant() {
                         ))}
                       </div>
                     )}
-                    {/* 工具调用状态 */}
+                    {/* 工具步骤卡：执行了什么、输出什么、花了多久（对齐 AI Shell 体验） */}
                     {(msg as any).toolCalls?.length > 0 && (
-                      <div className="space-y-1.5 mb-2">
-                        <div className="flex flex-wrap gap-1.5">
-                          {(msg as any).toolCalls.map((tc: any, i: number) => (
-                            <span
-                              key={i}
-                              title={[
-                                tc.args?.filePath ? `文件: ${tc.args.filePath}` : '',
-                                tc.args?.path ? `路径: ${tc.args.path}` : '',
-                                tc.args?.pattern ? `搜索: ${tc.args.pattern}` : '',
-                                tc.args?.command ? `命令: ${tc.args.command}` : '',
-                                tc.args?.service ? `服务: ${tc.args.service}` : '',
-                                tc.result?.error ? `错误: ${String(tc.result.error).slice(0, 200)}` : '',
-                                typeof tc.result?.matchCount === 'number' ? `命中 ${tc.result.matchCount} 行` : '',
-                              ].filter(Boolean).join('\n')}
-                              className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium ${
-                                toolCallTone(tc as any) === 'running' ? 'bg-yellow-500/10 text-yellow-400 border border-yellow-500/20' :
-                                toolCallTone(tc) === 'aborted' ? 'bg-dark-800 text-dark-400 border border-dark-700' :
-                                toolCallTone(tc) === 'failed' ? 'bg-red-500/10 text-red-400 border border-red-500/20' :
-                                'bg-green-500/10 text-green-400 border border-green-500/20'
-                              }`}>
-                                {tc.status === 'running' && <Loader className="w-3 h-3 animate-spin" />}
-                                {toolLabel(tc.tool)}
-                                {tc.status === 'aborted' && ' · 已中断'}
-                                {typeof tc.result?.matchCount === 'number' && tc.result.matchCount > 0 && ` ${tc.result.matchCount}`}
-                              </span>
-                            ))}
-                          </div>
-                          {/* 文件改动预览（write/edit 成功后展示 diff） */}
-                          {(msg as any).toolCalls
-                            .filter((tc: any) => tc.result?.preview)
-                            .map((tc: any, i: number) => (
-                              <pre key={`p${i}`} className="text-[10px] font-mono bg-dark-950/60 rounded p-1.5 overflow-x-auto whitespace-pre-wrap break-all">
-                                {String(tc.result.preview).split('\n').map((line, j) => (
-                                  <div key={j} className={line.startsWith('+') ? 'text-green-400' : line.startsWith('-') ? 'text-red-400' : 'text-dark-400'}>{line}</div>
-                                ))}
-                              </pre>
-                            ))}
+                      <div className="space-y-1 mb-2">
+                        {(msg as any).toolCalls.map((tc: any, i: number) => (
+                          <ToolCallCard
+                            key={i}
+                            tc={tc}
+                            // 失败/中断的步骤默认展开，让用户直接看到原因
+                            defaultOpen={tc.status !== 'running' && !!(tc.result?.error)}
+                          />
+                        ))}
                       </div>
                     )}
                     {msg.content ? (

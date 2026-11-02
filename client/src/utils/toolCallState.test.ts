@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { applyToolResult, settleToolCalls, toolCallTone, type ToolCall } from './toolCallState';
+import { applyToolResult, appendToolProgress, settleToolCalls, toolCallTone, type ToolCall } from './toolCallState';
 
 const call = (tool: string, status: ToolCall['status'] = 'running', result?: any): ToolCall =>
   ({ tool, status, result });
@@ -71,5 +71,40 @@ describe('toolCallTone —— chip 样式语义', () => {
 
   it('aborted 优先级高于 error（中断不是失败）', () => {
     expect(toolCallTone(call('a', 'aborted', { error: 'x' }))).toBe('aborted');
+  });
+});
+
+describe('applyToolResult —— 带耗时（步骤卡展示用）', () => {
+  it('把 durationMs 一起回填', () => {
+    const out = applyToolResult([call('remote_exec')], 'remote_exec', { stdout: 'ok' }, 1234);
+    expect(out[0].durationMs).toBe(1234);
+    expect(out[0].status).toBe('done');
+  });
+
+  it('不传 durationMs 时不写字段（保持旧行为）', () => {
+    const out = applyToolResult([call('remote_exec')], 'remote_exec', { stdout: 'ok' });
+    expect('durationMs' in out[0]).toBe(false);
+  });
+});
+
+describe('appendToolProgress —— 流式输出累积', () => {
+  it('把 chunk 追加到运行中的调用上', () => {
+    let calls = [call('remote_exec')];
+    calls = appendToolProgress(calls, 'remote_exec', 'line1\n');
+    calls = appendToolProgress(calls, 'remote_exec', 'line2\n');
+    expect(calls[0].liveOutput).toBe('line1\nline2\n');
+  });
+
+  it('没有运行中的调用时丢弃（迟到的 chunk 不污染已完成步骤）', () => {
+    const done = call('remote_exec', 'done', { stdout: 'x' });
+    const out = appendToolProgress([done], 'remote_exec', 'late');
+    expect(out[0]).toBe(done);
+    expect(out[0].liveOutput).toBeUndefined();
+  });
+
+  it('空 chunk / 空列表不崩', () => {
+    const calls = [call('remote_exec')];
+    expect(appendToolProgress(calls, 'remote_exec', '')).toEqual(calls);
+    expect(appendToolProgress([], 'x', 'y')).toEqual([]);
   });
 });

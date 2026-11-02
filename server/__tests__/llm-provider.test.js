@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const {
   normalizeBaseUrl, apiUrl, guessEngine, listModels,
   getCachedToolSupport, setCachedToolSupport, isToolUnsupportedError, looksLikeUncalledToolUse,
+  looksLikeFakeExecution,
   TOOL_PROTOCOL_PROMPT, renderToolsAsText, parseToolProtocol,
   renderToolResultForTextProtocol, extractDelta, ENGINE_HINTS,
   _resetToolCapabilityCache,
@@ -142,6 +143,22 @@ describe('looksLikeUncalledToolUse —— 识别 vLLM 静默忽略 tools', () =>
 
   it('中文回答里提到工具名才算（无下划线单词不误伤）', () => {
     expect(looksLikeUncalledToolUse('建议用 grep 查一下', names)).toBe(false);
+  });
+});
+
+describe('looksLikeFakeExecution —— 抓「没调工具却报完成」', () => {
+  it('典型假执行（用户实际遇到的回复）→ 命中', () => {
+    expect(looksLikeFakeExecution('收到，工具连接正常。要查哪台机器、哪个服务？')).toBe(true);
+    expect(looksLikeFakeExecution('已执行 df -h，磁盘正常。')).toBe(true);
+    expect(looksLikeFakeExecution('已修复 nginx 配置并重启服务。')).toBe(true);
+    expect(looksLikeFakeExecution('排查完成，没有发现问题。')).toBe(true);
+  });
+
+  it('描述计划 / 要参数 / 正常回答不误判', () => {
+    expect(looksLikeFakeExecution('我需要 serverId 才能继续，请提供。')).toBe(false);
+    expect(looksLikeFakeExecution('可以先跑 df -h 看看磁盘。')).toBe(false);
+    expect(looksLikeFakeExecution('磁盘使用率 42%。')).toBe(false);
+    expect(looksLikeFakeExecution('')).toBe(false);
   });
 });
 

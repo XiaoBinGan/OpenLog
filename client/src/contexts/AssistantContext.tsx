@@ -7,7 +7,16 @@ export interface AssistantMessage {
   content: string;
   ts: number;
   streaming?: boolean;
-  toolCalls?: { tool: string; args: any; status: string; result: any }[];
+  toolCalls?: {
+    tool: string;
+    args: any;
+    status: string;
+    result: any;
+    /** 该步骤耗时（毫秒），后端 tool_result 里带 */
+    durationMs?: number;
+    /** 流式输出（remote_exec 等）：后端 tool_progress 推来的片段 */
+    liveOutput?: string;
+  }[];
 }
 
 /** 会话级上下文覆盖（齿轮面板改的），留空项表示沿用设置页/默认值 */

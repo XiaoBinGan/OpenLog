@@ -1198,8 +1198,14 @@ async function ensureRemoteConnected(serverId) {
   await remote.ensureSshConnection(serverId);
 }
 
-/** 执行工具调用，返回结果对象 */
-async function executeAssistantTool(name, args) {
+/** 执行工具调用，返回结果对象
+ *
+ * @param {string} name 工具名
+ * @param {object} args 工具参数
+ * @param {{onOutput?: (stream:'stdout'|'stderr', chunk:string) => void}} [hooks]
+ *   流式输出钩子：exec 类工具边跑边把输出推给前端（模型侧仍只拿最终结果）
+ */
+async function executeAssistantTool(name, args, hooks = {}) {
   const settings = ensureSettings();
   const dockerSources = settings.dockerSources || [];
 
@@ -1207,7 +1213,13 @@ async function executeAssistantTool(name, args) {
   if (AGENT_TOOL_NAMES.has(name)) {
     return executeAgentTool(name, args, {
       ensureConnected: ensureRemoteConnected,
-      exec: (serverId, command) => remote.execRemoteCommand(serverId, command),
+      // 有流式钩子就边跑边推，前端能像终端一样看到输出；没有就退回一次性执行
+      exec: hooks.onOutput
+        ? (serverId, command) => remote.execRemoteCommandStream(serverId, command, {
+            onStdout: (chunk) => hooks.onOutput('stdout', chunk),
+            onStderr: (chunk) => hooks.onOutput('stderr', chunk),
+          })
+        : (serverId, command) => remote.execRemoteCommand(serverId, command),
     });
   }
 
@@ -1285,6 +1297,14 @@ async function executeAssistantTool(name, args) {
         const s = servers.find(x => x.id === args.serverId);
         if (!s) return { error: `服务器 ${args.serverId} 未找到` };
         try { await remote.ensureSshConnection(args.serverId); } catch (e) { return { error: `连接失败: ${errorMessage(e)}` }; }
+        // 前端在等结果时最想知道「命令跑出什么了」：有钩子就流式推
+        if (hooks.onOutput) {
+          const r = await remote.execRemoteCommandStream(args.serverId, args.command, {
+            onStdout: (chunk) => hooks.onOutput('stdout', chunk),
+            onStderr: (chunk) => hooks.onOutput('stderr', chunk),
+          });
+          return r;
+        }
         const r = await remote.execRemoteCommand(args.serverId, args.command);
         return r;
       }

@@ -19,7 +19,7 @@ import { classifyToolRisk, buildEditPreview } from '../agent-tools.js';
 import { recordAgentAction } from '../agent-audit.js';
 import {
   normalizeBaseUrl, guessEngine, getCachedToolSupport, setCachedToolSupport,
-  isToolUnsupportedError, looksLikeUncalledToolUse, TOOL_PROTOCOL_PROMPT, renderToolsAsText,
+  isToolUnsupportedError, looksLikeUncalledToolUse, looksLikeFakeExecution, TOOL_PROTOCOL_PROMPT, renderToolsAsText,
   parseToolProtocol, renderToolResultForTextProtocol, extractDelta,
 } from '../llm-provider.js';
 import { compactMessages, isContextOverflowError, isStreamOptionsUnsupported, stripToolCallBlocks, isOnlyToolCallText, estimateTokens, messagesTokens } from './chat-context.js';
@@ -113,14 +113,39 @@ export function createChatRunner({ ensureSettings, executeAssistantTool, pending
           serverId: args.serverId, serverName: serverNameById(args.serverId),
           filePath: args.filePath || args.path, command: args.command, summary: risk.reason,
         });
-        res.write(`data: ${JSON.stringify({ type: 'tool_result', tool: tc.name, result: denied })}\n\n`);
+        res.write(`data: ${JSON.stringify({ type: 'tool_result', tool: tc.name, result: denied, durationMs: 0 })}\n\n`);
         return { result: denied };
       }
       approvedOps?.add(opKey);
     }
 
-    res.write(`data: ${JSON.stringify({ type: 'tool_start', tool: tc.name, args })}\n\n`);
-    const result = await executeAssistantTool(tc.name, args);
+    const startedAt = Date.now();
+    res.write(`data: ${JSON.stringify({ type: 'tool_start', tool: tc.name, args, startedAt })}\n\n`);
+
+    /**
+     * 流式输出钩子：exec/read 类工具把 stdout/stderr 边跑边推给前端，
+     * 让用户像看终端一样看到「正在执行什么、输出了什么」。
+     * 模型侧仍然只拿最终结果（截断后），不影响上下文预算。
+     */
+    const hooks = {
+      onOutput: (stream, chunk) => {
+        const text = String(chunk || '');
+        if (!text) return;
+        // 单块限长，避免一行几万字符把 SSE 撑爆
+        res.write(`data: ${JSON.stringify({
+          type: 'tool_progress', tool: tc.name, stream,
+          chunk: text.length > 4000 ? `${text.slice(0, 4000)}…(截断)` : text,
+        })}\n\n`);
+      },
+    };
+
+    let result;
+    try {
+      result = await executeAssistantTool(tc.name, args, hooks);
+    } catch (err) {
+      result = { error: errorMessage(err) };
+    }
+    const durationMs = Date.now() - startedAt;
 
     if (risk.risk !== 'read') {
       recordAgentAction({
@@ -133,8 +158,26 @@ export function createChatRunner({ ensureSettings, executeAssistantTool, pending
       });
     }
 
-    res.write(`data: ${JSON.stringify({ type: 'tool_result', tool: tc.name, result })}\n\n`);
+    // durationMs 给前端展示「这一步花了多久」；result 可能很大，
+    // 这里再兜一层大小上限，避免单个 SSE 事件过大把页面卡住。
+    res.write(`data: ${JSON.stringify({ type: 'tool_result', tool: tc.name, result: guardUiResult(result), durationMs })}\n\n`);
     return { result };
+  }
+
+  /** 单个工具结果进 SSE 事件的大小保护（模型侧另有一套上下文截断） */
+  const UI_RESULT_CHARS = 60_000;
+  function guardUiResult(result) {
+    try {
+      const json = JSON.stringify(result ?? null);
+      if (json.length <= UI_RESULT_CHARS) return result;
+      return {
+        truncated: true,
+        _note: `输出过大（${json.length} 字符），已截断到 ${UI_RESULT_CHARS}`,
+        preview: json.slice(0, UI_RESULT_CHARS),
+      };
+    } catch {
+      return { error: '结果无法序列化' };
+    }
   }
 
   /**
@@ -368,6 +411,38 @@ export function createChatRunner({ ensureSettings, executeAssistantTool, pending
     let contextRetried = false;
     /** 单轮模型超时次数：连续两次就收尾（模型明显顶不住了） */
     let roundTimeouts = 0;
+    /** 本次任务里是否真正执行过工具（识别「没调工具却声称已执行」用） */
+    let anyToolExecuted = false;
+    /** 假执行纠正只做一次，避免模型较劲时死循环 */
+    let fakeExecCorrected = false;
+
+    /**
+     * 抓「没调工具就报完成」的假执行。
+     *
+     * 真实表现：文本协议降级后，模型回「收到，工具连接正常」——本轮没有
+     * TOOL_CALL，也没有任何工具结果，用户却以为它查过了。这里在收尾前拦一次：
+     * 把这句话塞回上下文 + 一条纠正指令，让它要么真调工具、要么承认没执行。
+     *
+     * @returns {boolean} true = 已拦截并要求重试（调用方应 continue，不要 finish）
+     */
+    const maybeCorrectFakeExecution = (text) => {
+      if (anyToolExecuted || fakeExecCorrected) return false;
+      if (!looksLikeFakeExecution(text)) return false;
+      fakeExecCorrected = true;
+      sse({
+        type: 'provider_notice',
+        message: '模型声称已执行操作，但本轮没有真正调用任何工具 —— 已要求它重新执行',
+        engine,
+      });
+      messages.push({ role: 'assistant', content: text });
+      messages.push({
+        role: 'user',
+        content: '你刚才的回答声称已经执行/连接/修复，但这一轮你并没有真正调用任何工具（既没有 tool_calls，也没有 TOOL_CALL）。'
+          + '要么立刻真正调用工具再回答，要么明确告诉用户「我没有执行任何操作」。禁止编造执行结果。',
+      });
+      return true;
+    };
+
     while (round < maxRounds) {
       // 时长预算
       if (Date.now() - startedAt > maxWallMs) {
@@ -625,6 +700,7 @@ export function createChatRunner({ ensureSettings, executeAssistantTool, pending
           try { args = JSON.parse(tc.arguments); } catch { args = {}; }
           const toolStartedAt = Date.now();
           const { result } = await runToolWithGuard(tc, args, res, approvedOps);
+          anyToolExecuted = true;
           const toolMs = Date.now() - toolStartedAt;
           if (toolMs > 10_000) console.warn(`[Chat] 工具 ${tc.name} 耗时 ${toolMs}ms`);
           messages.push({ role: 'tool', tool_call_id: tc.id, content: JSON.stringify(result).slice(0, toolChars) });
@@ -642,11 +718,14 @@ export function createChatRunner({ ensureSettings, executeAssistantTool, pending
         if (parsed.kind === 'tool') {
           messages.push({ role: 'assistant', content: contentAcc || null });
           const { result } = await runToolWithGuard({ name: parsed.tool, arguments: JSON.stringify(parsed.args) }, parsed.args, res, approvedOps);
+          anyToolExecuted = true;
           messages.push({ role: 'user', content: renderToolResultForTextProtocol(parsed.tool, result) });
           continue;
         }
 
         const finalText = parsed.kind === 'final' ? parsed.content : (parsed.content || contentAcc);
+        // 没调过任何工具却声称「已执行/已连接」→ 纠正一次再让它继续
+        if (maybeCorrectFakeExecution(finalText)) continue;
         if (finalText) sse({ content: finalText });
         finish();
         return { rounds: round, mode };
@@ -657,6 +736,8 @@ export function createChatRunner({ ensureSettings, executeAssistantTool, pending
       const filtered = f.feed(contentAcc) + f.flush();
       // 模型有时把「打算调用什么」写成 XML 正文，剥掉再展示
       const visible = stripToolCallBlocks(filtered);
+      // 同样的假执行拦截（原生模式下模型也可能直接编答案）
+      if (maybeCorrectFakeExecution(visible || filtered)) continue;
       if (visible) {
         sse({ content: visible });
       } else if (isOnlyToolCallText(filtered)) {

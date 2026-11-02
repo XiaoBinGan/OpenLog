@@ -187,6 +187,30 @@ export function looksLikeUncalledToolUse(content, toolNames) {
   return false;
 }
 
+/** 「声称已经执行/已经连接/已修复」的说法 —— 用来抓「没调工具就报完成」的假执行 */
+const FAKE_EXECUTION_PATTERNS = [
+  /已(?:经)?(?:执行|运行|调用|连接|连上|修复|修改|创建|删除|重启|启动|停止|部署|完成|成功)/,
+  /(?:工具|命令|操作|任务)(?:已|执行)(?:成功|完成|正常|就绪)/,
+  /工具连接(?:正常|成功)/,
+  /(?:修复|处理|排查|检查)(?:完成|好了|完毕)/,
+  /(?:已经|现已)(?:改好|修好|搞定|处理完)/,
+];
+
+/**
+ * 判断模型是不是在「没有真正调用工具」的情况下声称已经执行了操作。
+ *
+ * 真实踩到：文本协议模式下模型回一句「收到，工具连接正常」，而本轮没有输出任何
+ * TOOL_CALL、也没有任何工具结果 —— 用户以为它查过了，实际什么都没做。
+ *
+ * 只认**声称动作已完成**的措辞；单纯提到工具名或描述计划不算（那归
+ * looksLikeUncalledToolUse 管）。
+ */
+export function looksLikeFakeExecution(content) {
+  const text = String(content || '');
+  if (!text.trim()) return false;
+  return FAKE_EXECUTION_PATTERNS.some(re => re.test(text));
+}
+
 // ─── 文本工具协议 ──────────────────────────────────────────────────────────
 
 /**
@@ -207,10 +231,16 @@ TOOL_CALL: {"tool":"工具名","args":{参数对象}}
 
 FINAL: 给用户的最终回答
 
+示例（要查服务器状态）：
+TOOL_CALL: {"tool":"remote_servers","args":{}}
+
 规则：
 - 不要输出 TOOL_CALL 以外的任何内容（除了 FINAL）
 - args 必须是合法 JSON
-- 不要在 TOOL_CALL 里编造结果，等系统返回`;
+- 不要在 TOOL_CALL 里编造结果，等系统返回
+- **没有真的输出 TOOL_CALL 就等于没执行**：不许在 FINAL 里说「已执行 / 已连接 / 已修复 / 已完成」，
+  只能说你还缺什么信息、或问用户要参数
+- 用户说"需要怎么做才能用工具""怎么查"这类问题时，直接给出可复制的具体指令示例，不要空谈`;
 
 /** 把工具定义渲染成文本清单（给不支持原生 tools 的模型看） */
 export function renderToolsAsText(tools) {
@@ -320,6 +350,7 @@ export function adaptRequestParams(params, opts = {}) {
 export default {
   ENGINE_HINTS, normalizeBaseUrl, apiUrl, guessEngine, listModels,
   getCachedToolSupport, setCachedToolSupport, isToolUnsupportedError,
+  looksLikeUncalledToolUse, looksLikeFakeExecution,
   TOOL_PROTOCOL_PROMPT, renderToolsAsText, parseToolProtocol,
   renderToolResultForTextProtocol, extractDelta, adaptRequestParams,
 };
