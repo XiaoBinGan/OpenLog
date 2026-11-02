@@ -106,4 +106,27 @@ describe('客户端 —— 目标服务器 / 历史 / 复制 接线', () => {
     expect(card).toContain('复制输出');
     expect(card).toContain('navigator.clipboard.writeText');
   });
+
+  it('失败步骤有「让助手重试」入口', () => {
+    expect(assistant).toContain('retryFailedTool');
+    expect(card).toContain('让助手重试');
+    expect(card).toContain('onRetry');
+  });
+
+  it('历史消息的步骤卡自动折叠（openOverride）', () => {
+    expect(assistant).toContain('isOldMessage');
+    expect(card).toContain('openOverride');
+  });
+});
+
+describe('chat-runner —— 正文流式输出', () => {
+  it('原生模式边收边推（liveFilter / streamedContent），文本协议仍攒完再解析', () => {
+    expect(runner).toContain('const liveFilter = useNative ? new ThinkingStreamFilter');
+    expect(runner).toContain('streamedContent');
+    expect(runner).toContain('shouldStartStreaming');
+  });
+
+  it('假执行话术不提前流出（首轮流式有门槛）', () => {
+    expect(runner).toContain('looksLikeFakeExecution(contentAcc.slice(0, 60))');
+  });
 });

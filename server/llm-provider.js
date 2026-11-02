@@ -238,8 +238,62 @@ export function looksLikeUncalledToolUse(content, toolNames) {
   return false;
 }
 
-/** 「声称已经执行/已经连接/已修复」的说法 —— 用来抓「没调工具就报完成」的假执行 */
-const FAKE_EXECUTION_PATTERNS = [
+/**
+ * 判断一段文本是不是「英文散文」（没有中文、以字母为主）。
+ * 用于识别模型把英文思维链漏进正文的情况。
+ */
+export function looksLikeEnglishProse(text) {
+  const s = String(text || '');
+  if (!s.trim()) return false;
+  const cjk = (s.match(/[\u4e00-\u9fa5]/g) || []).length;
+  const latin = (s.match(/[A-Za-z]/g) || []).length;
+  if (cjk > 0) return false;
+  return latin >= 12;
+}
+
+/** 典型的英文思维链开头（模型把 reasoning 写进 content 时会这样起头） */
+const ENGLISH_REASONING_STARTS = [
+  /^\s*(Let me|Let's|I'll|I will|I need|I should|I can|I'm going to)/i,
+  /^\s*(The user|We need|We should|Looking at|Based on the|First,|Okay,|Alright,)/i,
+  /^\s*(To (do|answer|check|figure)|Since the|Now I)/i,
+];
+
+/**
+ * 去掉「英文思维链前缀」。
+ *
+ * 真实场景：思考模式关掉后，有些模型仍把 reasoning 写进正文，用户看到一大段英文
+ * 才出现中文答案。这里只删**开头连续的英文段落**，且满足：
+ *   - 用户问题是中文（否则英文提问得到英文回答是正常的）；
+ *   - 该段落是英文散文（没有中文）；
+ *   - 该段落以典型思维链开头，或后面还有中文内容；
+ * 一旦遇到中文段落就停，剩下的原样保留。
+ *
+ * @param {string} text 模型正文
+ * @param {string} [userText] 用户最近一条消息（用于判断该不该清理）
+ */
+export function stripEnglishReasoningPreamble(text, userText = '') {
+  const s = String(text || '');
+  if (!s) return s;
+  if (!/[\u4e00-\u9fa5]/.test(String(userText || ''))) return s; // 用户不是中文，不动
+  if (/[\u4e00-\u9fa5]/.test(s.slice(0, 40))) return s;          // 正文一上来就是中文，不动
+
+  const paras = s.split(/\n{2,}/);
+  let removed = 0;
+  while (removed < paras.length) {
+    const p = paras[removed];
+    const isEnglish = looksLikeEnglishProse(p);
+    const isReasoningLike = ENGLISH_REASONING_STARTS.some(re => re.test(p));
+    if (!isEnglish || !isReasoningLike) break;
+    removed++;
+  }
+  if (removed === 0) return s;
+  const rest = paras.slice(removed).join('\n\n').trim();
+  // 删完剩不下中文就说明整段都是英文，别删（可能用户就是要英文）
+  if (!/[\u4e00-\u9fa5]/.test(rest)) return s;
+  return rest;
+}
+
+/** 「声称已经执行/已经连接/已修复」的说法 —— 用来抓「没调工具就报完成」的假执行 */const FAKE_EXECUTION_PATTERNS = [
   /已(?:经)?(?:执行|运行|调用|连接|连上|修复|修改|创建|删除|重启|启动|停止|部署|完成|成功)/,
   /(?:工具|命令|操作|任务)(?:已|执行)(?:成功|完成|正常|就绪)/,
   /工具连接(?:正常|成功)/,

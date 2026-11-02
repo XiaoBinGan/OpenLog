@@ -4,6 +4,7 @@ const {
   normalizeBaseUrl, apiUrl, guessEngine, listModels,
   getCachedToolSupport, setCachedToolSupport, isToolUnsupportedError, looksLikeUncalledToolUse,
   looksLikeFakeExecution,
+  looksLikeEnglishProse, stripEnglishReasoningPreamble,
   extractModelWindow, probeModelWindow,
   TOOL_PROTOCOL_PROMPT, renderToolsAsText, parseToolProtocol,
   renderToolResultForTextProtocol, extractDelta, ENGINE_HINTS,
@@ -202,6 +203,48 @@ describe('probeModelWindow —— 查模型自报窗口', () => {
   it('请求失败/非 200 返回 null', async () => {
     expect(await probeModelWindow('http://x/v1', 'k', 'm', fakeFetch({}, false))).toBeNull();
     expect(await probeModelWindow('', 'k', 'm', fakeFetch({ data: [] }))).toBeNull();
+  });
+});
+
+describe('stripEnglishReasoningPreamble —— 清掉漏进正文的英文思维链', () => {
+  const user = '帮我看下 64 这台机器为什么慢';
+  const leaked = 'Let me analyze what I have so far. The user asked why the services on machine 64 are slow.\n\n磁盘使用率 42%，CPU 负载 53，瓶颈在磁盘 I/O。';
+
+  it('中文提问 + 英文思维链开头 → 删掉英文段落保留中文', () => {
+    const out = stripEnglishReasoningPreamble(leaked, user);
+    expect(out).not.toContain('Let me analyze');
+    expect(out).toContain('磁盘使用率');
+  });
+
+  it('用户用英文提问时不动（英文回答是正常的）', () => {
+    expect(stripEnglishReasoningPreamble(leaked, 'why is machine 64 slow?')).toBe(leaked);
+  });
+
+  it('正文一上来就是中文时不动', () => {
+    const text = '磁盘没问题：根分区 35%。';
+    expect(stripEnglishReasoningPreamble(text, user)).toBe(text);
+  });
+
+  it('整段都是英文时不动（可能就是要英文）', () => {
+    const text = 'Let me analyze the situation.\n\nI need more information about the machine.';
+    expect(stripEnglishReasoningPreamble(text, user)).toBe(text);
+  });
+
+  it('英文段落但不像思维链（普通英文结论）不删', () => {
+    const text = 'Disk usage is 42 percent.\n\n磁盘使用率 42%。';
+    expect(stripEnglishReasoningPreamble(text, user)).toBe(text);
+  });
+
+  it('空输入不崩', () => {
+    expect(stripEnglishReasoningPreamble('', user)).toBe('');
+    expect(stripEnglishReasoningPreamble(null, user)).toBe('');
+  });
+
+  it('looksLikeEnglishProse 判据', () => {
+    expect(looksLikeEnglishProse('Let me analyze what I have so far')).toBe(true);
+    expect(looksLikeEnglishProse('磁盘正常')).toBe(false);
+    expect(looksLikeEnglishProse('disk ok')).toBe(false); // 太短
+    expect(looksLikeEnglishProse('')).toBe(false);
   });
 });
 

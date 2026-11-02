@@ -197,6 +197,16 @@ export default function Assistant() {
     } catch { /* 浏览器不支持剪贴板时静默失败 */ }
   };
 
+  /** 某一步工具失败后，把失败信息发回给助手，让它换方式重试（不用用户手打） */
+  const retryFailedTool = (tc: { tool: string; args?: any; result?: any }) => {
+    if (loading) return;
+    const err = String(tc?.result?.error || '执行失败').slice(0, 200);
+    const what = tc?.args?.command
+      ? `命令 \`${String(tc.args.command).slice(0, 120)}\``
+      : (tc?.args?.filePath || tc?.args?.path || tc?.tool || '这一步');
+    sendMessage(`刚才的 ${what} 失败了（${err}），请换个方式重试这一步。`);
+  };
+
 
   // 加载分析历史摘要（@ 提及用）
   const loadBrief = useCallback(async () => {
@@ -742,7 +752,11 @@ export default function Assistant() {
                   ))}
                 </div>
               )}
-              {opsMessages.map((msg, i) => (
+              {opsMessages.map((msg, i) => {
+                // 只保留最近 6 条消息的步骤卡展开状态；更早的历史一律折叠，
+                // 否则翻旧对话时一屏全是展开的命令输出
+                const isOldMessage = i < opsMessages.length - 6;
+                return (
                 <div key={msg.ts} className={`flex gap-3 ${msg.role === 'user' ? 'justify-end' : ''}`}>
                   {msg.role === 'assistant' && (
                     <div className="flex-shrink-0 w-8 h-8 rounded-lg bg-accent-500/20 flex items-center justify-center mt-0.5">
@@ -774,8 +788,10 @@ export default function Assistant() {
                           <ToolCallCard
                             key={i}
                             tc={tc}
-                            // 失败/中断的步骤默认展开，让用户直接看到原因
+                            // 最近的几条消息默认展开失败步骤；更早的历史一律折叠（点开可看）
                             defaultOpen={tc.status !== 'running' && !!(tc.result?.error)}
+                            openOverride={isOldMessage ? false : undefined}
+                            onRetry={retryFailedTool}
                           />
                         ))}
                       </div>
@@ -819,7 +835,8 @@ export default function Assistant() {
                     </div>
                   )}
                 </div>
-              ))}
+                );
+              })}
               <div ref={messagesEndRef} />
             </div>
           )}

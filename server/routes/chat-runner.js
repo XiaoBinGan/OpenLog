@@ -19,7 +19,9 @@ import { classifyToolRisk, buildEditPreview } from '../agent-tools.js';
 import { recordAgentAction } from '../agent-audit.js';
 import {
   normalizeBaseUrl, guessEngine, getCachedToolSupport, setCachedToolSupport,
-  isToolUnsupportedError, looksLikeUncalledToolUse, looksLikeFakeExecution, TOOL_PROTOCOL_PROMPT, renderToolsAsText,
+  isToolUnsupportedError, looksLikeUncalledToolUse, looksLikeFakeExecution,
+  looksLikeEnglishProse, stripEnglishReasoningPreamble,
+  TOOL_PROTOCOL_PROMPT, renderToolsAsText,
   parseToolProtocol, renderToolResultForTextProtocol, extractDelta,
 } from '../llm-provider.js';
 import { compactMessages, isContextOverflowError, isStreamOptionsUnsupported, stripToolCallBlocks, isOnlyToolCallText, estimateTokens, messagesTokens } from './chat-context.js';
@@ -251,6 +253,15 @@ export function createChatRunner({ ensureSettings, executeAssistantTool, pending
     /** 文本协议模式下追加到 system prompt 的工具清单 */
     const textProtocolSuffix = `\n\n## 工具调用协议（当前引擎不支持原生 function calling，请严格按此格式）\n${renderToolsAsText(tools)}\n\n${TOOL_PROTOCOL_PROMPT}`;
     const baseSystemPrompt = systemPrompt;
+
+    /** 用户最近一条消息：用来判断「该不该清理英文思维链前缀」 */
+    const lastUserText = (() => {
+      for (let i = messages.length - 1; i >= 0; i--) {
+        if (messages[i]?.role === 'user') return String(messages[i].content || '');
+      }
+      return '';
+    })();
+    const userIsChinese = /[\u4e00-\u9fa5]/.test(lastUserText);
 
     const sse = (obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
 
@@ -607,6 +618,29 @@ export function createChatRunner({ ensureSettings, executeAssistantTool, pending
       let contentAcc = '';
       let reasoningAcc = '';
       const toolCallAcc = new Map();
+      /**
+       * 原生模式下边收边推正文：长回答不再「憋到最后一次性吐出来」。
+       *
+       * 什么时候开始流：
+       *   - 本次任务已经真执行过工具（anyToolExecuted）→ 直接流，模型确实在干活；
+       *   - 还没执行过任何工具 → 要防「假执行」话术（「收到，工具连接正常」这类
+       *     短句提前推出去就没法收回，用户会先看到假话再看到纠正提示）：
+       *     攒到 16 字且开头 60 字不像假执行时才开流；攒到 60 字也强制开流
+       *     （正常长回答里偶尔出现「已修复」不该把整段回答憋住）。
+       */
+      const liveFilter = useNative ? new ThinkingStreamFilter(ensureSettings) : null;
+      let streamedContent = '';
+      let streamingStarted = false;
+      const shouldStartStreaming = () => {
+        // 中文提问却先吐英文散文：很可能是模型把 reasoning 写进了正文 —— 先等中文出现，
+        // 否则用户先看到一大段英文思维链（等太久宁可整段最后一次性发）
+        if (userIsChinese && !anyToolExecuted && contentAcc.length < 400 && looksLikeEnglishProse(contentAcc)) {
+          return false;
+        }
+        return anyToolExecuted
+          || contentAcc.length >= 60
+          || (contentAcc.length >= 16 && !looksLikeFakeExecution(contentAcc.slice(0, 60)));
+      };
 
       try {
         for await (const chunk of stream) {
@@ -623,7 +657,24 @@ export function createChatRunner({ ensureSettings, executeAssistantTool, pending
           const delta = chunk.choices?.[0]?.delta;
           if (!delta) continue;
           const { content, reasoning } = extractDelta(delta);
-          if (content) contentAcc += content;
+          if (content) {
+            contentAcc += content;
+            if (liveFilter) {
+              if (!streamingStarted && shouldStartStreaming()) {
+                // 开始流式：把之前攒下的整段一次性喂进去
+                streamingStarted = true;
+                // 中文提问时，剥掉模型漏在开头的英文思维链（真实用户反馈过「返回都是英文」）
+                const startText = userIsChinese
+                  ? stripEnglishReasoningPreamble(contentAcc, lastUserText)
+                  : contentAcc;
+                const out = liveFilter.feed(startText);
+                if (out) { streamedContent += out; sse({ content: out }); }
+              } else if (streamingStarted) {
+                const out = liveFilter.feed(content);
+                if (out) { streamedContent += out; sse({ content: out }); }
+              }
+            }
+          }
           if (reasoning) reasoningAcc += reasoning;
           if (useNative && delta.tool_calls) {
             for (const tc of delta.tool_calls) {
@@ -647,6 +698,12 @@ export function createChatRunner({ ensureSettings, executeAssistantTool, pending
         throw err;
       } finally {
         clearTimeout(roundTimer);
+      }
+
+      // 收尾：把思维过滤器里还没吐出的尾巴推出去（正文已经边收边推过了）
+      if (liveFilter) {
+        const tail = liveFilter.flush();
+        if (tail) { streamedContent += tail; sse({ content: tail }); }
       }
 
       // 引擎返回了真实 prompt_tokens 时补发一条校准后的用量：
@@ -685,11 +742,7 @@ export function createChatRunner({ ensureSettings, executeAssistantTool, pending
       // ── 原生模式：有 tool_calls 就走工具 ──
       if (useNative && toolCallAcc.size > 0) {
         const toolCalls = [...toolCallAcc.values()];
-        if (contentAcc.trim()) {
-          const f = new ThinkingStreamFilter(ensureSettings);
-          const filtered = f.feed(contentAcc) + f.flush();
-          if (filtered) sse({ content: filtered });
-        }
+        // 正文在流式阶段已经推给前端了，这里不要再补发一遍（否则内容重复）
         messages.push({
           role: 'assistant',
           content: contentAcc || null,
@@ -732,17 +785,24 @@ export function createChatRunner({ ensureSettings, executeAssistantTool, pending
       }
 
       // ── 原生模式但没 tool_calls：正常回答 ──
+      // 正文在流式阶段已经推过了；这里只处理「没流出去的部分」和假执行拦截。
       const f = new ThinkingStreamFilter(ensureSettings);
       const filtered = f.feed(contentAcc) + f.flush();
       // 模型有时把「打算调用什么」写成 XML 正文，剥掉再展示
       const visible = stripToolCallBlocks(filtered);
       // 同样的假执行拦截（原生模式下模型也可能直接编答案）
       if (maybeCorrectFakeExecution(visible || filtered)) continue;
-      if (visible) {
-        sse({ content: visible });
-      } else if (isOnlyToolCallText(filtered)) {
-        console.warn('[Chat] 模型只输出工具调用 XML，无有效正文');
-        sse({ type: 'provider_notice', message: '模型返回了无法执行的工具调用格式，已忽略。可以再问一次或换个模型。' });
+      if (!streamedContent) {
+        // 一句正文都没流出去（例如思维块被整段过滤）才补发；
+        // 顺手剥掉模型漏进正文的英文思维链前缀（中文提问时）
+        const cleaned = userIsChinese
+          ? stripEnglishReasoningPreamble(visible)
+          : visible;
+        if (cleaned) sse({ content: cleaned });
+        else if (isOnlyToolCallText(filtered)) {
+          console.warn('[Chat] 模型只输出工具调用 XML，无有效正文');
+          sse({ type: 'provider_notice', message: '模型返回了无法执行的工具调用格式，已忽略。可以再问一次或换个模型。' });
+        }
       }
       finish();
       return { rounds: round, mode };

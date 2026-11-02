@@ -20,6 +20,10 @@ interface Props {
   tc: ToolCallLike;
   /** 默认展开（例如失败、或用户点过「全部展开」） */
   defaultOpen?: boolean;
+  /** 外部强制展开/收起（历史消息自动折叠用）；传了就忽略内部状态 */
+  openOverride?: boolean;
+  /** 失败时点「重试」：把失败信息发回给助手，让它换方式重试这一步 */
+  onRetry?: (tc: ToolCallLike) => void;
 }
 
 const STATUS_STYLE: Record<string, { row: string; icon: string }> = {
@@ -29,10 +33,12 @@ const STATUS_STYLE: Record<string, { row: string; icon: string }> = {
   aborted: { row: 'border-dark-800 bg-dark-900/40', icon: 'text-dark-500' },
 };
 
-export default function ToolCallCard({ tc, defaultOpen = false }: Props) {
+export default function ToolCallCard({ tc, defaultOpen = false, openOverride, onRetry }: Props) {
   const status = toolCallStatus(tc);
   const detail = hasDetails(tc);
-  const [open, setOpen] = useState(defaultOpen);
+  const [openState, setOpen] = useState(defaultOpen);
+  const open = openOverride === undefined ? openState : openOverride;
+  const setOpenSafe = (v: boolean) => { if (openOverride === undefined) setOpen(v); };
   const [copied, setCopied] = useState(false);
   const style = STATUS_STYLE[status] || STATUS_STYLE.ok;
   const summary = toolCallSummary(tc);
@@ -63,7 +69,7 @@ export default function ToolCallCard({ tc, defaultOpen = false }: Props) {
       <div className="flex items-center">
         <button
           type="button"
-          onClick={() => detail && setOpen(v => !v)}
+          onClick={() => detail && setOpenSafe(!open)}
           className={`flex-1 min-w-0 flex items-center gap-2 px-2.5 py-1.5 text-left ${detail ? 'cursor-pointer hover:bg-white/5' : 'cursor-default'}`}
         >
           <StatusIcon className={`w-3.5 h-3.5 flex-shrink-0 ${style.icon} ${status === 'running' ? 'animate-spin' : ''}`} />
@@ -100,10 +106,21 @@ export default function ToolCallCard({ tc, defaultOpen = false }: Props) {
         )}
       </div>
 
-      {/* 失败原因不用展开也看得到 */}
+      {/* 失败原因不用展开也看得到；同时给「让助手重试」入口 */}
       {!open && tc.result?.error && (
-        <div className="px-2.5 pb-1.5 text-[11px] text-red-300/80 font-mono break-all">
-          {String(tc.result.error).slice(0, 300)}
+        <div className="flex items-start gap-2 px-2.5 pb-1.5">
+          <div className="flex-1 text-[11px] text-red-300/80 font-mono break-all">
+            {String(tc.result.error).slice(0, 300)}
+          </div>
+          {onRetry && (
+            <button
+              type="button"
+              onClick={() => onRetry(tc)}
+              className="flex-shrink-0 text-[10px] px-1.5 py-0.5 rounded border border-red-500/30 text-red-300 hover:bg-red-500/10 transition-colors"
+            >
+              让助手重试
+            </button>
+          )}
         </div>
       )}
 
@@ -132,6 +149,17 @@ export default function ToolCallCard({ tc, defaultOpen = false }: Props) {
           )}
           {!output.text && !preview && (
             <div className="px-2.5 py-2 text-[11px] text-dark-500">（无输出）</div>
+          )}
+          {tc.result?.error && onRetry && (
+            <div className="px-2.5 pb-2">
+              <button
+                type="button"
+                onClick={() => onRetry(tc)}
+                className="text-[10px] px-2 py-1 rounded border border-red-500/30 text-red-300 hover:bg-red-500/10 transition-colors"
+              >
+                让助手重试这一步
+              </button>
+            </div>
           )}
         </div>
       )}
