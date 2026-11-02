@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { Brain, AlertTriangle, CheckCircle, XCircle, X, Loader, ChevronRight, Send, BookOpen } from 'lucide-react';
 import { sanitizeHtml } from '../utils/sanitize';
+import { analysisToastKey } from '../utils/alertKeys';
 
 interface AIAnalysisToastProps {
   wsRef: React.RefObject<WebSocket | null>;
@@ -10,12 +11,19 @@ interface AIAnalysisToastProps {
 
 interface ToastData {
   id: string;
+  /** 去重键：同一容器 / 同一日志来源只占一条 toast，避免反复弹 */
+  key: string;
   status: 'pending' | 'done' | 'error' | 'skipped';
   log?: any;
   analysis?: string;
   message?: string;
   ts: number;
   sourceId?: string;
+}
+
+/** 同一条 toast 的去重键：来源优先，其次日志文件/容器名 */
+function toastKeyOf(data: any): string {
+  return analysisToastKey(data);
 }
 
 interface AssistantTip {
@@ -50,20 +58,39 @@ export default function AIAnalysisToast({ wsRef, onViewLogs }: AIAnalysisToastPr
     const ws = wsRef.current;
     if (!ws) return;
     const handler = (event: MessageEvent) => {
-      const data = JSON.parse(event.data);
+      let data: any;
+      try { data = JSON.parse(event.data); } catch { return; }
       if (data.type !== 'ai_analysis') return;
-      const toast: ToastData = {
-        id: `${Date.now()}-${Math.random()}`,
-        status: data.status,
-        log: data.log,
-        analysis: data.analysis,
-        message: data.message,
-        ts: Date.now(),
-      };
-      setToasts(prev => [toast, ...prev].slice(0, 10));
-      prevToasts.current.set(toast.id, toast);
-      const ttl = toast.status === 'pending' ? 60_000 : 30_000;
-      setTimeout(() => setToasts(prev => prev.filter(t => t.id !== toast.id)), ttl);
+      const key = toastKeyOf(data);
+      setToasts(prev => {
+        const existing = prev.find(t => t.key === key);
+        if (existing) {
+          // 同一个来源/容器：只更新这一条的状态，不再新弹一条。
+          // 修的问题：ERROR 日志频繁时每个 pending/done 都新弹一个 toast，
+          // 用户还没点清除就被新的盖住/堆叠。
+          return prev.map(t => (t.key === key ? {
+            ...t,
+            status: data.status,
+            log: data.log ?? t.log,
+            analysis: data.analysis ?? t.analysis,
+            message: data.message ?? t.message,
+            sourceId: data.sourceId ?? t.sourceId,
+            ts: Date.now(),
+          } : t));
+        }
+        const toast: ToastData = {
+          id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          key,
+          status: data.status,
+          log: data.log,
+          analysis: data.analysis,
+          message: data.message,
+          sourceId: data.sourceId,
+          ts: Date.now(),
+        };
+        prevToasts.current.set(toast.id, toast);
+        return [toast, ...prev].slice(0, 5);
+      });
     };
     ws.addEventListener('message', handler);
     return () => ws.removeEventListener('message', handler);

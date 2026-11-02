@@ -25,12 +25,22 @@ import {
 } from '../security/shell-command-policy.js';
 import { getServers } from '../remote.js';
 import { resolveDockerTransport } from '../docker-transport.js';
+import { explainExitCode, buildRuleDiagnosis, mergePatrolProblems } from '../diagnosis.js';
 
 export default function createDockerRouter({
   ensureSettings, broadcast, addAnalysisRecord, buildHostExecMap, stripThinking,
   getLastPatrolResults, setLastPatrolResults,
 }) {
   const router = express.Router();
+
+// ─── 诊断相关的公共小工具 ─────────────────────────────────────────────
+
+/** 把一段文本按行写成 SSE（data: {"content": ...}），给「没有 API Key 时的规则诊断」复用 */
+function sseText(res, text) {
+  for (const line of String(text).split('\n')) {
+    res.write(`data: ${JSON.stringify({ content: `${line}\n` })}\n\n`);
+  }
+}
 
 /**
  * sourceId 白名单 —— 必须注册在 router 最前面。
@@ -329,7 +339,7 @@ ${logsText}
 router.get('/api/docker/health-check', async (req, res) => {
   try {
     const sources = ensureSettings().dockerSources || [];
-    const report = await docker.healthCheck(sources);
+    const report = mergePatrolProblems(await docker.healthCheck(sources), getLastPatrolResults());
     res.json(report);
   } catch (err) {
     res.status(500).json({ error: errorMessage(err) });
@@ -339,7 +349,7 @@ router.get('/api/docker/health-check', async (req, res) => {
 router.post('/api/docker/health-check/analyze', async (req, res) => {
   try {
     const sources = ensureSettings().dockerSources || [];
-    const report = await docker.healthCheck(sources);
+    const report = mergePatrolProblems(await docker.healthCheck(sources), getLastPatrolResults());
     const { summary, problems } = report;
 
     if (problems.length === 0) {
@@ -351,14 +361,28 @@ router.post('/api/docker/health-check/analyze', async (req, res) => {
     const baseUrl = ensureSettings().openaiBaseUrl;
     const model = ensureSettings().model;
 
-    if (!apiKey) return res.status(400).json({ error: '未配置 API Key' });
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+
+    // 没配模型就别报「未配置 API Key」这种死路了：先把已知事实用规则诊断讲清楚。
+    if (!apiKey) {
+      sseText(res, buildRuleDiagnosis({
+        title: `容器健康诊断（规则诊断）· ${problems.length} 个问题容器`,
+        lines: problems.map(p =>
+          `- **${p.name}**（${p.sourceName || ''}）· ${p.exitType === 'log' ? '日志异常（运行中）' : explainExitCode(p.exitCode)}\n` +
+          (p.errors?.length ? `  - 最近异常：${p.errors.slice(-3).join(' / ')}` : '  - 未取到最近异常日志')),
+      }));
+      res.write('data: [DONE]\n\n');
+      res.end();
+      return;
+    }
 
     const problemText = problems.map(p =>
       `### ${p.name} (${p.sourceName})\n` +
       `- 镜像: ${p.image}\n` +
       `- 状态: ${p.state}\n` +
       `- 退出码: ${p.exitCode} (` +
-      (p.exitType === 'oom' ? 'OOM内存溢出' : p.exitType === 'segfault' ? '段错误' : '异常退出') + `)\n` +
+      (p.exitType === 'oom' ? 'OOM内存溢出' : p.exitType === 'segfault' ? '段错误' : p.exitType === 'log' ? '日志异常（容器仍在运行）' : '异常退出') + `)\n` +
       `- 最近错误日志:\n${p.errors.map(l => '  ' + l).join('\n') || '  无'}`
     ).join('\n\n');
 
@@ -382,9 +406,6 @@ ${problemText}
 
     const OpenAI = (await import('openai')).default;
     const openai = new OpenAI({ apiKey, baseURL: baseUrl });
-
-    res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache');
 
     let fullAnalysis = '';
 
@@ -483,7 +504,21 @@ router.post('/api/docker/patrol/analyze', async (req, res) => {
     const baseUrl = ensureSettings().openaiBaseUrl;
     const model = ensureSettings().model;
 
-    if (!apiKey) return res.status(400).json({ error: '未配置 API Key' });
+    // 没配模型：用规则诊断把巡检结果讲清楚，而不是 400「未配置 API Key」
+    if (!apiKey) {
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache');
+      sseText(res, buildRuleDiagnosis({
+        title: `容器日志巡检（规则诊断）· ${results.length} 个容器有异常日志`,
+        lines: results.flatMap(r => [
+          `- **${r.containerName}**（${r.sourceName}）· ${r.uniqueCount || r.matchCount} 种异常`,
+          ...(r.lines || []).slice(-3).map(l => `  - [${l.level || 'ERROR'}] ${(l.content || l.line || '').slice(0, 160)}`),
+        ]),
+      }));
+      res.write('data: [DONE]\n\n');
+      res.end();
+      return;
+    }
 
     const containerText = results.map(r =>
       `### ${r.containerName} (${r.sourceName})\n` +
@@ -575,8 +610,6 @@ router.post('/api/docker/container/:sourceId/:containerId/analyze', async (req, 
     const baseUrl = ensureSettings().openaiBaseUrl;
     const model = ensureSettings().model;
 
-    if (!apiKey) return res.status(400).json({ error: '未配置 API Key' });
-
     const config = await getDockerConfig(sourceId);
     if (!config) return res.status(404).json({ error: 'Docker 源未找到' });
 
@@ -590,6 +623,25 @@ router.post('/api/docker/container/:sourceId/:containerId/analyze', async (req, 
         .slice(-10);
       // Infer name from latest log or use containerId
     } catch { /* 容器已被删除，日志读不到 */ }
+
+    // 没配模型：给规则诊断（退出码解释 + 已知错误日志），别让人卡在「未配置 API Key」
+    if (!apiKey) {
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache');
+      sseText(res, buildRuleDiagnosis({
+        title: `容器 ${containerName} 异常退出诊断（规则诊断）`,
+        lines: [
+          `- 镜像: ${image || '未知'}`,
+          `- ${explainExitCode(exitCode)}（${exitLabel || exitType || '异常退出'}）`,
+          recentErrorLines.length > 0
+            ? `- 退出前最后 ${recentErrorLines.length} 条错误:\n${recentErrorLines.map(l => `  - [${l.level}] ${(l.content || l.line || '').slice(0, 200)}`).join('\n')}`
+            : '- 未获取到最近错误日志（容器可能已被清理）',
+        ],
+      }));
+      res.write('data: [DONE]\n\n');
+      res.end();
+      return;
+    }
 
     const containerText = `- 容器 ID: ${containerId}\n- 镜像: ${image || '未知'}\n- 退出码: ${exitCode} (${exitLabel || exitType || '异常退出'})\n` +
       (recentErrorLines.length > 0

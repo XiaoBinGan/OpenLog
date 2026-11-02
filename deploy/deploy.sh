@@ -277,7 +277,18 @@ health_check() {
   done
   echo "  ❌ 90s 内健康检查未通过"
   echo "  —— 最近日志 ——"
-  docker logs --tail 30 "$container" 2>&1 | sed 's/^/    /'
+  LOG_TAIL="$(docker logs --tail 30 "$container" 2>&1)"
+  echo "$LOG_TAIL" | sed 's/^/    /'
+  # 把最常见的两种启动失败直接翻译成可操作的下一步，省得对着日志猜
+  if echo "$LOG_TAIL" | grep -qi 'password authentication failed'; then
+    echo ""
+    echo "  💡 数据库密码不对：openlog-pg 数据卷里的旧密码与 deploy.env 里的不一致。"
+    echo "     用 --db-url 提供旧密码，或复用已有容器的密码（install.sh 现在会自动复用）。"
+  elif echo "$LOG_TAIL" | grep -qi 'DB.*初始化失败\|数据库未就绪'; then
+    echo ""
+    echo "  💡 数据库没连上：检查 deploy.env 里的 OPENLOG_DATABASE_URL（用户名/密码/库名）"
+    echo "     以及数据库容器是否在运行（docker ps | grep -E 'openlog-pg|postgres'）。"
+  fi
   return 1
 }
 

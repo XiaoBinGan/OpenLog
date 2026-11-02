@@ -242,15 +242,22 @@ export default function Analytics() {
           </div>
           <div className="space-y-2 max-h-64 overflow-y-auto">
             {report.problems?.map((p: any) => (
-              <div key={p.name} className={`p-3 bg-dark-900 rounded-lg border-l-2 ${
-                p.exitType === 'oom' ? 'border-red-500 bg-red-500/5' : 'border-orange-500 bg-orange-500/5'
+              <div key={`${p.sourceName || ''}-${p.name}`} className={`p-3 bg-dark-900 rounded-lg border-l-2 ${
+                p.exitType === 'oom' || p.exitType === 'segfault' ? 'border-red-500 bg-red-500/5'
+                  : p.exitType === 'log' ? 'border-yellow-500 bg-yellow-500/5'
+                  : 'border-orange-500 bg-orange-500/5'
               }`}>
                 <div className="flex items-center justify-between mb-1">
                   <span className="font-medium text-sm">{p.name}</span>
                   <span className={`text-xs px-1.5 py-0.5 rounded ${
-                    p.exitType === 'oom' ? 'bg-red-500/20 text-red-400' : 'bg-orange-500/20 text-orange-400'
+                    p.exitType === 'oom' ? 'bg-red-500/20 text-red-400'
+                      : p.exitType === 'log' ? 'bg-yellow-500/20 text-yellow-400'
+                      : 'bg-orange-500/20 text-orange-400'
                   }`}>
-                    {p.exitType === 'oom' ? 'OOM' : `退出码 ${p.exitCode}`}
+                    {p.exitType === 'oom' ? 'OOM'
+                      : p.exitType === 'segfault' ? '段错误'
+                      : p.exitType === 'log' ? (p.status || '日志异常')
+                      : `退出码 ${p.exitCode}`}
                   </span>
                 </div>
                 <p className="text-xs text-dark-500">{p.image} · {p.sourceName}</p>

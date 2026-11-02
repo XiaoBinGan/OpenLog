@@ -74,6 +74,15 @@ ok()  { echo "  ✅ $*"; }
 warn(){ echo "  ⚠️  $*"; }
 die() { echo "  ❌ $*" >&2; exit 1; }
 
+# 用「真的连一次 TCP」验证 PG 密码，而不是只信容器里的 env。
+# 原因：POSTGRES_PASSWORD 只在数据卷首次初始化时生效；卷里残留旧密码时，
+# env 看起来是对的、实际认证会失败（app 侧报 password authentication failed）。
+pg_auth_ok() {
+  local container="$1" pw="$2"
+  docker exec -e PGPASSWORD="$pw" "$container" \
+    psql -h 127.0.0.1 -U openlog -d openlog -c 'select 1' >/dev/null 2>&1
+}
+
 echo "=================================================="
 echo "  OpenLog 离线一键部署"
 echo "=================================================="
@@ -146,48 +155,95 @@ ok "已打 tag openlog:latest → $IMAGE_TAG"
 if [ "$DB_MODE" = "postgres" ]; then
   if [ -z "$DB_URL" ]; then
     log "准备 PostgreSQL"
-    if docker ps --filter "name=^$PG_CONTAINER$" --format '{{.Names}}' | grep -qx "$PG_CONTAINER"; then
-      ok "已有运行中的 openlog-pg 容器"
-      warn "请用 --db-url 显式提供连接串（或先自己设置）"
-      die "需要知道现有 PG 的密码；请改用 --db-url 'postgres://user:pw@127.0.0.1:5432/openlog'"
-    fi
-    if ! docker image inspect "$PG_IMAGE" >/dev/null 2>&1; then
-      # 部署包里带了 PG 镜像就自动导入（离线机器没法 docker pull）
-      PG_ARCHIVE="$(ls -1t "$SCRIPT_DIR"/images/postgres-*.tar.gz 2>/dev/null | head -1 || true)"
-      if [ -n "$PG_ARCHIVE" ] && [ "$DRY_RUN" = "0" ]; then
-        echo "  导入 PostgreSQL 镜像 $(basename "$PG_ARCHIVE")（约 1 分钟）..."
-        docker load -i "$PG_ARCHIVE" >/dev/null
-        ok "已导入 $PG_IMAGE"
+    # 关键：只要容器「存在」（running 或 stopped）就必须复用它原来的密码。
+    # 原因：POSTGRES_PASSWORD 只在数据卷**首次初始化**时生效，卷里已有数据时
+    # 换新密码不会改库里的密码 → 应用侧报
+    # "PostgreSQL: password authentication failed for user openlog"。
+    # 真实踩到：重复跑安装（或 docker rm 容器但没删卷）时，脚本生成新密码 + 老数据卷。
+    if docker inspect --type container "$PG_CONTAINER" >/dev/null 2>&1; then
+      EXISTING_PW="$(docker inspect --type container "$PG_CONTAINER" \
+        --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null \
+        | sed -n 's/^POSTGRES_PASSWORD=//p' | head -1)"
+      if [ -z "$EXISTING_PW" ]; then
+        die "已有 $PG_CONTAINER 容器，但读不到它的 POSTGRES_PASSWORD。
+     请改用 --db-url 'postgres://openlog:<密码>@127.0.0.1:$PG_PORT/openlog' 显式提供连接串。"
       fi
-    fi
-    if ! docker image inspect "$PG_IMAGE" >/dev/null 2>&1; then
-      # 兜底：机器有外网时直接拉（离线机器会失败，属于预期）
-      warn "本机没有 $PG_IMAGE，尝试 docker pull（无外网会失败）"
-      if docker pull "$PG_IMAGE" >/dev/null 2>&1; then
-        ok "已拉取 $PG_IMAGE"
+      ok "复用已有 $PG_CONTAINER 容器的密码（不重建，避免认证失配）"
+      if [ "$DRY_RUN" = "0" ]; then
+        docker start "$PG_CONTAINER" >/dev/null 2>&1 || true
+        echo "  等待 PostgreSQL 就绪..."
+        for i in $(seq 1 40); do
+          if docker exec "$PG_CONTAINER" pg_isready -U openlog -d openlog >/dev/null 2>&1; then break; fi
+          sleep 1
+        done
+        docker exec "$PG_CONTAINER" pg_isready -U openlog -d openlog >/dev/null 2>&1 \
+          || die "复用的 $PG_CONTAINER 容器没起来，检查 docker logs $PG_CONTAINER"
       fi
-    fi
-    if ! docker image inspect "$PG_IMAGE" >/dev/null 2>&1; then
-      die "本机没有 $PG_IMAGE 镜像，且无法拉取（离线环境）。
+      DB_URL="postgres://openlog:${EXISTING_PW}@127.0.0.1:${PG_PORT}/openlog"
+      # 再验一次真连：容器 env 里记的密码不一定等于数据卷里的密码
+      if [ "$DRY_RUN" = "0" ] && ! pg_auth_ok "$PG_CONTAINER" "$EXISTING_PW"; then
+        die "复用到的密码认证失败：$PG_CONTAINER 的 env 密码与数据卷里的密码不一致。
+     解决其一：
+       1) 用 --db-url 'postgres://openlog:<正确密码>@127.0.0.1:$PG_PORT/openlog' 提供正确密码；
+       2) 旧实例的 deploy.env 里存着当初的 OPENLOG_DATABASE_URL，可以从那里找密码；
+       3) 确认数据可丢：docker rm -f $PG_CONTAINER && docker volume rm $PG_VOLUME 后重跑（会重建空库）。"
+      fi
+      ok "PostgreSQL 已就绪（复用原密码）"
+    else
+      # 没有容器但数据卷还在：卷里的旧密码无从得知，新建容器换密码一样会认证失败。
+      PG_VOL_MOUNT="$(docker volume inspect "$PG_VOLUME" --format '{{.Mountpoint}}' 2>/dev/null || true)"
+      if [ "$DRY_RUN" = "0" ] && [ -n "$PG_VOL_MOUNT" ] && [ -n "$(ls -A "$PG_VOL_MOUNT" 2>/dev/null)" ]; then
+        die "数据卷 $PG_VOLUME 里已有 PostgreSQL 数据，但对应容器已删除，无法得知旧密码。
+     解决其一：
+       1) 用 --db-url 'postgres://openlog:<旧密码>@127.0.0.1:$PG_PORT/openlog' 提供旧密码；
+       2) 确认数据可丢：docker volume rm $PG_VOLUME 后重跑本脚本（会重建空库）；
+       3) 不用 PG：去掉 --with-postgres 走默认 SQLite。"
+      fi
+      if ! docker image inspect "$PG_IMAGE" >/dev/null 2>&1; then
+        # 部署包里带了 PG 镜像就自动导入（离线机器没法 docker pull）
+        PG_ARCHIVE="$(ls -1t "$SCRIPT_DIR"/images/postgres-*.tar.gz 2>/dev/null | head -1 || true)"
+        if [ -n "$PG_ARCHIVE" ] && [ "$DRY_RUN" = "0" ]; then
+          echo "  导入 PostgreSQL 镜像 $(basename "$PG_ARCHIVE")（约 1 分钟）..."
+          docker load -i "$PG_ARCHIVE" >/dev/null
+          ok "已导入 $PG_IMAGE"
+        fi
+      fi
+      if ! docker image inspect "$PG_IMAGE" >/dev/null 2>&1; then
+        # 兜底：机器有外网时直接拉（离线机器会失败，属于预期）
+        warn "本机没有 $PG_IMAGE，尝试 docker pull（无外网会失败）"
+        if docker pull "$PG_IMAGE" >/dev/null 2>&1; then
+          ok "已拉取 $PG_IMAGE"
+        fi
+      fi
+      if ! docker image inspect "$PG_IMAGE" >/dev/null 2>&1; then
+        die "本机没有 $PG_IMAGE 镜像，且无法拉取（离线环境）。
      解决其一：
        1) 把 deploy/images/postgres-16-alpine.tar.gz 一起拷进来（本部署包默认已包含），
           重跑本脚本会自动 docker load；
        2) 手动 docker load -i postgres-16-alpine.tar.gz 后重跑；
        3) 不用 PG，去掉 --with-postgres 走默认 SQLite。"
+      fi
+      PG_PASSWORD="$(head -c 18 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 20)"
+      run "docker volume create '$PG_VOLUME' >/dev/null 2>&1 || true"
+      run "docker rm -f '$PG_CONTAINER' >/dev/null 2>&1 || true"
+      run "docker run -d --name '$PG_CONTAINER' --restart unless-stopped \
+        -e POSTGRES_USER=openlog -e POSTGRES_PASSWORD='$PG_PASSWORD' -e POSTGRES_DB=openlog \
+        -v '$PG_VOLUME':/var/lib/postgresql/data -p 127.0.0.1:$PG_PORT:5432 '$PG_IMAGE' >/dev/null"
+      echo "  等待 PostgreSQL 就绪..."
+      for i in $(seq 1 40); do
+        if docker exec "$PG_CONTAINER" pg_isready -U openlog -d openlog >/dev/null 2>&1; then break; fi
+        sleep 1
+      done
+      DB_URL="postgres://openlog:${PG_PASSWORD}@127.0.0.1:${PG_PORT}/openlog"
+      if [ "$DRY_RUN" = "0" ] && ! pg_auth_ok "$PG_CONTAINER" "$PG_PASSWORD"; then
+        die "新建的 $PG_CONTAINER 认证失败（数据卷 $PG_VOLUME 里可能有旧密码）。
+     解决其一：
+       1) 用 --db-url 'postgres://openlog:<正确密码>@127.0.0.1:$PG_PORT/openlog' 提供正确密码；
+       2) 确认数据可丢：docker rm -f $PG_CONTAINER && docker volume rm $PG_VOLUME 后重跑（会重建空库）；
+       3) 不用 PG：去掉 --with-postgres 走默认 SQLite。"
+      fi
+      ok "PostgreSQL 已就绪（密码已写入 deploy.env）"
     fi
-    PG_PASSWORD="$(head -c 18 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 20)"
-    run "docker volume create '$PG_VOLUME' >/dev/null 2>&1 || true"
-    run "docker rm -f '$PG_CONTAINER' >/dev/null 2>&1 || true"
-    run "docker run -d --name '$PG_CONTAINER' --restart unless-stopped \
-      -e POSTGRES_USER=openlog -e POSTGRES_PASSWORD='$PG_PASSWORD' -e POSTGRES_DB=openlog \
-      -v '$PG_VOLUME':/var/lib/postgresql/data -p 127.0.0.1:$PG_PORT:5432 '$PG_IMAGE' >/dev/null"
-    echo "  等待 PostgreSQL 就绪..."
-    for i in $(seq 1 40); do
-      if docker exec "$PG_CONTAINER" pg_isready -U openlog -d openlog >/dev/null 2>&1; then break; fi
-      sleep 1
-    done
-    DB_URL="postgres://openlog:${PG_PASSWORD}@127.0.0.1:${PG_PORT}/openlog"
-    ok "PostgreSQL 已就绪（密码已写入 deploy.env）"
   else
     ok "使用提供的 PG 连接串"
   fi

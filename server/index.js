@@ -42,7 +42,7 @@ import { AGENT_TOOLS, AGENT_TOOL_NAMES, executeAgentTool } from './agent-tools.j
 import createAuthRouter from './routes/auth.js';
 import { isLoopbackAddress } from './security/loopback.js';
 import { migrateWatchSourceFields } from './settings-migrations.js';
-import { initDb, getDb, getKv, setKv, insertLogRecord, getAlertConfig, closeDb, pruneOldRecords, checkpoint, ensureBuiltinSkills } from './db/index.js';
+import { initDb, getDb, getKv, setKv, insertLogRecord, getAlertConfig, closeDb, pruneOldRecords, checkpoint, ensureBuiltinSkills, isDbReady } from './db/index.js';
 import { BUILTIN_SKILLS } from './default-skills.js';
 import { resolveDockerTransport } from './docker-transport.js';
 import { getRemoteMfu } from './gpu-mfu.js';
@@ -238,6 +238,10 @@ async function initDatabase() {
     await remote.loadServers();
   } catch (err) {
     console.error('[DB] 初始化失败:', errorMessage(err));
+    // 不退出进程（退出会让容器在 --restart 策略下无限重启、把真正的原因刷没），
+    // 但把排查方向说清楚：API 层会用 503 明确告诉前端「数据库没就绪」。
+    console.error('[DB] 排查方向: 1) OPENLOG_DB_TYPE/OPENLOG_DATABASE_URL 是否正确'
+      + '（PG 密码必须与已有 openlog-pg 容器一致）2) 数据目录是否可写 3) 库服务是否在运行');
   }
 }
 
@@ -327,6 +331,32 @@ app.use((req, res, next) => {
 // Token 获取端点（仅 localhost）
 // Token 获取端点（仅 localhost）—— 已抽到 server/routes/auth.js
 app.use(createAuthRouter({ authToken: AUTH_TOKEN }));
+
+/**
+ * 数据库就绪闸门。
+ *
+ * 背景：initDb() 失败（最常见是 PG 密码与 openlog-pg 容器不一致）时进程**不退出**，
+ * 但 db 是 null。以前所有 DB 路由都会抛
+ * `Cannot read properties of null (reading 'all' / 'run' / 'get')` ——
+ * 前端只显示这句英文 TypeError（技能管理页尤其明显），用户根本看不出是数据库没连上。
+ *
+ * 这里统一挡掉：返回 503 + 中文原因。放行两个端点：
+ *   /api/auth/token  —— 浏览器登录用，不依赖 DB
+ *   /api/db/info     —— 健康检查/排障用，它自己会说明数据库状态
+ */
+const DB_FREE_PATHS = ['/api/auth/token', '/api/db/info'];
+app.use((req, res, next) => {
+  if (!isApiPath(req.path)) return next();
+  if (DB_FREE_PATHS.some(p => req.path === p || req.path.startsWith(p + '/'))) return next();
+  if (!isDbReady()) {
+    return res.status(503).json({
+      error: '数据库未就绪：服务启动时数据库初始化失败。请检查 OPENLOG_DB_TYPE / OPENLOG_DATABASE_URL'
+        + '（PostgreSQL 密码要与 openlog-pg 容器一致）或数据目录写权限，修正后重启容器。',
+      dbReady: false,
+    });
+  }
+  next();
+});
 
 // 默认 settings
 // 环境变量只作为「首次启动、数据库尚无配置」时的默认值：ensureSettings() 用
@@ -1921,6 +1951,8 @@ async function runRetention() {
   const now = Date.now();
   if (now - lastRetentionAt < RETENTION_INTERVAL_MS) return;
   lastRetentionAt = now;
+  // 数据库没连上就别跑（否则 pruneOldRecords 会拿到 null db 抛错，每 60s 刷一条日志）
+  if (!isDbReady()) return;
   const settings = ensureSettings();
   const logDays = Number(settings.logPersistenceMaxAge) || 7;
   if (!settings.logPersistence && logDays <= 0) return;

@@ -3,6 +3,7 @@ import { Outlet, NavLink, useNavigate, useLocation } from 'react-router-dom';
 import { AssistantProvider } from '../contexts/AssistantContext';
 import { useToast } from '../contexts/ToastContext';
 import { apiFetch } from '../api/client';
+import { containerToastGroup } from '../utils/alertKeys';
 import {
   LayoutDashboard,
   FileText,
@@ -60,7 +61,7 @@ function LayoutContent() {
     wsInstance.onopen = () => {
       console.log('[WS] Connected');
       // 重连后检查是否有遗漏的巡检/退出事件
-      apiFetch<{ results?: { containerName?: string; containerId?: string; totalUnique?: number; uniqueCount?: number }[] }>('/api/docker/patrol/last')
+      apiFetch<{ results?: { containerName?: string; containerId?: string; totalUnique?: number; uniqueCount?: number; sourceId?: string }[] }>('/api/docker/patrol/last')
         .then(data => {
           const results = data.results ?? [];
           if (results.length > 0) {
@@ -71,7 +72,7 @@ function LayoutContent() {
                 `🐳 ${cName} · ${count} 种异常`,
                 { action: { label: '分析 →', onClick: () => navigate('/analytics?autoPatrol=1') },
                   persistent: true,
-                  group: `patrol-${cName}` }
+                  group: containerToastGroup(r.sourceId, r.containerId, cName) }
               );
             }
           }
@@ -116,10 +117,10 @@ function LayoutContent() {
             toast.error(`${name} ${label}${code}`, {
               action: { label: '诊断 →', onClick: () => navigate(`/analytics?${params.toString()}`) },
               persistent: true,
-              group: `exit-${containerId || name}`
+              group: containerToastGroup(sourceId, containerId, name),
             });
           } else {
-            toast.error(`${name} ${label}${code}`, { persistent: true, group: `exit-${containerId || name}` });
+            toast.error(`${name} ${label}${code}`, { persistent: true, group: containerToastGroup(sourceId, containerId, name) });
           }
         }
         if (data.type === 'container_patrol') {
@@ -132,7 +133,7 @@ function LayoutContent() {
                 `🐳 ${cName} · ${count} 种异常`,
                 { action: { label: '分析 →', onClick: () => navigate('/analytics?autoPatrol=1') },
                   persistent: true,
-                  group: `patrol-${cName}` }
+                  group: containerToastGroup(r.sourceId, r.containerId, cName) }
               );
             }
           }
@@ -152,7 +153,8 @@ function LayoutContent() {
               onClick: () => navigate(`/docker?sourceId=${encodeURIComponent(d.sourceId || '')}&containerId=${encodeURIComponent(d.containerId || '')}&openLog=1`),
             },
             persistent: true,
-            group: `logalert-${d.sourceId || ''}-${d.containerId || cName}-${level}`,
+            // 同一个容器的 ERROR/警告都合并到一条（不再按 level 拆成两条）
+            group: containerToastGroup(d.sourceId, d.containerId, cName),
           });
         }
       } catch {}

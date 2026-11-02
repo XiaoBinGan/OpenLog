@@ -327,6 +327,20 @@ export function getDb() {
   return db;
 }
 
+/**
+ * 数据库是否已就绪。
+ *
+ * 启动时 initDb() 失败（比如 PG 密码不对）**不会**让进程退出，因为那会让
+ * 容器在 --restart 策略下无限重启、日志被刷掉。但路由不能继续往下跑：
+ * 以前 db 为 null 时每个 DB 路由都会抛 `Cannot read properties of null
+ * (reading 'all')` 这种英文 TypeError，前端只看到一句莫名其妙的报错。
+ *
+ * 现在用它在 API 层统一返回 503 + 中文原因（见 server/index.js 的 DB 闸门）。
+ */
+export function isDbReady() {
+  return Boolean(db);
+}
+
 export function getDbType() {
   return dbType;
 }
@@ -608,6 +622,10 @@ export function insertAnalysis(record) {
  * @returns {Promise<{ logs:number, analyses:number }>}
  */
 export async function pruneOldRecords({ logDays = 7, analysisDays = 30 } = {}) {
+  // 数据库没连上时后台保留任务仍会照常触发（定时器不看 DB 状态），
+  // 直接 `db.run` 会抛 "Cannot read properties of null (reading 'run')"，
+  // 每 60s 往日志里刷一条。连不上就静默跳过，等 DB 恢复后自然继续。
+  if (!db) return { logs: 0, analyses: 0, skipped: true };
   const nowSec = Math.floor(Date.now() / 1000);
   const results = { logs: 0, analyses: 0 };
   if (logDays > 0) {
