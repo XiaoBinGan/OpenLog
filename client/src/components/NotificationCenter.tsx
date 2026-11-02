@@ -9,6 +9,7 @@
  *     点击对应的错误就跳转对应的容器列表中的容器查看」
  */
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
 import {
   Bell, X, CheckCircle, AlertCircle, Info, AlertTriangle,
@@ -111,13 +112,15 @@ export default function NotificationCenter() {
         </button>
       </div>
 
-      {/* 右侧抽屉 + 遮罩 */}
-      {open && (
+      {/* 右侧抽屉 + 遮罩。
+          portal 到 body：顶栏有 backdrop-blur（backdrop-filter 会成为 fixed 的包含块），
+          不 portal 的话抽屉会被压缩成顶栏那么高。 */}
+      {open && createPortal(
         <>
-          <div className="fixed inset-0 z-40 bg-black/30" onClick={() => setOpen(false)} />
+          <div className="fixed inset-0 z-[90] bg-black/40" onClick={() => setOpen(false)} />
           <div
             ref={panelRef}
-            className="fixed right-0 top-14 bottom-0 z-50 w-96 max-w-[92vw] flex flex-col bg-dark-900 border-l border-dark-800 shadow-2xl animate-slide-in"
+            className="fixed right-0 top-0 bottom-0 z-[95] w-96 max-w-[92vw] flex flex-col bg-dark-900 border-l border-dark-800 shadow-2xl animate-slide-in"
           >
             {/* 头部 */}
             <div className="flex items-center justify-between px-4 py-3 border-b border-dark-800 flex-shrink-0">
@@ -225,7 +228,8 @@ export default function NotificationCenter() {
               提示弹出 2 秒后自动收进这里；点带「查看该容器」的条目可直接跳到对应容器。
             </div>
           </div>
-        </>
+        </>,
+        document.body,
       )}
     </>
   );
