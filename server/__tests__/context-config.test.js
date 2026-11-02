@@ -9,6 +9,7 @@ import { describe, it, expect } from 'vitest';
 
 const {
   resolveContextConfig, clampContextConfig, pickPersistableConfig,
+  adaptContextToWindow,
   CONTEXT_DEFAULTS, CONTEXT_BOUNDS,
 } = await import('../routes/context-config.js');
 
@@ -155,5 +156,42 @@ describe('token 估算与压缩（用量条的数据基础）', () => {
         && x.tool_calls.some(tc => tc.id === m.tool_call_id));
       expect(parent, `tool ${m.tool_call_id} 的父消息被丢了`).toBeTruthy();
     }
+  });
+});
+
+describe('adaptContextToWindow —— 按模型窗口自适应预算', () => {
+  const base = () => clampContextConfig({ windowTokens: 65_536, budgetTokens: 48_000 }).config;
+
+  it('模型窗口更小 → 窗口按模型修正，预算压到窗口 70%', () => {
+    const out = adaptContextToWindow(base(), 32_768);
+    expect(out.adjusted).toBe(true);
+    expect(out.config.windowTokens).toBe(32_768);
+    expect(out.config.budgetTokens).toBe(Math.floor(32_768 * 0.7));
+    expect(out.reason).toContain('32768');
+  });
+
+  it('模型窗口更大 → 只放大窗口，预算不动（不擅自加）', () => {
+    const out = adaptContextToWindow(base(), 131_072);
+    expect(out.adjusted).toBe(true);
+    expect(out.config.windowTokens).toBe(131_072);
+    expect(out.config.budgetTokens).toBe(48_000);
+  });
+
+  it('窗口相同 → 不调整', () => {
+    const out = adaptContextToWindow(base(), 65_536);
+    expect(out.adjusted).toBe(false);
+  });
+
+  it('探测不到（null/太小/非法）→ 原样返回', () => {
+    expect(adaptContextToWindow(base(), null).adjusted).toBe(false);
+    expect(adaptContextToWindow(base(), 1000).adjusted).toBe(false);
+    expect(adaptContextToWindow(base(), 'abc').adjusted).toBe(false);
+    expect(adaptContextToWindow(null, 65_536).adjusted).toBe(false);
+  });
+
+  it('调整后重算 compactAt/warnAt 绝对值', () => {
+    const out = adaptContextToWindow(base(), 16_384);
+    expect(out.config.compactAtTokens).toBe(Math.floor(out.config.budgetTokens * out.config.compactAt));
+    expect(out.config.warnAtTokens).toBe(Math.floor(out.config.budgetTokens * out.config.warnAt));
   });
 });

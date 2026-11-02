@@ -70,4 +70,40 @@ describe('chat.js —— 提示词禁止假执行', () => {
   it('强制简体中文回答', () => {
     expect(chat).toContain('一律用简体中文回答');
   });
+
+  it('支持会话指定目标服务器（写进系统提示，省掉先 remote_servers）', () => {
+    expect(chat).toContain('targetServerId');
+    expect(chat).toContain('当前目标服务器（用户已指定）');
+    expect(chat).toContain('不需要先调 remote_servers');
+  });
+
+  it('按模型窗口自适应上下文预算', () => {
+    expect(chat).toContain('probeModelWindow');
+    expect(chat).toContain('adaptContextToWindow');
+  });
+});
+
+describe('客户端 —— 目标服务器 / 历史 / 复制 接线', () => {
+  const assistant = fs.readFileSync(path.join(ROOT, 'client', 'src', 'pages', 'Assistant.tsx'), 'utf8');
+  const card = fs.readFileSync(path.join(ROOT, 'client', 'src', 'components', 'ToolCallCard.tsx'), 'utf8');
+
+  it('发送消息带上 targetServerId', () => {
+    expect(assistant).toContain('targetServerId: targetServerId || undefined');
+  });
+
+  it('输入框 ↑/↓ 翻历史 + Enter 发送', () => {
+    expect(assistant).toContain('handleInputKeyDown');
+    expect(assistant).toContain("e.key === 'ArrowUp'");
+    expect(assistant).toContain('assistant.inputHistory');
+  });
+
+  it('回答可复制、预算用尽可继续', () => {
+    expect(assistant).toContain('copyText(msg.content');
+    expect(assistant).toContain('继续（接着当前进度做）');
+  });
+
+  it('工具步骤卡可复制输出', () => {
+    expect(card).toContain('复制输出');
+    expect(card).toContain('navigator.clipboard.writeText');
+  });
 });

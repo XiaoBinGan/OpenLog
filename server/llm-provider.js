@@ -62,6 +62,57 @@ export function apiUrl(baseUrl, path) {
   return `${base}/${String(path || '').replace(/^\/+/, '')}`;
 }
 
+/**
+ * 从 /v1/models 的返回里提取模型窗口（token）。
+ *
+ * 各引擎字段不一样，实测见过：
+ *   strata:  meta.n_ctx
+ *   vLLM:    max_model_len
+ *   SGLang:  max_model_len / context_length
+ *   其他:    context_window / context_length
+ *
+ * @param {any} entry /v1/models 里单条模型对象
+ * @returns {number|null}
+ */
+export function extractModelWindow(entry) {
+  if (!entry || typeof entry !== 'object') return null;
+  const candidates = [
+    entry?.meta?.n_ctx,
+    entry?.n_ctx,
+    entry?.max_model_len,
+    entry?.context_length,
+    entry?.context_window,
+    entry?.meta?.max_model_len,
+    entry?.meta?.context_length,
+  ];
+  for (const c of candidates) {
+    const n = Number(c);
+    if (Number.isFinite(n) && n >= 4_000) return Math.round(n);
+  }
+  return null;
+}
+
+/**
+ * 查询某个模型自报的上下文窗口。
+ * 拿不到就返回 null（调用方保持原配置，不猜）。
+ */
+export async function probeModelWindow(baseUrl, apiKey, model, fetchImpl = fetch) {
+  try {
+    const base = normalizeBaseUrl(baseUrl);
+    if (!base) return null;
+    const headers = { 'Content-Type': 'application/json' };
+    if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+    const res = await fetchImpl(`${base}/models`, { method: 'GET', headers, signal: AbortSignal.timeout(8000) });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const list = Array.isArray(data?.data) ? data.data : (Array.isArray(data) ? data : []);
+    const hit = list.find(m => (m?.id || m?.name || m?.model) === model) || list[0];
+    return extractModelWindow(hit);
+  } catch {
+    return null;
+  }
+}
+
 /** 从 baseUrl / 模型名猜引擎类型（仅用于提示文案，不影响功能） */
 export function guessEngine(baseUrl, model) {
   const url = String(baseUrl || '').toLowerCase();
@@ -351,6 +402,7 @@ export default {
   ENGINE_HINTS, normalizeBaseUrl, apiUrl, guessEngine, listModels,
   getCachedToolSupport, setCachedToolSupport, isToolUnsupportedError,
   looksLikeUncalledToolUse, looksLikeFakeExecution,
+  extractModelWindow, probeModelWindow,
   TOOL_PROTOCOL_PROMPT, renderToolsAsText, parseToolProtocol,
   renderToolResultForTextProtocol, extractDelta, adaptRequestParams,
 };

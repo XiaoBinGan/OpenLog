@@ -222,7 +222,7 @@ export const AGENT_TOOLS = [
     type: 'function',
     function: {
       name: 'remote_stat',
-      description: '查看远程文件/目录的属性（大小、修改时间、权限、是否目录）',
+      description: '看远程文件/目录属性（大小/时间/权限）',
       parameters: { type: 'object', properties: { serverId: { type: 'string' }, path: { type: 'string', description: '绝对路径' } }, required: ['serverId', 'path'] },
     },
   },
@@ -230,7 +230,7 @@ export const AGENT_TOOLS = [
     type: 'function',
     function: {
       name: 'remote_ls',
-      description: '列远程目录内容（含权限/大小/时间，按修改时间倒序）',
+      description: '列远程目录（权限/大小/时间，按时间倒序）',
       parameters: { type: 'object', properties: { serverId: { type: 'string' }, path: { type: 'string', description: '绝对路径，默认 /' } }, required: ['serverId'] },
     },
   },
@@ -238,13 +238,13 @@ export const AGENT_TOOLS = [
     type: 'function',
     function: {
       name: 'remote_read_file',
-      description: '读远程文件内容（带行号）。可指定行区间；超 200KB 会截断并提示',
+      description: '读远程文件（带行号，超 200KB 截断）',
       parameters: {
         type: 'object',
         properties: {
           serverId: { type: 'string' },
           filePath: { type: 'string' },
-          startLine: { type: 'number', description: '起始行（1-based，可选）' },
+          startLine: { type: 'number', description: '起始行（可选）' },
           endLine: { type: 'number', description: '结束行（可选）' },
         },
         required: ['serverId', 'filePath'],
@@ -255,15 +255,15 @@ export const AGENT_TOOLS = [
     type: 'function',
     function: {
       name: 'remote_grep',
-      description: '在远程目录/文件里搜索内容（错误定位最常用）：返回 文件:行号:内容',
+      description: '远程搜内容（错误定位主力）：返回 文件:行号:内容',
       parameters: {
         type: 'object',
         properties: {
           serverId: { type: 'string' },
           pattern: { type: 'string', description: '正则（grep -E）' },
-          path: { type: 'string', description: '搜索目录或文件，绝对路径' },
-          glob: { type: 'string', description: '只搜匹配的文件，如 *.py / *.yaml' },
-          context: { type: 'number', description: '上下文行数，0-5' },
+          path: { type: 'string', description: '目录或文件绝对路径' },
+          glob: { type: 'string', description: '如 *.py / *.yaml（可选）' },
+          context: { type: 'number', description: '上下文行数 0-5' },
           caseSensitive: { type: 'boolean' },
         },
         required: ['serverId', 'pattern', 'path'],
@@ -274,15 +274,15 @@ export const AGENT_TOOLS = [
     type: 'function',
     function: {
       name: 'remote_edit_file',
-      description: '精确替换远程文件里的片段（改代码/改配置）。old_string 必须唯一；写前自动备份',
+      description: '精确替换远程文件片段（改代码/配置），写前自动备份',
       parameters: {
         type: 'object',
         properties: {
           serverId: { type: 'string' },
           filePath: { type: 'string' },
-          oldString: { type: 'string', description: '要替换的原文（含缩进，必须与文件完全一致）' },
-          newString: { type: 'string', description: '替换后的内容' },
-          replaceAll: { type: 'boolean', description: '是否替换所有匹配（默认 false，要求唯一）' },
+          oldString: { type: 'string', description: '原文（含缩进，须与文件完全一致且唯一）' },
+          newString: { type: 'string', description: '替换后内容' },
+          replaceAll: { type: 'boolean', description: '替换全部匹配（默认 false）' },
         },
         required: ['serverId', 'filePath', 'oldString', 'newString'],
       },
@@ -292,7 +292,7 @@ export const AGENT_TOOLS = [
     type: 'function',
     function: {
       name: 'remote_write_file',
-      description: '整份写入远程文件（新建或覆盖）。写前自动备份原文件',
+      description: '整份写入远程文件（新建/覆盖），写前自动备份',
       parameters: {
         type: 'object',
         properties: {
@@ -308,7 +308,7 @@ export const AGENT_TOOLS = [
     type: 'function',
     function: {
       name: 'remote_rollback_file',
-      description: '用最近一次自动备份回滚远程文件',
+      description: '用最近一次备份回滚远程文件',
       parameters: { type: 'object', properties: { serverId: { type: 'string' }, filePath: { type: 'string' } }, required: ['serverId', 'filePath'] },
     },
   },
@@ -316,7 +316,7 @@ export const AGENT_TOOLS = [
     type: 'function',
     function: {
       name: 'remote_git_status',
-      description: '查看远程仓库状态（git status --short + 当前分支 + 最近提交）',
+      description: '远程仓库状态（分支 + 改动 + 最近提交）',
       parameters: { type: 'object', properties: { serverId: { type: 'string' }, repoPath: { type: 'string', description: '仓库根目录' } }, required: ['serverId', 'repoPath'] },
     },
   },
@@ -324,15 +324,15 @@ export const AGENT_TOOLS = [
     type: 'function',
     function: {
       name: 'remote_git_diff',
-      description: '查看远程仓库改动（git diff，可指定文件）',
-      parameters: { type: 'object', properties: { serverId: { type: 'string' }, repoPath: { type: 'string' }, filePath: { type: 'string', description: '只看某个文件（可选）' } }, required: ['serverId', 'repoPath'] },
+      description: '远程仓库改动（git diff，可指定文件）',
+      parameters: { type: 'object', properties: { serverId: { type: 'string' }, repoPath: { type: 'string' }, filePath: { type: 'string', description: '只看某文件（可选）' } }, required: ['serverId', 'repoPath'] },
     },
   },
   {
     type: 'function',
     function: {
       name: 'remote_restart_service',
-      description: '⚠️ 重启远程 systemd 服务（如 nginx / docker / openlog），需要确认',
+      description: '⚠️ 重启远程 systemd 服务（需确认）',
       parameters: { type: 'object', properties: { serverId: { type: 'string' }, service: { type: 'string', description: '服务名，如 nginx' } }, required: ['serverId', 'service'] },
     },
   },

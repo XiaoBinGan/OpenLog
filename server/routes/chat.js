@@ -18,33 +18,34 @@ import { AGENT_TOOLS } from '../agent-tools.js';
 import { listAgentActions } from '../agent-audit.js';
 import {
   normalizeBaseUrl, guessEngine, ENGINE_HINTS, isToolUnsupportedError, setCachedToolSupport,
+  probeModelWindow,
 } from '../llm-provider.js';
 import { createChatRunner } from './chat-runner.js';
-import { resolveContextConfig, CONTEXT_DEFAULTS, CONTEXT_BOUNDS, pickPersistableConfig } from './context-config.js';
+import { resolveContextConfig, CONTEXT_DEFAULTS, CONTEXT_BOUNDS, pickPersistableConfig, adaptContextToWindow } from './context-config.js';
 
 // ─── 运维助手 Tool Calling ──────────────────────────────────────────
 
 const ASSISTANT_TOOLS = [
   // ── Docker 工具 ──
-  { type: 'function', function: { name: 'docker_list', description: '列出所有Docker容器（运行状态、镜像名、端口映射、退出码等）', parameters: { type: 'object', properties: { sourceId: { type: 'string', description: 'Docker源ID（可选，不传则列出所有源）' } } } } },
-  { type: 'function', function: { name: 'docker_logs', description: '读取指定容器的日志（最近N行）', parameters: { type: 'object', properties: { containerId: { type: 'string', description: '容器ID（12位短ID）或名称' }, sourceId: { type: 'string', description: 'Docker源ID（可选）' }, tail: { type: 'number', description: '读取最后N行，默认200' } }, required: ['containerId'] } } },
-  { type: 'function', function: { name: 'docker_inspect', description: '查看容器详细信息（状态、端口、环境变量、挂载卷、网络）', parameters: { type: 'object', properties: { containerId: { type: 'string', description: '容器ID或名称' }, sourceId: { type: 'string', description: 'Docker源ID（可选）' } }, required: ['containerId'] } } },
-  { type: 'function', function: { name: 'docker_start', description: '⚠️ 启动一个已停止的容器。需要用户确认后才能调用。', parameters: { type: 'object', properties: { containerId: { type: 'string' }, sourceId: { type: 'string' } }, required: ['containerId'] } } },
-  { type: 'function', function: { name: 'docker_stop', description: '⚠️ 停止一个运行中的容器。需要用户确认后才能调用。', parameters: { type: 'object', properties: { containerId: { type: 'string' }, sourceId: { type: 'string' } }, required: ['containerId'] } } },
-  { type: 'function', function: { name: 'docker_restart', description: '⚠️ 重启容器。需要用户确认后才能调用。', parameters: { type: 'object', properties: { containerId: { type: 'string' }, sourceId: { type: 'string' } }, required: ['containerId'] } } },
-  { type: 'function', function: { name: 'docker_exec', description: '在容器内执行命令。只读命令（cat/ls/grep/ps/nginx -T 等）会直接执行、无需确认；会修改容器状态的命令需要用户确认。', parameters: { type: 'object', properties: { containerId: { type: 'string' }, command: { type: 'string', description: '要执行的命令' }, sourceId: { type: 'string' } }, required: ['containerId', 'command'] } } },
-  { type: 'function', function: { name: 'docker_health_check', description: '执行所有容器健康诊断（检查退出状态、OOM、异常退出等）', parameters: { type: 'object', properties: {} } } },
+  { type: 'function', function: { name: 'docker_list', description: '列出 Docker 容器（状态/镜像/端口/退出码）', parameters: { type: 'object', properties: { sourceId: { type: 'string', description: 'Docker 源 ID（可选）' } } } } },
+  { type: 'function', function: { name: 'docker_logs', description: '读容器日志（最近 N 行）', parameters: { type: 'object', properties: { containerId: { type: 'string', description: '容器 ID 或名称' }, sourceId: { type: 'string', description: 'Docker 源 ID（可选）' }, tail: { type: 'number', description: '行数，默认 200' } }, required: ['containerId'] } } },
+  { type: 'function', function: { name: 'docker_inspect', description: '看容器详情（端口/环境变量/挂载/网络）', parameters: { type: 'object', properties: { containerId: { type: 'string', description: '容器 ID 或名称' }, sourceId: { type: 'string', description: 'Docker 源 ID（可选）' } }, required: ['containerId'] } } },
+  { type: 'function', function: { name: 'docker_start', description: '⚠️ 启动已停止的容器（需用户确认）', parameters: { type: 'object', properties: { containerId: { type: 'string' }, sourceId: { type: 'string' } }, required: ['containerId'] } } },
+  { type: 'function', function: { name: 'docker_stop', description: '⚠️ 停止容器（需用户确认）', parameters: { type: 'object', properties: { containerId: { type: 'string' }, sourceId: { type: 'string' } }, required: ['containerId'] } } },
+  { type: 'function', function: { name: 'docker_restart', description: '⚠️ 重启容器（需用户确认）', parameters: { type: 'object', properties: { containerId: { type: 'string' }, sourceId: { type: 'string' } }, required: ['containerId'] } } },
+  { type: 'function', function: { name: 'docker_exec', description: '容器内执行命令；只读命令自动执行，改状态需确认', parameters: { type: 'object', properties: { containerId: { type: 'string' }, command: { type: 'string', description: '命令' }, sourceId: { type: 'string' } }, required: ['containerId', 'command'] } } },
+  { type: 'function', function: { name: 'docker_health_check', description: '所有容器健康诊断（退出码/OOM）', parameters: { type: 'object', properties: {} } } },
   // ── 远程服务器工具 ──
-  { type: 'function', function: { name: 'remote_servers', description: '列出已配置的远程服务器及其连接状态', parameters: { type: 'object', properties: {} } } },
-  { type: 'function', function: { name: 'remote_exec', description: '在远程服务器执行 Shell 命令。只读命令（ls/cat/grep/ps/df/ss/docker ps/日志查看等）会直接执行、无需确认；写文件、改配置、启停服务等命令需要用户确认。', parameters: { type: 'object', properties: { serverId: { type: 'string', description: '服务器ID' }, command: { type: 'string', description: 'Shell命令' } }, required: ['serverId', 'command'] } } },
-  { type: 'function', function: { name: 'remote_system_stats', description: '获取远程服务器系统状态（CPU/内存/磁盘/网络/进程/GPU）', parameters: { type: 'object', properties: { serverId: { type: 'string' } }, required: ['serverId'] } } },
-  { type: 'function', function: { name: 'remote_list_files', description: '列出远程服务器的日志文件目录', parameters: { type: 'object', properties: { serverId: { type: 'string' }, path: { type: 'string', description: '目录路径（可选，默认服务器配置的日志目录）' } }, required: ['serverId'] } } },
-  { type: 'function', function: { name: 'remote_read_file', description: '读取远程服务器上的日志文件内容', parameters: { type: 'object', properties: { serverId: { type: 'string' }, filePath: { type: 'string' }, lines: { type: 'number', description: '读取最后N行，默认200' } }, required: ['serverId', 'filePath'] } } },
-  { type: 'function', function: { name: 'remote_search_logs', description: '在远程服务器日志中搜索关键词', parameters: { type: 'object', properties: { serverId: { type: 'string' }, search: { type: 'string', description: '搜索关键词' } }, required: ['serverId', 'search'] } } },
+  { type: 'function', function: { name: 'remote_servers', description: '列出远程服务器（拿 serverId 用）', parameters: { type: 'object', properties: {} } } },
+  { type: 'function', function: { name: 'remote_exec', description: '远程执行 Shell 命令；只读命令自动执行，写文件/改配置/重启需确认', parameters: { type: 'object', properties: { serverId: { type: 'string', description: '服务器 ID' }, command: { type: 'string', description: '命令' } }, required: ['serverId', 'command'] } } },
+  { type: 'function', function: { name: 'remote_system_stats', description: '远程系统状态（CPU/内存/磁盘/进程/GPU）', parameters: { type: 'object', properties: { serverId: { type: 'string' } }, required: ['serverId'] } } },
+  { type: 'function', function: { name: 'remote_list_files', description: '列远程日志目录', parameters: { type: 'object', properties: { serverId: { type: 'string' }, path: { type: 'string', description: '目录（可选）' } }, required: ['serverId'] } } },
+  { type: 'function', function: { name: 'remote_read_file', description: '读远程文件', parameters: { type: 'object', properties: { serverId: { type: 'string' }, filePath: { type: 'string' }, lines: { type: 'number', description: '行数，默认 200' } }, required: ['serverId', 'filePath'] } } },
+  { type: 'function', function: { name: 'remote_search_logs', description: '远程日志里搜关键词', parameters: { type: 'object', properties: { serverId: { type: 'string' }, search: { type: 'string', description: '关键词' } }, required: ['serverId', 'search'] } } },
   // ── 本地工具 ──
-  { type: 'function', function: { name: 'local_system_stats', description: '获取本机（OpenLog所在服务器）系统状态：CPU/内存/磁盘/网络/进程/GPU', parameters: { type: 'object', properties: {} } } },
-  { type: 'function', function: { name: 'local_log_files', description: '列出本地日志文件', parameters: { type: 'object', properties: {} } } },
-  { type: 'function', function: { name: 'local_read_log', description: '读取本地日志文件内容', parameters: { type: 'object', properties: { filePath: { type: 'string' }, lines: { type: 'number', description: '读取最后N行，默认200' } }, required: ['filePath'] } } },
+  { type: 'function', function: { name: 'local_system_stats', description: '本机（OpenLog 所在机）系统状态', parameters: { type: 'object', properties: {} } } },
+  { type: 'function', function: { name: 'local_log_files', description: '列本机日志文件', parameters: { type: 'object', properties: {} } } },
+  { type: 'function', function: { name: 'local_read_log', description: '读本机日志文件', parameters: { type: 'object', properties: { filePath: { type: 'string' }, lines: { type: 'number', description: '行数，默认 200' } }, required: ['filePath'] } } },
   // ── 远程代码/配置读写（错误定位 + 修复）──
   ...AGENT_TOOLS,
 ];
@@ -258,7 +259,7 @@ export default function createChatRouter({
   });
 
   router.post('/api/chat', async (req, res) => {
-    const { messages, contextOverride } = req.body;
+    const { messages, contextOverride, targetServerId } = req.body;
     if (!messages || !Array.isArray(messages) || messages.length === 0) {
       return res.status(400).json({ error: 'messages required' });
     }
@@ -279,6 +280,18 @@ export default function createChatRouter({
     }
     if (!model) return res.status(400).json({ error: '未配置模型' });
 
+    // 按模型自报窗口自适应预算（探测不到就保持原配置，不猜）
+    try {
+      const probed = await probeModelWindow(baseUrl, apiKey, model);
+      if (probed) {
+        const adapted = adaptContextToWindow(resolved.config, probed);
+        if (adapted.adjusted) {
+          resolved.config = adapted.config;
+          if (adapted.reason) resolved.warnings = [...(resolved.warnings || []), adapted.reason];
+        }
+      }
+    } catch { /* 探测失败不影响对话 */ }
+
     // 汇总工具可用的资源上下文
     const dockerSources = settings.dockerSources || [];
     const enabledDocker = dockerSources.filter(s => s.enabled);
@@ -295,6 +308,15 @@ export default function createChatRouter({
           ? `…共 ${connectedRemote.length} 台已连接（只列前 ${PROMPT_SERVER_LIMIT} 台，其余用 remote_servers 工具查询）`
           : '',
       ].filter(Boolean).join(' ');
+
+    // 用户在当前会话里指定的目标服务器：直接写进系统提示，省掉「先 remote_servers 再猜哪台」的一两轮
+    const targetServer = targetServerId ? remoteServers.find(s => s.id === targetServerId) : null;
+    const targetServerBlock = targetServer
+      ? `## 🎯 当前目标服务器（用户已指定）
+- ${targetServer.name}（${targetServer.id}），连接状态：${targetServer.status === 'connected' ? '已连接' : (targetServer.status || '未知')}
+- 默认在这台机器上操作，**不需要先调 remote_servers**；只有用户明确要求换机器时才去查列表。
+`
+      : '';
 
     const systemPrompt = `你是 OpenLog 的运维助手，一名能**亲自动手**排查和修复问题的运维工程师。你不只是给建议——你有工具可以直接读代码、改代码、改配置、跑命令。
 风格：简洁有力，像老运维跟同事说话，不啰嗦不念经。用中文。
@@ -349,7 +371,7 @@ export default function createChatRouter({
 - 推理服务: ${ENGINE_HINTS[engine]?.name || engine}（${baseUrl} / ${model}）
 - Docker 源: ${enabledDocker.length > 0 ? enabledDocker.map(s => s.name).join('、') : '无'}
 - 远程服务器: ${serverListText}
-
+${targetServerBlock}
 ## 最近的系统状态
 ${buildAssistantContext()}`;
 

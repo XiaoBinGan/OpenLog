@@ -28,7 +28,7 @@ export const CONTEXT_DEFAULTS = {
   compactAt: 0.85,
   /** 用量达到该比例时提前提示用户 */
   warnAt: 0.7,
-  maxRounds: Number(process.env.OPENLOG_ASSISTANT_MAX_ROUNDS) || 30,
+  maxRounds: Number(process.env.OPENLOG_ASSISTANT_MAX_ROUNDS) || 8,
   maxWallMs: Number(process.env.OPENLOG_ASSISTANT_MAX_WALL_MS) || 10 * 60 * 1000,
   toolResultChars: Number(process.env.OPENLOG_ASSISTANT_TOOL_RESULT_CHARS) || 6_000,
 };
@@ -176,4 +176,53 @@ export function pickPersistableConfig(config = {}) {
     if (config[key] !== undefined) out[key] = config[key];
   }
   return out;
+}
+
+/**
+ * 按模型真实窗口自适应上下文预算。
+ *
+ * 背景：窗口/预算原来都是固定的（65k 窗口 / 48k 预算）。换到窗口更小的模型时，
+ * 预算比窗口还大 → 请求发出去被模型拒绝；换到更大的模型时又白白浪费窗口。
+ *
+ * 策略（保守，只做必要的修正）：
+ *   - 模型窗口比当前窗口小 → 窗口取模型值，预算压到窗口的 70%（留出输出空间）
+ *   - 模型窗口比当前窗口大 → 只把窗口调大，预算保持用户/默认值（不擅自加）
+ *   - 探测不到（null）→ 原样返回
+ *
+ * @param {object} config clampContextConfig 的结果
+ * @param {number|null} probedWindow 模型自报的上下文窗口（token）
+ * @returns {{ config: object, adjusted: boolean, reason?: string }}
+ */
+export function adaptContextToWindow(config, probedWindow) {
+  const w = Number(probedWindow);
+  if (!config || !Number.isFinite(w) || w < CONTEXT_BOUNDS.windowTokens.min) {
+    return { config, adjusted: false };
+  }
+  const window = Math.min(CONTEXT_BOUNDS.windowTokens.max, Math.round(w));
+  const next = { ...config };
+  let adjusted = false;
+  let reason;
+
+  if (window < config.windowTokens) {
+    next.windowTokens = window;
+    // 预算不能超过窗口（还要给输出留空间）
+    const maxBudget = Math.max(CONTEXT_BOUNDS.budgetTokens.min, Math.floor(window * 0.7));
+    if (next.budgetTokens > maxBudget) {
+      next.budgetTokens = maxBudget;
+      reason = `模型窗口 ${window} tokens，上下文预算已从 ${config.budgetTokens} 压到 ${maxBudget}`;
+    } else {
+      reason = `模型窗口 ${window} tokens，窗口已按模型修正`;
+    }
+    adjusted = true;
+  } else if (window > config.windowTokens) {
+    next.windowTokens = window;
+    adjusted = true;
+    reason = `模型窗口 ${window} tokens，已按模型放大窗口（预算保持不变）`;
+  }
+
+  if (adjusted) {
+    next.compactAtTokens = Math.floor(next.budgetTokens * next.compactAt);
+    next.warnAtTokens = Math.floor(next.budgetTokens * next.warnAt);
+  }
+  return { config: next, adjusted, reason };
 }

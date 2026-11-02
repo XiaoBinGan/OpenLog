@@ -4,6 +4,7 @@ const {
   normalizeBaseUrl, apiUrl, guessEngine, listModels,
   getCachedToolSupport, setCachedToolSupport, isToolUnsupportedError, looksLikeUncalledToolUse,
   looksLikeFakeExecution,
+  extractModelWindow, probeModelWindow,
   TOOL_PROTOCOL_PROMPT, renderToolsAsText, parseToolProtocol,
   renderToolResultForTextProtocol, extractDelta, ENGINE_HINTS,
   _resetToolCapabilityCache,
@@ -159,6 +160,48 @@ describe('looksLikeFakeExecution —— 抓「没调工具却报完成」', () =
     expect(looksLikeFakeExecution('可以先跑 df -h 看看磁盘。')).toBe(false);
     expect(looksLikeFakeExecution('磁盘使用率 42%。')).toBe(false);
     expect(looksLikeFakeExecution('')).toBe(false);
+  });
+});
+
+describe('extractModelWindow —— 各引擎窗口字段', () => {
+  it('strata 的 meta.n_ctx', () => {
+    expect(extractModelWindow({ id: 'qwen', meta: { n_ctx: 65536 } })).toBe(65536);
+  });
+  it('vLLM / SGLang 的 max_model_len', () => {
+    expect(extractModelWindow({ id: 'x', max_model_len: 32768 })).toBe(32768);
+    expect(extractModelWindow({ id: 'x', context_length: 131072 })).toBe(131072);
+    expect(extractModelWindow({ id: 'x', context_window: 8192 })).toBe(8192);
+  });
+  it('没有窗口信息返回 null（调用方保持原配置，不猜）', () => {
+    expect(extractModelWindow({ id: 'x' })).toBeNull();
+    expect(extractModelWindow(null)).toBeNull();
+    expect(extractModelWindow({ max_model_len: 100 })).toBeNull();
+  });
+});
+
+describe('probeModelWindow —— 查模型自报窗口', () => {
+  const fakeFetch = (payload, ok = true) => async () => ({
+    ok,
+    json: async () => payload,
+  });
+
+  it('从 /v1/models 里按模型名匹配并取窗口', async () => {
+    const w = await probeModelWindow('http://x:8899/v1', 'k', 'qwen3.8', fakeFetch({
+      data: [{ id: 'other' }, { id: 'qwen3.8', meta: { n_ctx: 65536 } }],
+    }));
+    expect(w).toBe(65536);
+  });
+
+  it('没有精确匹配时退回第一条', async () => {
+    const w = await probeModelWindow('http://x:8899/v1', 'k', 'missing', fakeFetch({
+      data: [{ id: 'a', max_model_len: 32768 }],
+    }));
+    expect(w).toBe(32768);
+  });
+
+  it('请求失败/非 200 返回 null', async () => {
+    expect(await probeModelWindow('http://x/v1', 'k', 'm', fakeFetch({}, false))).toBeNull();
+    expect(await probeModelWindow('', 'k', 'm', fakeFetch({ data: [] }))).toBeNull();
   });
 });
 

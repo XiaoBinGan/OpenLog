@@ -39,7 +39,7 @@ const CONFIRM_TIMEOUT_MS = 3 * 60 * 1000;
  * 现在：轮数/时长可配 + 每轮做上下文压缩 + 超预算时**先做一次收尾总结**再结束，
  * 而不是把用户已经查到的信息一起扔掉。
  */
-export const DEFAULT_MAX_ROUNDS = Number(process.env.OPENLOG_ASSISTANT_MAX_ROUNDS) || 30;
+export const DEFAULT_MAX_ROUNDS = Number(process.env.OPENLOG_ASSISTANT_MAX_ROUNDS) || 8;
 export const DEFAULT_MAX_WALL_MS = Number(process.env.OPENLOG_ASSISTANT_MAX_WALL_MS) || 10 * 60 * 1000;
 /** 上下文预算（tokens）：给模型输出和工具定义留余量，默认 48k（Strata 窗口 65536） */
 export const DEFAULT_CONTEXT_BUDGET = Number(process.env.OPENLOG_ASSISTANT_CONTEXT_TOKENS) || 48_000;

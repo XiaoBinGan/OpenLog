@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import {
   Send, Bot, User, Trash2, Square, Loader, Sparkles, Terminal,
-  BookOpen, Plus, X, FileText, Save,
+  BookOpen, Plus, X, FileText, Save, Copy, Check,
   MessageSquare, Pencil, Sidebar, History, ArrowRight,
 } from 'lucide-react';
 import { useAssistantContext } from '../contexts/AssistantContext';
@@ -129,6 +129,17 @@ export default function Assistant() {
   const [atItems, setAtItems] = useState<HistoryBrief[]>([]);
   const [atIdx, setAtIdx] = useState(0);
 
+  /** 输入历史（↑/↓ 翻，和 AI Shell 一致，localStorage 持久化） */
+  const [inputHistory, setInputHistory] = useState<string[]>(() => {
+    try { return JSON.parse(localStorage.getItem('assistant.inputHistory') || '[]'); } catch { return []; }
+  });
+  const [historyIdx, setHistoryIdx] = useState(-1);
+  /** 目标服务器：选定后后端会把它写进系统提示，省掉「先 remote_servers 再猜」的轮次 */
+  const [targetServers, setTargetServers] = useState<{ id: string; name: string; status?: string }[]>([]);
+  const [targetServerId, setTargetServerId] = useState<string>(() => localStorage.getItem('assistant.targetServerId') || '');
+  /** 复制反馈 */
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -158,6 +169,33 @@ export default function Assistant() {
   }, [JSON.stringify(opsContextSettings)]);
 
   useEffect(() => { reloadCtxConfig(); }, [reloadCtxConfig]);
+
+  // 目标服务器列表（顶栏下拉）：选定后不用模型再猜在哪台机器上操作
+  useEffect(() => {
+    apiFetch<{ servers?: Array<{ id: string; name: string; status?: string }> }>('/api/remote/servers')
+      .then(d => setTargetServers((d.servers || []).map(s => ({ id: s.id, name: s.name, status: s.status }))))
+      .catch(() => { /* 不影响聊天 */ });
+  }, []);
+
+  useEffect(() => {
+    try { localStorage.setItem('assistant.inputHistory', JSON.stringify(inputHistory.slice(-50))); } catch { /* ignore */ }
+  }, [inputHistory]);
+
+  useEffect(() => {
+    try {
+      if (targetServerId) localStorage.setItem('assistant.targetServerId', targetServerId);
+      else localStorage.removeItem('assistant.targetServerId');
+    } catch { /* ignore */ }
+  }, [targetServerId]);
+
+  /** 复制文本（回答 / 工具输出），带 1.5s 对勾反馈 */
+  const copyText = async (text: string, key: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedKey(key);
+      setTimeout(() => setCopiedKey(prev => (prev === key ? null : prev)), 1500);
+    } catch { /* 浏览器不支持剪贴板时静默失败 */ }
+  };
 
 
   // 加载分析历史摘要（@ 提及用）
@@ -246,13 +284,48 @@ export default function Assistant() {
     if (e.key === 'Escape') setAtOpen(false);
   };
 
+  /** 输入框键盘处理：@ 补全优先，其次 ↑/↓ 翻历史，Enter 发送（AI Shell 同款） */
+  const handleInputKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    handleAtKey(e);
+    if (atOpen) return;
+    if (e.key === 'ArrowUp' && !e.shiftKey) {
+      if (inputHistory.length === 0) return;
+      // 输入框里有内容且没在翻历史时，保留原生光标行为（不要打断编辑）
+      if (input.trim() && historyIdx === -1) return;
+      e.preventDefault();
+      const next = historyIdx === -1 ? inputHistory.length - 1 : Math.max(0, historyIdx - 1);
+      setHistoryIdx(next);
+      setInput(inputHistory[next]);
+      return;
+    }
+    if (e.key === 'ArrowDown' && !e.shiftKey) {
+      if (historyIdx === -1) return;
+      e.preventDefault();
+      const next = historyIdx + 1;
+      if (next >= inputHistory.length) {
+        setHistoryIdx(-1);
+        setInput('');
+      } else {
+        setHistoryIdx(next);
+        setInput(inputHistory[next]);
+      }
+      return;
+    }
+    if (e.key === 'Enter' && !e.shiftKey && !(e.nativeEvent as any).isComposing) {
+      e.preventDefault();
+      sendMessage();
+    }
+  };
+
   // 发送消息
-  const sendMessage = async (text?: string) => {
-    const content = text || input.trim();
+  const sendMessage = async (text?: string) => {    const content = text || input.trim();
     if (!content || loading) return;
 
     setInput('');
     setAtOpen(false);
+    // 记录输入历史（↑/↓ 翻历史用，和 AI Shell 一致）
+    setInputHistory(prev => (prev[prev.length - 1] === content ? prev : [...prev, content].slice(-50)));
+    setHistoryIdx(-1);
 
     // @ 提及 -> 获取完整分析内容注入上下文
     const atIds = new Set(selectedHistoryIds);
@@ -347,6 +420,8 @@ export default function Assistant() {
           messages: history,
           // 本会话的上下文覆盖（齿轮面板改的）：空对象就不传，走后端默认
           contextOverride: Object.keys(opsContextSettings || {}).length ? opsContextSettings : undefined,
+          // 用户指定的目标服务器：后端会直接写进系统提示，省掉先 remote_servers 的轮次
+          targetServerId: targetServerId || undefined,
         }),
         signal: abortRef.current.signal,
       });
@@ -606,6 +681,18 @@ export default function Assistant() {
             </span>
           </div>
           <div className="flex items-center gap-2">
+            {/* 目标服务器：选定后后端把它写进系统提示，助手不用先调 remote_servers 猜哪台 */}
+            <select
+              value={targetServerId}
+              onChange={e => setTargetServerId(e.target.value)}
+              title="指定目标服务器后，助手默认在这台机器上操作"
+              className="max-w-44 px-2 py-1.5 rounded-lg text-xs bg-dark-900 border border-dark-800 text-dark-300 focus:outline-none focus:border-accent-500/40"
+            >
+              <option value="">不限机器（助手自己查）</option>
+              {targetServers.map(s => (
+                <option key={s.id} value={s.id}>{s.name}{s.status === 'connected' ? ' · 在线' : ''}</option>
+              ))}
+            </select>
             {opsMessages.length > 0 && (
               <button onClick={clearChat}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs text-dark-400 hover:text-red-400 hover:bg-red-500/10 border border-dark-800 transition-colors">
@@ -702,6 +789,29 @@ export default function Assistant() {
                     ) : msg.streaming ? (
                       <div className="flex items-center gap-2 text-dark-500"><Loader className="w-4 h-4 animate-spin" /> 思考中...</div>
                     ) : null}
+                    {/* 复制 / 预算用尽后的「继续」 */}
+                    {msg.role === 'assistant' && !msg.streaming && (msg.content || ((msg as any).notices || []).length > 0) && (
+                      <div className="mt-1.5 flex items-center gap-3">
+                        {msg.content && (
+                          <button
+                            onClick={() => copyText(msg.content, `msg-${msg.ts}`)}
+                            className="inline-flex items-center gap-1 text-[10px] text-dark-500 hover:text-accent-400 transition-colors"
+                          >
+                            {copiedKey === `msg-${msg.ts}`
+                              ? <><Check className="w-3 h-3" /> 已复制</>
+                              : <><Copy className="w-3 h-3" /> 复制</>}
+                          </button>
+                        )}
+                        {((msg as any).notices || []).some((n: any) => n.type === 'budget_exhausted') && (
+                          <button
+                            onClick={() => sendMessage('继续')}
+                            className="inline-flex items-center gap-1 text-[10px] text-accent-400 hover:text-accent-300 transition-colors"
+                          >
+                            <ArrowRight className="w-3 h-3" /> 继续（接着当前进度做）
+                          </button>
+                        )}
+                      </div>
+                    )}
                   </div>
                   {msg.role === 'user' && (
                     <div className="flex-shrink-0 w-8 h-8 rounded-lg bg-dark-700 flex items-center justify-center mt-0.5">
@@ -799,8 +909,8 @@ export default function Assistant() {
                 ref={inputRef}
                 value={input}
                 onChange={handleInputChange}
-                onKeyDown={e => { handleAtKey(e); if (e.key === 'Enter' && !e.shiftKey && !atOpen && !(e.nativeEvent as any).isComposing) { e.preventDefault(); sendMessage(); } }}
-                placeholder="输入问题，Shift+Enter 换行，@ 引用分析历史..."
+                onKeyDown={handleInputKeyDown}
+                placeholder="输入问题，↑↓ 翻历史，Shift+Enter 换行，@ 引用分析历史..."
                 rows={1}
                 className="block w-full resize-none border-0 bg-transparent px-2.5 py-2 text-sm text-dark-200
                   placeholder-dark-600 focus:outline-none"
