@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
+import { usePolling } from '../utils/usePolling';
 import { 
   Cpu, 
   HardDrive, 
@@ -229,8 +230,7 @@ export default function Monitor() {
     setPanelOrder([...DEFAULT_PANEL_ORDER]);
   }, []);
 
-  useEffect(() => {
-    const fetchData = async () => {
+  const fetchData = useCallback(async () => {
       setError(null);
       setLoading(true);
       
@@ -302,15 +302,10 @@ export default function Monitor() {
       }
       
       setLoading(false);
-    };
+  }, [isRemote, selectedDevice.id, connectedServers]);
 
-    fetchData();
-    
-    // Auto refresh every 5 seconds
-    const interval = setInterval(fetchData, 5000);
-    
-    return () => clearInterval(interval);
-  }, [selectedDevice.id, isRemote, connectedServers]);
+  // 自动刷新（页面隐藏时暂停，切回来立刻补一次）
+  usePolling(fetchData, 5000, [fetchData]);
 
   const formatBytes = (bytes: number) => {
     if (!bytes || bytes === 0 || isNaN(bytes)) return '0 B';

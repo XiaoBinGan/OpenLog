@@ -1,6 +1,7 @@
 import { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { useLocation } from 'react-router-dom';
 import { apiFetch, apiJson } from '../api/client';
+import { compactMessagesForStorage, saveJsonSafe } from '../utils/conversationStorage';
 
 export interface AssistantMessage {
   role: 'user' | 'assistant' | 'system';
@@ -178,8 +179,24 @@ function loadStore(): AssistantStore {
   }
 }
 
+/**
+ * 保存会话。
+ *
+ * 原来的实现是 `localStorage.setItem(...)` 裸写 + 空 catch —— 会话里带完整工具结果
+ * （remote_exec 输出、文件内容）时很容易撑爆 5MB 配额，抛异常后就被静默吞掉，
+ * 用户完全不知道「从此不再保存」。现在改成：
+ *   - 每个会话的消息先按体积裁剪（丢最老、截断工具结果、丢弃流式中间态）
+ *   - 写入超限时逐级降级（只保留最近 1 个会话 / 最近 20 条消息）
+ */
 function persist(s: AssistantStore) {
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(s)); } catch {}
+  const compactStore = (maxMessages: number, maxBytes: number): AssistantStore => ({
+    ...s,
+    opsConvs: s.opsConvs.map(c => ({ ...c, messages: compactMessagesForStorage(c.messages as any, { maxMessages, maxBytes }).messages as any })),
+    docConvs: s.docConvs.map(c => ({ ...c, messages: compactMessagesForStorage(c.messages as any, { maxMessages, maxBytes }).messages as any })),
+  });
+  saveJsonSafe(STORAGE_KEY, compactStore(80, 1_200_000), {
+    shrink: () => compactStore(20, 200_000),
+  });
 }
 
 // 在 streaming 结束时发送 Tip

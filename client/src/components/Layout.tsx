@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, Suspense } from 'react';
 import { Outlet, NavLink, useNavigate, useLocation } from 'react-router-dom';
 import { AssistantProvider } from '../contexts/AssistantContext';
 import { useToast } from '../contexts/ToastContext';
@@ -371,7 +371,12 @@ function LayoutContent() {
 
         {/* Page Content */}
         <div className="p-4 md:p-6 md:mt-14 min-w-0 max-w-full overflow-x-hidden">
-          <Outlet />
+          {/* 路由懒加载占位：只替换内容区，顶栏/侧边栏/通知中心不闪 */}
+          <Suspense fallback={
+            <div className="flex items-center justify-center min-h-[240px] text-dark-600 text-sm">加载中…</div>
+          }>
+            <Outlet />
+          </Suspense>
         </div>
       </main>
 

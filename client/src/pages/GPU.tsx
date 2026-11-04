@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { usePolling } from '../utils/usePolling';
 import {
   Cpu, MemoryStick, Thermometer, RefreshCw, Wifi, AlertCircle, Loader, Server, Monitor,
 } from 'lucide-react';
@@ -263,11 +264,8 @@ export default function GPU() {
     setLastRefresh(new Date());
   }, [connectedServers, fetchServerGPU, fetchLocalGPU, isRemote, toServerGPU]);
 
-  useEffect(() => {
-    fetchAllGPUs();
-    const interval = setInterval(fetchAllGPUs, 30000);
-    return () => clearInterval(interval);
-  }, [fetchAllGPUs]);
+  // 30s 刷新（页面隐藏时暂停；GPU 查询要连服务器跑 nvidia-smi，后台轮询纯浪费）
+  usePolling(fetchAllGPUs, 30000, [fetchAllGPUs]);
 
   const totalGPUs = serverGPUs.reduce((s, sv) => s + sv.devices.length, 0);
   const avgUtil = serverGPUs.length > 0

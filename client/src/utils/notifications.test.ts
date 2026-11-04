@@ -10,6 +10,7 @@ import {
   mergeNotification, removeNotifications, markAllRead, unreadCount,
   recordIgnored, isSuppressed, pruneIgnored, formatNotificationTime,
   newNotificationId, MAX_NOTIFICATIONS, IGNORE_SUPPRESS_MS,
+  filterNotifications, listNotificationSources, isFilterActive, EMPTY_NOTIFICATION_FILTER,
   type NotificationItem,
 } from './notifications';
 
@@ -99,5 +100,77 @@ describe('formatNotificationTime —— 列表里的时间', () => {
     const now = new Date('2026-11-03T10:00:00').getTime();
     expect(formatNotificationTime(new Date('2026-11-03T09:05:00').getTime(), now)).toBe('09:05');
     expect(formatNotificationTime(new Date('2026-11-01T08:07:00').getTime(), now)).toBe('11/1 08:07');
+  });
+});
+
+describe('filterNotifications —— 通知中心的筛选/搜索', () => {
+  const one = (over: Partial<NotificationItem>): NotificationItem => ({
+    id: newNotificationId(1000), type: 'error', message: '告警', ts: 1000, read: false, ...over,
+  });
+  const list: NotificationItem[] = [
+    one({ id: 'a', type: 'error', read: false, sourceId: 'srv-1', sourceName: '4090服务器', containerName: 'openlog-api', description: 'panic: invalid memory' }),
+    one({ id: 'b', type: 'warning', read: false, sourceId: 'local', sourceName: '本机 Docker', containerName: 'openlog-pg', description: 'healthcheck failed' }),
+    one({ id: 'c', type: 'error', read: true, sourceId: 'srv-1', sourceName: '4090服务器', containerName: 'cache', errorContent: 'OOM killed' }),
+    one({ id: 'd', type: 'info', read: true, message: '普通提示' }),
+  ];
+
+  it('默认不过滤', () => {
+    expect(filterNotifications(list, EMPTY_NOTIFICATION_FILTER)).toHaveLength(4);
+    expect(filterNotifications(list)).toHaveLength(4);
+  });
+
+  it('按级别过滤', () => {
+    expect(filterNotifications(list, { level: 'error' }).map(n => n.id)).toEqual(['a', 'c']);
+    expect(filterNotifications(list, { level: 'warning' }).map(n => n.id)).toEqual(['b']);
+  });
+
+  it('按机器过滤（sourceId）', () => {
+    expect(filterNotifications(list, { sourceId: 'srv-1' }).map(n => n.id)).toEqual(['a', 'c']);
+  });
+
+  it('只看未读', () => {
+    expect(filterNotifications(list, { unreadOnly: true }).map(n => n.id)).toEqual(['a', 'b']);
+  });
+
+  it('关键词命中报错内容/容器名/机器名', () => {
+    expect(filterNotifications(list, { query: 'panic' }).map(n => n.id)).toEqual(['a']);
+    expect(filterNotifications(list, { query: 'openlog-pg' }).map(n => n.id)).toEqual(['b']);
+    expect(filterNotifications(list, { query: '4090' }).map(n => n.id)).toEqual(['a', 'c']);
+    expect(filterNotifications(list, { query: 'oom' }).map(n => n.id)).toEqual(['c']);
+  });
+
+  it('关键词大小写不敏感、前后空格忽略', () => {
+    expect(filterNotifications(list, { query: '  PANIC ' }).map(n => n.id)).toEqual(['a']);
+  });
+
+  it('多个条件同时生效（AND）', () => {
+    expect(filterNotifications(list, { level: 'error', sourceId: 'srv-1', unreadOnly: true }).map(n => n.id)).toEqual(['a']);
+  });
+
+  it('没有匹配返回空数组，不崩', () => {
+    expect(filterNotifications(list, { query: '不存在的词' })).toEqual([]);
+    expect(filterNotifications([], { level: 'error' })).toEqual([]);
+  });
+
+  it('isFilterActive 判断是否有非默认条件', () => {
+    expect(isFilterActive(EMPTY_NOTIFICATION_FILTER)).toBe(false);
+    expect(isFilterActive({ level: 'all' })).toBe(false);
+    expect(isFilterActive({ level: 'error' })).toBe(true);
+    expect(isFilterActive({ query: '  ' })).toBe(false);
+    expect(isFilterActive({ query: 'oom' })).toBe(true);
+    expect(isFilterActive({ unreadOnly: true })).toBe(true);
+  });
+
+  it('listNotificationSources 汇总机器与条数（按条数降序）', () => {
+    const s = listNotificationSources(list);
+    expect(s[0]).toEqual({ sourceId: 'srv-1', sourceName: '4090服务器', count: 2 });
+    expect(s.find(x => x.sourceId === 'local')?.count).toBe(1);
+    expect(s).toHaveLength(2);
+  });
+
+  it('老数据没有 sourceId 也能按机器名归组', () => {
+    const legacy = [one({ id: 'x', sourceId: undefined, sourceName: '老机器' })];
+    expect(listNotificationSources(legacy)[0].sourceId).toBe('name:老机器');
+    expect(filterNotifications(legacy, { sourceId: 'name:老机器' })).toHaveLength(1);
   });
 });

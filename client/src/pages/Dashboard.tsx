@@ -343,8 +343,10 @@ export default function Dashboard() {
     
     fetchDeviceData();
     
-    // HTTP 轮询，与 GlobalStatusBar 保持一致
-    const pollInterval = setInterval(fetchDeviceData, 5000);
+    // HTTP 轮询，与 GlobalStatusBar 保持一致（页面隐藏时不发请求，省带宽/CPU）
+    const pollInterval = setInterval(() => {
+      if (!document.hidden) fetchDeviceData();
+    }, 5000);
     
     // 仅用于日志的 WebSocket（不包含监控数据）
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';

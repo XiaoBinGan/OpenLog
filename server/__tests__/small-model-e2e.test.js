@@ -177,7 +177,7 @@ describe('AI Shell：16k 窗口下多步执行每步 prompt 都 ≤ 窗口', () 
   });
 
   it('步数用尽时保存 resumeState，可以用来「继续」', async () => {
-    const { opts } = makeOpts(65_536, { steps: 30 });
+    const { opts } = makeOpts(65_536, { steps: 100 });
     const result = await runAgent(opts);
     expect(result.status).toBe('max_steps');
     expect(result.resumeState).toBeTruthy();
@@ -187,13 +187,13 @@ describe('AI Shell：16k 窗口下多步执行每步 prompt 都 ≤ 窗口', () 
   });
 
   it('继续任务：复用 resumeState，不从头再来', async () => {
-    const { opts } = makeOpts(65_536, { steps: 30 });
+    const { opts } = makeOpts(65_536, { steps: 100 });
     const first = await runAgent(opts);
     expect(first.resumeState).toBeTruthy();
     const doneSteps = first.steps;
 
     const seenMessages = [];
-    const opts2 = makeOpts(65_536, { steps: 30 }).opts;
+    const opts2 = makeOpts(65_536, { steps: 100 }).opts;
     opts2.resume = first.resumeState;
     opts2.callModel = async (messages) => {
       seenMessages.push(messages);
@@ -216,5 +216,86 @@ describe('AI Shell：16k 窗口下多步执行每步 prompt 都 ≤ 窗口', () 
     expect(opts.execStream).toHaveBeenCalledTimes(1);
     expect(opts.send).toHaveBeenCalledWith(expect.objectContaining({ type: 'progress', message: expect.stringContaining('重复命令') }));
     expect(result.status).toBe('max_steps');
+  });
+});
+
+describe('AI Shell：步数/时长上限可调（前端下拉）', () => {
+  function optsFor(extra = {}) {
+    let n = 0;
+    const sent = [];
+    return {
+      sent,
+      opts: {
+        serverId: 's1', text: '一直查', history: [], autoRun: true,
+        windowTokens: 65_536,
+        send: (e) => sent.push(e),
+        callModel: async () => {
+          n += 1;
+          return { content: `RUN: echo step-${n}` }; // 每条命令都不同，避免被重复拦截
+        },
+        execStream: async () => ({ stdout: 'ok', stderr: '', exitCode: 0, success: true }),
+        confirm: async () => true,
+        ...extra,
+      },
+    };
+  }
+
+  it('默认 24 步', async () => {
+    const { sent, opts } = optsFor();
+    const r = await runAgent(opts);
+    expect(r.steps).toBe(24);
+    expect(sent.find(e => e.type === 'context_budget')?.maxSteps).toBe(24);
+  });
+
+  it('前端传 maxSteps=40 → 真跑 40 步', async () => {
+    const { sent, opts } = optsFor({ maxSteps: 40 });
+    const r = await runAgent(opts);
+    expect(r.steps).toBe(40);
+    expect(sent.find(e => e.type === 'context_budget')?.maxSteps).toBe(40);
+  });
+
+  it('超过硬上限 64 会被夹到 64（防止跑飞）', async () => {
+    const { sent, opts } = optsFor({ maxSteps: 1000 });
+    await runAgent(opts);
+    expect(sent.find(e => e.type === 'context_budget')?.maxSteps).toBe(64);
+  });
+
+  it('传非法值（0 / 负数 / NaN）回落默认 24', async () => {
+    for (const bad of [0, -5, NaN, null, undefined, 'abc']) {
+      const { sent, opts } = optsFor({ maxSteps: bad });
+      await runAgent(opts);
+      expect(sent.find(e => e.type === 'context_budget')?.maxSteps).toBe(24);
+    }
+  });
+
+  it('时长上限：默认 20 分钟，调大后按调大的值算', async () => {
+    const realNow = Date.now;
+    let fake = realNow();
+    Date.now = () => (fake += 1000); // 每次调用只前进 1 秒
+    try {
+      const { sent, opts } = optsFor({ maxSteps: 3, maxWallMs: 60 * 60 * 1000 });
+      const r = await runAgent(opts);
+      expect(r.steps).toBe(3);
+      // 走完 3 步是「步数用尽」暂停（reason=steps），不是被时长掐断
+      expect(sent.some(e => e.type === 'agent_paused' && e.reason === 'time')).toBe(false);
+    } finally {
+      Date.now = realNow;
+    }
+  });
+
+  it('时长上限：超过后暂停并保存进度（提示里是配置的分钟数）', async () => {
+    const realNow = Date.now;
+    let fake = realNow();
+    Date.now = () => (fake += 61 * 60 * 1000); // 直接越过 60 分钟硬上限
+    try {
+      const { sent, opts } = optsFor({ maxSteps: 10, maxWallMs: 30 * 60 * 1000 });
+      const r = await runAgent(opts);
+      expect(sent.some(e => e.type === 'agent_paused')).toBe(true);
+      expect(r.status).toBe('max_steps');
+      expect(r.answer).toContain('继续');
+      expect(r.resumeState).toBeTruthy();
+    } finally {
+      Date.now = realNow;
+    }
   });
 });

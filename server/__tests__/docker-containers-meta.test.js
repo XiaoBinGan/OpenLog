@@ -69,7 +69,8 @@ beforeAll(async () => {
 afterAll(() => new Promise((r) => server.close(r)));
 
 async function fetchSources() {
-  const res = await fetch(`${base}/api/docker/containers`);
+  // refresh=1 绕过 3 秒短缓存：这些用例会切换设置，必须拿到最新结果
+  const res = await fetch(`${base}/api/docker/containers?refresh=1`);
   expect(res.status).toBe(200);
   return (await res.json()).sources;
 }

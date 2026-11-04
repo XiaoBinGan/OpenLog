@@ -2,7 +2,8 @@ import { Monitor, Server, Activity, HardDrive, Cpu, ChevronDown } from 'lucide-r
 import { useDevice } from '../contexts/DeviceContext';
 import { apiFetch } from '../api/client';
 import { summarizeDisks } from '../utils/diskUsage';
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
+import { usePolling } from '../utils/usePolling';
 import NotificationCenter from './NotificationCenter';
 
 interface QuickStats {
@@ -32,80 +33,70 @@ interface RemoteStatsResponse {
 }
 
 export default function GlobalStatusBar() {
-  const { selectedDevice, setSelectedDevice, devices, isRemote, getDeviceStatusColor, refreshDevices } = useDevice();
+  const { selectedDevice, setSelectedDevice, devices, isRemote, getDeviceStatusColor } = useDevice();
   const [stats, setStats] = useState<QuickStats>({ cpu: 0, memory: 0, disk: 0 });
   const [showDropdown, setShowDropdown] = useState(false);
 
-  // 获取快速统计
-  useEffect(() => {
-    const fetchStats = async () => {
-      try {
-        if (isRemote) {
-          const data = await apiFetch<RemoteStatsResponse>(`/api/remote/servers/${selectedDevice.id}/stats`);
-          if (data.offline) return; // 未连接，静默跳过
+  // 获取快速统计（页面隐藏时暂停，切回来立刻补一次）
+  usePolling(async () => {
+    try {
+      if (isRemote) {
+        const data = await apiFetch<RemoteStatsResponse>(`/api/remote/servers/${selectedDevice.id}/stats`);
+        if (data.offline) return; // 未连接，静默跳过
 
-          // 解析远程统计 - 新结构化格式
-          let cpu = 0, memory = 0, disk = 0;
+        // 解析远程统计 - 新结构化格式
+        let cpu = 0, memory = 0, disk = 0;
 
-          if (data.cpu) {
-            // 新格式: {load: 0.2, cores: []} 或旧格式: "0.1"
-            cpu = typeof data.cpu === 'object' ? data.cpu.load ?? 0 : parseFloat(String(data.cpu).match(/([\d.]+)/)?.[1] || '0');
-          }
-
-          if (data.memory) {
-            // 新格式: {used: ..., total: ...} 或旧格式: "12950.0/128568.0 MB (10.1%)"
-            if (typeof data.memory === 'object') {
-              memory = (data.memory.used / (data.memory.total || 1)) * 100;
-            } else {
-              const match = String(data.memory).match(/\(([\d.]+)%\)/);
-              if (match) memory = parseFloat(match[1]);
-            }
-          }
-
-          if (data.disk) {
-            // 新格式: [{usePercent: 23}] 或旧格式: "388G/1.8T (23%)"
-            if (Array.isArray(data.disk)) {
-              // 同一块盘的重复条目（bind mount / APFS 卷）由 summarizeDisks 去重，
-              // 直接求和会算出 476.9% 这类不可能的值
-              disk = summarizeDisks(data.disk).percent;
-            } else {
-              const match = String(data.disk).match(/(\d+)%/);
-              if (match) disk = parseFloat(match[1]);
-            }
-          }
-
-          setStats({ cpu, memory, disk });
-        } else {
-          // 轮询失败时静默跳过（保留原有的诊断日志），不抛到外层
-          const data = await apiFetch<MonitorStatsResponse>('/api/monitor/stats').catch((err: unknown) => {
-            console.error('Monitor stats request failed:', (err as Error).message);
-            return null;
-          });
-          if (!data) return;
-          const disks = data.disk ?? [];
-          setStats({
-            cpu: data.cpu?.load || 0,
-            memory: data.memory ? (data.memory.used / (data.memory.total || 1)) * 100 : 0,
-            // 服务端已去重，这里再兜一层（旧版服务端 / 重复 bind mount 都不会算成 >100%）
-            disk: summarizeDisks(disks).percent,
-          });
+        if (data.cpu) {
+          // 新格式: {load: 0.2, cores: []} 或旧格式: "0.1"
+          cpu = typeof data.cpu === 'object' ? data.cpu.load ?? 0 : parseFloat(String(data.cpu).match(/([\d.]+)/)?.[1] || '0');
         }
-      } catch {
-        // 静默跳过（未连接、网络波动等）
+
+        if (data.memory) {
+          // 新格式: {used: ..., total: ...} 或旧格式: "12950.0/128568.0 MB (10.1%)"
+          if (typeof data.memory === 'object') {
+            memory = (data.memory.used / (data.memory.total || 1)) * 100;
+          } else {
+            const match = String(data.memory).match(/\(([\d.]+)%\)/);
+            if (match) memory = parseFloat(match[1]);
+          }
+        }
+
+        if (data.disk) {
+          // 新格式: [{usePercent: 23}] 或旧格式: "388G/1.8T (23%)"
+          if (Array.isArray(data.disk)) {
+            // 同一块盘的重复条目（bind mount / APFS 卷）由 summarizeDisks 去重，
+            // 直接求和会算出 476.9% 这类不可能的值
+            disk = summarizeDisks(data.disk).percent;
+          } else {
+            const match = String(data.disk).match(/(\d+)%/);
+            if (match) disk = parseFloat(match[1]);
+          }
+        }
+
+        setStats({ cpu, memory, disk });
+      } else {
+        // 轮询失败时静默跳过（保留原有的诊断日志），不抛到外层
+        const data = await apiFetch<MonitorStatsResponse>('/api/monitor/stats').catch((err: unknown) => {
+          console.error('Monitor stats request failed:', (err as Error).message);
+          return null;
+        });
+        if (!data) return;
+        const disks = data.disk ?? [];
+        setStats({
+          cpu: data.cpu?.load || 0,
+          memory: data.memory ? (data.memory.used / (data.memory.total || 1)) * 100 : 0,
+          // 服务端已去重，这里再兜一层（旧版服务端 / 重复 bind mount 都不会算成 >100%）
+          disk: summarizeDisks(disks).percent,
+        });
       }
-    };
+    } catch {
+      // 静默跳过（未连接、网络波动等）
+    }
+  }, 5000, [selectedDevice.id, isRemote]);
 
-    fetchStats();
-    const interval = setInterval(fetchStats, 5000);
-    return () => clearInterval(interval);
-  }, [selectedDevice.id, isRemote]);
-
-  // 刷新设备列表
-  useEffect(() => {
-    refreshDevices();
-    const interval = setInterval(refreshDevices, 30000);
-    return () => clearInterval(interval);
-  }, [refreshDevices]);
+  // 设备列表刷新交给 DeviceContext（它内部已经每 30s 轮询一次），这里不再重复拉一遍 ——
+  // 之前 GlobalStatusBar 与 DeviceContext 各拉一次 /api/remote/servers，等于双倍请求。
 
   return (
     <div className="fixed top-0 left-0 right-0 h-14 bg-dark-900/95 backdrop-blur border-b border-dark-800 z-30 hidden md:flex items-center px-6 gap-8">

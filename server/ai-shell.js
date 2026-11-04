@@ -19,12 +19,14 @@ import { planBudget, fitAgentMessages, truncateTextToTokens } from './context-bu
 
 // ─── 常量 ──────────────────────────────────────────────────────────────────
 
-/** agent 循环最多步数（长任务：给足步数，靠进度台账 + 上下文压缩控制住 token） */
+/** agent 循环默认步数（长任务：给足步数，靠进度台账 + 上下文压缩控制住 token） */
 export const MAX_STEPS = 24;
-/** 16k 小窗口也别只给几步 —— 靠压缩 + 台账，长任务照样能跑 */
-export const SMALL_WINDOW_MAX_STEPS = 16;
-/** 单次任务时长上限（防止跑飞） */
+/** 用户可调的上限（前端「步数上限」下拉最大 64；再大没有意义且容易跑飞） */
+export const MAX_STEPS_CAP = 64;
+/** 单次任务默认时长上限（前端可调 5~60 分钟） */
 export const MAX_WALL_MS = 20 * 60 * 1000;
+/** 时长上限的硬天花板 */
+export const MAX_WALL_CAP_MS = 60 * 60 * 1000;
 /** 进度台账占用的 token 上限 */
 const DIGEST_MAX_TOKENS = 1200;
 /** 单条命令上限 */
@@ -447,6 +449,7 @@ export async function runAgent(opts) {
     execContext = execStream,
     windowTokens,
     resume,
+    maxWallMs,
   } = opts;
 
   // ── 上下文预算（小窗口模型的关键）────────────────────────────────────
@@ -456,9 +459,18 @@ export async function runAgent(opts) {
   const win = Number(windowTokens) > 0 ? Number(windowTokens) : 8192;
   const isSmallWindow = win <= 16_384;
   const observationLimit = isSmallWindow ? 1800 : (win <= 32_768 ? 3200 : OBSERVATION_LIMIT);
+  // 步数上限由前端可调（默认 24，硬上限 64）。小窗口不再额外砍半 —— 长任务靠台账 + 压缩撑着，
+  // 砍步数只会让用户「任务做一半就停」。
+  const requestedSteps = Math.floor(Number(maxSteps));
   const effectiveMaxSteps = Math.min(
-    Math.max(1, Number(maxSteps) || MAX_STEPS),
-    isSmallWindow ? SMALL_WINDOW_MAX_STEPS : MAX_STEPS,
+    Math.max(1, Number.isFinite(requestedSteps) && requestedSteps > 0 ? requestedSteps : MAX_STEPS),
+    MAX_STEPS_CAP,
+  );
+  // 时长上限同样可调（默认 20 分钟，硬上限 60 分钟）
+  const requestedWall = Number(maxWallMs);
+  const wallLimitMs = Math.min(
+    Math.max(60_000, Number.isFinite(requestedWall) && requestedWall > 0 ? requestedWall : MAX_WALL_MS),
+    MAX_WALL_CAP_MS,
   );
 
   // ── 进度台账：长任务的核心 ────────────────────────────────────────────
@@ -576,12 +588,12 @@ ${renderDigest(digest)}
   try {
     while (step < stepLimit) {
       if (signal?.aborted) return { status: 'cancelled', steps: step };
-      if (Date.now() - startedAt > MAX_WALL_MS) {
+      if (Date.now() - startedAt > wallLimitMs) {
         send({ type: 'agent_paused', steps: step, reason: 'time', digest });
         return {
           status: 'max_steps',
           steps: step,
-          answer: `任务已执行 ${step} 步、超过 ${Math.round(MAX_WALL_MS / 60000)} 分钟上限，先停在这里。可以点「继续」接着跑。`,
+          answer: `任务已执行 ${step} 步、超过 ${Math.round(wallLimitMs / 60000)} 分钟上限，先停在这里。可以点「继续」接着跑（或把「时长」调大）。`,
           resumeState: makeResumeState(),
         };
       }

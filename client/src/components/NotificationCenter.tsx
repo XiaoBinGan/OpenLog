@@ -8,15 +8,19 @@
  *     支持全选忽略；支持全选删除；
  *     点击对应的错误就跳转对应的容器列表中的容器查看」
  */
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
 import {
   Bell, X, CheckCircle, AlertCircle, Info, AlertTriangle,
   BellOff, Trash2, CheckCheck, Download, FileText, FileSpreadsheet, ChevronDown,
+  Search, Filter,
 } from 'lucide-react';
 import { useToast } from '../contexts/ToastContext';
-import { formatNotificationTime, type NotificationItem } from '../utils/notifications';
+import {
+  formatNotificationTime, filterNotifications, listNotificationSources, isFilterActive,
+  EMPTY_NOTIFICATION_FILTER, type NotificationItem, type NotificationFilter,
+} from '../utils/notifications';
 import { toMarkdown, toXlsx, exportFileName } from '../utils/notifyExport';
 
 const ICON = {
@@ -55,14 +59,23 @@ export default function NotificationCenter() {
   const [open, setOpen] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [exportOpen, setExportOpen] = useState(false);
+  const [filter, setFilter] = useState<NotificationFilter>(EMPTY_NOTIFICATION_FILTER);
+  const [searchOpen, setSearchOpen] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
   const navigate = useNavigate();
 
-  // 打开抽屉时：标记已读 + 选中态清空
+  // 打开抽屉：清空选中与筛选（每次打开都是完整列表）；关闭时才把「未读」清掉，
+  // 这样「只看未读」筛选在打开期间才有意义，同时关掉抽屉后小红点也会消失。
+  const wasOpenRef = useRef(false);
   useEffect(() => {
     if (open) {
-      markAllRead();
       setSelected(new Set());
+      setFilter(EMPTY_NOTIFICATION_FILTER);
+      setSearchOpen(false);
+      wasOpenRef.current = true;
+    } else if (wasOpenRef.current) {
+      wasOpenRef.current = false;
+      markAllRead();
     }
   }, [open, markAllRead]);
 
@@ -74,7 +87,16 @@ export default function NotificationCenter() {
     return () => window.removeEventListener('keydown', onKey);
   }, [open]);
 
-  const allSelected = notifications.length > 0 && selected.size === notifications.length;
+  /** 筛选后的列表（导出/全选/批量操作都以它为准） */
+  const filteredNotifications = useMemo(
+    () => filterNotifications(notifications, filter),
+    [notifications, filter],
+  );
+  const sources = useMemo(() => listNotificationSources(notifications), [notifications]);
+  const filterActive = isFilterActive(filter);
+  const filteredUnread = filteredNotifications.filter(n => !n.read).length;
+
+  const allSelected = filteredNotifications.length > 0 && selected.size === filteredNotifications.length;
 
   const toggleOne = useCallback((id: string) => {
     setSelected(prev => {
@@ -85,8 +107,8 @@ export default function NotificationCenter() {
   }, []);
 
   const toggleAll = useCallback(() => {
-    setSelected(prev => (prev.size === notifications.length ? new Set() : new Set(notifications.map(n => n.id))));
-  }, [notifications]);
+    setSelected(prev => (prev.size === filteredNotifications.length ? new Set() : new Set(filteredNotifications.map(n => n.id))));
+  }, [filteredNotifications]);
 
   /** 点一条通知：有 nav 就跳转（例如直接打开对应容器的日志），然后收起抽屉 */
   const openItem = (n: NotificationItem) => {
@@ -96,24 +118,24 @@ export default function NotificationCenter() {
   };
 
   const handleIgnore = () => {
-    const ids = selected.size > 0 ? [...selected] : notifications.map(n => n.id);
+    const ids = selected.size > 0 ? [...selected] : filteredNotifications.map(n => n.id);
     ignoreNotifications(ids);
     setSelected(new Set());
   };
   const handleDelete = () => {
-    const ids = selected.size > 0 ? [...selected] : notifications.map(n => n.id);
+    const ids = selected.size > 0 ? [...selected] : filteredNotifications.map(n => n.id);
     deleteNotifications(ids);
     setSelected(new Set());
   };
 
   /**
-   * 导出：默认导出「选中的」；没选就导出全部。
+   * 导出：默认导出「筛选后的全部」；有勾选就只导选中的。
    * Markdown 给程序员直接贴 issue/发给同事；Excel 给需要筛选/统计的场景。
    */
   const handleExport = (format: 'md' | 'xlsx') => {
     const items = selected.size > 0
-      ? notifications.filter(n => selected.has(n.id))
-      : notifications;
+      ? filteredNotifications.filter(n => selected.has(n.id))
+      : filteredNotifications;
     if (items.length === 0) return;
     const name = exportFileName(format);
     try {
@@ -178,6 +200,82 @@ export default function NotificationCenter() {
               </button>
             </div>
 
+            {/* 筛选 / 搜索：告警一多就得能快速定位（按级别/机器/未读/关键词） */}
+            <div className="px-4 py-2 border-b border-dark-800 flex-shrink-0 space-y-1.5">
+              <div className="flex items-center gap-1.5 text-xs">
+                <div className="flex items-center gap-0.5 rounded bg-dark-800 p-0.5">
+                  {([
+                    ['all', '全部'],
+                    ['error', '错误'],
+                    ['warning', '警告'],
+                  ] as const).map(([value, label]) => (
+                    <button
+                      key={value}
+                      onClick={() => setFilter(f => ({ ...f, level: value }))}
+                      className={`px-2 py-0.5 rounded text-[11px] transition-colors ${
+                        (filter.level || 'all') === value ? 'bg-accent-500/20 text-accent-300' : 'text-dark-500 hover:text-dark-300'
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+                <button
+                  onClick={() => setFilter(f => ({ ...f, unreadOnly: !f.unreadOnly }))}
+                  className={`flex items-center gap-1 px-2 py-0.5 rounded border text-[11px] transition-colors ${
+                    filter.unreadOnly
+                      ? 'border-accent-500/40 bg-accent-500/10 text-accent-300'
+                      : 'border-dark-700 text-dark-500 hover:text-dark-300'
+                  }`}
+                  title="只看未读"
+                >
+                  未读{filteredUnread > 0 ? ` ${filteredUnread}` : ''}
+                </button>
+                {sources.length > 0 && (
+                  <select
+                    value={filter.sourceId || ''}
+                    onChange={e => setFilter(f => ({ ...f, sourceId: e.target.value }))}
+                    className="min-w-0 flex-1 bg-dark-800 border border-dark-700 rounded px-1.5 py-0.5 text-[11px] text-dark-300 outline-none"
+                    title="按机器筛选"
+                  >
+                    <option value="">全部机器</option>
+                    {sources.map(s => (
+                      <option key={s.sourceId} value={s.sourceId}>{s.sourceName}（{s.count}）</option>
+                    ))}
+                  </select>
+                )}
+                <button
+                  onClick={() => setSearchOpen(v => !v)}
+                  className={`p-1 rounded border transition-colors ${searchOpen || filter.query
+                    ? 'border-accent-500/40 bg-accent-500/10 text-accent-300'
+                    : 'border-dark-700 text-dark-500 hover:text-dark-300'}`}
+                  title="搜索（报错内容/容器名）"
+                >
+                  <Search className="w-3 h-3" />
+                </button>
+              </div>
+              {searchOpen && (
+                <div className="flex items-center gap-1.5">
+                  <input
+                    autoFocus
+                    value={filter.query || ''}
+                    onChange={e => setFilter(f => ({ ...f, query: e.target.value }))}
+                    placeholder="搜报错内容 / 容器名 / 机器名"
+                    className="flex-1 min-w-0 bg-dark-800 border border-dark-700 rounded px-2 py-1 text-[11px] text-dark-200 placeholder:text-dark-600 outline-none focus:border-accent-500/50"
+                  />
+                  {filterActive && (
+                    <button
+                      onClick={() => { setFilter(EMPTY_NOTIFICATION_FILTER); setSearchOpen(false); }}
+                      className="flex items-center gap-1 px-1.5 py-1 rounded border border-dark-700 text-[11px] text-dark-500 hover:text-dark-300"
+                      title="清除筛选"
+                    >
+                      <Filter className="w-3 h-3" /> 清除
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+
             {/* 批量操作 */}
             <div className="flex items-center gap-2 px-4 py-2 border-b border-dark-800 flex-shrink-0 text-xs">
               <label className="flex items-center gap-1.5 text-dark-400 cursor-pointer select-none">
@@ -185,7 +283,7 @@ export default function NotificationCenter() {
                   type="checkbox"
                   checked={allSelected}
                   onChange={toggleAll}
-                  disabled={notifications.length === 0}
+                  disabled={filteredNotifications.length === 0}
                   className="accent-accent-500"
                 />
                 全选{selected.size > 0 ? `（${selected.size}）` : ''}
@@ -193,7 +291,7 @@ export default function NotificationCenter() {
               <div className="flex-1" />
               <button
                 onClick={handleIgnore}
-                disabled={notifications.length === 0}
+                disabled={filteredNotifications.length === 0}
                 title="忽略选中的通知（同类告警 10 分钟内不再提醒）"
                 className="flex items-center gap-1 px-2 py-1 rounded border border-dark-700 text-dark-300 hover:text-yellow-300 hover:border-yellow-500/40 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
               >
@@ -201,7 +299,7 @@ export default function NotificationCenter() {
               </button>
               <button
                 onClick={handleDelete}
-                disabled={notifications.length === 0}
+                disabled={filteredNotifications.length === 0}
                 title="删除选中的通知"
                 className="flex items-center gap-1 px-2 py-1 rounded border border-dark-700 text-dark-300 hover:text-red-300 hover:border-red-500/40 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
               >
@@ -220,8 +318,8 @@ export default function NotificationCenter() {
               <div className="relative">
                 <button
                   onClick={() => setExportOpen(v => !v)}
-                  disabled={notifications.length === 0}
-                  title="导出通知（选中的就只导选中的，没选就导全部）"
+                  disabled={filteredNotifications.length === 0}
+                  title="导出通知（选中的就只导选中的，没选就导当前筛选结果）"
                   className={`flex items-center gap-1 px-2 py-1 rounded border transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
                     exportOpen
                       ? 'border-accent-500/40 bg-accent-500/10 text-accent-300'
@@ -256,7 +354,11 @@ export default function NotificationCenter() {
                         </span>
                       </button>
                       <div className="px-3 py-1.5 text-[10px] text-dark-600 border-t border-dark-800">
-                        {selected.size > 0 ? `导出选中的 ${selected.size} 条` : `导出全部 ${notifications.length} 条`}
+                        {selected.size > 0
+                          ? `导出选中的 ${selected.size} 条`
+                          : filterActive
+                            ? `导出当前筛选的 ${filteredNotifications.length} 条（共 ${notifications.length} 条）`
+                            : `导出全部 ${notifications.length} 条`}
                       </div>
                     </div>
                   </>
@@ -272,8 +374,19 @@ export default function NotificationCenter() {
                   <p className="text-sm">没有通知</p>
                   <p className="text-xs mt-1 text-dark-700">告警和提示会在这里汇总</p>
                 </div>
+              ) : filteredNotifications.length === 0 ? (
+                <div className="flex flex-col items-center justify-center h-full text-dark-600">
+                  <Search className="w-8 h-8 mb-2 opacity-20" />
+                  <p className="text-sm">没有匹配的通知</p>
+                  <button
+                    onClick={() => setFilter(EMPTY_NOTIFICATION_FILTER)}
+                    className="text-xs mt-2 text-accent-400 hover:text-accent-300"
+                  >
+                    清除筛选条件
+                  </button>
+                </div>
               ) : (
-                notifications.map(n => {
+                filteredNotifications.map(n => {
                   const Icon = ICON[n.type] || Info;
                   const isSel = selected.has(n.id);
                   return (

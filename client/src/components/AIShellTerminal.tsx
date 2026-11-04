@@ -13,11 +13,12 @@ import {
   X, Maximize2, Minimize2, Terminal, AlertCircle, Loader,
   Sparkles, Send, Check, Save, RotateCcw, Command,
   ArrowRight, Clipboard, ClipboardCheck, ChevronDown,
-  BookOpen, Square, ShieldAlert, Cpu, AlertTriangle,
+  BookOpen, Square, ShieldAlert, Cpu, AlertTriangle, Trash2, History,
 } from 'lucide-react';
 import type { RemoteServer } from '../types';
 import { withWsToken } from '../api/auth';
 import { apiFetch } from '../api/client';
+import { compactTurnsForStorage, saveJsonSafe } from '../utils/conversationStorage';
 import { sanitizeHtml } from '../utils/sanitize';
 
 interface SkillBrief {
@@ -108,12 +109,31 @@ export default function AIShellTerminal({ server, onClose, onReady }: AIShellTer
   const [connected, setConnected] = useState(false);
   const [connecting, setConnecting] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [turns, setTurns] = useState<Turn[]>([]);
+  // 任务记录按服务器持久化：刷新/误关标签不再丢掉排查过程（长任务尤其重要）
+  const storageKey = `aishell.turns.${server.id}`;
+  const [turns, setTurns] = useState<Turn[]>(() => {
+    try {
+      const raw = localStorage.getItem(storageKey);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch { return []; }
+  });
+  const [showRestored, setShowRestored] = useState(false);
   const [input, setInput] = useState('');
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [mode, setMode] = useState<'ai' | 'cmd'>('ai');
   const [autoRun, setAutoRun] = useState(() => localStorage.getItem('aishell.autoRun') !== '0');
+  /** 长任务上限（可调，默认 24 步 / 20 分钟） */
+  const [maxSteps, setMaxSteps] = useState(() => {
+    const v = Number(localStorage.getItem('aishell.maxSteps'));
+    return [8, 16, 24, 40, 64].includes(v) ? v : 24;
+  });
+  const [maxWallMin, setMaxWallMin] = useState(() => {
+    const v = Number(localStorage.getItem('aishell.maxWallMin'));
+    return [5, 10, 20, 40, 60].includes(v) ? v : 20;
+  });
   const [running, setRunning] = useState(false);
   const [contextSummary, setContextSummary] = useState('');
   /** 模型上下文窗口（服务端探测；小窗口会提示用户） */
@@ -136,7 +156,26 @@ export default function AIShellTerminal({ server, onClose, onReady }: AIShellTer
   const stickToBottomRef = useRef(true);
 
   useEffect(() => { localStorage.setItem('aishell.autoRun', autoRun ? '1' : '0'); }, [autoRun]);
+  useEffect(() => { localStorage.setItem('aishell.maxSteps', String(maxSteps)); }, [maxSteps]);
+  useEffect(() => { localStorage.setItem('aishell.maxWallMin', String(maxWallMin)); }, [maxWallMin]);
   useEffect(() => { localStorage.setItem('aishell.cmdHistory', JSON.stringify(cmdHistory.slice(-50))); }, [cmdHistory]);
+
+  // 任务记录落盘（体积受控：每步输出只留头尾、最多 10 轮）
+  useEffect(() => {
+    const { turns: slim, trimmed } = compactTurnsForStorage(turns as any, { maxTurns: 10, maxBytes: 400_000 });
+    const { ok } = saveJsonSafe(storageKey, slim, {
+      shrink: () => compactTurnsForStorage(turns as any, { maxTurns: 3, maxBytes: 120_000 }).turns,
+    });
+    if (!ok) console.warn('[AIShell] 任务记录保存失败（超出浏览器存储配额），已跳过本次保存');
+    if (trimmed > 0) setShowRestored(true);
+  }, [turns, storageKey]);
+
+  // 打开时如果有恢复的记录，提示一下（让用户知道不是凭空出现的）
+  useEffect(() => {
+    if (turns.length > 0) setShowRestored(true);
+    // 只在挂载时判断一次
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // 加载技能列表
   useEffect(() => {
@@ -348,8 +387,11 @@ export default function AIShellTerminal({ server, onClose, onReady }: AIShellTer
       history,
       skillContent: combinedContent,
       skillName: selectedSkills.map(s => s.name).join(' + '),
+      // 长任务上限（界面可调）
+      maxSteps,
+      maxWallMs: maxWallMin * 60_000,
     }));
-  }, [autoRun, selectedSkills, turns]);
+  }, [autoRun, selectedSkills, turns, maxSteps, maxWallMin]);
 
   // ─── 继续上次暂停的长任务（服务端保存了进度台账，不会从头再来）──────────
   const continueTask = useCallback(() => {
@@ -361,8 +403,8 @@ export default function AIShellTerminal({ server, onClose, onReady }: AIShellTer
     setError(null);
     setRunning(true);
     stickToBottomRef.current = true;
-    ws.send(JSON.stringify({ type: 'continue_task', id }));
-  }, [running]);
+    ws.send(JSON.stringify({ type: 'continue_task', id, maxSteps, maxWallMs: maxWallMin * 60_000 }));
+  }, [running, maxSteps, maxWallMin]);
 
   // ─── 命令模式：直接执行 ────────────────────────────────────────────────
   const executeDirect = useCallback((command: string) => {
@@ -552,6 +594,15 @@ export default function AIShellTerminal({ server, onClose, onReady }: AIShellTer
         </div>
 
         <div className="flex items-center gap-1 shrink-0">
+          {turns.length > 0 && (
+            <button
+              onClick={() => { setTurns([]); setShowRestored(false); }}
+              title="清空本机保存的任务记录"
+              className="p-1.5 rounded-lg hover:bg-dark-800 text-dark-500 hover:text-red-300 transition-colors"
+            >
+              <Trash2 className="w-4 h-4" />
+            </button>
+          )}
           <button onClick={() => setIsFullscreen(v => !v)} className="p-1.5 rounded-lg hover:bg-dark-800 text-dark-500 hover:text-dark-300 transition-colors">
             {isFullscreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
           </button>
@@ -560,6 +611,17 @@ export default function AIShellTerminal({ server, onClose, onReady }: AIShellTer
           </button>
         </div>
       </div>
+
+      {/* 恢复提示：任务记录是从本机缓存恢复的，不是新任务 */}
+      {showRestored && turns.length > 0 && (
+        <div className="px-4 py-1.5 bg-dark-800/60 border-b border-dark-800 text-[11px] text-dark-400 flex items-center gap-1.5 flex-shrink-0">
+          <History className="w-3.5 h-3.5 flex-shrink-0" />
+          <span>已恢复上次在这台机器上的 {turns.length} 条任务记录（刷新/重开不会丢）</span>
+          <button onClick={() => setShowRestored(false)} className="ml-auto text-dark-600 hover:text-dark-400">
+            <X className="w-3 h-3" />
+          </button>
+        </div>
+      )}
 
       {/* 已选技能标签行 */}
       {selectedSkills.length > 0 && (
@@ -815,9 +877,32 @@ export default function AIShellTerminal({ server, onClose, onReady }: AIShellTer
           )}
         </div>
         {mode === 'ai' && (
-          <div className="px-4 pb-2 -mt-1 text-[10px] text-dark-600 flex items-center gap-3">
+          <div className="px-4 pb-2 -mt-1 text-[10px] text-dark-600 flex items-center gap-3 flex-wrap">
             <span>{autoRun ? '自动模式：只读命令直接执行，写操作会询问' : '逐步模式：每条命令都要确认'}</span>
             <span>· Esc 停止</span>
+            {/* 长任务上限可调：默认 24 步 / 20 分钟，跑不通可以放宽 */}
+            <label className="flex items-center gap-1 ml-auto" title="单次任务最多执行多少步">
+              步数上限
+              <select
+                value={maxSteps}
+                onChange={e => setMaxSteps(Number(e.target.value))}
+                disabled={running}
+                className="bg-dark-800 border border-dark-700 rounded px-1 py-0.5 text-[10px] text-dark-300 outline-none disabled:opacity-50"
+              >
+                {[8, 16, 24, 40, 64].map(v => <option key={v} value={v}>{v}</option>)}
+              </select>
+            </label>
+            <label className="flex items-center gap-1" title="单次任务最长运行时间">
+              时长
+              <select
+                value={maxWallMin}
+                onChange={e => setMaxWallMin(Number(e.target.value))}
+                disabled={running}
+                className="bg-dark-800 border border-dark-700 rounded px-1 py-0.5 text-[10px] text-dark-300 outline-none disabled:opacity-50"
+              >
+                {[5, 10, 20, 40, 60].map(v => <option key={v} value={v}>{v} 分钟</option>)}
+              </select>
+            </label>
           </div>
         )}
       </div>

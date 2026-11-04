@@ -6,6 +6,7 @@ import { createContext, useContext, useState, useEffect, useCallback, useRef } f
 import type { RemoteServer, RemoteServerState, RemoteFileList, Log } from '../types';
 import { useDevice } from './DeviceContext';
 import { apiFetch, apiJson } from '../api/client';
+import { usePolling } from '../utils/usePolling';
 
 interface RemoteContextValue {
   servers: RemoteServer[];
@@ -69,15 +70,9 @@ export function RemoteProvider({ children }: { children: React.ReactNode }) {
     } catch {}
   }, []);
 
-  useEffect(() => {
-    refreshServers();
-  }, [refreshServers]);
-
   // 心跳：仅刷新服务器列表，不 touch activeServer
-  useEffect(() => {
-    const interval = setInterval(refreshServers, 30000);
-    return () => clearInterval(interval);
-  }, [refreshServers]);
+  // （页面隐藏时暂停，切回来立刻补一次 —— 避免后台标签页白白轮询）
+  usePolling(refreshServers, 30000, [refreshServers]);
 
   // 选中服务器（纯前端状态切换，不发起连接）
   const selectServer = useCallback((server: RemoteServer) => {
@@ -389,34 +384,28 @@ export function RemoteProvider({ children }: { children: React.ReactNode }) {
     }
   }, [loadFiles, showToast]);
 
-  // Stats 轮询：用 ref 确保不陈旧
-  useEffect(() => {
-    if (!activeServer || activeServer.status !== 'connected') return;
-    
-    const fetchStats = async () => {
-      const server = activeServerRef.current;
-      if (!server || server.status !== 'connected') return;
-      
-      try {
-        // apiFetch 在非 2xx 时抛错，因此「stats API 失败」与「网络错误」
-        // 走同一个 catch —— 两种情况原本就执行同样的清理逻辑。
-        const stats = await apiFetch<Record<string, string>>(`/api/remote/servers/${server.id}/stats`);
-        setActiveServer(prev => {
-          if (!prev || prev.id !== server.id) return prev;
-          return { ...prev, systemStats: stats };
-        });
-      } catch {
-        // stats 获取失败（SSH 已断开或网络波动），清理连接状态
-        setActiveServer(null);
-        resetToLocal();
-        refreshServers();
-      }
-    };
+  // Stats 轮询：用 ref 确保不陈旧（页面隐藏时暂停，SSH 查询不便宜）
+  const pollStats = useCallback(async () => {
+    const server = activeServerRef.current;
+    if (!server || server.status !== 'connected') return;
 
-    fetchStats();
-    const interval = setInterval(fetchStats, 10000);
-    return () => clearInterval(interval);
-  }, [activeServer?.id, activeServer?.status, refreshServers]);
+    try {
+      // apiFetch 在非 2xx 时抛错，因此「stats API 失败」与「网络错误」
+      // 走同一个 catch —— 两种情况原本就执行同样的清理逻辑。
+      const stats = await apiFetch<Record<string, string>>(`/api/remote/servers/${server.id}/stats`);
+      setActiveServer(prev => {
+        if (!prev || prev.id !== server.id) return prev;
+        return { ...prev, systemStats: stats };
+      });
+    } catch {
+      // stats 获取失败（SSH 已断开或网络波动），清理连接状态
+      setActiveServer(null);
+      resetToLocal();
+      refreshServers();
+    }
+  }, [refreshServers, resetToLocal]);
+
+  usePolling(pollStats, 10000, [activeServer?.id, activeServer?.status, pollStats]);
 
   return (
     <RemoteContext.Provider value={{

@@ -131,3 +131,75 @@ export function formatNotificationTime(ts: number, now = Date.now()): string {
   if (d.toDateString() === nd.toDateString()) return hm;
   return `${d.getMonth() + 1}/${d.getDate()} ${hm}`;
 }
+
+// ─── 筛选 / 搜索 ───────────────────────────────────────────────────────────
+
+/** 通知筛选条件 */
+export interface NotificationFilter {
+  /** 只看某一级别（'all' 表示不限） */
+  level?: 'all' | 'error' | 'warning' | 'info' | 'success';
+  /** 只看某一台机器（'' 表示不限；值为 sourceId） */
+  sourceId?: string;
+  /** 只看未读 */
+  unreadOnly?: boolean;
+  /** 关键词搜索（消息 / 描述 / 机器 / 容器 / 报错内容） */
+  query?: string;
+}
+
+export const EMPTY_NOTIFICATION_FILTER: NotificationFilter = {
+  level: 'all', sourceId: '', unreadOnly: false, query: '',
+};
+
+/** 筛选条件是否处于「非默认」状态（用于显示清除按钮） */
+export function isFilterActive(filter: NotificationFilter): boolean {
+  return Boolean(
+    (filter.level && filter.level !== 'all') ||
+    filter.sourceId ||
+    filter.unreadOnly ||
+    String(filter.query || '').trim(),
+  );
+}
+
+/** 从通知列表里取出所有出现过的机器（用于筛选下拉） */
+export function listNotificationSources(items: NotificationItem[]): Array<{ sourceId: string; sourceName: string; count: number }> {
+  const map = new Map<string, { sourceId: string; sourceName: string; count: number }>();
+  for (const n of items || []) {
+    const id = n.sourceId || (n.sourceName ? `name:${n.sourceName}` : '');
+    if (!id) continue;
+    const name = n.sourceName || (id === 'local' ? '本机 Docker' : id);
+    const hit = map.get(id);
+    if (hit) hit.count += 1;
+    else map.set(id, { sourceId: id, sourceName: name, count: 1 });
+  }
+  return [...map.values()].sort((a, b) => b.count - a.count);
+}
+
+/**
+ * 按条件筛选通知（纯函数）。
+ *
+ * 搜索覆盖标题、描述、机器名、容器名、报错内容 —— 排查时经常只记得半句报错
+ * 或者只记得容器名，都要能搜到。
+ */
+export function filterNotifications(items: NotificationItem[], filter: NotificationFilter = {}): NotificationItem[] {
+  const level = filter.level && filter.level !== 'all' ? filter.level : '';
+  const sourceId = filter.sourceId || '';
+  const unreadOnly = filter.unreadOnly === true;
+  const query = String(filter.query || '').trim().toLowerCase();
+
+  return (items || []).filter((n) => {
+    if (level && n.type !== level) return false;
+    if (sourceId) {
+      const key = n.sourceId || (n.sourceName ? `name:${n.sourceName}` : '');
+      if (key !== sourceId) return false;
+    }
+    if (unreadOnly && n.read) return false;
+    if (query) {
+      const haystack = [
+        n.message, n.description, n.sourceName, n.sourceId,
+        n.containerName, n.containerId, n.level, n.errorType, n.errorContent,
+      ].filter(Boolean).join('\n').toLowerCase();
+      if (!haystack.includes(query)) return false;
+    }
+    return true;
+  });
+}

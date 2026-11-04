@@ -26,12 +26,19 @@ import {
 import { getServers } from '../remote.js';
 import { resolveDockerTransport } from '../docker-transport.js';
 import { explainExitCode, buildRuleDiagnosis, mergePatrolProblems } from '../diagnosis.js';
+import { applyPatrolResults } from '../patrol-cache.js';
+import { createShortCache, cached } from '../short-cache.js';
 
 export default function createDockerRouter({
   ensureSettings, broadcast, addAnalysisRecord, buildHostExecMap, stripThinking,
   getLastPatrolResults, setLastPatrolResults,
 }) {
   const router = express.Router();
+
+  // 容器列表短缓存（3 秒）：/api/docker/containers 实测 224~322ms、73KB，
+  // 顶栏/Docker 页/远程页/多开标签页会同时拉，缓存把并发尖峰合并成一次真实查询。
+  // 容器操作（启动/停止/重启/删除）后会主动失效，保证操作后立刻看到新状态。
+  const containersCache = createShortCache({ ttlMs: 3000 });
 
 // ─── 诊断相关的公共小工具 ─────────────────────────────────────────────
 
@@ -121,43 +128,51 @@ router.post('/api/docker/:sourceId/:containerId/:op', async (req, res) => {
       case 'remove': result = await docker.removeContainer(sourceId, containerId, config); break;
       default: return res.status(400).json({ error: '不支持的操作: ' + op });
     }
+    // 容器状态变了：立刻失效列表缓存，下一次拉取拿到新状态
+    containersCache.invalidate('containers');
     res.json(result);
   } catch (err) {
     res.status(500).json({ error: errorMessage(err) });
   }
 });
 
-// 获取所有 Docker 配置的容器列表
+// 获取所有 Docker 配置的容器列表（3 秒短缓存，容器操作后主动失效；?refresh=1 可强制刷新）
 router.get('/api/docker/containers', async (req, res) => {
   try {
-    const allContainers = [];
-    const sources = ensureSettings().dockerSources || [];
-    const enabled = sources.filter(s => s.enabled);
+    const forceRefresh = req.query?.refresh === '1' || req.query?.refresh === 'true';
+    if (forceRefresh) containersCache.invalidate('containers');
+    // 缓存的是「成功」结果；失败不缓存，故障恢复立刻可见
+    const payload = await cached(containersCache, 'containers', async () => {
+      const allContainers = [];
+      const sources = ensureSettings().dockerSources || [];
+      const enabled = sources.filter(s => s.enabled);
 
-    for (const source of enabled) {
-      // via(SSH) 源没有 host 字段，它指向的是某台远程服务器的 docker.sock。
-      // 前端「远程设备」模式是按 host 过滤 Docker 源的，不把 host 解析出来
-      // 这个源会在设备模式下被整体过滤掉 —— 表现为「所有 Docker 连接均失败」。
-      // 同时回传 serverId，供前端按服务器精确匹配（同一 host 可能有多台）。
-      const viaHost = source.via?.serverId
-        ? (getServers().find(r => r.id === source.via.serverId)?.host || '')
-        : '';
-      const meta = {
-        sourceId: source.id,
-        sourceName: source.name,
-        host: source.host || viaHost,
-        serverId: source.via?.serverId || '',
-      };
+      for (const source of enabled) {
+        // via(SSH) 源没有 host 字段，它指向的是某台远程服务器的 docker.sock。
+        // 前端「远程设备」模式是按 host 过滤 Docker 源的，不把 host 解析出来
+        // 这个源会在设备模式下被整体过滤掉 —— 表现为「所有 Docker 连接均失败」。
+        // 同时回传 serverId，供前端按服务器精确匹配（同一 host 可能有多台）。
+        const viaHost = source.via?.serverId
+          ? (getServers().find(r => r.id === source.via.serverId)?.host || '')
+          : '';
+        const meta = {
+          sourceId: source.id,
+          sourceName: source.name,
+          host: source.host || viaHost,
+          serverId: source.via?.serverId || '',
+        };
 
-      try {
-        const containers = await docker.listContainers(source.id, await resolveDockerTransport(source));
-        allContainers.push({ ...meta, containers });
-      } catch (err) {
-        allContainers.push({ ...meta, error: errorMessage(err), containers: [] });
+        try {
+          const containers = await docker.listContainers(source.id, await resolveDockerTransport(source));
+          allContainers.push({ ...meta, containers });
+        } catch (err) {
+          allContainers.push({ ...meta, error: errorMessage(err), containers: [] });
+        }
       }
-    }
+      return { sources: allContainers };
+    });
 
-    res.json({ sources: allContainers });
+    res.json(payload);
   } catch (err) {
     res.status(500).json({ error: errorMessage(err) });
   }
@@ -470,9 +485,9 @@ router.post('/api/docker/patrol/now', async (req, res) => {
     const levels = ensureSettings().containerPatrolLevels || ['ERROR', 'FATAL'];
     const hostExecMap = buildHostExecMap();
     const results = await docker.patrolContainerLogs(sources, levels, (src) => hostExecMap.get(src.host) || null);
-    if (results.length > 0) {
-      setLastPatrolResults(results);
-    }
+    // 巡检成功就覆盖缓存（含空结果）——否则问题修好后旧异常会一直留在缓存里，
+    // 健康诊断/通知列表会报已经不存在的异常（见 /api/docker/patrol/last）
+    setLastPatrolResults(applyPatrolResults(getLastPatrolResults(), results));
     broadcast({ type: 'container_patrol', data: { results, timestamp: new Date().toISOString() } });
     res.json({ success: true, results });
   } catch (err) {

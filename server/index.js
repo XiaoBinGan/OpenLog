@@ -18,12 +18,13 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import * as remote from './remote.js';
-import { runAgent, classifyCommand, MAX_STEPS } from './ai-shell.js';
+import { runAgent, classifyCommand, MAX_STEPS, MAX_STEPS_CAP, MAX_WALL_MS, MAX_WALL_CAP_MS } from './ai-shell.js';
 import * as docker from './docker.js';
 import { ContainerLogWatcher, detectSelfContainerId } from './container-log-watch.js';
 import { parseLogLevel } from './log-level.js';
 import { warnIfUnconfigured as warnIfHostGpuUnconfigured } from './gpu-host-ssh.js';
 import { dedupeDisks } from './disk-utils.js';
+import { applyPatrolResults } from './patrol-cache.js';
 import gpuRouter from './routes/gpu.js';
 import skillsRouter from './routes/skills.js';
 import createMonitorRouter from './routes/monitor.js';
@@ -952,13 +953,12 @@ async function runPatrol(sources, levels) {
     const hostExecForSource = (src) => hostExecMap.get(src.host) || null;
 
     const results = await docker.patrolContainerLogs(sources, levels, hostExecForSource);
-    // 只在有新结果时覆盖，避免空巡检冲掉上一次有效数据
-    if (results.length > 0) {
-      lastPatrolResults = results;
-      // 处理告警通知
-      for (const result of results) {
-        processAlertForResult(result);
-      }
+    // 巡检成功就整体覆盖缓存（空结果也覆盖）——否则问题修好后旧异常会一直留在
+    // 缓存里，/api/docker/patrol/last、健康诊断、通知列表会报已经不存在的异常。
+    // 巡检失败走 catch，opts.succeeded=false 时保留旧数据。
+    lastPatrolResults = applyPatrolResults(lastPatrolResults, results);
+    for (const result of results) {
+      processAlertForResult(result);
     }
     if (results.length > 0) {
       broadcast({ type: 'container_patrol', data: { results, timestamp: new Date().toISOString() } });
@@ -1711,7 +1711,9 @@ async function handleAIShellWebSocket(ws, serverId) {
           skillContent: msg.skillContent || '',
           skillName: msg.skillName || '',
           autoRun: msg.autoRun !== false,
-          maxSteps: Math.min(Math.max(Number(msg.maxSteps) || MAX_STEPS, 1), MAX_STEPS),
+          // 步数/时长上限由前端可调（默认 24 步 / 20 分钟，硬上限 64 步 / 60 分钟）
+          maxSteps: Math.min(Math.max(Number(msg.maxSteps) || MAX_STEPS, 1), MAX_STEPS_CAP),
+          maxWallMs: Math.min(Math.max(Number(msg.maxWallMs) || MAX_WALL_MS, 60_000), MAX_WALL_CAP_MS),
           windowTokens,
           resume,
           signal,
