@@ -84,6 +84,41 @@ describe('NotificationCenter —— 铃铛与右侧列表', () => {
     expect(bell).toContain('navigate(n.nav)');
     expect(bell).toContain('openItem');
   });
+
+  it('支持导出 Markdown / Excel', () => {
+    expect(bell).toContain("from '../utils/notifyExport'");
+    expect(bell).toContain("handleExport('md')");
+    expect(bell).toContain("handleExport('xlsx')");
+    expect(bell).toContain('Markdown（.md）');
+    expect(bell).toContain('Excel（.xlsx）');
+    expect(bell).toContain('downloadBlob');
+  });
+});
+
+describe('导出模块 —— 机器/服务/容器/报错 四要素', () => {
+  const exporter = read('client/src/utils/notifyExport.ts');
+  const toastCtx = read('client/src/contexts/ToastContext.tsx');
+  const layout = read('client/src/components/Layout.tsx');
+
+  it('导出模块提供 md / xlsx（真实 xlsx 结构，不是改后缀的 CSV）', () => {
+    expect(exporter).toContain('export function toMarkdown');
+    expect(exporter).toContain('export function toXlsx');
+    expect(exporter).toContain('xl/worksheets/sheet1.xml');
+    expect(exporter).toContain("name: '[Content_Types].xml'");
+  });
+
+  it('导出列包含机器/来源/容器/级别/错误类型/报错内容/链接', () => {
+    for (const col of ['机器', '来源ID', '容器', '容器ID', '级别', '错误类型', '报错内容', '打开链接']) {
+      expect(exporter).toContain(col);
+    }
+  });
+
+  it('容器告警带结构化 meta（否则导出只有一句话）', () => {
+    expect(toastCtx).toContain('meta?:');
+    expect(layout).toContain('sourceName: sourceNameOf(');
+    expect(layout).toContain("errorType: '日志异常'");
+    expect(layout).toContain('errorContent: text + extra');
+  });
 });
 
 describe('顶栏与告警接线', () => {

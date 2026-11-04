@@ -21,7 +21,11 @@ interface ToastOptions {
   description?: string; // 第二行详情（错误日志原文、影响范围等）
   /** 点这条通知跳转到哪（如 /docker?sourceId=..&containerId=..&openLog=1） */
   nav?: string;
+  /** 结构化告警来源（导出用）：机器/容器/级别/报错原文 */
+  meta?: Pick<NotificationItem, 'sourceId' | 'sourceName' | 'containerName' | 'containerId' | 'level' | 'errorType' | 'errorContent'>;
 }
+
+type ToastMeta = Pick<NotificationItem, 'sourceId' | 'sourceName' | 'containerName' | 'containerId' | 'level' | 'errorType' | 'errorContent'>;
 
 interface ToastMsg {
   id: string;
@@ -32,6 +36,7 @@ interface ToastMsg {
   persistent?: boolean;
   group?: string;
   nav?: string;
+  meta?: ToastMeta;
 }
 
 interface ToastContextValue {
@@ -116,6 +121,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       read: false,
       nav: msg.nav,
       group: msg.group,
+      ...(msg.meta || {}),
     }));
   }, []);
 
@@ -136,6 +142,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     const description = opts?.description;
     const action = opts?.action;
     const nav = opts?.nav;
+    const meta = opts?.meta;
     const persistent = false; // 统一 2s 后进列表
 
     // 同 group 合并：复用旧卡片，重置计时
@@ -145,13 +152,13 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       : `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
     if (existing) {
       setToasts(prev => prev.map(t => (t.id !== id ? t : {
-        ...t, type, message, description: description ?? t.description, action: action || t.action, nav: nav || t.nav,
+        ...t, type, message, description: description ?? t.description, action: action || t.action, nav: nav || t.nav, meta: meta || t.meta,
       })));
       toastsRef.current = toastsRef.current.map(t => (t.id !== id ? t : {
-        ...t, type, message, description: description ?? t.description, action: action || t.action, nav: nav || t.nav,
+        ...t, type, message, description: description ?? t.description, action: action || t.action, nav: nav || t.nav, meta: meta || t.meta,
       }));
     } else {
-      const created: ToastMsg = { id, type, message, description, action, persistent, group, nav };
+      const created: ToastMsg = { id, type, message, description, action, persistent, group, nav, meta };
       toastsRef.current = [...toastsRef.current, created];
       setToasts(prev => [...prev, created]);
     }
@@ -164,7 +171,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       toastsRef.current = toastsRef.current.filter(t => t.id !== id);
       setToasts(prev => prev.filter(t => t.id !== id));
       pushToNotifications({
-        id, type, message, description, action, persistent, group, nav,
+        id, type, message, description, action, persistent, group, nav, meta,
       }, Date.now());
     }, TOAST_VISIBLE_MS);
     timersRef.current.set(id, timer);

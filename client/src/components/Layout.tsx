@@ -51,6 +51,23 @@ function LayoutContent() {
   // 统一 WebSocket 连接（带自动重连，供全局通知使用）
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout>>();
+  /** docker 源 id → 显示名（导出告警时要知道「哪台机器」） */
+  const sourceNamesRef = useRef<Record<string, string>>({ local: '本机 Docker' });
+
+  const loadSourceNames = useCallback(async () => {
+    try {
+      const data = await apiFetch<{ sources?: Array<{ sourceId?: string; id?: string; sourceName?: string; name?: string }> }>('/api/docker/containers');
+      const map: Record<string, string> = { local: '本机 Docker' };
+      for (const s of data.sources || []) {
+        const id = s.sourceId || s.id;
+        const name = s.sourceName || s.name;
+        if (id && name) map[id] = name;
+      }
+      sourceNamesRef.current = map;
+    } catch { /* 拿不到名字就留空，导出时显示 ID */ }
+  }, []);
+
+  const sourceNameOf = (sourceId?: string) => (sourceId ? (sourceNamesRef.current[sourceId] || '') : '');
 
   const connectWs = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) return;
@@ -60,6 +77,8 @@ function LayoutContent() {
 
     wsInstance.onopen = () => {
       console.log('[WS] Connected');
+      // 机器名映射（导出告警时要写清是哪台机器）
+      loadSourceNames();
       // 重连后检查是否有遗漏的巡检/退出事件
       apiFetch<{ results?: { containerName?: string; containerId?: string; totalUnique?: number; uniqueCount?: number; sourceId?: string }[] }>('/api/docker/patrol/last')
         .then(data => {
@@ -73,7 +92,16 @@ function LayoutContent() {
                 `🐳 ${cName} · ${count} 种异常`,
                 { action: { label: '查看容器 →', onClick: () => navigate(link) },
                   group: containerToastGroup(r.sourceId, r.containerId, cName),
-                  nav: r.containerId ? link : undefined }
+                  nav: r.containerId ? link : undefined,
+                  meta: {
+                    sourceId: r.sourceId,
+                    sourceName: sourceNameOf(r.sourceId),
+                    containerName: cName,
+                    containerId: r.containerId,
+                    level: 'WARNING',
+                    errorType: '巡检异常',
+                    errorContent: `${count} 种异常日志`,
+                  } }
               );
             }
           }
@@ -120,11 +148,24 @@ function LayoutContent() {
               group: containerToastGroup(sourceId, containerId, name),
               // 通知列表里点它 → 直接打开这个容器的日志视图（不用再手选服务器）
               nav: containerId ? dockerContainerLink(sourceId, containerId) : undefined,
+              meta: {
+                sourceId, sourceName: sourceNameOf(sourceId),
+                containerName: name, containerId,
+                level: 'ERROR',
+                errorType: `${label}${code}`,
+                errorContent: `容器 ${name} ${label}${code}${image ? `（镜像 ${image}）` : ''}`,
+              },
             });
           } else {
             toast.error(`${name} ${label}${code}`, {
               group: containerToastGroup(sourceId, containerId, name),
               nav: containerId ? dockerContainerLink(sourceId, containerId) : undefined,
+              meta: {
+                sourceId, sourceName: sourceNameOf(sourceId),
+                containerName: name, containerId,
+                level: 'INFO', errorType: label,
+                errorContent: `容器 ${name} ${label}${code}`,
+              },
             });
           }
         }
@@ -139,7 +180,13 @@ function LayoutContent() {
                 `🐳 ${cName} · ${count} 种异常`,
                 { action: { label: '查看容器 →', onClick: () => navigate(link) },
                   group: containerToastGroup(r.sourceId, r.containerId, cName),
-                  nav: r.containerId ? link : undefined }
+                  nav: r.containerId ? link : undefined,
+                  meta: {
+                    sourceId: r.sourceId, sourceName: sourceNameOf(r.sourceId),
+                    containerName: cName, containerId: r.containerId,
+                    level: 'WARNING', errorType: '巡检异常',
+                    errorContent: `容器 ${cName} 检出 ${count} 种异常日志`,
+                  } }
               );
             }
           }
@@ -159,6 +206,12 @@ function LayoutContent() {
             // 同一个容器的 ERROR/警告都合并到一条（不再按 level 拆成两条）
             group: containerToastGroup(d.sourceId, d.containerId, cName),
             nav: link,
+            meta: {
+              sourceId: d.sourceId, sourceName: sourceNameOf(d.sourceId),
+              containerName: cName, containerId: d.containerId,
+              level, errorType: '日志异常',
+              errorContent: text + extra,
+            },
           });
         }
       } catch {}

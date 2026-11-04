@@ -23,6 +23,21 @@ export interface NotificationItem {
   nav?: string;
   /** 同类合并键（同一容器/同一类告警只留一条） */
   group?: string;
+  // ── 导出用的结构化信息（告警来源）─────────────────────────────────
+  /** Docker 源/机器 ID（local 或远程服务器 id） */
+  sourceId?: string;
+  /** 机器/来源显示名（如「本机 Docker」「4090服务器」） */
+  sourceName?: string;
+  /** 容器名 */
+  containerName?: string;
+  /** 容器 ID（短 ID 即可） */
+  containerId?: string;
+  /** 级别：ERROR/WARNING/FATAL/CRITICAL 等 */
+  level?: string;
+  /** 错误/异常类型：OOM、异常退出、段错误、日志异常、巡检异常… */
+  errorType?: string;
+  /** 报错原始内容（多行也保留，导出时按格式处理） */
+  errorContent?: string;
 }
 
 /** 最多保留多少条（避免 localStorage 无限膨胀） */

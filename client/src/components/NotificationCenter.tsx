@@ -13,10 +13,11 @@ import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
 import {
   Bell, X, CheckCircle, AlertCircle, Info, AlertTriangle,
-  BellOff, Trash2, CheckCheck,
+  BellOff, Trash2, CheckCheck, Download, FileText, FileSpreadsheet, ChevronDown,
 } from 'lucide-react';
 import { useToast } from '../contexts/ToastContext';
 import { formatNotificationTime, type NotificationItem } from '../utils/notifications';
+import { toMarkdown, toXlsx, exportFileName } from '../utils/notifyExport';
 
 const ICON = {
   success: CheckCircle,
@@ -32,6 +33,20 @@ const TONE = {
   warning: 'text-yellow-400',
 } as const;
 
+/** 触发浏览器下载 */
+function downloadBlob(name: string, data: string | Uint8Array, mime: string) {
+  const part: BlobPart = typeof data === 'string' ? data : (data as unknown as BlobPart);
+  const blob = new Blob([part], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name;
+  a.style.display = 'none';
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 1500);
+}
+
 export default function NotificationCenter() {
   const {
     notifications, unread, markAllRead,
@@ -39,6 +54,7 @@ export default function NotificationCenter() {
   } = useToast();
   const [open, setOpen] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [exportOpen, setExportOpen] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
   const navigate = useNavigate();
 
@@ -88,6 +104,30 @@ export default function NotificationCenter() {
     const ids = selected.size > 0 ? [...selected] : notifications.map(n => n.id);
     deleteNotifications(ids);
     setSelected(new Set());
+  };
+
+  /**
+   * 导出：默认导出「选中的」；没选就导出全部。
+   * Markdown 给程序员直接贴 issue/发给同事；Excel 给需要筛选/统计的场景。
+   */
+  const handleExport = (format: 'md' | 'xlsx') => {
+    const items = selected.size > 0
+      ? notifications.filter(n => selected.has(n.id))
+      : notifications;
+    if (items.length === 0) return;
+    const name = exportFileName(format);
+    try {
+      if (format === 'md') {
+        downloadBlob(name, toMarkdown(items), 'text/markdown;charset=utf-8');
+      } else {
+        const bytes = toXlsx(items);
+        downloadBlob(name, bytes, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      }
+      setExportOpen(false);
+    } catch (e) {
+      // 导出失败不应该把界面搞崩，给出可见反馈
+      console.error('导出通知失败', e);
+    }
   };
 
   return (
@@ -175,6 +215,53 @@ export default function NotificationCenter() {
               >
                 <CheckCheck className="w-3 h-3" />
               </button>
+
+              {/* 导出：Markdown / Excel（给程序员直接存档或贴 issue） */}
+              <div className="relative">
+                <button
+                  onClick={() => setExportOpen(v => !v)}
+                  disabled={notifications.length === 0}
+                  title="导出通知（选中的就只导选中的，没选就导全部）"
+                  className={`flex items-center gap-1 px-2 py-1 rounded border transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
+                    exportOpen
+                      ? 'border-accent-500/40 bg-accent-500/10 text-accent-300'
+                      : 'border-dark-700 text-dark-300 hover:text-accent-300 hover:border-accent-500/40'
+                  }`}
+                >
+                  <Download className="w-3 h-3" /> 导出
+                  <ChevronDown className={`w-3 h-3 transition-transform ${exportOpen ? 'rotate-180' : ''}`} />
+                </button>
+                {exportOpen && (
+                  <>
+                    <div className="fixed inset-0 z-[96]" onClick={() => setExportOpen(false)} />
+                    <div className="absolute right-0 top-full mt-1 z-[97] w-56 bg-dark-900 border border-dark-700 rounded-lg shadow-2xl overflow-hidden">
+                      <button
+                        onClick={() => handleExport('md')}
+                        className="w-full flex items-start gap-2 px-3 py-2 text-left hover:bg-dark-800 transition-colors"
+                      >
+                        <FileText className="w-4 h-4 mt-0.5 text-accent-400 flex-shrink-0" />
+                        <span>
+                          <span className="block text-dark-200">Markdown（.md）</span>
+                          <span className="block text-[10px] text-dark-500 mt-0.5">概览表 + 逐条明细，报错内容保留原文</span>
+                        </span>
+                      </button>
+                      <button
+                        onClick={() => handleExport('xlsx')}
+                        className="w-full flex items-start gap-2 px-3 py-2 text-left hover:bg-dark-800 transition-colors border-t border-dark-800"
+                      >
+                        <FileSpreadsheet className="w-4 h-4 mt-0.5 text-green-400 flex-shrink-0" />
+                        <span>
+                          <span className="block text-dark-200">Excel（.xlsx）</span>
+                          <span className="block text-[10px] text-dark-500 mt-0.5">机器 / 容器 / 级别 / 报错内容 分列</span>
+                        </span>
+                      </button>
+                      <div className="px-3 py-1.5 text-[10px] text-dark-600 border-t border-dark-800">
+                        {selected.size > 0 ? `导出选中的 ${selected.size} 条` : `导出全部 ${notifications.length} 条`}
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
             </div>
 
             {/* 列表 */}
@@ -210,6 +297,13 @@ export default function NotificationCenter() {
                           <div className="text-xs font-medium text-dark-200 break-words flex-1">{n.message}</div>
                           <span className="text-[10px] text-dark-600 flex-shrink-0 mt-0.5">{formatNotificationTime(n.ts)}</span>
                         </div>
+                        {(n.sourceName || n.containerName) && (
+                          <div className="text-[10px] text-dark-600 mt-0.5 truncate">
+                            {n.sourceName || n.sourceId || '未知机器'}
+                            {n.containerName ? ` · ${n.containerName}` : ''}
+                            {n.level ? ` · ${n.level}` : ''}
+                          </div>
+                        )}
                         {n.description && (
                           <div className="text-[11px] text-dark-500 font-mono break-all line-clamp-2 mt-0.5">{n.description}</div>
                         )}
