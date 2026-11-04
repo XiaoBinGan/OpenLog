@@ -18,10 +18,11 @@ import { AGENT_TOOLS, classifyToolRisk } from '../agent-tools.js';
 import { listAgentActions } from '../agent-audit.js';
 import {
   normalizeBaseUrl, guessEngine, ENGINE_HINTS, isToolUnsupportedError, setCachedToolSupport,
-  probeModelWindow,
+  probeModelWindowCached,
 } from '../llm-provider.js';
 import { createChatRunner } from './chat-runner.js';
 import { resolveContextConfig, CONTEXT_DEFAULTS, CONTEXT_BOUNDS, pickPersistableConfig, adaptContextToWindow } from './context-config.js';
+import { planBudget } from '../context-budget.js';
 
 // ─── 运维助手 Tool Calling ──────────────────────────────────────────
 
@@ -282,7 +283,7 @@ export default function createChatRouter({
 
     // 按模型自报窗口自适应预算（探测不到就保持原配置，不猜）
     try {
-      const probed = await probeModelWindow(baseUrl, apiKey, model);
+      const probed = await probeModelWindowCached(baseUrl, apiKey, model);
       if (probed) {
         const adapted = adaptContextToWindow(resolved.config, probed);
         if (adapted.adjusted) {
@@ -291,6 +292,28 @@ export default function createChatRouter({
         }
       }
     } catch { /* 探测失败不影响对话 */ }
+
+    // 用统一的预算规划再夹一次：保证「system + 工具 + 历史 + 输出」一定放得进窗口。
+    //
+    // 起因（用户反馈）：16k 窗口的小模型在 AI Shell 和运维助手里都会「抽风」——
+    // 很多引擎对超长 prompt 不报错而是**静默截断**，模型看到被砍掉一半的对话就乱来。
+    // 这里把预算按「窗口 - 安全余量 - 输出预留」硬算，不再依赖 0.7 这种拍脑袋比例。
+    {
+      const plan = planBudget({
+        windowTokens: resolved.config.windowTokens,
+        maxOutputTokens: resolved.config.maxOutputTokens,
+      });
+      if (plan.outputTokens !== resolved.config.maxOutputTokens) {
+        resolved.config.maxOutputTokens = plan.outputTokens;
+      }
+      if (plan.promptBudget < resolved.config.budgetTokens) {
+        resolved.warnings = [...(resolved.warnings || []), `上下文预算按窗口收紧到 ${plan.promptBudget}（窗口 ${plan.windowTokens} - 安全余量 ${plan.safetyTokens} - 输出 ${plan.outputTokens}）`];
+        resolved.config.budgetTokens = plan.promptBudget;
+      }
+      for (const w of plan.warnings) resolved.warnings = [...(resolved.warnings || []), w];
+      resolved.config.compactAtTokens = Math.floor(resolved.config.budgetTokens * resolved.config.compactAt);
+      resolved.config.warnAtTokens = Math.floor(resolved.config.budgetTokens * resolved.config.warnAt);
+    }
 
     // 汇总工具可用的资源上下文
     const dockerSources = settings.dockerSources || [];

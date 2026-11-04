@@ -15,11 +15,18 @@
  */
 
 import { errorMessage } from './errors.js';
+import { planBudget, fitAgentMessages, truncateTextToTokens } from './context-budget.js';
 
 // ─── 常量 ──────────────────────────────────────────────────────────────────
 
-/** agent 循环最多步数 */
-export const MAX_STEPS = 6;
+/** agent 循环最多步数（长任务：给足步数，靠进度台账 + 上下文压缩控制住 token） */
+export const MAX_STEPS = 24;
+/** 16k 小窗口也别只给几步 —— 靠压缩 + 台账，长任务照样能跑 */
+export const SMALL_WINDOW_MAX_STEPS = 16;
+/** 单次任务时长上限（防止跑飞） */
+export const MAX_WALL_MS = 20 * 60 * 1000;
+/** 进度台账占用的 token 上限 */
+const DIGEST_MAX_TOKENS = 1200;
 /** 单条命令上限 */
 export const COMMAND_TIMEOUT_MS = 120_000;
 /** 回灌给模型的单条输出上限（字符） */
@@ -362,6 +369,55 @@ export function toObservation(command, result, limit = OBSERVATION_LIMIT) {
   return body;
 }
 
+// ─── 进度台账（长任务的关键）────────────────────────────────────────────
+
+/** 粗略估 token（与 context-budget 的估算口径一致，避免循环依赖） */
+function estimateAgentTokens(text) {
+  const s = String(text ?? '');
+  if (!s) return 0;
+  let wide = 0;
+  for (const ch of s) {
+    if (ch.codePointAt(0) > 0x2e80) wide += 1;
+  }
+  return Math.ceil(wide + (s.length - wide) / 3.5);
+}
+
+/** 把结果里的关键行挑出来（进度台账只留「看了什么、成没成」，不留大段输出） */
+function keyLines(result, limit = 2, lineChars = 90) {
+  const pick = (s) => String(s || '')
+    .split('\n')
+    .map(l => l.replace(/\s+/g, ' ').trim())
+    .filter(Boolean)
+    .slice(0, limit)
+    .map(l => (l.length > lineChars ? `${l.slice(0, lineChars)}…` : l));
+  const out = pick(result?.stdout);
+  if (out.length === 0) {
+    const err = pick(result?.stderr);
+    return err.length > 0 ? err : ['(无输出)'];
+  }
+  return out;
+}
+
+/** 拼出台账文本（受 token 上限约束，超了丢最老的条目） */
+export function renderDigest(entries) {
+  if (!Array.isArray(entries) || entries.length === 0) return '';
+  const lines = entries.map((e) => {
+    const head = `#${e.step} \`${e.command}\` → exit ${e.exitCode}`;
+    return e.lines?.length ? `${head} | ${e.lines.join(' / ')}` : head;
+  });
+  // 从最老开始丢，直到放得下
+  while (lines.length > 1 && estimateAgentTokens(lines.join('\n')) > DIGEST_MAX_TOKENS) lines.shift();
+  return lines.join('\n');
+}
+
+/** 台账加一条；超 token 上限就丢最老的（保留最近进度） */
+export function appendDigest(digest, entry) {
+  const next = [...(digest || []), entry];
+  while (next.length > 1 && estimateAgentTokens(renderDigest(next)) > DIGEST_MAX_TOKENS) next.shift();
+  while (next.length > 60) next.shift();
+  return next;
+}
+
 // ─── agent 循环 ────────────────────────────────────────────────────────────
 
 /**
@@ -380,34 +436,160 @@ export function toObservation(command, result, limit = OBSERVATION_LIMIT) {
  * @param {(messages:object[], signal:AbortSignal)=>Promise<{content:string}>} opts.callModel
  * @param {(serverId:string, command:string, opts:object)=>Promise<object>} opts.execStream
  * @param {(state:{risk:string, command:string, thought?:string})=>Promise<boolean>} [opts.confirm]
- * @returns {Promise<{status:'done'|'cancelled'|'error'|'max_steps', steps:number, answer?:string}>}
+ * @param {number} [opts.windowTokens] 模型上下文窗口（探测得到；不传按 8192 保守处理）
+ * @param {object} [opts.resume] 上次中断（max_steps）时的状态：继续跑时带上，进度不丢
+ * @returns {Promise<{status:'done'|'cancelled'|'error'|'max_steps'|'timeout', steps:number, answer?:string, resumeState?:object}>}
  */
 export async function runAgent(opts) {
   const {
     serverId, text, history = [], skillContent = '', skillName = '',
     autoRun = true, maxSteps = MAX_STEPS, signal, send, callModel, execStream, confirm,
     execContext = execStream,
+    windowTokens,
+    resume,
   } = opts;
+
+  // ── 上下文预算（小窗口模型的关键）────────────────────────────────────
+  // 16k 及以下的模型：system + 历史 + 每步最多几千字符的命令输出，几步就超窗；
+  // 很多引擎超窗不报错而是静默截断，模型就会忘任务/乱造命令。这里先算预算，
+  // 再按窗口收缩「单条命令输出上限」，并每步裁剪消息（步数不砍死，靠进度台账保连续性）。
+  const win = Number(windowTokens) > 0 ? Number(windowTokens) : 8192;
+  const isSmallWindow = win <= 16_384;
+  const observationLimit = isSmallWindow ? 1800 : (win <= 32_768 ? 3200 : OBSERVATION_LIMIT);
+  const effectiveMaxSteps = Math.min(
+    Math.max(1, Number(maxSteps) || MAX_STEPS),
+    isSmallWindow ? SMALL_WINDOW_MAX_STEPS : MAX_STEPS,
+  );
+
+  // ── 进度台账：长任务的核心 ────────────────────────────────────────────
+  // 上下文被压缩后，模型会忘掉「前面查过什么、哪条路失败了」。这里把每一步压成一行
+  // （步号 + 命令 + 退出码 + 关键输出），钉在 system prompt 里 —— 即使历史被裁掉，
+  // 模型仍然知道自己干到哪了，不会重复执行、也不会把已经确认的结论再查一遍。
+  let digest = Array.isArray(resume?.digest) ? [...resume.digest] : [];
+  let ranMutating = resume?.ranMutating === true;
 
   const context = await getServerContext(serverId, (id, cmd) => execContext(id, cmd, { timeoutMs: 15_000 }));
   send({ type: 'context_ready', context: { summary: context.summary } });
 
-  const messages = [
-    { role: 'system', content: buildSystemPrompt({ context, skillContent, skillName, autoRun, maxSteps }) },
-    ...history.filter(h => h && h.role && h.content),
-    { role: 'user', content: typeof text === 'string' ? text : JSON.stringify(text) },
-  ];
+  // system prompt（可能包含用户选中的技能，内容可能非常大）
+  let skillText = skillContent;
+  let baseSystem = buildSystemPrompt({ context, skillContent: skillText, skillName, autoRun, maxSteps: effectiveMaxSteps });
+  let plan = planBudget({
+    windowTokens: win,
+    maxOutputTokens: 1200,
+    fixedTokens: estimateAgentTokens(baseSystem),
+  });
 
-  let step = 0;
-  let ranMutating = false;
+  // system 自己就吃掉大半个窗口（典型原因：选中的技能文档很长）→ 截断技能再重算，
+  // 否则消息再怎么压都放不下，引擎只会静默截断，模型直接开始胡说。
+  if (skillText && estimateAgentTokens(baseSystem) > plan.promptBudget * 0.85) {
+    const targetSystem = Math.max(512, Math.floor(plan.promptBudget * 0.6));
+    const excess = estimateAgentTokens(baseSystem) - targetSystem;
+    const cutSkill = truncateTextToTokens(skillText, Math.max(128, estimateAgentTokens(skillText) - excess));
+    if (cutSkill.truncated) {
+      skillText = cutSkill.text;
+      baseSystem = buildSystemPrompt({ context, skillContent: skillText, skillName, autoRun, maxSteps: effectiveMaxSteps });
+      plan = planBudget({ windowTokens: win, maxOutputTokens: 1200, fixedTokens: estimateAgentTokens(baseSystem) });
+      send({
+        type: 'context_trimmed',
+        windowTokens: plan.windowTokens,
+        promptBudget: plan.promptBudget,
+        tokens: estimateAgentTokens(baseSystem),
+        compressed: 0,
+        dropped: 0,
+        message: `技能内容约 ${estimateAgentTokens(skillContent)} tokens，超过模型窗口能容纳的范围，已截断技能说明（保留开头和结尾）`,
+      });
+    }
+  }
+
+  const systemContent = () => {
+    if (digest.length === 0) return baseSystem;
+    return `${baseSystem}
+
+## 已执行步骤（进度台账，按顺序；被上下文压缩后仍然保留）
+${renderDigest(digest)}
+
+下一步请基于上面的进度继续：不要重复已经成功执行过的命令，不要重新查已经确认过的结论；已经完成就给出 ANSWER。`;
+  };
+
+  let messages;
+  if (resume?.messages?.length) {
+    // 继续上次任务：沿用原来的对话（system 会按最新台账重建）
+    messages = [{ role: 'system', content: systemContent() }, ...resume.messages.filter(m => m?.role !== 'system')];
+    messages.push({ role: 'user', content: '继续完成这个任务：从上次的进度接着做，不要重复已经执行过的步骤。' });
+  } else {
+    messages = [
+      { role: 'system', content: systemContent() },
+      ...history.filter(h => h && h.role && h.content),
+      { role: 'user', content: typeof text === 'string' ? text : JSON.stringify(text) },
+    ];
+  }
+
+  send({
+    type: 'context_budget',
+    windowTokens: plan.windowTokens,
+    promptBudget: plan.promptBudget,
+    outputTokens: plan.outputTokens,
+    observationLimit,
+    maxSteps: effectiveMaxSteps,
+    warnings: plan.warnings,
+  });
+
+  /** 每步请求模型前裁剪一次（返回是否发生了裁剪） */
+  let trimmedTimes = 0;
+  const fitBeforeCall = () => {
+    messages[0] = { ...messages[0], content: systemContent() };
+    const fit = fitAgentMessages(messages, { promptBudget: plan.promptBudget });
+    if (fit.messages !== messages) {
+      for (let i = messages.length - 1; i >= 0; i--) messages.pop();
+      messages.push(...fit.messages);
+      trimmedTimes += 1;
+      send({
+        type: 'context_trimmed',
+        windowTokens: plan.windowTokens,
+        promptBudget: plan.promptBudget,
+        tokens: fit.tokens,
+        dropped: fit.dropped,
+        compressed: fit.compressed,
+        message: `模型窗口约 ${plan.windowTokens} tokens，已压缩 ${fit.compressed} 条较早命令输出${fit.dropped ? `、丢弃 ${fit.dropped} 条最老对话` : ''}（进度台账已保留，任务不会丢）`,
+      });
+    }
+  };
+  fitBeforeCall();
+
+  /** 步数/时长用尽时保存状态，前端点「继续」可以从这里接着跑 */
+  const makeResumeState = () => ({
+    messages: messages.slice(1).filter(m => m?.role !== 'system').slice(-12),
+    digest,
+    ranMutating,
+    stepsDone: step,
+  });
+
+  let step = Number(resume?.stepsDone) || 0;
+  /** 本次运行的步数上限 = 已有步数 + 本次允许的新步数（继续时能接着跑，而不是立刻又停） */
+  const stepLimit = step + effectiveMaxSteps;
   let nudged = false;
+  /** 已经执行过的命令（用于发现原地打转） */
+  const executedCommands = new Map();
+  const startedAt = Date.now();
+
   try {
-    while (step < maxSteps) {
+    while (step < stepLimit) {
       if (signal?.aborted) return { status: 'cancelled', steps: step };
+      if (Date.now() - startedAt > MAX_WALL_MS) {
+        send({ type: 'agent_paused', steps: step, reason: 'time', digest });
+        return {
+          status: 'max_steps',
+          steps: step,
+          answer: `任务已执行 ${step} 步、超过 ${Math.round(MAX_WALL_MS / 60000)} 分钟上限，先停在这里。可以点「继续」接着跑。`,
+          resumeState: makeResumeState(),
+        };
+      }
       step += 1;
       send({ type: 'step_start', step });
 
       // 1) 让模型决定这一步做什么（流式 thinking）
+      fitBeforeCall();
       const reply = await callModel(messages, signal);
       const parsed = parseAgentReply(reply?.content || '');
       if (parsed.thought) send({ type: 'thought', step, content: parsed.thought });
@@ -416,7 +598,7 @@ export async function runAgent(opts) {
       if (parsed.type === 'answer') {
         // 「只查不干」兜底：用户明确要求改东西，但全程没执行过任何写命令 —— 催一次
         const wantsAction = ACTION_INTENT_RE.test(String(text));
-        if (wantsAction && !ranMutating && !nudged && step < maxSteps) {
+        if (wantsAction && !ranMutating && !nudged && step < stepLimit) {
           nudged = true;
           send({ type: 'nudge', step, content: '要求执行修改但还没动手，促使模型继续' });
           messages.push({ role: 'assistant', content: `ANSWER: ${parsed.answer || ''}` });
@@ -442,7 +624,20 @@ export async function runAgent(opts) {
         return { status: 'done', steps: step, answer: fallback || undefined };
       }
 
-      // 3) 风险分级 → 可能需要用户确认
+      // 3) 防原地打转：同一条命令重复执行没有意义（上下文压缩后模型容易忘）
+      const cmdKey = String(parsed.command).replace(/\s+/g, ' ').trim();
+      const prevStep = executedCommands.get(cmdKey);
+      if (prevStep) {
+        messages.push({ role: 'assistant', content: `RUN: ${parsed.command}` });
+        messages.push({
+          role: 'user',
+          content: `这条命令在第 ${prevStep} 步已经执行过了，不要重复执行。请基于上面已有的输出换一个思路或参数；如果信息已经够了，直接给 ANSWER。`,
+        });
+        send({ type: 'progress', step, message: '检测到重复命令，已提醒模型换思路' });
+        continue;
+      }
+
+      // 4) 风险分级 → 可能需要用户确认
       const risk = classifyCommand(parsed.command);
       send({ type: 'command_ready', step, command: parsed.command, risk: risk.risk, reason: risk.reason || null });
       const needConfirm = risk.risk === 'danger' || (risk.risk === 'write' && !autoRun);
@@ -460,11 +655,12 @@ export async function runAgent(opts) {
             role: 'user',
             content: `用户拒绝执行这条命令${risk.reason ? `（风险：${risk.reason}）` : ''}。不要再尝试用其它命令达成同样的目的；如果这个目标必须修改服务器状态，请直接说明需要用户手动处理，并给出建议步骤。`,
           });
+          digest = appendDigest(digest, { step, command: parsed.command, exitCode: '拒绝', lines: ['用户拒绝执行'] });
           continue;
         }
       }
 
-      // 4) 流式执行
+      // 5) 流式执行
       send({ type: 'command_start', step, command: parsed.command });
       if (risk.risk !== 'read') ranMutating = true;
       const result = await execStream(serverId, parsed.command, {
@@ -474,18 +670,36 @@ export async function runAgent(opts) {
         onStderr: (chunk) => send({ type: 'command_output', step, stream: 'stderr', data: chunk }),
       });
       if (signal?.aborted) return { status: 'cancelled', steps: step };
-      send({ type: 'command_done', step, exitCode: result?.exitCode ?? (result?.success ? 0 : -1) });
+      const exitCode = result?.exitCode ?? (result?.success ? 0 : -1);
+      send({ type: 'command_done', step, exitCode });
 
-      // 5) 观测回灌，进入下一轮
+      // 6) 观测回灌 + 记进度台账（台账钉在 system 里，历史被压缩也不会丢）
       messages.push({ role: 'assistant', content: `RUN: ${parsed.command}` });
-      messages.push({ role: 'user', content: `[命令输出]\n${toObservation(parsed.command, result)}` });
+      messages.push({ role: 'user', content: `[命令输出]\n${toObservation(parsed.command, result, observationLimit)}` });
+      executedCommands.set(cmdKey, step);
+      digest = appendDigest(digest, {
+        step,
+        command: parsed.command,
+        exitCode,
+        lines: keyLines(result),
+      });
+      send({ type: 'progress', step, digest: renderDigest(digest) });
     }
-    send({ type: 'final', step, content: `已达到最大步数（${maxSteps} 步）仍未完成。可以让我继续，或把任务拆小一点。` });
-    return { status: 'max_steps', steps: step };
+    // 步数用尽：保存进度，前端点「继续」可以从这里接着跑
+    const historyText = digest.length
+      ? `已执行 ${step} 步（最多 ${effectiveMaxSteps} 步）。进度：\n${renderDigest(digest)}`
+      : `已执行 ${step} 步（最多 ${effectiveMaxSteps} 步）。`;
+    send({ type: 'agent_paused', steps: step, reason: 'steps', digest });
+    return {
+      status: 'max_steps',
+      steps: step,
+      answer: `${historyText}\n\n任务还没结束 —— 点「继续」可以接着跑（进度已保存，不会从头再来）。`,
+      resumeState: makeResumeState(),
+    };
   } catch (err) {
     if (signal?.aborted) return { status: 'cancelled', steps: step };
     const message = errorMessage(err);
     send({ type: 'error', step, error: message });
-    return { status: 'error', steps: step, answer: message };
+    return { status: 'error', steps: step, answer: message, resumeState: makeResumeState() };
   }
 }

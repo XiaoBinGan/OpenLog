@@ -13,7 +13,7 @@ import {
   X, Maximize2, Minimize2, Terminal, AlertCircle, Loader,
   Sparkles, Send, Check, Save, RotateCcw, Command,
   ArrowRight, Clipboard, ClipboardCheck, ChevronDown,
-  BookOpen, Square, ShieldAlert, Cpu,
+  BookOpen, Square, ShieldAlert, Cpu, AlertTriangle,
 } from 'lucide-react';
 import type { RemoteServer } from '../types';
 import { withWsToken } from '../api/auth';
@@ -54,8 +54,10 @@ interface Turn {
   text: string;
   steps: Step[];
   final?: string;
-  status: 'running' | 'done' | 'cancelled' | 'error';
+  status: 'running' | 'done' | 'cancelled' | 'error' | 'paused';
   error?: string;
+  /** 因步数/时长上限暂停 → 可以「继续」接着跑（服务端保存了进度） */
+  canContinue?: boolean;
 }
 
 const RISK_META: Record<Risk, { label: string; cls: string }> = {
@@ -114,6 +116,9 @@ export default function AIShellTerminal({ server, onClose, onReady }: AIShellTer
   const [autoRun, setAutoRun] = useState(() => localStorage.getItem('aishell.autoRun') !== '0');
   const [running, setRunning] = useState(false);
   const [contextSummary, setContextSummary] = useState('');
+  /** 模型上下文窗口（服务端探测；小窗口会提示用户） */
+  const [modelWindow, setModelWindow] = useState(0);
+  const [budgetNote, setBudgetNote] = useState('');
   const [cmdHistory, setCmdHistory] = useState<string[]>(() => {
     try { return JSON.parse(localStorage.getItem('aishell.cmdHistory') || '[]'); } catch { return []; }
   });
@@ -197,6 +202,17 @@ export default function AIShellTerminal({ server, onClose, onReady }: AIShellTer
         case 'context_ready':
           setContextSummary(data.context?.summary || '');
           break;
+        // 服务端按模型窗口算的预算：16k 小模型会在这时候告诉前端「步数/输出都被压了」
+        case 'context_budget':
+          if (data.windowTokens) setModelWindow(Number(data.windowTokens));
+          if (Array.isArray(data.warnings) && data.warnings.length > 0) {
+            setBudgetNote(data.warnings.join('；'));
+          }
+          break;
+        // 历史被按窗口裁剪过：提示一次，避免用户以为模型「忘事」
+        case 'context_trimmed':
+          setBudgetNote(data.message || '已按模型窗口压缩历史');
+          break;
         case 'step_start':
           setRunning(true);
           ensureStep(turnId!, data.step, { status: 'thinking', output: '' });
@@ -252,7 +268,13 @@ export default function AIShellTerminal({ server, onClose, onReady }: AIShellTer
         case 'agent_done':
           setTurns(prev => prev.map(t => t.id === turnId ? {
             ...t,
-            status: t.status === 'running' ? (data.status === 'cancelled' ? 'cancelled' : 'done') : t.status,
+            status: t.status === 'running'
+              ? (data.status === 'cancelled' ? 'cancelled'
+                : data.status === 'max_steps' ? 'paused'
+                : 'done')
+              : t.status,
+            canContinue: Boolean(data.canContinue),
+            ...(data.answer && !t.final ? { final: data.answer } : {}),
           } : t));
           setRunning(false);
           activeTurnRef.current = null;
@@ -328,6 +350,19 @@ export default function AIShellTerminal({ server, onClose, onReady }: AIShellTer
       skillName: selectedSkills.map(s => s.name).join(' + '),
     }));
   }, [autoRun, selectedSkills, turns]);
+
+  // ─── 继续上次暂停的长任务（服务端保存了进度台账，不会从头再来）──────────
+  const continueTask = useCallback(() => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN || running) return;
+    const id = Date.now().toString(36) + Math.random().toString(36).slice(2);
+    activeTurnRef.current = id;
+    setTurns(prev => [...prev, { id, text: '继续（接着上次进度）', steps: [], status: 'running' }]);
+    setError(null);
+    setRunning(true);
+    stickToBottomRef.current = true;
+    ws.send(JSON.stringify({ type: 'continue_task', id }));
+  }, [running]);
 
   // ─── 命令模式：直接执行 ────────────────────────────────────────────────
   const executeDirect = useCallback((command: string) => {
@@ -437,6 +472,21 @@ export default function AIShellTerminal({ server, onClose, onReady }: AIShellTer
             </span>
           )}
 
+          {/* 模型窗口：小窗口模型（16k）会按窗口自动压缩历史，这里让用户看得见 */}
+          {modelWindow > 0 && (
+            <span
+              className={`hidden md:inline-flex items-center gap-1 px-2 py-0.5 rounded border text-[10px] shrink-0 ${
+                modelWindow <= 16_384
+                  ? 'border-yellow-500/30 bg-yellow-500/10 text-yellow-400'
+                  : 'border-dark-700 bg-dark-800 text-dark-400'
+              }`}
+              title={budgetNote || `模型上下文窗口约 ${modelWindow} tokens`}
+            >
+              {modelWindow <= 16_384 && <AlertTriangle className="w-3 h-3 shrink-0" />}
+              窗口 {Math.round(modelWindow / 1024)}k
+            </span>
+          )}
+
           {/* 自动执行开关 */}
           <label className="flex items-center gap-1.5 text-[11px] text-dark-400 shrink-0 cursor-pointer select-none"
             title={autoRun
@@ -520,6 +570,14 @@ export default function AIShellTerminal({ server, onClose, onReady }: AIShellTer
               {s.name}
             </span>
           ))}
+        </div>
+      )}
+
+      {/* 小窗口模型提示：历史被裁剪过/系统提示过大时给一行说明 */}
+      {budgetNote && (
+        <div className="px-4 py-1.5 bg-yellow-500/10 border-y border-yellow-500/20 text-[11px] text-yellow-300/90 flex items-start gap-1.5 flex-shrink-0">
+          <AlertTriangle className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" />
+          <span className="break-all">{budgetNote}</span>
         </div>
       )}
 
@@ -656,6 +714,24 @@ export default function AIShellTerminal({ server, onClose, onReady }: AIShellTer
 
             {turn.status === 'cancelled' && (
               <p className="pl-8 text-xs text-dark-500 flex items-center gap-1.5"><Square className="w-3 h-3" />已停止</p>
+            )}
+            {/* 长任务因步数/时长上限暂停：一键接着跑（服务端保留进度） */}
+            {turn.status === 'paused' && (
+              <div className="pl-8 flex items-center gap-2">
+                <span className="text-xs text-yellow-500/90 flex items-center gap-1.5">
+                  <AlertCircle className="w-3 h-3" />
+                  已暂停{turn.steps.length ? `（已完成 ${turn.steps.length} 步）` : ''}，进度已保存
+                </span>
+                {turn.canContinue && (
+                  <button
+                    onClick={continueTask}
+                    disabled={running}
+                    className="flex items-center gap-1 px-2 py-1 rounded border border-purple-500/40 bg-purple-500/10 text-purple-300 text-[11px] hover:bg-purple-500/20 disabled:opacity-40 transition-colors"
+                  >
+                    <ArrowRight className="w-3 h-3" /> 继续
+                  </button>
+                )}
+              </div>
             )}
             {turn.status === 'error' && turn.error && (
               <p className="pl-8 text-xs text-red-400 flex items-center gap-1.5"><AlertCircle className="w-3 h-3" />{turn.error}</p>

@@ -1564,6 +1564,8 @@ async function handleAIShellWebSocket(ws, serverId) {
 
   let abortController = null;
   let pendingConfirm = null;
+  /** 上次任务因步数/时长上限暂停时的进度状态：点「继续」从这里接着跑 */
+  let lastResumeState = null;
 
   const send = (taskId, payload) => {
     if (ws.readyState !== ws.OPEN) return;
@@ -1665,18 +1667,43 @@ async function handleAIShellWebSocket(ws, serverId) {
       return;
     }
 
-    // ── agent 任务（natural_language 走兼容路径）────────────────────────
-    if (msg.type === 'agent_task' || msg.type === 'natural_language' || msg.type === 'regenerate') {
+    // ── agent 任务（natural_language 走兼容路径；continue_task 接着上次进度跑）──
+    if (msg.type === 'agent_task' || msg.type === 'natural_language' || msg.type === 'regenerate' || msg.type === 'continue_task') {
       abortController?.abort();
       abortController = new AbortController();
       const { signal } = abortController;
-      const text = String(msg.text || msg.prompt || '');
+      const isContinue = msg.type === 'continue_task';
+      const text = String(msg.text || msg.prompt || (isContinue ? '继续完成这个任务' : ''));
       if (!text.trim()) {
         send(taskId, { type: 'error', error: '缺少任务描述' });
         return;
       }
+      // 继续任务：只认没有超时/取消的暂停状态（避免接着一个已经结束的任务跑）
+      const resume = isContinue ? lastResumeState : null;
+      if (isContinue && !resume) {
+        send(taskId, { type: 'error', error: '这个任务已经结束，没有可继续的进度；请重新描述任务。' });
+        send(taskId, { type: 'agent_done', status: 'error', steps: 0 });
+        return;
+      }
+      if (!isContinue) lastResumeState = null;
 
       try {
+        // 探测模型窗口：16k 小模型必须按窗口裁剪，否则超长 prompt 被引擎静默截断，
+        // 模型就会「抽风」（忘任务、重复、乱造命令）—— 用户反馈过这个现象。
+        let windowTokens;
+        try {
+          const s = ensureSettings();
+          const lp = await import('./llm-provider.js');
+          const baseUrl = lp.normalizeBaseUrl(s.openaiBaseUrl || 'http://localhost:11434/v1');
+          const probed = await lp.probeModelWindowCached(baseUrl, s.openaiApiKey, s.model);
+          // 探测不到（部分离线引擎不暴露窗口）→ 用用户在设置里配的窗口兜底
+          const configured = Number(s.assistantContext?.windowTokens) || 0;
+          windowTokens = probed || configured || undefined;
+          if (windowTokens) console.log(`[AIShell] 模型窗口 ${windowTokens} tokens（${probed ? '探测' : '配置'}）`);
+        } catch (e) {
+          console.warn('[AIShell] 模型窗口探测失败，按保守窗口处理:', errorMessage(e));
+        }
+
         const result = await runAgent({
           serverId,
           text,
@@ -1685,6 +1712,8 @@ async function handleAIShellWebSocket(ws, serverId) {
           skillName: msg.skillName || '',
           autoRun: msg.autoRun !== false,
           maxSteps: Math.min(Math.max(Number(msg.maxSteps) || MAX_STEPS, 1), MAX_STEPS),
+          windowTokens,
+          resume,
           signal,
           send: (payload) => send(taskId, payload),
           callModel: (messages, sig) => callModel(messages, sig, taskId),
@@ -1694,10 +1723,13 @@ async function handleAIShellWebSocket(ws, serverId) {
             send(taskId, { type: 'confirm_required', ...state });
           }),
         });
+        // 保存进度状态：任务因步数/时长暂停时，前端点「继续」可以接着跑
+        lastResumeState = result.status === 'max_steps' ? (result.resumeState || null) : null;
         send(taskId, {
           type: 'agent_done',
           status: result.status,
           steps: result.steps,
+          canContinue: Boolean(lastResumeState),
           ...(result.answer ? { answer: result.answer } : {}),
         });
       } catch (err) {

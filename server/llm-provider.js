@@ -113,6 +113,35 @@ export async function probeModelWindow(baseUrl, apiKey, model, fetchImpl = fetch
   }
 }
 
+/** 模型窗口探测缓存：避免每次请求都打一次 /v1/models（窗口基本不变） */
+const windowProbeCache = new Map(); // `${baseUrl}||${model}` → { value, ts }
+export const WINDOW_PROBE_TTL_MS = 10 * 60 * 1000;
+
+/**
+ * 带缓存的窗口探测。两个功能（运维助手 / AI Shell）都走这里。
+ * @returns {Promise<number|null>}
+ */
+export async function probeModelWindowCached(baseUrl, apiKey, model, ttlMs = WINDOW_PROBE_TTL_MS) {
+  const base = normalizeBaseUrl(baseUrl);
+  if (!base) return null;
+  const key = `${base}||${model || ''}`;
+  const hit = windowProbeCache.get(key);
+  if (hit && Date.now() - hit.ts < ttlMs) return hit.value;
+  const value = await probeModelWindow(base, apiKey, model);
+  windowProbeCache.set(key, { value, ts: Date.now() });
+  // 缓存别无限长
+  if (windowProbeCache.size > 50) {
+    const oldest = [...windowProbeCache.entries()].sort((a, b) => a[1].ts - b[1].ts)[0];
+    if (oldest) windowProbeCache.delete(oldest[0]);
+  }
+  return value;
+}
+
+/** 测试用：清缓存 */
+export function _resetWindowProbeCache() {
+  windowProbeCache.clear();
+}
+
 /** 从 baseUrl / 模型名猜引擎类型（仅用于提示文案，不影响功能） */
 export function guessEngine(baseUrl, model) {
   const url = String(baseUrl || '').toLowerCase();

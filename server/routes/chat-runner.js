@@ -25,6 +25,7 @@ import {
   parseToolProtocol, renderToolResultForTextProtocol, extractDelta,
 } from '../llm-provider.js';
 import { compactMessages, isContextOverflowError, isStreamOptionsUnsupported, stripToolCallBlocks, isOnlyToolCallText, estimateTokens, messagesTokens } from './chat-context.js';
+import { fitMessagesToBudget } from '../context-budget.js';
 import { CONTEXT_DEFAULTS, STREAM_USAGE_ENGINES } from './context-config.js';
 
 const CONFIRM_TIMEOUT_MS = 3 * 60 * 1000;
@@ -526,6 +527,33 @@ export function createChatRunner({ ensureSettings, executeAssistantTool, pending
               : '上下文已压缩，但可压缩内容有限（早期消息已很精简）',
           });
           if (ineffectiveCompactions >= 2) return summarizeAndFinish('context');
+        }
+      }
+
+      // 最后一道保险：把消息硬压进「窗口安全线」内。
+      //
+      // 为什么压缩完还要再压：`budgetTokens` 是用户可见的预算（默认 48k），
+      // 而小窗口模型（16k）很多引擎对超长 prompt **不报错、直接静默截断** ——
+      // 模型看到半截对话就会「抽风」（重复、忘任务、编命令）。这里按
+      // window - system - tools - output - 安全余量 再兜一次，宁丢老消息也不超窗。
+      {
+        const hardPromptBudget = Math.max(512, budgetTokens - fixedOverhead);
+        const curTokens = messagesTokens(messages);
+        if (curTokens > hardPromptBudget) {
+          const fit = fitMessagesToBudget(messages, hardPromptBudget);
+          if (fit.messages !== messages) {
+            messages = fit.messages;
+            sse({
+              type: 'context_compacted',
+              before: fixedOverhead + curTokens,
+              after: fixedOverhead + fit.tokens,
+              tokens: fit.tokens,
+              dropped: fit.dropped,
+              count: ++compactedCount,
+              trigger: 'window',
+              message: `当前模型窗口约 ${cfg.windowTokens} tokens，已丢弃最早的 ${fit.dropped} 条历史以腾出空间（否则小模型会因超长被静默截断而答非所问）`,
+            });
+          }
         }
       }
 

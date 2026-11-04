@@ -345,7 +345,7 @@ describe('runAgent —— 多步 agent 循环', () => {
     expect(confirm).toHaveBeenCalledTimes(1); // 手动模式确认了一次
   });
 
-  it('达到最大步数时停止并给出提示', async () => {
+  it('达到最大步数时暂停并给出可继续的进度', async () => {
     const { events, send } = collector();
     const exec = vi.fn(async () => ({ success: true, stdout: 'x', stderr: '', exitCode: 0 }));
     const result = await runAgent({
@@ -353,14 +353,17 @@ describe('runAgent —— 多步 agent 循环', () => {
       text: '一直查下去',
       maxSteps: 2,
       send,
-      callModel: fakeModel(['RUN: uptime']), // 永远不结束
+      callModel: fakeModel(['RUN: uptime', 'RUN: date']), // 永远不结束
       execStream: exec,
       execContext: NOOP_EXEC,
     });
     expect(result.status).toBe('max_steps');
     expect(result.steps).toBe(2);
     expect(exec).toHaveBeenCalledTimes(2);
-    expect(events.some(e => e.type === 'final' && e.content.includes('最大步数'))).toBe(true);
+    // 步数用尽不是「直接结束」：保存进度，前端可以继续
+    expect(events.some(e => e.type === 'agent_paused')).toBe(true);
+    expect(result.answer).toContain('继续');
+    expect(result.resumeState).toBeTruthy();
   });
 
   it('用户要求修改但模型只查不干 → 会催一次并继续执行', async () => {
