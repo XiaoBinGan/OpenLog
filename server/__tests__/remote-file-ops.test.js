@@ -201,3 +201,15 @@ describe('接线 —— 服务端路由与 remote.js 真的接上了', () => {
     expect(src).toContain("file/op");
   });
 });
+
+describe('回归 —— 选中服务器后文件列表要自动加载（不用手动点刷新）', () => {
+  const ctx = read('client/src/contexts/RemoteContext.tsx');
+
+  it('activeServerRef 在 render 阶段同步，而不是只放在 useEffect 里', () => {
+    // 真实 bug：子组件的 effect 先于 Provider 的 effect 执行，
+    // ref 若只在 useEffect 里更新，loadFiles() 第一次调用会读到旧值（null）直接 return，
+    // 表现为「选中服务器后目录一直空着，点一次『刷新目录』才出来」。
+    expect(ctx).toContain('activeServerRef.current = activeServer;');
+    expect(ctx).not.toMatch(/useEffect\(\(\) => \{ activeServerRef\.current = activeServer; \}/);
+  });
+});

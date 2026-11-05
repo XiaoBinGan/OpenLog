@@ -47,9 +47,16 @@ export function RemoteProvider({ children }: { children: React.ReactNode }) {
   const uploadAbortRef = useRef<AbortController | null>(null);
   const loadingRef = useRef(false); // 防并发导航锁
 
-  // 用 ref 追踪最新 activeServer，避免闭包陈旧
+  // 用 ref 追踪最新 activeServer，避免闭包陈旧。
+  //
+  // 必须在 render 阶段同步赋值，不能只放在 useEffect 里 ——
+  // 真实的 bug：选中服务器后，Remote.tsx 的 effect 会调 loadFiles() 自动加载目录，
+  // 但子组件的 effect 先于父组件（Provider）的 effect 执行，
+  // 此时 ref 还是旧的（null）→ loadFiles 直接 return，**首次自动加载静默失败**，
+  // 用户必须手动点一次「刷新目录」才看到文件列表。
+  // 在 render 阶段赋值可以保证任何 effect 读到的都是本次渲染的最新值。
   const activeServerRef = useRef(activeServer);
-  useEffect(() => { activeServerRef.current = activeServer; }, [activeServer]);
+  activeServerRef.current = activeServer;
 
   // 同步 DeviceContext，断开时切回本地
   const { resetToLocal, setSelectedDevice, refreshDevices } = useDevice();
