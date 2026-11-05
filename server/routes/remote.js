@@ -371,6 +371,25 @@ router.post('/api/remote/servers/:id/file/write', async (req, res) => {
   }
 });
 
+/**
+ * 远程文件操作：重命名 / 移动 / 复制 / 新建目录 / 删除 / 改权限
+ *
+ * 之前文件面板只能读、写、上传 —— 用户右键没有任何操作，连重命名都做不了。
+ * 路径校验、危险目录拦截、shell 转义都在 remote-file-ops.js（纯函数，有单测）。
+ */
+router.post('/api/remote/servers/:id/file/op', async (req, res) => {
+  try {
+    const { op, path: targetPath, newPath, mode } = req.body || {};
+    if (!op) return res.status(400).json({ error: '缺少 op 参数' });
+    if (!targetPath) return res.status(400).json({ error: '缺少 path 参数' });
+    const result = await remote.remoteFileOp(req.params.id, { op, path: targetPath, newPath, mode });
+    if (result.error) return res.status(400).json(result);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: errorMessage(err) });
+  }
+});
+
 // 上传文件到远程服务器
 router.post('/api/remote/servers/:id/file/upload', async (req, res) => {
   try {

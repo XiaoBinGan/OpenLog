@@ -11,6 +11,7 @@ import {
   queueServerWrite, queueServerDelete, flushServerWrites, migrateLegacyKvServers, repairServerRows,
 } from './remote-store.js';
 import { mapLimit } from './concurrency.js';
+import { buildFileOpCommand } from './remote-file-ops.js';
 
 // AES-256-GCM 加密密钥（32 字节）
 // 优先从 OPENLOG_SECRET_KEY 派生；未设置时回退到源码内置种子（兼容旧数据）
@@ -898,10 +899,34 @@ export async function writeRemoteFile(id, filePath, content) {
   }
 }
 
-/**
- * 上传本地文件到远程服务器
- * 通过 base64 编码传输
- */
+// ─── 文件操作（重命名 / 新建目录 / 删除 / 复制 / 移动 / 权限）─────────────
+//
+// 之前远程文件面板只能「读 / 写 / 上传」，重命名、删除、新建目录都没有 ——
+// 用户在文件列表里右键没有任何操作。这里补上服务端能力。
+// 命令拼装、路径校验、危险目录拦截都在 remote-file-ops.js（纯函数，可单测）。
+
+export async function remoteFileOp(id, input) {
+  const built = buildFileOpCommand(input);
+  if (!built.ok) return { error: built.error };
+
+  let ssh;
+  try {
+    ssh = await ensureSshConnection(id);
+  } catch (err) {
+    return { error: `连接失败: ${errorMessage(err)}` };
+  }
+
+  try {
+    const result = await ssh.execCommand(built.command, { encoding: 'utf8' });
+    if (result.code !== 0) {
+      return { error: (result.stderr || result.stdout || '操作失败').trim() || '操作失败' };
+    }
+    return { success: true, op: input.op, path: input.path };
+  } catch (err) {
+    return { error: errorMessage(err) };
+  }
+}
+
 export async function uploadRemoteFile(id, localFileBuffer, remotePath) {
   // 按需重连（同 readRemoteFileRaw 的说明）
   let ssh;

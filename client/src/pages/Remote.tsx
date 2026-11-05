@@ -14,11 +14,17 @@ import {
   Cpu, MemoryStick, HardDrive, Clock, Home, Eye, EyeOff, Upload,
   Code2, Save, Pencil, Wifi, WifiOff, PanelLeftClose,
   PanelLeftOpen, ArrowUp, FileCode, FolderOpen, FileJson, Sparkles, Download, PowerOff,
+  FolderPlus, MoreHorizontal,
 } from 'lucide-react';
 import { useRemote } from '../contexts/RemoteContext';
 import { apiFetch, apiJson } from '../api/client';
 import ShellTerminal from '../components/ShellTerminal';
 import AIShellTerminal from '../components/AIShellTerminal';
+import FileContextMenu, { type FileMenuTarget, type FileOpKind } from '../components/FileContextMenu';
+import {
+  validateFileName, validateRemotePathInput, validateMode,
+  joinPath, baseName, parentDir, deleteConfirmText,
+} from '../utils/fileOpPrompt';
 import type { RemoteServer, RemoteServerConfig, RemoteServerState, RemoteFile, RemoteDir } from '../types';
 
 const levelColors: Record<string, string> = {
@@ -357,6 +363,136 @@ export default function Remote() {
   const [statusFilter, setStatusFilter] = useState<'all' | 'connected' | 'error' | 'disconnected'>('all');
   const [visibleCount, setVisibleCount] = useState(DEFAULT_VISIBLE_COUNT);
   const [dragOver, setDragOver] = useState(false);
+
+  // ─── 文件右键菜单 + 操作对话框（重命名 / 删除 / 新建文件夹 / 复制移动 / 权限）──
+  // 用户反馈：「文件支持修改但无法右键修改文件名等操作」—— 这里补上。
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; target: FileMenuTarget | null } | null>(null);
+  const [opDialog, setOpDialog] = useState<{
+    op: FileOpKind;
+    target: FileMenuTarget | null;
+    title: string;
+    label: string;
+    placeholder: string;
+    initial: string;
+  } | null>(null);
+  const [opInput, setOpInput] = useState('');
+  const [opError, setOpError] = useState('');
+  const [opBusy, setOpBusy] = useState(false);
+
+  const currentDir = activeServer?.files.currentPath || '/';
+
+  /** 打开右键菜单（target 为空 = 右键空白处） */
+  const openFileMenu = (e: React.MouseEvent, target: FileMenuTarget | null) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setCtxMenu({ x: e.clientX, y: e.clientY, target });
+  };
+
+  /** 调用后端文件操作接口，成功后刷新当前目录 */
+  const callFileOp = async (op: string, path: string, extra: Record<string, unknown> = {}) => {
+    if (!activeServer) return false;
+    try {
+      await apiJson(`/api/remote/servers/${activeServer.id}/file/op`, 'POST', { op, path, ...extra });
+      loadFiles(currentDir);
+      // 删掉/改名了正在看/正在编辑的文件 → 顺手清掉对应面板，避免点开报错
+      if (op === 'delete' || op === 'rename' || op === 'move') {
+        if (activeServer.selectedFile === path) {
+          setActiveServer(s => (s ? { ...s, selectedFile: null, logs: [] } : s));
+        }
+        if (activeServer.editingFilePath === path) closeEditor();
+      }
+      return true;
+    } catch (err: any) {
+      showToast(err?.message || '操作失败', 'error');
+      return false;
+    }
+  };
+
+  /** 菜单里的动作分发 */
+  const handleFileOp = (op: FileOpKind) => {
+    const target = ctxMenu?.target || null;
+    setOpError('');
+    if (op === 'refresh') { loadFiles(currentDir); return; }
+    if (op === 'delete') {
+      if (!target) return;
+      if (!window.confirm(deleteConfirmText(target.kind, target.name, target.path))) return;
+      callFileOp('delete', target.path).then(ok => { if (ok) showToast(`已删除 ${target.name}`, 'success'); });
+      return;
+    }
+    if (op === 'rename') {
+      if (!target) return;
+      setOpInput(target.name);
+      setOpDialog({ op, target, title: `重命名${target.kind === 'dir' ? '目录' : '文件'}`, label: '新名称', placeholder: '新名称', initial: target.name });
+      return;
+    }
+    if (op === 'mkdir') {
+      setOpInput('');
+      setOpDialog({ op, target: null, title: '新建文件夹', label: '文件夹名称', placeholder: '例如 logs-backup', initial: '' });
+      return;
+    }
+    if (op === 'copy' || op === 'move') {
+      if (!target) return;
+      const initial = joinPath(currentDir, target.name);
+      setOpInput(initial);
+      setOpDialog({
+        op, target,
+        title: op === 'copy' ? `复制「${target.name}」到` : `移动「${target.name}」到`,
+        label: '目标路径（含文件名）', placeholder: '/var/log/xxx', initial,
+      });
+      return;
+    }
+    if (op === 'chmod') {
+      if (!target) return;
+      setOpInput('755');
+      setOpDialog({ op, target, title: `修改「${target.name}」权限`, label: '权限（八进制）', placeholder: '755', initial: '755' });
+    }
+  };
+
+  /** 对话框提交 */
+  const submitOpDialog = async () => {
+    if (!opDialog) return;
+    const { op, target } = opDialog;
+    setOpError('');
+    let path = '';
+    let extra: Record<string, unknown> = {};
+    let successMsg = '';
+
+    if (op === 'mkdir') {
+      const v = validateFileName(opInput);
+      if (!v.ok) { setOpError(v.error!); return; }
+      path = joinPath(currentDir, v.value!);
+      successMsg = `已创建 ${v.value}`;
+    } else if (op === 'rename') {
+      const v = validateFileName(opInput);
+      if (!v.ok) { setOpError(v.error!); return; }
+      if (!target) return;
+      path = target.path;
+      extra = { newPath: joinPath(parentDir(target.path), v.value!) };
+      successMsg = `已重命名为 ${v.value}`;
+    } else if (op === 'copy' || op === 'move') {
+      const v = validateRemotePathInput(opInput);
+      if (!v.ok) { setOpError(v.error!); return; }
+      if (!target) return;
+      path = target.path;
+      extra = { newPath: v.value! };
+      successMsg = op === 'copy' ? `已复制到 ${v.value}` : `已移动到 ${v.value}`;
+    } else if (op === 'chmod') {
+      const v = validateMode(opInput);
+      if (!v.ok) { setOpError(v.error!); return; }
+      if (!target) return;
+      path = target.path;
+      extra = { mode: v.value! };
+      successMsg = `权限已改为 ${v.value}`;
+    } else {
+      return;
+    }
+
+    if (!path) return;
+    setOpBusy(true);
+    const ok = await callFileOp(op, path, extra);
+    setOpBusy(false);
+    if (ok) { showToast(successMsg, 'success'); setOpDialog(null); }
+  };
 
   // 首次连接后加载文件
   const loadedRef = useRef<string | null>(null);
@@ -891,6 +1027,13 @@ export default function Remote() {
                     <Upload className="w-3.5 h-3.5" /> 上传
                     <input type="file" multiple className="hidden" onChange={e => handleFiles(e.target.files)} />
                   </label>
+                  <button
+                    onClick={() => handleFileOp('mkdir')}
+                    title="在当前目录新建文件夹"
+                    className="flex h-8 flex-shrink-0 items-center gap-1.5 rounded-lg border border-dark-700 bg-dark-800 px-2.5 text-xs text-dark-300 transition-colors hover:bg-dark-700 hover:text-dark-100"
+                  >
+                    <FolderPlus className="w-3.5 h-3.5" /> 新建文件夹
+                  </button>
                 </div>
 
                 {/* 上传进度条 */}
@@ -938,11 +1081,21 @@ export default function Remote() {
                       <AlertCircle className="w-5 h-5 mr-2" /> {activeServer.files.error}
                     </div>
                   ) : (
-                    <div className="p-4 h-full overflow-y-auto">
+                    <div
+                      className="p-4 h-full overflow-y-auto"
+                      onContextMenu={e => {
+                        // 右键空白处 = 新建文件夹 / 刷新
+                        if ((e.target as HTMLElement).closest('[data-file-item]')) return;
+                        openFileMenu(e, null);
+                      }}
+                    >
                       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2">
                         {/* 目录 */}
                         {activeServer.files.dirs.map((dir: RemoteDir) => (
-                          <button key={dir.path} onClick={() => navigateDir(dir.name)}
+                          <button key={dir.path}
+                            data-file-item
+                            onClick={() => navigateDir(dir.name)}
+                            onContextMenu={e => openFileMenu(e, { kind: 'dir', path: dir.path, name: dir.name })}
                             className="flex items-center gap-2 p-3 rounded-lg bg-dark-800/60 hover:bg-dark-800 text-left transition-colors">
                             <Folder className="w-5 h-5 text-yellow-400 flex-shrink-0" />
                             <div className="min-w-0 flex-1">
@@ -954,7 +1107,10 @@ export default function Remote() {
                         ))}
                         {/* 文件 */}
                         {activeServer.files.files.map((file: RemoteFile) => (
-                          <div key={file.path} className="flex items-center gap-2 p-3 rounded-lg bg-dark-800/60 hover:bg-dark-800 transition-colors group">
+                          <div key={file.path}
+                            data-file-item
+                            onContextMenu={e => openFileMenu(e, { kind: 'file', path: file.path, name: file.name })}
+                            className="flex items-center gap-2 p-3 rounded-lg bg-dark-800/60 hover:bg-dark-800 transition-colors group">
                             <FileText className={`w-5 h-5 flex-shrink-0 ${file.isLog ? 'text-green-400' : 'text-dark-400'}`} />
                             {/* 文件名区域：点击加载日志，阻止冒泡 */}
                             <div className="min-w-0 flex-1 cursor-pointer" onClick={e => { e.stopPropagation(); loadLogs(file.path, logLines, logSearch); }}>
@@ -966,6 +1122,18 @@ export default function Remote() {
                               className="opacity-0 group-hover:opacity-100 p-1.5 rounded-lg hover:bg-accent-500/20 text-dark-500 hover:text-accent-400 transition-all flex-shrink-0"
                               title="编辑文件">
                               <Code2 className="w-3.5 h-3.5" />
+                            </button>
+                            {/* 更多操作（≡）：和右键同一套菜单，不方便右键时用 */}
+                            <button
+                              onClick={e => {
+                                e.stopPropagation();
+                                const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                                setCtxMenu({ x: rect.left, y: rect.bottom + 4, target: { kind: 'file', path: file.path, name: file.name } });
+                              }}
+                              className="opacity-0 group-hover:opacity-100 p-1.5 rounded-lg text-dark-500 hover:bg-dark-700 hover:text-dark-200 transition-all flex-shrink-0"
+                              title="更多操作（重命名 / 删除 / 复制路径…）"
+                            >
+                              <MoreHorizontal className="w-3.5 h-3.5" />
                             </button>
                           </div>
                         ))}
@@ -1078,6 +1246,71 @@ export default function Remote() {
               onClose={() => { setShowAIShell(false); setAiShellOpening(false); }}
               onReady={() => setAiShellOpening(false)}
             />
+          </div>
+        </div>
+      )}
+
+      {/* 文件右键菜单：重命名 / 删除 / 新建文件夹 / 复制移动 / 权限 */}
+      {ctxMenu && (
+        <FileContextMenu
+          x={ctxMenu.x}
+          y={ctxMenu.y}
+          target={ctxMenu.target}
+          canEdit={ctxMenu.target?.kind === 'file'}
+          onEdit={ctxMenu.target ? () => openInEditor(ctxMenu.target!.path) : undefined}
+          onOpen={ctxMenu.target ? () => navigateDir(ctxMenu.target!.name) : undefined}
+          onOp={handleFileOp}
+          onCopyPath={(p) => {
+            navigator.clipboard?.writeText(p).then(
+              () => showToast('路径已复制', 'success'),
+              () => showToast(p, 'info'),
+            );
+          }}
+          onClose={() => setCtxMenu(null)}
+        />
+      )}
+
+      {/* 文件操作输入框（重命名 / 新建文件夹 / 复制移动目标 / 权限） */}
+      {opDialog && (
+        <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4"
+          onMouseDown={e => { if (e.target === e.currentTarget) { setOpDialog(null); setOpError(''); } }}>
+          <div className="w-full max-w-md rounded-xl border border-dark-700 bg-dark-900 shadow-2xl">
+            <div className="flex items-center justify-between border-b border-dark-800 px-5 py-3">
+              <h3 className="text-sm font-semibold text-dark-100">{opDialog.title}</h3>
+              <button onClick={() => { setOpDialog(null); setOpError(''); }}
+                className="rounded p-1 text-dark-500 hover:bg-dark-800 hover:text-dark-200">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="px-5 py-4 space-y-2">
+              {opDialog.target && (
+                <p className="font-mono text-[11px] text-dark-500 break-all">{opDialog.target.path}</p>
+              )}
+              <label className="block text-xs text-dark-400">{opDialog.label}</label>
+              <input
+                autoFocus
+                value={opInput}
+                onChange={e => { setOpInput(e.target.value); setOpError(''); }}
+                onKeyDown={e => {
+                  if (e.key === 'Enter' && !opBusy) submitOpDialog();
+                  if (e.key === 'Escape') { setOpDialog(null); setOpError(''); }
+                }}
+                placeholder={opDialog.placeholder}
+                className="w-full rounded-lg border border-dark-700 bg-dark-800 px-3 py-2 font-mono text-sm text-dark-200 placeholder-dark-600 focus:border-accent-500/50 focus:outline-none"
+              />
+              {opError && <p className="text-xs text-red-400">{opError}</p>}
+            </div>
+            <div className="flex items-center justify-end gap-2 border-t border-dark-800 px-5 py-3">
+              <button onClick={() => { setOpDialog(null); setOpError(''); }}
+                className="rounded-lg border border-dark-700 px-3 py-1.5 text-xs text-dark-300 hover:bg-dark-800">
+                取消
+              </button>
+              <button onClick={submitOpDialog} disabled={opBusy}
+                className="flex items-center gap-1.5 rounded-lg bg-accent-500/20 px-3 py-1.5 text-xs font-medium text-accent-300 hover:bg-accent-500/30 disabled:opacity-50">
+                {opBusy ? <Loader className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
+                {opBusy ? '处理中…' : '确定'}
+              </button>
+            </div>
           </div>
         </div>
       )}
