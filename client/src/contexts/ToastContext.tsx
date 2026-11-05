@@ -45,6 +45,11 @@ interface ToastContextValue {
   error: (message: string, opts?: ToastOptions) => void;
   info: (message: string, opts?: ToastOptions) => void;
   warning: (message: string, opts?: ToastOptions) => void;
+  /**
+   * 只进通知列表、不弹悬浮提示。
+   * 用于「AI 分析结果」这类已经有自己浮层 UI 的事件 —— 让它们也能进列表、被筛选和导出。
+   */
+  notify: (type: ToastType, message: string, opts?: Omit<ToastOptions, 'action'>) => void;
   // ── 通知中心（铃铛 + 右侧列表）──
   notifications: NotificationItem[];
   unread: number;
@@ -188,6 +193,26 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   const info = useCallback((msg: string, opts?: ToastOptions) => addToast('info', msg, opts), [addToast]);
   const warning = useCallback((msg: string, opts?: ToastOptions) => addToast('warning', msg, opts), [addToast]);
 
+  /**
+   * 只进通知列表，不弹悬浮提示。
+   * 用于 AI 分析结果这类「已有自己的浮层 UI」的事件：它们同样应该出现在通知列表里，
+   * 这样能被筛选、被导出（否则分析结果永远导不出来）。
+   */
+  const notify = useCallback((type: ToastType, message: string, opts?: Omit<ToastOptions, 'action'>) => {
+    const group = opts?.group;
+    const ts = Date.now();
+    if (isSuppressed(ignoredRef.current, group, ts)) return;
+    pushToNotifications({
+      id: `${ts}-${Math.random().toString(36).slice(2, 7)}`,
+      type,
+      message,
+      description: opts?.description,
+      group,
+      nav: opts?.nav,
+      meta: opts?.meta,
+    }, ts);
+  }, [pushToNotifications]);
+
   // ── 通知列表操作 ──
   const markAllRead = useCallback(() => {
     setNotifications(prev => markAllReadPure(prev));
@@ -215,7 +240,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
 
   return (
     <ToastContext.Provider value={{
-      toast: addToast, success, error, info, warning,
+      toast: addToast, success, error, info, warning, notify,
       notifications, unread, markAllRead, ignoreNotifications, deleteNotifications, clearNotifications,
     }}>
       {children}

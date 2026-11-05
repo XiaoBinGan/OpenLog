@@ -3,6 +3,8 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import { Brain, AlertTriangle, CheckCircle, XCircle, X, Loader, ChevronRight, Send, BookOpen } from 'lucide-react';
 import { sanitizeHtml } from '../utils/sanitize';
 import { analysisToastKey } from '../utils/alertKeys';
+import { useToast } from '../contexts/ToastContext';
+import { buildAnalysisNotice } from '../utils/analysisNotice';
 
 interface AIAnalysisToastProps {
   wsRef: React.RefObject<WebSocket | null>;
@@ -40,6 +42,8 @@ export default function AIAnalysisToast({ wsRef, onViewLogs }: AIAnalysisToastPr
   const prevToasts = useRef<Map<string, ToastData>>(new Map());
   const navigate = useNavigate();
   const location = useLocation();
+  /** 只进通知列表（不弹第二遍）：分析完成/失败/跳过都能在通知中心筛选+导出 */
+  const { notify } = useToast();
 
   // 监听所有助手回答完成事件
   useEffect(() => {
@@ -61,6 +65,19 @@ export default function AIAnalysisToast({ wsRef, onViewLogs }: AIAnalysisToastPr
       let data: any;
       try { data = JSON.parse(event.data); } catch { return; }
       if (data.type !== 'ai_analysis') return;
+
+      // 进入通知中心（可筛选/可导出）。pending 不记（分析开始没必要留痕），
+      // done/error/skipped 各一条，同来源自动合并，避免刷屏。
+      const notice = buildAnalysisNotice(data);
+      if (notice) {
+        notify(notice.type, notice.message, {
+          description: notice.description,
+          group: notice.group,
+          nav: notice.nav,
+          meta: notice.meta,
+        });
+      }
+
       const key = toastKeyOf(data);
       setToasts(prev => {
         const existing = prev.find(t => t.key === key);
@@ -94,7 +111,7 @@ export default function AIAnalysisToast({ wsRef, onViewLogs }: AIAnalysisToastPr
     };
     ws.addEventListener('message', handler);
     return () => ws.removeEventListener('message', handler);
-  }, [wsRef]);
+  }, [wsRef, notify]);
 
   const dismiss = (id: string) => setToasts(prev => prev.filter(t => t.id !== id));
 

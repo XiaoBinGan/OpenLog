@@ -161,3 +161,44 @@ describe('7. 容器列表短缓存 —— 合并并发尖峰', () => {
     expect(dockers).toContain("refresh === '1'");
   });
 });
+
+describe('8. AI 分析结果并入通知中心（可筛选 / 可导出）', () => {
+  const toast = read('client/src/contexts/ToastContext.tsx');
+  const aiToast = read('client/src/components/AIAnalysisToast.tsx');
+  const notice = read('client/src/utils/analysisNotice.ts');
+
+  it('ToastContext 提供「只进列表不弹窗」的 notify', () => {
+    expect(toast).toContain('notify: (type: ToastType');
+    expect(toast).toContain('const notify = useCallback');
+    expect(toast).toContain('pushToNotifications({');
+  });
+
+  it('AI 分析事件转成通知（done/error/skipped；pending 不记）', () => {
+    expect(notice).toContain('export function buildAnalysisNotice');
+    expect(notice).toContain("if (status !== 'done' && status !== 'error' && status !== 'skipped') return null");
+    expect(notice).toContain("errorType: 'AI 分析'");
+    expect(notice).toContain("const nav = '/analysis-history'");
+    expect(aiToast).toContain("import { useToast } from '../contexts/ToastContext'");
+    expect(aiToast).toContain('buildAnalysisNotice(data)');
+    expect(aiToast).toContain('notify(notice.type, notice.message');
+  });
+
+  it('分析正文有长度上限（否则 localStorage 会被撑爆）', () => {
+    expect(notice).toContain('export const ANALYSIS_STORE_CHARS');
+    expect(notice).toContain('已截断');
+  });
+});
+
+describe('9. AMD / 沐熙 / 华为 GPU 进程解析（不再是 TODO 桩）', () => {
+  const gpu = read('server/gpu.js');
+  it('三种厂商都有真正的解析函数', () => {
+    expect(gpu).toContain('export function parseAMDProcessOutput');
+    expect(gpu).toContain('export function parseVendorProcessCsv');
+    expect(gpu).toContain('function parseMOXIProcessOutput');
+    expect(gpu).toContain('function parseHuaweiProcessOutput');
+    expect(gpu).not.toContain('TODO: 根据实际输出格式解析');
+  });
+  it('AMD 本地/远程都在拿不到进程时回落到纯文本输出', () => {
+    expect(gpu).toContain("rocm-smi --showpids 2>/dev/null");
+  });
+});

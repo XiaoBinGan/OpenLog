@@ -323,9 +323,12 @@ async function getAMDGPUsLocal() {
     ]);
     const devices = parseAMDOutput(nameOut, memOut, utilOut, tempOut, powerOut);
     
-    // AMD GPU 进程信息 (如果支持)
+    // AMD GPU 进程信息（老版本 rocm-smi 不支持 --csv，回落到纯文本输出）
     try {
-      const processOut = await runCommand('rocm-smi --showpids --csv 2>/dev/null');
+      let processOut = await runCommand('rocm-smi --showpids --csv 2>/dev/null');
+      if (!parseAMDProcessOutput(processOut).length) {
+        processOut = await runCommand('rocm-smi --showpids 2>/dev/null');
+      }
       const processes = parseAMDProcessOutput(processOut);
       devices.forEach(device => {
         device.processes = processes.filter(p => p.gpuId === device.id);
@@ -373,11 +376,179 @@ function parseAMDOutput(nameOut, memOut, utilOut, tempOut, powerOut) {
   }));
 }
 
-function parseAMDProcessOutput(output) {
-  // AMD rocm-smi --showpids 输出格式各异，这里做简单解析
-  if (!output || !output.trim()) return [];
-  // TODO: 根据实际输出格式解析
-  return [];
+/**
+ * 解析 `rocm-smi --showpids` 的输出（AMD GPU 进程列表）。
+ *
+ * 之前这里是个 TODO，永远返回 []，所以 AMD 机器上「GPU 进程」永远是空的。
+ *
+ * rocm-smi 各版本输出不统一，这里兼容三种实际见到的格式：
+ *
+ * 1) CSV（`--showpids --csv`，新版本）：
+ *      device,PID,Process Name,VRAM
+ *      card0,12345,python3,1234 MB
+ * 2) CSV（旧版本，列名不同）：
+ *      GPU,PID,Process Name,GPU Memory Usage
+ *      0,12345,python3,1234
+ * 3) 纯文本：
+ *      GPU[0] : PID[12345]  Process Name: python3  VRAM: 1234 MB
+ *      GPU[0]          : PID 23456 Process Name: python VRAM: 512 MB
+ *
+ * 返回值统一为 `[{ gpuId, pid, name, memoryUsed, memoryUnit }]`，
+ * gpuId 与 parseAMDOutput 里的 device.id 对齐（都是 0/1/2… 的数字字符串）。
+ *
+ * @param {string} output
+ * @returns {Array<{gpuId:string, pid:number, name:string, memoryUsed:number, memoryUnit:string}>}
+ */
+export function parseAMDProcessOutput(output) {
+  if (!output || typeof output !== 'string' || !output.trim()) return [];
+
+  /** "card0" / "GPU[0]" / "GPU 0" / "0" → "0" */
+  const normalizeGpuId = (raw) => {
+    const s = String(raw ?? '').trim();
+    const m = s.match(/(\d+)/);
+    return m ? String(Number(m[1])) : '';
+  };
+
+  const processes = [];
+  const seen = new Set();
+  const push = (gpuId, pid, name, mem, unit) => {
+    const id = normalizeGpuId(gpuId);
+    const pidNum = Number(pid);
+    if (!Number.isFinite(pidNum) || pidNum <= 0) return;
+    const key = `${id}:${pidNum}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    const processName = String(name || '').trim() || `pid ${pidNum}`;
+    const memoryUsed = Number.isFinite(Number(mem)) ? Number(mem) : 0;
+    const memoryUnit = String(unit || 'MB').toUpperCase();
+    // 同时给出 name/usedMemory 别名：GPU 页统一按 { pid, name, usedMemory } 渲染，
+    // 而 NVIDIA 侧解析用的是 processName/memoryUsed —— 两个名字都带上，前端不会显示空。
+    processes.push({
+      gpuId: id,
+      pid: pidNum,
+      name: processName,
+      processName,
+      memoryUsed,
+      usedMemory: memoryUnit === 'MB' ? memoryUsed : Math.round(memoryUsed * 1024),
+      memoryUnit,
+    });
+  };
+
+  const lines = output.split('\n').map(l => l.replace(/\r$/, '')).filter(l => l.trim());
+
+  // ── 格式 1/2：CSV（靠表头定位列，不依赖固定顺序）──
+  const headerIdx = lines.findIndex(l => /,/.test(l) && /\bpid\b/i.test(l));
+  if (headerIdx >= 0) {
+    const headers = lines[headerIdx].split(',').map(h => h.trim().toLowerCase());
+    const findCol = (...names) => headers.findIndex(h => names.some(n => h.includes(n)));
+    const gpuCol = findCol('device', 'gpu');
+    const pidCol = findCol('pid');
+    const nameCol = findCol('process name', 'name', 'process');
+    const memCol = findCol('vram', 'memory');
+
+    for (const line of lines.slice(headerIdx + 1)) {
+      const parts = line.split(',').map(p => p.trim());
+      if (parts.length < 2) continue;
+      const pidRaw = pidCol >= 0 ? parts[pidCol] : parts[1];
+      if (!/^\d+$/.test(String(pidRaw))) continue; // 跳过分隔行/汇总行
+      const memRaw = memCol >= 0 ? parts[memCol] : '';
+      const memMatch = String(memRaw).match(/([\d.]+)\s*([KMGT]i?B)?/i);
+      push(
+        gpuCol >= 0 ? parts[gpuCol] : parts[0],
+        pidRaw,
+        nameCol >= 0 ? parts[nameCol] : parts[2],
+        memMatch?.[1],
+        memMatch?.[2] || 'MB',
+      );
+    }
+    if (processes.length > 0) return processes;
+  }
+
+  // ── 格式 3：纯文本（每行一条）──
+  for (const line of lines) {
+    const gpuMatch = line.match(/(?:GPU\s*\[\s*(\d+)\s*\]|card\s*(\d+)|GPU\s*[:#]?\s*(\d+))/i);
+    const pidMatch = line.match(/PID\s*[^0-9]{0,3}(\d+)/i) || line.match(/^\s*(\d+)\s+\S/);
+    const nameMatch = line.match(/(?:Process\s*Name|Name)\s*[:=]\s*([^,;]+?)(?:\s+(?:VRAM|GPU\s*Memory|Memory)\s*[:=]|\s*$)/i);
+    const memMatch = line.match(/(?:VRAM|GPU\s*Memory|Memory\s*Usage)\s*[:=]\s*([\d.]+)\s*([KMGT]i?B)?/i);
+    if (!pidMatch) continue;
+    const gpuRaw = gpuMatch ? (gpuMatch[1] ?? gpuMatch[2] ?? gpuMatch[3]) : '';
+    push(gpuRaw, pidMatch[1], nameMatch ? nameMatch[1] : '', memMatch?.[1], memMatch?.[2] || 'MB');
+  }
+
+  return processes;
+}
+
+/**
+ * 通用「厂商 GPU 进程 CSV」解析（沐熙 muxi-smi / 华为 npu-smi 共用）。
+ *
+ * 这两家的 `--format=csv` 输出列序在不同 driver 版本里不一样，所以：
+ *   - 有表头：按列名找 device/pid/name/memory
+ *   - 没表头：按「第一个 4 位以上纯数字 = pid」兜底定位
+ *
+ * @param {string} output
+ * @returns {Array<{gpuId:string,pid:number,name:string,processName:string,memoryUsed:number,usedMemory:number}>}
+ */
+export function parseVendorProcessCsv(output) {
+  if (!output || typeof output !== 'string' || !output.trim()) return [];
+  const lines = output.split('\n').map(l => l.replace(/\r$/, '')).filter(l => l.trim());
+  const rows = lines.filter(l => !/invalid|not a valid|error|no running processes/i.test(l));
+  if (rows.length === 0) return [];
+
+  const out = [];
+  const seen = new Set();
+  const push = (gpuId, pid, name, mem) => {
+    const pidNum = Number(pid);
+    if (!Number.isFinite(pidNum) || pidNum <= 0) return;
+    const key = `${gpuId}:${pidNum}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    const processName = String(name || '').trim() || `pid ${pidNum}`;
+    const memoryUsed = Number(String(mem ?? '').replace(/[^\d.]/g, '')) || 0;
+    out.push({
+      gpuId: String(gpuId ?? '').replace(/[^\d]/g, ''),
+      pid: pidNum,
+      name: processName,
+      processName,
+      memoryUsed,
+      usedMemory: memoryUsed,
+    });
+  };
+
+  // 有表头：按列名定位
+  const headerIdx = rows.findIndex(l => /,/.test(l) && /pid/i.test(l));
+  if (headerIdx >= 0) {
+    const headers = rows[headerIdx].split(',').map(h => h.trim().toLowerCase());
+    const findCol = (...names) => headers.findIndex(h => names.some(n => h.includes(n)));
+    const gpuCol = findCol('npu', 'device', 'gpu', 'index');
+    const pidCol = findCol('pid');
+    const nameCol = findCol('process name', 'name', 'process');
+    const memCol = findCol('memory', 'vram', 'mem');
+    for (const line of rows.slice(headerIdx + 1)) {
+      const parts = line.split(',').map(p => p.trim());
+      if (parts.length < 2) continue;
+      const pidRaw = pidCol >= 0 ? parts[pidCol] : '';
+      if (!/^\d+$/.test(String(pidRaw))) continue;
+      push(
+        gpuCol >= 0 ? parts[gpuCol] : parts[0],
+        pidRaw,
+        nameCol >= 0 ? parts[nameCol] : '',
+        memCol >= 0 ? parts[memCol] : '',
+      );
+    }
+    return out;
+  }
+
+  // 无表头：第一个 4 位以上纯数字当 pid，最后一个数字串当显存，中间的字母串当进程名
+  for (const line of rows) {
+    const parts = line.split(',').map(p => p.trim());
+    if (parts.length < 2) continue;
+    const pidIdx = parts.findIndex(p => /^\d{3,}$/.test(p));
+    if (pidIdx <= 0) continue; // 第一列一般是设备号，pid 不会在最前面
+    const memIdx = parts.length - 1;
+    const namePart = parts.find((p, i) => i !== pidIdx && i !== 0 && i !== memIdx && /[a-zA-Z/._-]/.test(p));
+    push(parts[pidIdx - 1] || parts[0], parts[pidIdx], namePart || '', parts[memIdx]);
+  }
+  return out;
 }
 
 // ─── 沐熙 GPU ──────────────────────────────────────────────────────────────
@@ -434,9 +605,10 @@ function parseMOXIOutput(output) {
 }
 
 function parseMOXIProcessOutput(output) {
-  if (!output || !output.trim()) return [];
-  // TODO: 根据实际输出格式解析
-  return [];
+  // muxi-smi --show-processes --format=csv,noheader
+  // 实际列序（不同版本略有差异）：index,pid,process_name,used_memory
+  // 有表头就按表头找列，没有就按「第一个 4+ 位纯数字 = pid」兜底。
+  return parseVendorProcessCsv(output);
 }
 
 // ─── 华为昇腾 GPU ───────────────────────────────────────────────────────────
@@ -493,9 +665,9 @@ function parseHuaweiOutput(output) {
 }
 
 function parseHuaweiProcessOutput(output) {
-  if (!output || !output.trim()) return [];
-  // TODO: 根据实际输出格式解析
-  return [];
+  // npu-smi info --query-processes --format=csv,noheader
+  // 实际列序（不同版本略有差异）：npu_id,chip_id,pid,process_name,memory
+  return parseVendorProcessCsv(output);
 }
 
 // ─── 远程 GPU 检测 ──────────────────────────────────────────────────────────
@@ -563,9 +735,12 @@ export async function getRemoteGPUs(host, sshUser, sshPassword, sshKeyPath, sshP
       const powerOut = await sshExec(ssh, 'rocm-smi --showpower --csv 2>/dev/null');
       const devices = parseAMDOutput(nameOut, memOut, utilOut, tempOut, powerOut);
       
-      // AMD 进程信息
+      // AMD 进程信息（老版本 rocm-smi 不支持 --csv，回落到纯文本输出）
       try {
-        const processOut = await sshExec(ssh, 'rocm-smi --showpids --csv 2>/dev/null');
+        let processOut = await sshExec(ssh, 'rocm-smi --showpids --csv 2>/dev/null');
+        if (!parseAMDProcessOutput(processOut).length) {
+          processOut = await sshExec(ssh, 'rocm-smi --showpids 2>/dev/null');
+        }
         const processes = parseAMDProcessOutput(processOut);
         devices.forEach(device => {
           device.processes = processes.filter(p => p.gpuId === device.id);
