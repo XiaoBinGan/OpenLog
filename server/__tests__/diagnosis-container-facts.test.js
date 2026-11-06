@@ -164,9 +164,19 @@ describe('接线 —— 路由真的用了这套事实来源和进度事件', ()
   });
 
   it('前端带上了 JSON body 并处理 status 事件', () => {
-    const page = read('client/src/pages/Docker.tsx');
-    expect(page).toContain("headers: { 'Content-Type': 'application/json' }");
-    expect(page).toContain('正在读取容器状态');
-    expect(page).toContain('j.status');
+    // 页面被拆过（Docker.tsx 1287 行 → 399 行），诊断逻辑搬到了 hook 里。
+    // 断言要跟着逻辑走，而不是钉死文件名 —— 否则每次重构都会假红。
+    const candidates = [
+      'client/src/pages/Docker.tsx',
+      'client/src/pages/docker/useDiagnosis.tsx',
+      'client/src/pages/docker/DiagnosisPanel.tsx',
+    ];
+    const blob = candidates
+      .filter((f) => fs.existsSync(path.join(ROOT, f)))
+      .map((f) => read(f))
+      .join('\n');
+    expect(blob).toContain("headers: { 'Content-Type': 'application/json' }");
+    expect(blob).toContain('正在读取容器状态');
+    expect(blob).toContain('j.status');
   });
 });

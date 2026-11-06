@@ -1,15 +1,15 @@
 /**
- * 区块：AI 模型配置（提供商网格 / API Key / Base URL / 模型选择 / 测试连接）+ 本地模型使用指南
+ * 区块：AI 模型配置（提供商网格 / API Key / Base URL / 模型选择 / 测试连接 / 本地模型指引）
  *
  * 负责什么：
  *   - providers 清单（导出给父组件底部的「支持的模型提供商」列表复用，避免复制一份常量）
- *   - 提供商选中态之外的所有渲染：Key 明文切换、模型下拉/手填、刷新已安装模型列表
- *   - 测试连接（testApiKey）：先 PUT /api/settings 再 POST /api/logs/analyze
- *   - 本地模型的安装指引卡片
+ *   - 提供商网格、API Key 明文切换、Base URL、模型下拉/手填、刷新已安装模型列表
+ *   - 把「测试连接」和「本地模型使用指南」两个子块挂到原来的 DOM 位置上：
+ *     ./ModelConnectionTest.tsx、./LocalModelTips.tsx
  *
  * 为什么不放在父组件：
  *   这里只有 4 个字段是被父组件共享的（openaiApiKey / openaiBaseUrl / model / thinkingEnabled），
- *   其余全部是纯本区块的临时状态：showApiKey、testing、ollamaModels、loadingModels、拉模型列表的请求。
+ *   其余全部是纯本区块的临时状态：showApiKey、ollamaModels、loadingModels、拉模型列表的请求。
  *   父组件只需要把 4 个字符串/布尔 + 3 个稳定回调下发；本区块内部的输入不会让 Docker / 告警 /
  *   MFU 等其它 8 个区块重画。
  *
@@ -22,15 +22,15 @@ import {
   Cloud,
   Server,
   Terminal,
-  Check,
-  AlertCircle,
   Eye,
   EyeOff,
   RefreshCw,
 } from 'lucide-react';
-import { apiFetch, apiJson } from '../../api/client';
+import { apiFetch } from '../../api/client';
 import type { Settings as SettingsType } from '../../types';
 import ThinkingTestBlock from './ThinkingTestBlock';
+import ModelConnectionTest from './ModelConnectionTest';
+import LocalModelTips from './LocalModelTips';
 
 export const providers = [
   { id: 'openai', name: 'OpenAI', baseUrl: 'https://api.openai.com/v1', models: ['gpt-4o-mini', 'gpt-4o', 'gpt-4-turbo', 'gpt-3.5-turbo'], icon: Cloud },
@@ -83,7 +83,6 @@ function ModelSection({
   onTestResult,
 }: ModelSectionProps) {
   const [showApiKey, setShowApiKey] = useState(false);
-  const [testing, setTesting] = useState(false);
   const [ollamaModels, setOllamaModels] = useState<string[]>([]);
   const [loadingModels, setLoadingModels] = useState(false);
 
@@ -112,41 +111,6 @@ function ModelSection({
     fetchOllamaModels();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  const testApiKey = async () => {
-    setTesting(true);
-    onTestResult(null);
-
-    try {
-      // 先保存当前配置，确保测试用的是页面上的最新值
-      try {
-        await apiJson('/api/settings', 'PUT', {
-          openaiApiKey: apiKey,
-          openaiBaseUrl: baseUrl,
-          model,
-        });
-      } catch {
-        onTestResult({ success: false, message: '保存配置失败，无法测试' });
-        setTesting(false);
-        return;
-      }
-
-      const data = await apiJson<{ analysis?: string; error?: string }>('/api/logs/analyze', 'POST', {
-        logs: [{ id: '1', timestamp: new Date().toISOString(), level: 'INFO', message: 'API connection test' }],
-        prompt: 'Reply with exactly: "API test successful"'
-      });
-
-      if (data.analysis) {
-        onTestResult({ success: true, message: isLocal ? '本地模型连接成功！' : 'API 连接成功！' });
-      } else {
-        onTestResult({ success: false, message: data.error || 'API 测试失败' });
-      }
-    } catch (err) {
-      onTestResult({ success: false, message: 'API 测试失败: ' + err });
-    }
-
-    setTesting(false);
-  };
 
   return (
     <>
@@ -321,50 +285,19 @@ function ModelSection({
           />
 
           {/* Test Connection */}
-          <div className="flex items-center gap-4">
-            <button
-              onClick={testApiKey}
-              disabled={testing}
-              className="px-4 py-2 rounded-lg bg-dark-800 text-dark-300 hover:bg-dark-700 transition-colors flex items-center gap-2 disabled:opacity-50"
-            >
-              <Terminal className="w-4 h-4" />
-              {testing ? '测试中...' : '测试连接'}
-            </button>
-
-            {testResult && (
-              <div className={`flex items-center gap-2 text-sm ${testResult.success ? 'text-green-400' : 'text-red-400'}`}>
-                {testResult.success ? <Check className="w-4 h-4" /> : <AlertCircle className="w-4 h-4" />}
-                {testResult.message}
-              </div>
-            )}
-          </div>
+          <ModelConnectionTest
+            apiKey={apiKey}
+            baseUrl={baseUrl}
+            model={model}
+            isLocal={isLocal}
+            testResult={testResult}
+            onTestResult={onTestResult}
+          />
         </div>
       </div>
 
       {/* Local model tips */}
-      {isLocal && (
-        <div className="glass rounded-xl p-4 bg-green-500/10 border border-green-500/20">
-          <h3 className="font-semibold mb-2 text-green-400 flex items-center gap-2">
-            <Server className="w-5 h-5" />
-            本地模型使用指南
-          </h3>
-          {provider === 'ollama' && (
-            <div className="text-sm text-dark-400 space-y-1">
-              <p>1. 安装: <code className="text-accent-400">brew install ollama</code></p>
-              <p>2. 启动: <code className="text-accent-400">ollama serve</code></p>
-              <p>3. 下载模型: <code className="text-accent-400">ollama pull qwen3.5:9b</code></p>
-              <p>4. 查看已安装: <code className="text-accent-400">ollama list</code></p>
-            </div>
-          )}
-          {provider === 'lmstudio' && (
-            <div className="text-sm text-dark-400 space-y-1">
-              <p>1. 下载安装 LM Studio</p>
-              <p>2. 在 LM Studio 中下载模型</p>
-              <p>3. 启动本地服务器（默认端口 1234）</p>
-            </div>
-          )}
-        </div>
-      )}
+      <LocalModelTips provider={provider} isLocal={isLocal} />
     </>
   );
 }

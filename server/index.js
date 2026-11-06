@@ -60,7 +60,7 @@ import { buildOpenApi, collectRoutes, renderDocsHtml } from './openapi.js';
 import createDbMonitorRouter from './routes/db-monitor.js';
 import createApiMonitorRouter from './routes/api-monitor.js';
 import createOpenApiRouter from './routes/openapi.js';
-import { createVerifyClient, createHandleProtocols } from './ws-auth.js';
+import { createVerifyClient, createHandleProtocols, evaluateUpgradeRequest } from './ws-auth.js';
 import { startMonitoring, stopMonitoring } from './monitoring.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -1648,12 +1648,16 @@ const shellSessions = new Map();
 // WebSocket 升级处理 - 为 Shell 终端
 // 升级请求不经过 Express 中间件，必须在此处完成 token 鉴权
 function isUpgradeAuthorized(request) {
+  // 开发模式回环地址免鉴权（与 authMiddleware 口径一致）
   if (process.env.NODE_ENV !== 'production' && isLoopbackAddress(request.socket?.remoteAddress)) return true;
-  let token = null;
-  try {
-    token = new URL(request.url, 'http://localhost').searchParams.get('token');
-  } catch {}
-  return tokenMatches(token, AUTH_TOKEN);
+  // 与 wss 的 verifyClient 用**同一套**判定，避免两处口径不一致导致
+  // 「子协议带 token 能过 verifyClient、却被这里 401 掉」。
+  // 顺序：Sec-WebSocket-Protocol 优先，?token= 作为老客户端兼容期兜底。
+  const verdict = evaluateUpgradeRequest(request, {
+    expectedToken: AUTH_TOKEN,
+    allowQueryFallback: true,
+  });
+  return verdict.ok === true;
 }
 
 server.on('upgrade', (request, socket, head) => {

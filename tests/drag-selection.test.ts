@@ -20,8 +20,33 @@ import { fileURLToPath } from 'node:url';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const read = (rel: string) => fs.readFileSync(path.join(ROOT, rel), 'utf8').replace(/\r\n/g, '\n');
 
+/**
+ * Docker 页已被拆成 Docker.tsx + client/src/pages/docker/*。
+ * 这些断言原本针对单个大文件，现在要覆盖所有拆出来的子组件，
+ * 否则「组件搬走 = 断言假绿」。
+ */
+const readDockerAll = () => {
+  const dir = path.join(ROOT, 'client/src/pages/docker');
+  const files = fs.existsSync(dir) ? fs.readdirSync(dir).filter((f) => f.endsWith('.tsx') || f.endsWith('.ts')) : [];
+  return [read('client/src/pages/Docker.tsx'), ...files.map((f) => read(`client/src/pages/docker/${f}`))].join('\n');
+};
+
+/** 在拼接后的源码里取一个组件/函数体（到下一个顶层 function/export 为止） */
+const sliceFn = (src: string, name: string, until?: string) => {
+  const start = src.indexOf(name);
+  if (start < 0) return '';
+  const rest = src.slice(start + name.length);
+  const stops = [
+    until ? rest.indexOf(until) : -1,
+    rest.indexOf('\nfunction '),
+    rest.indexOf('\nexport function '),
+    rest.indexOf('\nexport default '),
+  ].filter((i) => i > 0);
+  return rest.slice(0, stops.length ? Math.min(...stops) : rest.length);
+};
+
 describe('Docker 容器卡片：只有手柄可拖，正文可选中', () => {
-  const src = read('client/src/pages/Docker.tsx');
+  const src = readDockerAll();
 
   it('卡片本身不再有 draggable 属性（否则卡片内文字无法选中）', () => {
     // 容器卡片是 <div key={key} ... onDragStart={...handleDragStart...}
@@ -34,13 +59,15 @@ describe('Docker 容器卡片：只有手柄可拖，正文可选中', () => {
     const gripBlock = src.slice(src.indexOf('{/* Drag handle'), src.indexOf('{/* Drag handle') + 600);
     expect(gripBlock).toContain('draggable');
     expect(gripBlock).toContain('GripVertical');
-    // 卡片上仍保留 drop 处理器（拖到卡片上排序）
-    expect(src).toMatch(/onDrop=\{\(e\) => handleDrop\(e, key\)\}/);
+    // 卡片上仍保留 drop 处理器（拖到卡片上排序）。
+    // 拆分后处理器可能叫 handleDrop（父组件里直接传）或 onDrop（子组件收到的 prop），
+    // 两种写法都合法 —— 断言"存在一个把 (事件, key) 交给排序函数的 onDrop"。
+    expect(src).toMatch(/onDrop=\{\(e\) => (handleDrop|onDrop)\(e, key\)\}/);
   });
 
   it('日志输出区显式允许选中文字', () => {
     // 日志滚动容器带 select-text
-    const panel = src.slice(src.indexOf('function LiveLogPanel'), src.indexOf('function DiagnosisPanel'));
+    const panel = sliceFn(src, 'function LiveLogPanel');
     expect(panel).toContain('select-text');
   });
 
@@ -50,10 +77,10 @@ describe('Docker 容器卡片：只有手柄可拖，正文可选中', () => {
 });
 
 describe('流式滚动不能打断用户框选', () => {
-  const src = read('client/src/pages/Docker.tsx');
+  const src = readDockerAll();
 
   it('LiveLogPanel 自动滚动前检查当前选区', () => {
-    const panel = src.slice(src.indexOf('function LiveLogPanel'), src.indexOf('function DiagnosisPanel'));
+    const panel = sliceFn(src, 'function LiveLogPanel');
     expect(panel).toContain('getSelection');
     expect(panel).toMatch(/isCollapsed/);
     // 用即时滚动，避免平滑滚动把选中区域滚走
@@ -63,16 +90,16 @@ describe('流式滚动不能打断用户框选', () => {
 
   it('DiagnosisPanel 自动滚动前检查当前选区', () => {
     // renderMarkdown 定义在 DiagnosisPanel 之前，所以这里取到文件末尾
-    const panel = src.slice(src.indexOf('function DiagnosisPanel'));
+    const panel = sliceFn(src, 'function DiagnosisPanel');
     expect(panel).toContain('getSelection');
     expect(panel).toMatch(/el\.contains\(sel\.anchorNode\)/);
   });
 
   it('日志 / 终端面板提供一键复制（框选不好用时的兜底）', () => {
-    const logPanel = src.slice(src.indexOf('function LiveLogPanel'), src.indexOf('function DiagnosisPanel'));
+    const logPanel = sliceFn(src, 'function LiveLogPanel');
     expect(logPanel).toContain('copyAll');
     expect(logPanel).toContain('已复制');
-    const termPanel = src.slice(src.indexOf('function TerminalPanel'), src.indexOf('interface LiveLogLine'));
+    const termPanel = sliceFn(src, 'function TerminalPanel');
     expect(termPanel).toContain('copyAll');
   });
 });
