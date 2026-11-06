@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { marked } from 'marked';
-import { withWsToken } from '../api/auth';
+import { withWsToken, wsProtocols } from '../api/auth';
 import { sanitizeHtml } from '../utils/sanitize';
 import {
   Container, Boxes, Activity, Search, Filter, RefreshCw,
@@ -355,7 +355,7 @@ export default function Docker() {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsHost = window.location.host;
     const wsUrl = `${protocol}//${wsHost}/ws/docker/logs/${sourceId}/${containerId}`;
-    const ws = new WebSocket(withWsToken(wsUrl));
+    const ws = new WebSocket(withWsToken(wsUrl), wsProtocols());
     liveLogWsRef.current[key] = ws;
 
     ws.onopen = () => {
@@ -542,7 +542,7 @@ export default function Docker() {
   };
 
   const pollAnalysis = () => {
-    const ws = new WebSocket(withWsToken(`ws://${window.location.host}/ws`));
+    const ws = new WebSocket(withWsToken(`ws://${window.location.host}/ws`), wsProtocols());
     ws.onmessage = (e) => {
       const data = JSON.parse(e.data);
       if (data.type === 'docker_batch_analysis') {

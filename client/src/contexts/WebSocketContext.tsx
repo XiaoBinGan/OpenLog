@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useRef, useState, ReactNode } from 'react';
-import { withWsToken, whenTokenReady } from '../api/auth';
+import { withWsToken, whenTokenReady, wsProtocols } from '../api/auth';
 
 interface WebSocketContextValue {
   ws: WebSocket | null;
@@ -35,7 +35,7 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
       if (cancelled) return;
 
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      socket = new WebSocket(withWsToken(`${protocol}//${window.location.host}/ws`));
+      socket = new WebSocket(withWsToken(`${protocol}//${window.location.host}/ws`), wsProtocols());
 
       socket.onopen = () => {
         attempt = 0;

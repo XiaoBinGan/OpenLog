@@ -147,6 +147,16 @@ describe('抽取重构不变量', () => {
     const definedAtTop = new Set();
     for (const m of indexSrc.matchAll(/^(?:async )?function\s+([A-Za-z_$][\w$]*)/gm)) definedAtTop.add(m[1]);
     for (const m of indexSrc.matchAll(/^(?:const|let)\s+([A-Za-z_$][\w$]*)\s*=/gm)) definedAtTop.add(m[1]);
+    // import 进来的名字也算「有定义」：注入的依赖本来就常常是别的模块的导出
+    // （例如 renderDocsHtml 来自 server/openapi.js）。不认 import 会把正常接法判成错误。
+    for (const m of indexSrc.matchAll(/^import\s+(?:[\w$]+\s*,\s*)?\{([^}]*)\}\s+from/gm)) {
+      for (const part of m[1].split(',')) {
+        const name = part.trim().split(/\s+as\s+/).pop().trim();
+        if (/^[A-Za-z_$][\w$]*$/.test(name)) definedAtTop.add(name);
+      }
+    }
+    for (const m of indexSrc.matchAll(/^import\s+([A-Za-z_$][\w$]*)\s+from/gm)) definedAtTop.add(m[1]);
+    for (const m of indexSrc.matchAll(/^import\s+\*\s+as\s+([A-Za-z_$][\w$]*)\s+from/gm)) definedAtTop.add(m[1]);
 
     // 支持两种写法：
     //   { ensureSettings, broadcast }        → 简写，名字即来源

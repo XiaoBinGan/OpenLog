@@ -23,6 +23,8 @@ import {
 import { useDevice } from '../contexts/DeviceContext';
 import { useRemote } from '../contexts/RemoteContext';
 import { apiFetch } from '../api/client';
+import ApiSection from '../components/monitor/ApiSection';
+import DbSection from '../components/monitor/DbSection';
 import type { MonitorStats, MonitorHistory, RemoteServer } from '../types';
 
 // ─── Panel drag-and-drop system ───────────────────────────────────────────
@@ -755,6 +757,17 @@ export default function Monitor() {
             {renderPanel(panelId)}
           </DraggablePanel>
         ))}
+      </div>
+
+      {/*
+        接口 / 数据库监控：放在可拖拽面板之下一段独立区域。
+        为什么不做进抽拽体系：它们的轮询节奏不同（15s / 30s，主机是 5s），
+        塞进同一套 drag 状态里会让用户以为它们是同一类指标；而且这两块
+        在自己的组件里各自处理「未启用 / 不可用 / 空数据」三种降级。
+      */}
+      <div className="space-y-6">
+        <ApiSection />
+        <DbSection />
       </div>
     </div>
   );

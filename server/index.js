@@ -43,10 +43,25 @@ import { AGENT_TOOLS, AGENT_TOOL_NAMES, executeAgentTool } from './agent-tools.j
 import createAuthRouter from './routes/auth.js';
 import { isLoopbackAddress } from './security/loopback.js';
 import { migrateWatchSourceFields } from './settings-migrations.js';
-import { initDb, getDb, getKv, setKv, insertLogRecord, getAlertConfig, closeDb, pruneOldRecords, checkpoint, ensureBuiltinSkills, isDbReady } from './db/index.js';
+import { initDb, getDb, getDbType, getDbInfo, getRawDb, getSqlitePath, getKv, setKv, insertLogRecord, getAlertConfig, closeDb, pruneOldRecords, checkpoint, ensureBuiltinSkills, isDbReady } from './db/index.js';
 import { BUILTIN_SKILLS } from './default-skills.js';
 import { resolveDockerTransport } from './docker-transport.js';
 import { getRemoteMfu } from './gpu-mfu.js';
+// ── 监控体系（接口指标 / 数据库采样 / 慢查询 / 依赖拨测 / 接口清单）──
+// 全部可用 OPENLOG_METRICS=off 关闭；关掉时中间件与采样器直接旁路，面板显示「未启用」。
+import { createRegistry } from './metrics/registry.js';
+import { createApiMetricsMiddleware } from './metrics/api-middleware.js';
+import { normalizeRoutePath, shouldSkipPath } from './metrics/route-pattern.js';
+import { createApiStore } from './metrics/api-store.js';
+import { createDbSampler } from './metrics/db-sampler.js';
+import { createSlowQueryLog } from './metrics/slow-query.js';
+import { createProbes } from './dependency-probe.js';
+import { buildOpenApi, collectRoutes, renderDocsHtml } from './openapi.js';
+import createDbMonitorRouter from './routes/db-monitor.js';
+import createApiMonitorRouter from './routes/api-monitor.js';
+import createOpenApiRouter from './routes/openapi.js';
+import { createVerifyClient, createHandleProtocols } from './ws-auth.js';
+import { startMonitoring, stopMonitoring } from './monitoring.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -219,6 +234,96 @@ function saveSettings(data) {
   }
 }
 
+/** 监控运行时句柄（定时器/采样器），shutdown 时要停掉 */
+let monitoringHandle = null;
+
+/**
+ * 启动监控体系。整体包在 try/catch 里 —— 监控是可选能力，
+ * 任何一步失败都不能影响主服务启动（这是契约里写死的铁律）。
+ */
+async function startMonitoringSafe() {
+  try {
+    monitoringHandle = await startMonitoring({
+      registry: apiRegistry,
+      createApiStore,
+      createDbSampler,
+      createProbes,
+      slowQueryLog,
+      db: () => { try { return getDb(); } catch { return null; } },
+      dbType: () => { try { return getDbType(); } catch { return null; } },
+      rawDb: () => { try { return getRawDb(); } catch { return null; } },
+      sqlitePath: () => { try { return getSqlitePath(); } catch { return null; } },
+      dbInfo: () => { try { return getDbInfo(); } catch { return null; } },
+      enabled: metricsEnabled,
+      selfUrl: `http://127.0.0.1:${PORT}`,
+      probeTargets: buildProbeTargets(),
+      fetchImpl: probeFetch,
+    });
+    apiStore = monitoringHandle.store;
+    dbSampler = monitoringHandle.sampler;
+    probes = monitoringHandle.probes;
+    Object.assign(metricsState, monitoringHandle.state);
+  } catch (err) {
+    console.warn('[Metrics] 监控启动失败（不影响主服务）:', errorMessage(err));
+  }
+}
+
+/**
+ * 依赖拨测用的 fetch：给本机/LLM 的 HTTP 探测补上鉴权头。
+ *
+ * 为什么不在 createProbes 里做：那个模块是纯逻辑（IO 全注入、可单测），
+ * 把「从哪拿 token」塞进去会污染它的可测性。token 的归属在这里。
+ * 只对 http(s) 目标生效，exec 目标不受影响。
+ */
+function probeFetch(url, init = {}) {
+  const headers = { ...(init.headers || {}) };
+  try {
+    if (/^https?:\/\//i.test(String(url))) {
+      // 本机自检与内网引擎都可能要求鉴权；带上不会有害（对方的 /models 若不需要会忽略）
+      headers.Authorization = `Bearer ${AUTH_TOKEN}`;
+      const s = ensureSettings();
+      if (s.openaiApiKey && String(url).startsWith(String(s.openaiBaseUrl || '').replace(/\/+$/, ''))) {
+        headers.Authorization = `Bearer ${s.openaiApiKey}`;
+      }
+    }
+  } catch { /* 设置读不到就只带内部 token */ }
+  return fetch(url, { ...init, headers });
+}
+
+/**
+ * 依赖拨测目标。
+ *
+ * 只放「挂了会直接影响用户」的三类：LLM 引擎、Docker socket、SSH 主机。
+ * 超时统一 3s —— 拨测本身不能变成负担。
+ */
+function buildProbeTargets() {
+  const targets = [];
+  try {
+    const s = ensureSettings();
+    if (s.openaiBaseUrl) {
+      targets.push({
+        id: 'llm', kind: 'http',
+        url: `${String(s.openaiBaseUrl).replace(/\/+$/, '')}/models`,
+        timeoutMs: 3000,
+      });
+    }
+  } catch { /* 设置读不到就跳过 */ }
+  // Docker：本机 socket（远程源由各自的 SSH 链路负责，不在这里重复探）
+  targets.push({ id: 'docker', kind: 'exec', command: 'docker version --format "{{.Server.Version}}"', timeoutMs: 3000 });
+  try {
+    for (const srv of remote.getServers() || []) {
+      if (!srv?.host) continue;
+      targets.push({
+        id: `ssh:${srv.id}`,
+        kind: 'exec',
+        command: `ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=3 ${srv.sshUser || srv.user || 'root'}@${srv.host} true`,
+        timeoutMs: 5000,
+      });
+    }
+  } catch { /* 远程服务器列表没就绪 */ }
+  return targets;
+}
+
 // 初始化数据库（启动时调用）
 async function initDatabase() {
   try {
@@ -237,6 +342,9 @@ async function initDatabase() {
     }
 
     await remote.loadServers();
+
+    // ── 监控体系启动（失败只 warn，绝不影响主服务）──────────────────
+    await startMonitoringSafe();
   } catch (err) {
     console.error('[DB] 初始化失败:', errorMessage(err));
     // 不退出进程（退出会让容器在 --restart 策略下无限重启、把真正的原因刷没），
@@ -248,10 +356,48 @@ async function initDatabase() {
 
 const app = express();
 const server = createServer(app);
-const wss = new WebSocketServer({ noServer: true }); // 关键：使用 noServer: true，避免自动处理升级
+/**
+ * WebSocket 服务端。
+ *
+ * token 改走 `Sec-WebSocket-Protocol`（浏览器无法给 WS 设自定义头，以前只能用 `?token=`，
+ * 那个位置会进反代日志/浏览器历史/Referer）：
+ *   客户端发 `['openlog.v1', 'token.<token>']`，服务端只回显 `openlog.v1`。
+ * `allowQueryFallback` 暂时保留 —— 老客户端（缓存里的旧 JS）仍然能用 `?token=` 连上，
+ * 否则用户升级后刷新前会一直 401。灰度两版之后可以关掉。
+ */
+const wss = new WebSocketServer({
+  noServer: true, // 关键：使用 noServer: true，避免自动处理升级
+  verifyClient: createVerifyClient({ expectedToken: AUTH_TOKEN, allowQueryFallback: true }),
+  handleProtocols: createHandleProtocols(), // 握手只回显 openlog.v1，绝不回 token 项
+});
 
 const PORT = process.env.PORT || 3011;
 const HOST = process.env.HOST || '127.0.0.1';
+
+// ─── 监控单例 ────────────────────────────────────────────────
+// 为什么在模块顶层建：中间件要在 app.use 阶段就拿到 registry，不能等 initDatabase 之后。
+// 为什么可关：OPENLOG_METRICS=off 时中间件直接旁路、采样器不启动，面板返回 {enabled:false}
+// （用户反馈「监控不能变成负担」，所以开关必须是第一等公民）。
+const METRICS_OFF = () => process.env.OPENLOG_METRICS === 'off';
+const metricsEnabled = () => !METRICS_OFF();
+/** 接口指标滑窗：1 小时（够看趋势，内存 ~13KB/路由 × 300 上限） */
+const apiRegistry = createRegistry({ windowMs: 3_600_000 });
+/** 埋点中间件：必须挂在限流/鉴权**之前**，否则 401/429 统计不到，错误率会失真 */
+const apiMetricsMiddleware = createApiMetricsMiddleware({
+  registry: apiRegistry,
+  enabled: metricsEnabled,
+  normalize: normalizeRoutePath,
+  shouldSkip: shouldSkipPath,
+});
+/** 慢查询：阈值 200ms，环形缓冲 200 条（只存指纹，不存参数值） */
+const slowQueryLog = createSlowQueryLog({ thresholdMs: 200, max: 200 });
+/** 以下三个依赖 DB / 定时器，在 initDatabase() 成功后创建 */
+let apiStore = null;
+let dbSampler = null;
+let probes = null;
+/** 监控相关的定时器（shutdown 时必须清，否则进程不退） */
+const metricsTimers = { flush: null, prune: null, probe: null };
+const metricsState = { schemaReady: false, lastFlushAt: null, lastFlushRows: 0 };
 
 // CORS 白名单：OPENLOG_ALLOWED_ORIGINS（逗号分隔）优先；未设置时仅允许 localhost/127.0.0.1 任意端口，
 // 以及不带 Origin 头的请求（同源 / 非浏览器客户端）。
@@ -295,6 +441,10 @@ app.use(cors({
   },
 }));
 app.use(express.json({ limit: '10mb' }));
+
+// 接口埋点：位置很关键 —— 必须在限流与鉴权之前，才能统计到 429/401；
+// 但要在 express.json 之后（这里不改 body，只是习惯上把解析类中间件放前面）。
+app.use(apiMetricsMiddleware);
 
 // 生产模式：托管前端静态文件
 if (process.env.NODE_ENV === 'production') {
@@ -345,7 +495,28 @@ app.use(createAuthRouter({ authToken: AUTH_TOKEN }));
  *   /api/auth/token  —— 浏览器登录用，不依赖 DB
  *   /api/db/info     —— 健康检查/排障用，它自己会说明数据库状态
  */
-const DB_FREE_PATHS = ['/api/auth/token', '/api/db/info'];
+const DB_FREE_PATHS = ['/api/auth/token', '/api/db/info', '/api/health'];
+
+/**
+ * 极轻健康检查：GET /api/health
+ *
+ * 用途只有一个 —— 给「端到端拨测」一个稳定的靶子（依赖拨测每 30s 打一次，
+ * 要能算出可用性百分比）。所以这里**不查库、不查 Docker、不读盘**，
+ * 只回进程自身的状态，保证它永远不会因为下游故障而 503（那会让 uptime 失真）。
+ *
+ * 注意：它不伪装数据库健康 —— 真实库状态看 `dbReady` 字段与 /api/db/info。
+ */
+app.get('/api/health', (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  res.json({
+    ok: true,
+    uptime: Math.round(process.uptime()),
+    dbReady: (() => { try { return isDbReady(); } catch { return false; } })(),
+    metricsEnabled: metricsEnabled(),
+    timestamp: new Date().toISOString(),
+  });
+});
+
 app.use((req, res, next) => {
   if (!isApiPath(req.path)) return next();
   if (DB_FREE_PATHS.some(p => req.path === p || req.path.startsWith(p + '/'))) return next();
@@ -1141,6 +1312,55 @@ app.use(createLogsRouter({ logs, ensureSettings, saveLog, broadcast }));
 // ─── 系统监控路由（已抽到 server/routes/monitor.js）────────────────────────
 // monitorHistory 由下方 startMonitor() 的定时器写入，这里通过工厂注入
 app.use(createMonitorRouter({ monitorHistory }));
+
+// ─── 接口 / 数据库监控路由（依赖在 initDatabase 里创建的实例）──────────────
+// 两个 router 内部都做了「依赖为 null → 返回可用性标记而不是 500」的降级，
+// 所以数据库没就绪时它们只会说「不可用」，不会把整个服务拖垮。
+//
+// 为什么要 lazy：apiStore / dbSampler / probes 是 `initDatabase()` 之后才创建的，
+// 如果在这里直接传值，工厂函数会把 null 捕进闭包，之后永远是 null。
+// 用「首次请求时才建 router」的包装层，既保住 app.use 顺序，又拿到真实实例。
+const lazyRouter = (factory, depsFn) => {
+  let router = null;
+  return (req, res, next) => {
+    if (!router) {
+      try { router = factory(depsFn()); } catch (err) {
+        console.warn('[Metrics] 监控路由创建失败:', errorMessage(err));
+        return res.json({ enabled: false, unavailable: ['监控路由创建失败'] });
+      }
+    }
+    return router(req, res, next);
+  };
+};
+
+app.use(lazyRouter(createDbMonitorRouter, () => ({
+  sampler: dbSampler,
+  store: apiStore,
+  slowQueryLog,
+  dbInfo: getDbInfo,
+  db: (() => { try { return getDb(); } catch { return null; } })(),
+  slowQueryThresholdMs: 200,
+  enabled: metricsEnabled,
+})));
+// OpenAPI 文档：会暴露全部内部接口名（含 /api/remote/servers/:id/shell 这类高危接口），
+// 因此必须留在鉴权之后，绝不放进 PUBLIC_PATHS。
+app.use(createOpenApiRouter({
+  spec: () => buildOpenApi(app, { title: 'OpenLog API', version: '1.0.0', serverUrl: '/' }),
+  renderDocsHtml,
+  collectRoutes: () => collectRoutes(app),
+}));
+
+// 接口指标 / 覆盖率 / 告警规则 / 依赖拨测 / 总览状态
+app.use(lazyRouter(createApiMonitorRouter, () => ({
+  registry: apiRegistry,
+  store: apiStore,
+  probes,
+  collectRoutes: (a) => collectRoutes(a || app),
+  app,
+  enabled: metricsEnabled,
+  dropped: apiMetricsMiddleware, // 埋点自身的丢弃计数挂在这个中间件实例上
+  lastFlushAt: () => metricsState.lastFlushAt,
+})));
 
 // ============================================================
 // 配置读写 —— 已抽到 server/routes/settings.js
@@ -2042,6 +2262,9 @@ async function shutdown(reason, exitCode = 0) {
     if (monitorInterval) { clearInterval(monitorInterval); monitorInterval = null; }
     if (patrolTimer) { clearInterval(patrolTimer); patrolTimer = null; }
     if (maintenanceTimer) { clearInterval(maintenanceTimer); maintenanceTimer = null; }
+    // 监控的定时器与 DB 采样器：不清掉进程会退不出去（采样器用的是 setTimeout 链）
+    try { stopMonitoring(monitoringHandle); } catch { /* 已停 */ }
+    monitoringHandle = null;
   });
 
   // 先关连接再关服务：keep-alive 连接会把 server.close() 的 callback 无限拖住

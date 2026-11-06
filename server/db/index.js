@@ -346,6 +346,22 @@ export function getDbType() {
 }
 
 /**
+ * 原生连接 / 连接池（PG 的 Pool、SQLite 的 better-sqlite3 实例、MySQL 的 pool）。
+ *
+ * 为什么必须导出：监控的 DB 采样器要在**独立连接**上执行
+ * `SET LOCAL statement_timeout`（会话级 SET 会污染池里其它请求），
+ * 而适配层 `getDb()` 把这一层藏起来了。拿不到时返回 null，调用方要降级。
+ */
+export function getRawDb() {
+  return rawDb;
+}
+
+/** SQLite 数据文件路径（WAL 大小要读 `-wal` 兄弟文件）。非 SQLite 返回 null。 */
+export function getSqlitePath() {
+  return dbType === 'sqlite' ? SQLITE_PATH : null;
+}
+
+/**
  * 数据库概况（健康检查端点用）。
  *
  * 连接池水位直接反映「是不是把池打满了」：`waiting > 0` 持续出现说明池太小，
@@ -533,6 +549,208 @@ const CREATE_INDEXES = [
   `CREATE INDEX IF NOT EXISTS idx_analysis_records_log ON analysis_records(log_record_id)`,
 ];
 
+// ─── 幂等补列（先探测，绝不盲改）──────────────────────────────────────────────
+//
+// 老写法是「先执行 ALTER，报错就当列已存在」（try/catch 空块）。
+// 后果：PostgreSQL 每次启动都会在**服务端日志**里刷两条
+//   ERROR: column "content" of relation "skills" already exists
+// 每次重启两条，既污染 openlog-pg 的日志，也会被容器 LogWatch 当成 ERROR 采成告警
+// —— 幂等迁移不该产生噪声。
+//
+// 现在分两步：先按方言探测已有列名（information_schema / PRAGMA table_info），
+// 只对**确实缺失**的列生成 ALTER。探测失败也不许让启动失败：按「本次跳过」处理，
+// 只记一次 warn。
+
+/**
+ * 生成「探测某张表已有列名」的查询语句。
+ *
+ * @param {'sqlite'|'postgres'|'mysql'} dbType 数据库方言
+ * @param {string} [tableName='skills'] 表名
+ * @returns {string} 一条只读查询；结果行交给 columnNamesFromProbe 归一化
+ */
+export function columnProbeSql(dbType, tableName = 'skills') {
+  const table = String(tableName || 'skills').replace(/'/g, "''");
+  if (dbType === 'postgres') {
+    // 限定 current_schema()：同一个库里可能有多套 schema 各有一张同名表，
+    // 不加限定会把别的 schema 的列当成「已存在」而漏补。
+    return `SELECT column_name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = '${table}'`;
+  }
+  if (dbType === 'mysql') {
+    // MySQL 的 information_schema 是全局的，必须用 DATABASE() 限定当前库，
+    // 否则同一实例里别的库有同名表时探测结果会串。
+    return `SELECT column_name FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = '${table}'`;
+  }
+  return `PRAGMA table_info(${table})`;
+}
+
+/**
+ * 把三种方言的探测结果行归一化成「列名数组」。
+ *
+ * SQLite 的 PRAGMA 返回 `{ cid, name, type … }`；PG/MySQL 走列名，
+ * 而且 MySQL 的 information_schema 列在结果里大小写不固定，所以三个键都认。
+ *
+ * @param {'sqlite'|'postgres'|'mysql'} dbType 数据库方言
+ * @param {Array<object|string>} rows 探测查询返回的行
+ * @returns {string[]} 归一化后的列名（不可用的行直接跳过）
+ */
+export function columnNamesFromProbe(dbType, rows) {
+  const list = Array.isArray(rows) ? rows : [];
+  const names = [];
+  for (const row of list) {
+    if (typeof row === 'string' && row) { names.push(row); continue; }
+    if (!row || typeof row !== 'object') continue;
+    const name = row.name ?? row.column_name ?? row.COLUMN_NAME ?? row.Field ?? row.FIELD;
+    if (name) names.push(String(name));
+  }
+  return names;
+}
+
+/**
+ * 纯函数：wanted 里哪些列在 existing 里还没有。
+ *
+ * 比较用小写：PG / MySQL 对未加引号的标识符一律折叠成小写，SQLite 的标识符
+ * 本身大小写不敏感，所以 `CONTENT` 与 `content` 必须算同一列（否则会重复 ALTER 报错）。
+ *
+ * @param {string[]} existingNames 探测到的已有列名
+ * @param {string[]} wantedNames 期望存在的列名
+ * @returns {string[]} 缺失的列名（保持 wantedNames 的顺序，重复项只留一个）
+ */
+export function missingColumns(existingNames, wantedNames) {
+  const existing = new Set();
+  for (const raw of Array.isArray(existingNames) ? existingNames : []) {
+    const key = String(raw ?? '').trim().toLowerCase();
+    if (key) existing.add(key);
+  }
+  const seen = new Set();
+  const missing = [];
+  for (const raw of Array.isArray(wantedNames) ? wantedNames : []) {
+    const name = String(raw ?? '').trim();
+    if (!name) continue;
+    const key = name.toLowerCase();
+    if (existing.has(key) || seen.has(key)) continue;
+    seen.add(key);
+    missing.push(name);
+  }
+  return missing;
+}
+
+/**
+ * 生成一条 ADD COLUMN 语句（全文件唯一拼 ALTER 的地方）。
+ *
+ * @param {string} table 表名
+ * @param {string} column 列名
+ * @param {string} definition 方言化列定义（类型 + 默认值）
+ * @returns {string} 单条 ALTER 语句
+ */
+export function addColumnSql(table, column, definition) {
+  return `ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`;
+}
+
+/**
+ * skills 表需要补齐的列（方言差异只在这里说一次）。
+ *
+ * MySQL 的 TEXT/LONGTEXT 不接受字面量 DEFAULT（5.7 直接报错，8.0.13 起只支持表达式默认），
+ * 所以 MySQL 不补默认值；该列由 createSkill 始终写入 `content || ''`，不会留 NULL。
+ *
+ * @param {'sqlite'|'postgres'|'mysql'} dbType 数据库方言
+ * @returns {Array<{ name: string, definition: string }>} 期望存在的列及列定义
+ */
+export function skillsColumnSpecs(dbType) {
+  const d = schemaDialect(dbType);
+  const contentDefinition = dbType === 'mysql' ? d.text : `${d.text} DEFAULT ''`;
+  return [
+    { name: 'content', definition: contentDefinition },
+    { name: 'is_default', definition: 'INTEGER DEFAULT 0' },
+  ];
+}
+
+/**
+ * 纯函数：根据已有列名算出本次需要执行的 ALTER 语句。
+ *
+ * 列都在 → 返回空数组（零语句，零报错）；缺哪列生成哪条。
+ *
+ * @param {'sqlite'|'postgres'|'mysql'} dbType 数据库方言
+ * @param {string} table 表名
+ * @param {Array<{ name: string, definition: string }>} specs 期望的列
+ * @param {string[]} existingNames 探测到的已有列名
+ * @returns {string[]} 需要执行的 ALTER 语句（顺序与 specs 一致）
+ */
+export function planAddColumnSql(dbType, table, specs, existingNames) {
+  const list = (Array.isArray(specs) ? specs : []).filter(s => s && s.name);
+  const missing = new Set(missingColumns(existingNames, list.map(s => s.name)));
+  const statements = [];
+  for (const spec of list) {
+    if (!missing.has(spec.name)) continue;
+    statements.push(addColumnSql(table, spec.name, spec.definition));
+  }
+  return statements;
+}
+
+/**
+ * 幂等补列：探测 → 算差集 → 只对缺失的列执行 ALTER。
+ *
+ * 语义要求（比正确性更重要）：**任何异常都不许让启动失败**。
+ *  - 探测失败（权限不足 / 表还不存在 / 方言不支持）→ 记一次 warn，本次跳过补列；
+ *  - 单条 ALTER 失败（并发启动抢着建）→ 收集起来最后记一次 warn，继续往下走。
+ *
+ * @param {{
+ *   db: any,
+ *   dbType: 'sqlite'|'postgres'|'mysql',
+ *   table?: string,
+ *   specs?: Array<{ name: string, definition: string }>,
+ *   logger?: { warn: (msg: string) => void },
+ * }} opts db 为适配层（需要 all/exec），logger 默认 console
+ * @returns {Promise<{
+ *   probed: boolean, existing: string[], missing: string[],
+ *   added: string[], skipped?: string, error?: string,
+ * }>} probed=false 表示探测失败；added 为实际成功补上的列
+ */
+export async function ensureColumns({
+  db: conn, dbType: type, table = 'skills', specs = null, logger = console,
+} = {}) {
+  const columns = (Array.isArray(specs) ? specs : skillsColumnSpecs(type)).filter(s => s && s.name);
+  const result = { probed: false, existing: [], missing: [], added: [] };
+
+  let rows;
+  try {
+    // SQLite 适配层是同步的，PG/MySQL 是异步的 —— Promise.resolve 把两种都抹平
+    rows = await Promise.resolve(conn.all(columnProbeSql(type, table)));
+  } catch (err) {
+    result.skipped = 'probe-failed';
+    result.error = errorMessage(err);
+    logger.warn(`[DB] ${table} 列探测失败，本次跳过补列: ${result.error}`);
+    return result;
+  }
+
+  result.probed = true;
+  result.existing = columnNamesFromProbe(type, rows);
+  if (result.existing.length === 0) {
+    // 空结果通常意味着表不在当前 schema/库里：这时盲目 ALTER 会造出另一种错，
+    // 直接跳过并提示，让建表那条链自己去报真正的错。
+    result.skipped = 'no-columns';
+    logger.warn(`[DB] ${table} 未探测到任何列，本次跳过补列`);
+    return result;
+  }
+
+  const missing = missingColumns(result.existing, columns.map(s => s.name));
+  result.missing = missing;
+  const statements = planAddColumnSql(type, table, columns, result.existing);
+  const errors = [];
+  for (let i = 0; i < statements.length; i += 1) {
+    try {
+      await Promise.resolve(conn.exec(statements[i]));
+      result.added.push(missing[i]);
+    } catch (err) {
+      errors.push(`${missing[i]}: ${errorMessage(err)}`);
+    }
+  }
+  if (errors.length) {
+    result.error = errors.join('; ');
+    logger.warn(`[DB] ${table} 补列失败（服务继续启动）: ${result.error}`);
+  }
+  return result;
+}
+
 async function runMigrations() {
   if (!db) return;
 
@@ -546,13 +764,8 @@ async function runMigrations() {
     try { await db.exec(sql); } catch { /* 已存在 */ }
   }
 
-  // 兼容旧数据：补列（各库都不支持 ADD COLUMN IF NOT EXISTS）
-  for (const sql of [
-    `ALTER TABLE skills ADD COLUMN content ${schemaDialect(dbType).text} DEFAULT ''`,
-    `ALTER TABLE skills ADD COLUMN is_default INTEGER DEFAULT 0`,
-  ]) {
-    try { await db.exec(sql); } catch { /* 列已存在 */ }
-  }
+  // 兼容旧数据：补列。先探测再决定，缺哪列补哪列（各库都不支持 ADD COLUMN IF NOT EXISTS）
+  await ensureColumns({ db, dbType });
 }
 
 // ─── CRUD helpers ────────────────────────────────────────────────────────────

@@ -3,7 +3,12 @@
  *
  * Token contract (agreed with the server):
  *  - HTTP:      `Authorization: Bearer <token>`
- *  - WebSocket: token appended to the URL as `?token=<token>`
+ *  - WebSocket: `Sec-WebSocket-Protocol: openlog.v1, token.<token>`
+ *               — i.e. `new WebSocket(url, wsProtocols())`. The token is NOT
+ *               put in the URL any more: a `?token=` in the URL ends up in
+ *               proxy access logs, the browser history, `Referer` and error
+ *               reports. `withWsToken()` is kept only for URL hygiene and now
+ *               strips any legacy `?token=` it is handed.
  *  - `GET /api/auth/token` -> `{ token }`, reachable only from localhost
  *    (403 elsewhere, which is a normal "no token available" outcome).
  *
@@ -16,7 +21,8 @@
  *     localStorage('openlog_token') -> import.meta.env.VITE_OPENLOG_TOKEN ->
  *     GET /api/auth/token. The promise is cached, so a 403 (not on localhost)
  *     is never retried in a loop.
- *  3. Exposes `withWsToken()` for every `new WebSocket(...)` call site.
+ *  3. Exposes `wsProtocols()` (the subprotocol list carrying the token) and
+ *     `withWsToken()` (URL, token-free) for every `new WebSocket(...)` call site.
  *  4. Surfaces the FIRST 401/403 from an `/api/` request (callback + a
  *     `openlog:auth-error` window event). It never retries and never loops.
  *
@@ -27,6 +33,13 @@
 
 const TOKEN_STORAGE_KEY = 'openlog_token';
 const TOKEN_ENDPOINT_PATH = '/api/auth/token';
+
+/** Subprotocol agreed with the server; it is echoed back on the 101 response. */
+export const WS_SUBPROTOCOL = 'openlog.v1';
+/** Subprotocol prefix carrying the token: `token.<token>`. */
+const WS_TOKEN_PROTOCOL_PREFIX = 'token.';
+/** Legacy query parameter, stripped on sight — deprecated transport. */
+const LEGACY_WS_TOKEN_PARAM = 'token';
 
 // Upper bound on the token request. Only reached when the endpoint is genuinely
 // unavailable; on loopback it answers in ~2ms. Keeping the request bounded is
@@ -109,16 +122,77 @@ export function onAuthError(listener: AuthErrorListener): () => void {
 }
 
 /**
- * Appends the resolved token to a WebSocket URL:
- *   wss://host/ws            -> wss://host/ws?token=...
- *   wss://host/ws/a?x=1      -> wss://host/ws/a?x=1&token=...
- * Returns the URL unchanged when no token is known.
+ * Subprotocol list for `new WebSocket(url, protocols)`.
+ *
+ * The browser WebSocket API cannot set an `Authorization` header, so the token
+ * rides in the `Sec-WebSocket-Protocol` handshake header instead of the URL:
+ *
+ *   new WebSocket('wss://host/ws', wsProtocols())
+ *   -> Sec-WebSocket-Protocol: openlog.v1, token.<token>
+ *
+ * The server echoes only `openlog.v1` back (never the `token.` entry) and
+ * re-reads the token from the request header, so nothing lands in the URL,
+ * the proxy access log, the browser history, `Referer` or error reports.
+ *
+ * Returns `['openlog.v1']` when no token is known yet (not logged in / 403),
+ * which keeps the handshake well-formed; the server then answers 401 as usual.
+ */
+export function wsProtocols(): string[] {
+  const current = getToken();
+  if (current === null) return [WS_SUBPROTOCOL];
+  // RFC 7230 tchar-safe: encodeURIComponent output never breaks ws's
+  // subprotocol tokenizer, and '.' survives untransformed, so a dotted token
+  // stays dotted on the wire.
+  return [WS_SUBPROTOCOL, `${WS_TOKEN_PROTOCOL_PREFIX}${encodeURIComponent(current)}`];
+}
+
+/**
+ * Returns the WebSocket URL to dial. The token no longer lives here — it moved
+ * to the subprotocol list (`wsProtocols()`, second argument of the
+ * `WebSocket` constructor), because a `?token=` in the URL leaks into proxy
+ * access logs, browser history, `Referer` headers and error reports.
+ *
+ * Kept under its original name (other modules import it) purely as URL hygiene:
+ * any legacy `?token=<token>` a caller still hands over is stripped, everything
+ * else in the query string is preserved verbatim.
+ *
+ *   wss://host/ws?token=...   -> wss://host/ws
+ *   wss://host/ws?a=1&token=.. -> wss://host/ws?a=1
  */
 export function withWsToken(url: string): string {
-  const current = getToken();
-  if (current === null) return url;
-  const separator = url.includes('?') ? '&' : '?';
-  return `${url}${separator}token=${encodeURIComponent(current)}`;
+  return stripLegacyTokenParam(url);
+}
+
+/**
+ * Removes `token` from the query string without touching anything else.
+ * String surgery (not `new URL`) so relative and odd-shaped URLs survive
+ * untouched, and the returned value never gains an origin.
+ */
+function stripLegacyTokenParam(url: string): string {
+  if (typeof url !== 'string' || url.length === 0) return url;
+
+  const hashIndex = url.indexOf('#');
+  const hash = hashIndex === -1 ? '' : url.slice(hashIndex);
+  const withoutHash = hashIndex === -1 ? url : url.slice(0, hashIndex);
+  const queryIndex = withoutHash.indexOf('?');
+  if (queryIndex === -1) return url;
+
+  const base = withoutHash.slice(0, queryIndex);
+  const params = withoutHash
+    .slice(queryIndex + 1)
+    .split('&')
+    .filter((param) => param.length > 0);
+
+  const kept = params.filter((param) => {
+    const name = param.split('=')[0].toLowerCase();
+    return name !== LEGACY_WS_TOKEN_PARAM;
+  });
+
+  // Nothing to strip: return the caller's string byte-for-byte.
+  if (kept.length === params.length) return url;
+
+  const query = kept.join('&');
+  return `${base}${query.length > 0 ? `?${query}` : ''}${hash}`;
 }
 
 /**

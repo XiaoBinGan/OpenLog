@@ -16,7 +16,7 @@ import {
 } from 'lucide-react';
 import { LineChart, Line, AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
 import { useDevice } from '../contexts/DeviceContext';
-import { withWsToken } from '../api/auth';
+import { withWsToken, wsProtocols } from '../api/auth';
 import { apiFetch } from '../api/client';
 
 import type { MonitorStats, MonitorHistory, Log, RemoteServer } from '../types';
@@ -350,7 +350,7 @@ export default function Dashboard() {
     
     // 仅用于日志的 WebSocket（不包含监控数据）
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsInstance = new WebSocket(withWsToken(`${protocol}//${window.location.host}/ws`));
+    const wsInstance = new WebSocket(withWsToken(`${protocol}//${window.location.host}/ws`), wsProtocols());
     
     wsInstance.onmessage = (event) => {
       const data = JSON.parse(event.data);

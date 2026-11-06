@@ -19,7 +19,7 @@ import {
 import { useDevice } from '../contexts/DeviceContext';
 import { useRemote } from '../contexts/RemoteContext';
 import type { Log } from '../types';
-import { withWsToken } from '../api/auth';
+import { withWsToken, wsProtocols } from '../api/auth';
 import { apiFetch } from '../api/client';
 
 const LEVELS = ['INFO', 'WARN', 'WARNING', 'ERROR', 'DEBUG', 'TRACE', 'FATAL'];
@@ -84,7 +84,7 @@ export default function Logs() {
 
   const connectWebSocket = () => {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const ws = new WebSocket(withWsToken(`${protocol}//${window.location.host}/ws`));
+    const ws = new WebSocket(withWsToken(`${protocol}//${window.location.host}/ws`), wsProtocols());
     ws.onmessage = (event) => {
       const data = JSON.parse(event.data);
       if (data.type === 'log') {

@@ -23,7 +23,7 @@ import {
 import clsx from 'clsx';
 import GlobalStatusBar from './GlobalStatusBar';
 import AIAnalysisToast from './AIAnalysisToast';
-import { withWsToken } from '../api/auth';
+import { withWsToken, wsProtocols } from '../api/auth';
 
 const navItems = [
   { path: '/monitor', icon: Activity, label: '系统监控' },
@@ -79,7 +79,7 @@ function LayoutContent() {
   const connectWs = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) return;
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsInstance = new WebSocket(withWsToken(`${protocol}//${window.location.host}/ws`));
+    const wsInstance = new WebSocket(withWsToken(`${protocol}//${window.location.host}/ws`), wsProtocols());
     wsRef.current = wsInstance;
 
     wsInstance.onopen = () => {

@@ -5,7 +5,7 @@ import {
   Download, Info, Keyboard, Command
 } from 'lucide-react';
 import type { RemoteServer } from '../types';
-import { withWsToken } from '../api/auth';
+import { withWsToken, wsProtocols } from '../api/auth';
 import { sanitizeHtml } from '../utils/sanitize';
 
 interface ShellTerminalProps {
@@ -75,7 +75,7 @@ export default function ShellTerminal({ server, onClose }: ShellTerminalProps) {
     setConnecting(true);
     setError(null);
 
-    const ws = new WebSocket(withWsToken(wsUrl));
+    const ws = new WebSocket(withWsToken(wsUrl), wsProtocols());
     wsRef.current = ws;
 
     let manualClose = false;

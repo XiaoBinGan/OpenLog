@@ -5,7 +5,7 @@
  */
 import { describe, it, beforeAll, afterAll, expect } from 'vitest';
 import { spawn } from 'child_process';
-import { fileURLToPath } from 'url';
+import { fileURLToPath, pathToFileURL } from 'url';
 import path from 'path';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -14,6 +14,50 @@ const PORT = 3098;
 const BASE = `http://localhost:${PORT}`;
 
 let serverProc;
+
+// ── systeminformation（si）桩：注入到被 spawn 的 server 子进程 ────────
+//
+// 为什么不用 vi.mock：
+// 本文件是**黑盒 HTTP 冒烟测试** —— 被测的 si 调用发生在
+// `spawn('node', ['server/index.js'])` 起的**子进程**里，而 vi.mock 只能改写
+// vitest 自身进程的模块图，对子进程里的 `import * as si from 'systeminformation'`
+// 毫无影响。想让 /api/monitor/stats 摆脱 si 冷启动，注入必须发生在子进程。
+//
+// 为什么必须摆脱冷启动：
+// 本机实测首次调用要 8907ms（扫盘 + 枚举进程，走 PowerShell/WMI），
+// 而 vitest 全局 testTimeout 是 10000ms；全量跑时机器被其它 test 文件压满，
+// 这条用例就会偶发触顶超时（热调用也要 1.7~2.0s，同样不稳）。
+//
+// 做法：spawn 时加 `--import <data:URL>`，在 server 的模块图加载**之前**
+// 把 5 个被 /api/monitor/stats 用到的函数换成固定小对象。
+// 用 data:URL 而不是写临时文件，是为了不往仓库或磁盘上多落任何文件；
+// 只替换这 5 个函数，其余导出保持真实实现，不会影响本文件其它用例。
+const SI_STUB = {
+  currentLoad: { currentLoad: 12.5, cpus: [{ load: 10 }, { load: 15 }] },
+  mem: { used: 512, total: 1024, free: 512 },
+  fsSize: [{ fs: '/dev/stub0', used: 40, size: 100, use: 40 }],
+  networkStats: [{ iface: 'eth0', rx_sec: 10, tx_sec: 20 }],
+  processes: { list: [{ pid: 1, name: 'stub-proc', cpu: 1, mem: 1 }] },
+};
+
+/** 生成 `--import` 用的 data:URL，内容是给子进程打 si 桩的 ESM 模块 */
+function buildSiStubUrl() {
+  // createRequire 的基准指到 server 入口，保证 'systeminformation' 从项目
+  // node_modules 解析，而不是相对于 data:URL 解析（data:URL 没有包解析上下文）。
+  const serverEntry = pathToFileURL(path.join(PROJECT_ROOT, 'server', 'index.js')).href;
+  const pick = (key) => `(${JSON.stringify(SI_STUB[key])})`;
+  const src = [
+    "import { createRequire } from 'node:module';",
+    `const require = createRequire(${JSON.stringify(serverEntry)});`,
+    "const si = require('systeminformation');",
+    `si.currentLoad = async () => ${pick('currentLoad')};`,
+    `si.mem = async () => ${pick('mem')};`,
+    `si.fsSize = async () => ${pick('fsSize')};`,
+    `si.networkStats = async () => ${pick('networkStats')};`,
+    `si.processes = async () => ${pick('processes')};`,
+  ].join('\n');
+  return 'data:text/javascript;base64,' + Buffer.from(src, 'utf8').toString('base64');
+}
 
 // ── 辅助函数 ──────────────────────────────────────────────────
 async function get(path, opts = {}) {
@@ -48,7 +92,9 @@ async function del(path) {
 
 // ── 启动 / 关闭 Server ────────────────────────────────────────
 beforeAll(async () => {
-  serverProc = spawn('node', ['server/index.js'], {
+  // --import 的桩先于 server/index.js 的 import 执行，因此
+  // `import * as si from 'systeminformation'` 拿到的就是被改写过的对象。
+  serverProc = spawn('node', ['--import', buildSiStubUrl(), 'server/index.js'], {
     cwd: PROJECT_ROOT,
     env: { ...process.env, PORT: String(PORT), NODE_ENV: 'test' },
     stdio: ['pipe', 'pipe', 'pipe'],
@@ -117,12 +163,25 @@ describe('核心路由 200 冒烟测试', () => {
   });
 
   describe('监控模块 (monitor)', () => {
-    it('GET /api/monitor/stats — 返回系统状态', async () => {
+    // 第二个参数 30000 只是兜底：正常路径（si 桩生效）这条用例 60~90ms 就结束。
+    // 万一将来桩失效退回真实 si，冷启动 8.9s 会先撞上全局 10000ms —— 那是
+    // "超时"这种没法定位的失败态；给足 30s 让它跑完并以**桩值断言失败**的形式
+    // 报出来，能一眼看出是桩没注入，而不是又一次 flaky。
+    it('GET /api/monitor/stats — 返回系统状态', { timeout: 30000 }, async () => {
       const res = await get('/api/monitor/stats');
       expect(res.status).toBe(200);
       const data = await res.json();
-      expect(data).toHaveProperty('cpu');
-      expect(data).toHaveProperty('memory');
+
+      // 断言「结构 + 桩值」而不是真实数值：
+      // 桩值能证明 si 桩确实注入生效（否则会退回真实冷启动，且数值不可能恰好等于桩值），
+      // 结构断言保证 routes/monitor.js 的字段映射没被改坏。
+      expect(data.cpu).toEqual({ load: 12.5, cores: [10, 15] });
+      expect(data.memory).toEqual({ used: 512, total: 1024, free: 512 });
+      expect(Array.isArray(data.disk)).toBe(true);
+      expect(data.disk).toEqual([{ name: '/dev/stub0', used: 40, total: 100, usePercent: 40 }]);
+      expect(data.network).toEqual([{ iface: 'eth0', rx: 10, tx: 20 }]);
+      expect(data.processes).toEqual([{ pid: 1, name: 'stub-proc', cpu: 1, mem: 1 }]);
+      expect(Array.isArray(data.gpus)).toBe(true);
     });
 
     it('GET /api/monitor/history — 返回监控历史', async () => {

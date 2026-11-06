@@ -16,7 +16,7 @@ import {
   BookOpen, Square, ShieldAlert, Cpu, AlertTriangle, Trash2, History,
 } from 'lucide-react';
 import type { RemoteServer } from '../types';
-import { withWsToken } from '../api/auth';
+import { withWsToken, wsProtocols } from '../api/auth';
 import { apiFetch } from '../api/client';
 import { compactTurnsForStorage, saveJsonSafe } from '../utils/conversationStorage';
 import { sanitizeHtml } from '../utils/sanitize';
@@ -220,7 +220,7 @@ export default function AIShellTerminal({ server, onClose, onReady }: AIShellTer
     setConnecting(true);
     setError(null);
 
-    const ws = new WebSocket(withWsToken(wsUrl));
+    const ws = new WebSocket(withWsToken(wsUrl), wsProtocols());
     wsRef.current = ws;
     let ready = false;
 
