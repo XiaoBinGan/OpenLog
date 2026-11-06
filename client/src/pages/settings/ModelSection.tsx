@@ -1,20 +1,17 @@
 /**
- * 区块：AI 模型配置（提供商网格 / API Key / Base URL / 模型选择 / 测试连接 / 本地模型指引）
+ * 区块：AI 模型配置（提供商网格 / API Key / Base URL / 模型选择）
  *
  * 负责什么：
- *   - providers 清单（导出给父组件底部的「支持的模型提供商」列表复用，避免复制一份常量）
+ *   - providers 清单（导出给父组件底部的「支持的模型提供商」列表复用，不复制常量）
  *   - 提供商网格、API Key 明文切换、Base URL、模型下拉/手填、刷新已安装模型列表
- *   - 把「测试连接」和「本地模型使用指南」两个子块挂到原来的 DOM 位置上：
- *     ./ModelConnectionTest.tsx、./LocalModelTips.tsx
+ *   - 把「测试连接」「本地模型使用指南」挂回原来的 DOM 位置：./ModelConnectionTest.tsx、./LocalModelTips.tsx
  *
  * 为什么不放在父组件：
- *   这里只有 4 个字段是被父组件共享的（openaiApiKey / openaiBaseUrl / model / thinkingEnabled），
- *   其余全部是纯本区块的临时状态：showApiKey、ollamaModels、loadingModels、拉模型列表的请求。
- *   父组件只需要把 4 个字符串/布尔 + 3 个稳定回调下发；本区块内部的输入不会让 Docker / 告警 /
- *   MFU 等其它 8 个区块重画。
- *
- * 注意：provider 选中态与 customModel 留在父组件——它们的自动探测是在父组件「加载 settings」
- * 的同一个 then 回调里做的（见 Settings.tsx），下沉需要额外的加载信号，反而更脆。
+ *   只有 4 个字段是与父组件共享的（openaiApiKey / openaiBaseUrl / model / thinkingEnabled），
+ *   其余（showApiKey、ollamaModels、loadingModels、拉模型列表的请求）都是本区块私有的。
+ *   下沉后这边输入不会让 Docker / 告警 / MFU 等其它区块重画。
+ *   例外：provider 选中态与 customModel 留在父组件——自动探测发生在父组件加载 settings 的同一个
+ *   then 回调里（见 Settings.tsx），下沉需要额外的加载信号，反而更脆。
  */
 import { memo, useCallback, useEffect, useState } from 'react';
 import {
@@ -106,11 +103,8 @@ function ModelSection({
       .catch(() => setLoadingModels(false));
   }, [apiKey, baseUrl]);
 
-  // 挂载时拉一次（与原实现一致：此时用的是 settings 的默认值，不是服务端返回值）
-  useEffect(() => {
-    fetchOllamaModels();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  // 挂载时拉一次（与原实现一致：用的是 settings 默认值，而非服务端返回值）
+  useEffect(() => { fetchOllamaModels(); }, []);
 
   return (
     <>

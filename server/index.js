@@ -293,8 +293,15 @@ function probeFetch(url, init = {}) {
 /**
  * 依赖拨测目标。
  *
- * 只放「挂了会直接影响用户」的三类：LLM 引擎、Docker socket、SSH 主机。
- * 超时统一 3s —— 拨测本身不能变成负担。
+ * **只放能真反映依赖健康的项，宁缺勿滥**：
+ *   - LLM 引擎：挂了整个 AI 分析/助手全废，必须探（HTTP /models）
+ *   - 自身 /api/health：算端到端可用性（probeSelf 单独做）
+ *
+ * 曾经想探 Docker 与 SSH，实测在容器里**两条都是永久误报**，所以拿掉了：
+ *   - `docker` CLI 不存在（本项目用 dockerode 直连 socket，镜像里没装 CLI）→ spawn ENOENT
+ *   - `ssh` CLI 无法用应用的凭据（密码在 node-ssh 里，CLI 要 sshpass/密钥，且远程禁密码登录）
+ * 永久红灯比没有灯更糟 —— 用户会学会无视整个面板。
+ * Docker 与 SSH 的真实连通性各自主页面就有明确展示（Docker 页的源报错、远程服务器卡片的状态）。
  */
 function buildProbeTargets() {
   const targets = [];
@@ -308,19 +315,6 @@ function buildProbeTargets() {
       });
     }
   } catch { /* 设置读不到就跳过 */ }
-  // Docker：本机 socket（远程源由各自的 SSH 链路负责，不在这里重复探）
-  targets.push({ id: 'docker', kind: 'exec', command: 'docker version --format "{{.Server.Version}}"', timeoutMs: 3000 });
-  try {
-    for (const srv of remote.getServers() || []) {
-      if (!srv?.host) continue;
-      targets.push({
-        id: `ssh:${srv.id}`,
-        kind: 'exec',
-        command: `ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=3 ${srv.sshUser || srv.user || 'root'}@${srv.host} true`,
-        timeoutMs: 5000,
-      });
-    }
-  } catch { /* 远程服务器列表没就绪 */ }
   return targets;
 }
 
