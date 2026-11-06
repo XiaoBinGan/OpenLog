@@ -99,8 +99,8 @@ describe('toMarkdown —— 概览表 + 明细，报错内容保留原文', () =
     expect(md).toContain('告警数量：2 条');
   });
 
-  it('概览表含 时间/级别/机器/容器/错误类型 列', () => {
-    expect(md).toContain('| # | 时间 | 级别 | 机器 | 容器 | 错误类型 | 摘要 |');
+  it('概览表含 时间/级别/机器 IP/机器名/容器/错误类型 列', () => {
+    expect(md).toContain('| # | 时间 | 级别 | 机器 IP | 机器名 | 容器 | 错误类型 | 摘要 |');
     expect(md).toContain('4090服务器');
     expect(md).toContain('openlog-api');
     expect(md).toContain('日志异常');

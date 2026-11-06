@@ -53,21 +53,28 @@ function LayoutContent() {
   const reconnectTimer = useRef<ReturnType<typeof setTimeout>>();
   /** docker 源 id → 显示名（导出告警时要知道「哪台机器」） */
   const sourceNamesRef = useRef<Record<string, string>>({ local: '本机 Docker' });
+  /** docker 源 id → 机器 IP（导出的「机器」列用 IP，比名字更能定位） */
+  const sourceHostsRef = useRef<Record<string, string>>({});
 
   const loadSourceNames = useCallback(async () => {
     try {
-      const data = await apiFetch<{ sources?: Array<{ sourceId?: string; id?: string; sourceName?: string; name?: string }> }>('/api/docker/containers');
+      const data = await apiFetch<{ sources?: Array<{ sourceId?: string; id?: string; sourceName?: string; name?: string; host?: string }> }>('/api/docker/containers');
       const map: Record<string, string> = { local: '本机 Docker' };
+      const hosts: Record<string, string> = {};
       for (const s of data.sources || []) {
         const id = s.sourceId || s.id;
         const name = s.sourceName || s.name;
         if (id && name) map[id] = name;
+        // 优先用后端解析出的 host；local 源后端给的就是本机对外 IP
+        if (id && s.host) hosts[id] = s.host;
       }
       sourceNamesRef.current = map;
+      sourceHostsRef.current = hosts;
     } catch { /* 拿不到名字就留空，导出时显示 ID */ }
   }, []);
 
   const sourceNameOf = (sourceId?: string) => (sourceId ? (sourceNamesRef.current[sourceId] || '') : '');
+  const sourceHostOf = (sourceId?: string) => (sourceId ? (sourceHostsRef.current[sourceId] || '') : '');
 
   const connectWs = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) return;
@@ -95,7 +102,7 @@ function LayoutContent() {
                   nav: r.containerId ? link : undefined,
                   meta: {
                     sourceId: r.sourceId,
-                    sourceName: sourceNameOf(r.sourceId),
+                    sourceName: sourceNameOf(r.sourceId), sourceHost: sourceHostOf(r.sourceId),
                     containerName: cName,
                     containerId: r.containerId,
                     level: 'WARNING',
@@ -149,7 +156,7 @@ function LayoutContent() {
               // 通知列表里点它 → 直接打开这个容器的日志视图（不用再手选服务器）
               nav: containerId ? dockerContainerLink(sourceId, containerId) : undefined,
               meta: {
-                sourceId, sourceName: sourceNameOf(sourceId),
+                sourceId, sourceName: sourceNameOf(sourceId), sourceHost: sourceHostOf(sourceId),
                 containerName: name, containerId,
                 level: 'ERROR',
                 errorType: `${label}${code}`,
@@ -161,7 +168,7 @@ function LayoutContent() {
               group: containerToastGroup(sourceId, containerId, name),
               nav: containerId ? dockerContainerLink(sourceId, containerId) : undefined,
               meta: {
-                sourceId, sourceName: sourceNameOf(sourceId),
+                sourceId, sourceName: sourceNameOf(sourceId), sourceHost: sourceHostOf(sourceId),
                 containerName: name, containerId,
                 level: 'INFO', errorType: label,
                 errorContent: `容器 ${name} ${label}${code}`,
@@ -182,7 +189,7 @@ function LayoutContent() {
                   group: containerToastGroup(r.sourceId, r.containerId, cName),
                   nav: r.containerId ? link : undefined,
                   meta: {
-                    sourceId: r.sourceId, sourceName: sourceNameOf(r.sourceId),
+                    sourceId: r.sourceId, sourceName: sourceNameOf(r.sourceId), sourceHost: sourceHostOf(r.sourceId),
                     containerName: cName, containerId: r.containerId,
                     level: 'WARNING', errorType: '巡检异常',
                     errorContent: `容器 ${cName} 检出 ${count} 种异常日志`,
@@ -207,7 +214,7 @@ function LayoutContent() {
             group: containerToastGroup(d.sourceId, d.containerId, cName),
             nav: link,
             meta: {
-              sourceId: d.sourceId, sourceName: sourceNameOf(d.sourceId),
+              sourceId: d.sourceId, sourceName: sourceNameOf(d.sourceId), sourceHost: sourceHostOf(d.sourceId),
               containerName: cName, containerId: d.containerId,
               level, errorType: '日志异常',
               errorContent: text + extra,

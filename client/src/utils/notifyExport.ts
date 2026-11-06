@@ -19,7 +19,10 @@ export interface ExportRow {
   time: string;
   ts: number;
   level: string;
+  /** 机器 IP（用户要求：导出的「机器」列要能直接定位是哪台机器） */
   machine: string;
+  /** 机器显示名（「4090服务器」「本机 Docker」），IP 拿不到时兜底 */
+  machineName: string;
   sourceId: string;
   container: string;
   containerId: string;
@@ -31,6 +34,8 @@ export interface ExportRow {
 /**
  * 把通知整理成导出用的行。
  * 老数据（没有 meta 的）从文案里兜底解析：message 形如「🐳 openlog-site · ERROR」。
+ *
+ * 机器列优先 IP：只有机器名时排查起来要先去设置里翻 IP，用户明确要求导出要能直接看到 IP。
  */
 export function buildExportRows(items: NotificationItem[], now = Date.now()): ExportRow[] {
   return (items || []).map((n, i) => {
@@ -41,12 +46,16 @@ export function buildExportRows(items: NotificationItem[], now = Date.now()): Ex
     const level = n.level || levelFromMsg || levelFromType(n.type);
     const container = n.containerName || containerFromMsg || '';
     const content = n.errorContent || n.description || '';
+    const machineName = n.sourceName || (n.sourceId === 'local' ? '本机 Docker' : '') || '';
+    // 机器列：IP 优先；没有 IP 才退回机器名（老通知里没存 host）
+    const host = String(n.sourceHost || '').trim();
     return {
       index: i + 1,
       time: formatFullTime(n.ts, now),
       ts: n.ts,
       level,
-      machine: n.sourceName || (n.sourceId === 'local' ? '本机 Docker' : '') || '',
+      machine: host || machineName || n.sourceId || '',
+      machineName,
       sourceId: n.sourceId || '',
       container,
       containerId: n.containerId || '',
@@ -106,11 +115,11 @@ export function toMarkdown(items: NotificationItem[], opts: { now?: number; titl
   }
   lines.push('## 概览');
   lines.push('');
-  lines.push('| # | 时间 | 级别 | 机器 | 容器 | 错误类型 | 摘要 |');
-  lines.push('|---|------|------|------|------|----------|------|');
+  lines.push('| # | 时间 | 级别 | 机器 IP | 机器名 | 容器 | 错误类型 | 摘要 |');
+  lines.push('|---|------|------|--------|--------|------|----------|------|');
   for (const r of rows) {
     const summary = mdCell(r.content.split('\n')[0] || '').slice(0, 120);
-    lines.push(`| ${r.index} | ${r.time} | ${mdCell(r.level)} | ${mdCell(r.machine)} | ${mdCell(r.container)} | ${mdCell(r.errorType)} | ${summary} |`);
+    lines.push(`| ${r.index} | ${r.time} | ${mdCell(r.level)} | ${mdCell(r.machine)} | ${mdCell(r.machineName)} | ${mdCell(r.container)} | ${mdCell(r.errorType)} | ${summary} |`);
   }
   lines.push('');
   lines.push('## 明细');
@@ -119,7 +128,7 @@ export function toMarkdown(items: NotificationItem[], opts: { now?: number; titl
     lines.push(`### ${r.index}. ${r.level}${r.errorType ? ` · ${r.errorType}` : ''}${r.container ? ` · ${r.container}` : ''}`);
     lines.push('');
     lines.push(`- **时间**：${r.time}`);
-    lines.push(`- **机器**：${r.machine || '未记录'}${r.sourceId ? `（${r.sourceId}）` : ''}`);
+    lines.push(`- **机器**：${r.machine || '未记录'}${r.machineName && r.machineName !== r.machine ? `（${r.machineName}）` : ''}${r.sourceId ? ` · 来源ID ${r.sourceId}` : ''}`);
     lines.push(`- **容器**：${r.container || '未记录'}${r.containerId ? `（${r.containerId}）` : ''}`);
     if (r.errorType) lines.push(`- **错误类型**：${r.errorType}`);
     if (r.content) {
@@ -143,10 +152,10 @@ function csvCell(s: string): string {
 
 export function toCsv(items: NotificationItem[], now = Date.now()): string {
   const rows = buildExportRows(items, now);
-  const header = ['序号', '时间', '级别', '机器', '来源ID', '容器', '容器ID', '错误类型', '报错内容', '打开链接'];
+  const header = ['序号', '时间', '级别', '机器IP', '机器名', '来源ID', '容器', '容器ID', '错误类型', '报错内容', '打开链接'];
   const lines = [header.map(h => csvCell(h)).join(',')];
   for (const r of rows) {
-    lines.push([r.index, r.time, r.level, r.machine, r.sourceId, r.container, r.containerId, r.errorType, r.content, r.nav]
+    lines.push([r.index, r.time, r.level, r.machine, r.machineName, r.sourceId, r.container, r.containerId, r.errorType, r.content, r.nav]
       .map(v => csvCell(String(v))).join(','));
   }
   // BOM：Excel 打开 UTF-8 CSV 不乱码
@@ -155,7 +164,7 @@ export function toCsv(items: NotificationItem[], now = Date.now()): string {
 
 // ─── XLSX（最小写入器）────────────────────────────────────────────────────
 
-const XLSX_HEADERS = ['序号', '时间', '级别', '机器', '来源ID', '容器', '容器ID', '错误类型', '报错内容', '打开链接'];
+const XLSX_HEADERS = ['序号', '时间', '级别', '机器IP', '机器名', '来源ID', '容器', '容器ID', '错误类型', '报错内容', '打开链接'];
 
 /** 去掉 XML 1.0 不允许的控制字符（日志里偶发 \u0000 会让 Excel 打不开文件） */
 function stripInvalidXmlChars(s: string): string {
@@ -259,42 +268,88 @@ export function crc32(bytes: Uint8Array): number {
 
 interface ZipEntry { name: string; data: Uint8Array }
 
-/** 最小 ZIP 写入（method=0 store）；Excel 对 store 完全兼容 */
+/**
+ * 最小 ZIP 写入（method=0 store）；Excel 对 store 完全兼容。
+ *
+ * 修的 bug（2026-11-06，用户报「Excel 无法导出」）：
+ * 旧实现用 `chunks.push(...nameBytes)` / `push([...entry.data])` 把字节铺成参数，
+ * 通知多起来（实测 150 条起）sheet1.xml 一大，就 `RangeError: Maximum call stack
+ * size exceeded`，导出直接抛异常 —— 而调用方只在 console 里记了一行，界面毫无反应。
+ *
+ * 现在改成**先算总长、按偏移写 Uint8Array**，不产生任何大数组展开。
+ */
 export function zipStore(entries: ZipEntry[]): Uint8Array {
   const enc = new TextEncoder();
-  const chunks: number[] = [];
-  const central: number[] = [];
-  const push = (arr: number[]) => chunks.push(...arr);
-  const u16 = (v: number) => [v & 0xFF, (v >>> 8) & 0xFF];
-  const u32 = (v: number) => [v & 0xFF, (v >>> 8) & 0xFF, (v >>> 16) & 0xFF, (v >>> 24) & 0xFF];
+  const prepared = entries.map(e => ({ name: enc.encode(e.name), data: e.data, crc: crc32(e.data) }));
 
-  let offset = 0;
+  const LOCAL_HEADER = 30;
+  const CENTRAL_HEADER = 46;
+  const EOCD = 22;
+
+  let total = 0;
+  for (const e of prepared) total += LOCAL_HEADER + e.name.length + e.data.length;
+  for (const e of prepared) total += CENTRAL_HEADER + e.name.length;
+  total += EOCD;
+
+  const out = new Uint8Array(total);
+  const view = new DataView(out.buffer);
+  let p = 0;
+
   const d = new Date();
-  const dosTime = ((d.getHours() << 11) | (d.getMinutes() << 5) | Math.floor(d.getSeconds() / 2)) & 0xFFFF;
-  const dosDate = (((d.getFullYear() - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate()) & 0xFFFF;
+  const dosTime = ((d.getHours() << 11) | (d.getMinutes() << 5) | Math.floor(d.getSeconds() / 2)) & 0xffff;
+  const dosDate = (((d.getFullYear() - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate()) & 0xffff;
 
-  for (const entry of entries) {
-    const nameBytes = enc.encode(entry.name);
-    const crc = crc32(entry.data);
-    const localOffset = offset;
-    const header = [
-      ...u32(0x04034b50), ...u16(20), ...u16(0), ...u16(0), ...u16(dosTime), ...u16(dosDate),
-      ...u32(crc), ...u32(entry.data.length), ...u32(entry.data.length),
-      ...u16(nameBytes.length), ...u16(0),
-    ];
-    push(header);
-    chunks.push(...nameBytes);
-    push([...entry.data]);
-    offset += header.length + nameBytes.length + entry.data.length;
-    central.push(...u32(0x02014b50), ...u16(20), ...u16(20), ...u16(0), ...u16(0),
-      ...u16(dosTime), ...u16(dosDate), ...u32(crc), ...u32(entry.data.length), ...u32(entry.data.length),
-      ...u16(nameBytes.length), ...u16(0), ...u16(0), ...u16(0), ...u16(0), ...u32(0), ...u32(localOffset));
-    central.push(...nameBytes);
+  const offsets: number[] = [];
+  for (const e of prepared) {
+    offsets.push(p);
+    view.setUint32(p, 0x04034b50, true); p += 4;   // local file header
+    view.setUint16(p, 20, true); p += 2;           // version needed
+    view.setUint16(p, 0, true); p += 2;            // flags
+    view.setUint16(p, 0, true); p += 2;            // method = 0 (store)
+    view.setUint16(p, dosTime, true); p += 2;
+    view.setUint16(p, dosDate, true); p += 2;
+    view.setUint32(p, e.crc, true); p += 4;
+    view.setUint32(p, e.data.length, true); p += 4; // compressed size
+    view.setUint32(p, e.data.length, true); p += 4; // uncompressed size
+    view.setUint16(p, e.name.length, true); p += 2;
+    view.setUint16(p, 0, true); p += 2;            // extra length
+    out.set(e.name, p); p += e.name.length;
+    out.set(e.data, p); p += e.data.length;
   }
-  const cdOffset = offset;
-  const cdSize = central.length;
-  const eocd = [...u32(0x06054b50), ...u16(0), ...u16(0), ...u16(entries.length), ...u16(entries.length), ...u32(cdSize), ...u32(cdOffset), ...u16(0)];
-  return new Uint8Array([...chunks, ...central, ...eocd]);
+
+  const cdOffset = p;
+  prepared.forEach((e, i) => {
+    view.setUint32(p, 0x02014b50, true); p += 4;   // central directory header
+    view.setUint16(p, 20, true); p += 2;           // version made by
+    view.setUint16(p, 20, true); p += 2;           // version needed
+    view.setUint16(p, 0, true); p += 2;
+    view.setUint16(p, 0, true); p += 2;
+    view.setUint16(p, dosTime, true); p += 2;
+    view.setUint16(p, dosDate, true); p += 2;
+    view.setUint32(p, e.crc, true); p += 4;
+    view.setUint32(p, e.data.length, true); p += 4;
+    view.setUint32(p, e.data.length, true); p += 4;
+    view.setUint16(p, e.name.length, true); p += 2;
+    view.setUint16(p, 0, true); p += 2;            // extra
+    view.setUint16(p, 0, true); p += 2;            // comment
+    view.setUint16(p, 0, true); p += 2;            // disk number
+    view.setUint16(p, 0, true); p += 2;            // internal attrs
+    view.setUint32(p, 0, true); p += 4;            // external attrs
+    view.setUint32(p, offsets[i], true); p += 4;   // local header offset
+    out.set(e.name, p); p += e.name.length;
+  });
+  const cdSize = p - cdOffset;
+
+  view.setUint32(p, 0x06054b50, true); p += 4;     // EOCD
+  view.setUint16(p, 0, true); p += 2;
+  view.setUint16(p, 0, true); p += 2;
+  view.setUint16(p, prepared.length, true); p += 2;
+  view.setUint16(p, prepared.length, true); p += 2;
+  view.setUint32(p, cdSize, true); p += 4;
+  view.setUint32(p, cdOffset, true); p += 4;
+  view.setUint16(p, 0, true); p += 2;
+
+  return out;
 }
 
 /**
@@ -306,7 +361,7 @@ export function toXlsx(items: NotificationItem[], now = Date.now()): Uint8Array 
   const table: string[][] = [XLSX_HEADERS];
   for (const r of rows) {
     table.push([
-      String(r.index), r.time, r.level, r.machine, r.sourceId,
+      String(r.index), r.time, r.level, r.machine, r.machineName, r.sourceId,
       r.container, r.containerId, r.errorType, r.content, r.nav,
     ]);
   }

@@ -55,6 +55,7 @@ export default function NotificationCenter() {
   const {
     notifications, unread, markAllRead,
     ignoreNotifications, deleteNotifications, clearNotifications,
+    error: toastError, warning: toastWarning,
   } = useToast();
   const [open, setOpen] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -136,7 +137,10 @@ export default function NotificationCenter() {
     const items = selected.size > 0
       ? filteredNotifications.filter(n => selected.has(n.id))
       : filteredNotifications;
-    if (items.length === 0) return;
+    if (items.length === 0) {
+      toastWarning('没有可导出的通知');
+      return;
+    }
     const name = exportFileName(format);
     try {
       if (format === 'md') {
@@ -147,8 +151,11 @@ export default function NotificationCenter() {
       }
       setExportOpen(false);
     } catch (e) {
-      // 导出失败不应该把界面搞崩，给出可见反馈
+      // 以前只 console.error → 用户看到的就是「点了没反应」。
+      // 现在必须在界面上说清楚，否则根本不知道是失败了。
+      const msg = e instanceof Error ? e.message : String(e);
       console.error('导出通知失败', e);
+      toastError(`导出失败：${msg}`);
     }
   };
 

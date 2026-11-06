@@ -28,6 +28,8 @@ export interface NotificationItem {
   sourceId?: string;
   /** 机器/来源显示名（如「本机 Docker」「4090服务器」） */
   sourceName?: string;
+  /** 机器 IP（导出时「机器」列用它，比机器名更能定位） */
+  sourceHost?: string;
   /** 容器名 */
   containerName?: string;
   /** 容器 ID（短 ID 即可） */

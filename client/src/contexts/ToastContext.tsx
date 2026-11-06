@@ -22,10 +22,10 @@ interface ToastOptions {
   /** 点这条通知跳转到哪（如 /docker?sourceId=..&containerId=..&openLog=1） */
   nav?: string;
   /** 结构化告警来源（导出用）：机器/容器/级别/报错原文 */
-  meta?: Pick<NotificationItem, 'sourceId' | 'sourceName' | 'containerName' | 'containerId' | 'level' | 'errorType' | 'errorContent'>;
+  meta?: Pick<NotificationItem, 'sourceId' | 'sourceName' | 'sourceHost' | 'containerName' | 'containerId' | 'level' | 'errorType' | 'errorContent'>;
 }
 
-type ToastMeta = Pick<NotificationItem, 'sourceId' | 'sourceName' | 'containerName' | 'containerId' | 'level' | 'errorType' | 'errorContent'>;
+type ToastMeta = Pick<NotificationItem, 'sourceId' | 'sourceName' | 'sourceHost' | 'containerName' | 'containerId' | 'level' | 'errorType' | 'errorContent'>;
 
 interface ToastMsg {
   id: string;
