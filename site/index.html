@@ -3,39 +3,74 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>OpenLog · 智能运维监控平台 —— 一个面板管住日志、算力、容器与服务器</title>
-<meta name="description" content="OpenLog 是自托管的智能运维监控平台：日志实时告警、GPU / MFU 监控、Docker over SSH 管理、远程服务器运维、AI 运维助手。也是 FDE（前沿部署工程师）进客户内网就能直接开工的那块面板。1000 台规模压测通过，PostgreSQL 生产运行中，单端口部署。" />
+<title data-i18n="meta_title">OpenLog · 智能运维监控平台 —— 一个面板管住日志、算力、容器与服务器</title>
+<meta name="description" data-i18n-content="meta_desc" content="OpenLog 是自托管的智能运维监控平台：日志实时告警、GPU / MFU 监控、Docker over SSH 管理、远程服务器运维、AI 运维助手。也是 FDE（前沿部署工程师）进客户内网就能直接开工的那块面板。1000 台规模压测通过，PostgreSQL 生产运行中，单端口部署。" />
 <meta name="theme-color" content="#0B0F14" />
-<meta property="og:title" content="OpenLog · 智能运维监控平台" />
-<meta property="og:description" content="一个面板管住「日志 · 算力 · 容器 · 服务器 · AI 排查」，FDE 驻场即战力" />
+<meta property="og:title" data-i18n-content="meta_og_title" content="OpenLog · 智能运维监控平台" />
+<meta property="og:description" data-i18n-content="meta_og_desc" content="一个面板管住「日志 · 算力 · 容器 · 服务器 · AI 排查」，FDE 驻场即战力" />
 <meta property="og:type" content="website" />
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230B0F14'/%3E%3Crect x='6' y='6' width='9' height='20' rx='2' fill='%2334D399'/%3E%3Crect x='17' y='6' width='9' height='9' rx='2' fill='%2310B981' opacity='.65'/%3E%3Crect x='17' y='17' width='9' height='9' rx='2' fill='%2358A6FF' opacity='.7'/%3E%3C/svg%3E" />
 <link rel="stylesheet" href="assets/style.css" />
 <script>document.documentElement.classList.add('js');</script>
+<style>
+/* ===== 语言切换（纯本地，无外部资源） ===== */
+.lang{
+  display:inline-flex;align-items:center;overflow:hidden;
+  border:1px solid var(--border);border-radius:9px;background:rgba(255,255,255,.025);
+}
+.lang button{
+  appearance:none;-webkit-appearance:none;border:0;background:transparent;
+  padding:8px 10px;cursor:pointer;white-space:nowrap;
+  color:var(--sub);font:600 12px/1 var(--cn);letter-spacing:.02em;
+  transition:color .2s ease,background .2s ease;
+}
+.lang button+button{border-left:1px solid var(--border)}
+.lang button:hover{color:var(--text)}
+.lang button.is-active{
+  color:#062A1E;background:linear-gradient(180deg,#3EE0A6,#10B981);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.32);
+}
+.lang button:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+@media (max-width:720px){.lang button{padding:7px 8px;font-size:11px}}
+
+/* ===== 英文文案更长：只调整换行策略，不动字号与配色 ===== */
+html[lang="en"] .nw{white-space:normal}
+html[lang="en"] .nav-links a{white-space:nowrap}
+html[lang="en"] .chips li{white-space:nowrap}
+html[lang="en"] .flow{flex-wrap:wrap;row-gap:6px}
+html[lang="en"] .flow span{white-space:nowrap}
+html[lang="en"] .acts{flex-wrap:wrap;row-gap:2px}
+html[lang="en"] .deck-caption b,
+html[lang="en"] .deck-caption span{overflow-wrap:anywhere}
+</style>
 </head>
 <body>
-<a class="skip" href="#main">跳到主要内容</a>
+<a class="skip" href="#main" data-i18n="skip">跳到主要内容</a>
 
 <header class="nav" id="nav">
   <div class="wrap nav-inner">
-    <a class="brand" href="#top" aria-label="OpenLog 首页">
+    <a class="brand" href="#top" aria-label="OpenLog 首页" data-i18n-aria="brand_home">
       <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
       <span class="brand-name">OpenLog</span>
       <span class="brand-tag">node</span>
     </a>
-    <nav class="nav-links" id="nav-links" aria-label="站点导航">
-      <a href="#why">为什么</a>
+    <nav class="nav-links" id="nav-links" aria-label="站点导航" data-i18n-aria="nav_site">
+      <a href="#why" data-i18n="nav_why">为什么</a>
       <a href="#fde" class="hot">FDE</a>
-      <a href="#product">产品</a>
-      <a href="#features">能力</a>
-      <a href="#arch">架构</a>
-      <a href="#scale">规模</a>
-      <a href="#security">安全</a>
-      <a href="#roadmap">路线图</a>
+      <a href="#product" data-i18n="nav_product">产品</a>
+      <a href="#features" data-i18n="nav_features">能力</a>
+      <a href="#arch" data-i18n="nav_arch">架构</a>
+      <a href="#scale" data-i18n="nav_scale">规模</a>
+      <a href="#security" data-i18n="nav_security">安全</a>
+      <a href="#roadmap" data-i18n="nav_roadmap">路线图</a>
     </nav>
     <div class="nav-actions">
-      <a class="btn btn-primary btn-sm" href="http://203.0.113.10:3001" target="_blank" rel="noopener">在线体验</a>
-      <button class="nav-burger" id="nav-burger" type="button" aria-label="打开导航菜单" aria-expanded="false" aria-controls="nav-links">
+      <div class="lang" id="lang-switch" role="group" aria-label="切换语言" data-i18n-aria="lang_switch">
+        <button type="button" data-lang="zh" lang="zh-CN" aria-pressed="true" class="is-active">中文</button>
+        <button type="button" data-lang="en" lang="en" aria-pressed="false">English</button>
+      </div>
+      <a class="btn btn-primary btn-sm" href="http://203.0.113.10:3001" target="_blank" rel="noopener" data-i18n="nav_try">在线体验</a>
+      <button class="nav-burger" id="nav-burger" type="button" aria-label="打开导航菜单" data-i18n-aria="nav_menu_open" data-i18n-aria-alt="nav_menu_close" aria-expanded="false" aria-controls="nav-links">
         <span></span><span></span><span></span>
       </button>
     </div>
@@ -48,29 +83,29 @@
   <section class="hero" id="top">
     <div class="wrap hero-grid">
       <div class="hero-copy reveal">
-        <p class="kicker">Self-hosted · 内网可用</p>
-        <h1><span class="nw">把运维的「看」</span><span class="nw">和「动手」</span><br /><em>放进同一个面板</em></h1>
-        <p class="lead">
+        <p class="kicker" data-i18n="hero_kicker">Self-hosted · 内网可用</p>
+        <h1><span class="nw" data-i18n="hero_h1a">把运维的「看」</span><span class="nw" data-i18n="hero_h1b">和「动手」</span><br /><em data-i18n="hero_h1c">放进同一个面板</em></h1>
+        <p class="lead" data-i18n="hero_lead">
           日志分析、GPU / MFU 监控、Docker 管理、远程服务器运维、AI 运维助手，
           收进一个 Web 面板。11 个页面共享同一套鉴权、同一份数据、同一套告警通道。
         </p>
         <div class="hero-cta">
-          <a class="btn btn-primary" href="http://203.0.113.10:3001" target="_blank" rel="noopener">打开面板 <span aria-hidden="true">→</span></a>
-          <a class="btn btn-ghost" href="#features">看核心能力</a>
+          <a class="btn btn-primary" href="http://203.0.113.10:3001" target="_blank" rel="noopener" data-i18n-html="hero_cta1">打开面板 <span aria-hidden="true">→</span></a>
+          <a class="btn btn-ghost" href="#features" data-i18n="hero_cta2">看核心能力</a>
         </div>
-        <ul class="chips" aria-label="核心特性">
-          <li>日志实时告警</li>
+        <ul class="chips" aria-label="核心特性" data-i18n-aria="hero_chips">
+          <li data-i18n="log_alerts">日志实时告警</li>
           <li>GPU / MFU</li>
           <li>Docker over SSH</li>
-          <li>1000 台就绪</li>
+          <li data-i18n="chip_1000">1000 台就绪</li>
           <li>PostgreSQL</li>
-          <li>FDE 现场就战力</li>
+          <li data-i18n="chip_fde">FDE 现场就战力</li>
         </ul>
       </div>
 
       <!-- 轮播图 -->
       <div class="hero-visual reveal">
-        <div class="deck" id="deck" aria-roledescription="轮播图" aria-label="产品界面轮播">
+        <div class="deck" id="deck" aria-roledescription="轮播图" aria-label="产品界面轮播" data-i18n-aria="deck_label">
           <div class="browser">
             <div class="browser-bar">
               <span class="lights" aria-hidden="true"><i></i><i></i><i></i></span>
@@ -81,10 +116,10 @@
               <div class="track" id="track">
 
                 <!-- 1 日志监控 -->
-                <figure class="slide" role="group" aria-roledescription="幻灯片" aria-label="第 1 张，共 6 张：日志监控与告警">
+                <figure class="slide" role="group" aria-roledescription="幻灯片" aria-label="第 1 张，共 6 张：日志监控与告警" data-i18n-aria="slide1_aria">
                   <div class="mock">
                     <div class="mock-head">
-                      <span class="mock-title">日志流 · openlog-4090</span>
+                      <span class="mock-title" data-i18n="s1_mocktitle">日志流 · openlog-4090</span>
                       <span class="tag ok"><i class="dot-live"></i>LIVE</span>
                     </div>
                     <div class="mock-body">
@@ -98,22 +133,22 @@
                     </div>
                     <div class="m-toast">
                       <span class="toast-dot" aria-hidden="true"></span>
-                      <span><b>ERROR 命中 3 次</b> · openlog-4090</span>
-                      <span class="toast-act">一键跳转 →</span>
+                      <span><b data-i18n="toast_hit">ERROR 命中 3 次</b> · openlog-4090</span>
+                      <span class="toast-act" data-i18n="toast_jump">一键跳转 →</span>
                     </div>
                   </div>
                   <figcaption>
-                    <b>日志监控与告警</b>
-                    <span>WS 实时推送 · 级别过滤 · ERROR 关键字命中就弹窗，一键跳到对应容器日志</span>
+                    <b data-i18n="s1_cap">日志监控与告警</b>
+                    <span data-i18n="s1_desc">WS 实时推送 · 级别过滤 · ERROR 关键字命中就弹窗，一键跳到对应容器日志</span>
                   </figcaption>
                 </figure>
 
                 <!-- 2 GPU / MFU -->
-                <figure class="slide" role="group" aria-roledescription="幻灯片" aria-label="第 2 张，共 6 张：GPU 与 MFU 模型算力效率">
+                <figure class="slide" role="group" aria-roledescription="幻灯片" aria-label="第 2 张，共 6 张：GPU 与 MFU 模型算力效率" data-i18n-aria="slide2_aria">
                   <div class="mock">
                     <div class="mock-head">
-                      <span class="mock-title">算力监控 · 4 × A100 80G</span>
-                      <span class="tag blue">MFU 已接入</span>
+                      <span class="mock-title" data-i18n="s2_mocktitle">算力监控 · 4 × A100 80G</span>
+                      <span class="tag blue" data-i18n="s2_tag">MFU 已接入</span>
                     </div>
                     <div class="mock-body">
                       <div class="m-gpu">
@@ -123,39 +158,39 @@
                         <div class="gpu-tile"><span class="gpu-name">GPU 3</span><span class="gpu-val">89<i>%</i></span><span class="gpu-sub">69 / 80 GB · 70°C</span><span class="bar"><i style="width:89%"></i></span></div>
                       </div>
                       <div class="m-spark">
-                        <span class="m-spark-label">近 5 分钟 GPU 利用率</span>
+                        <span class="m-spark-label" data-i18n="s2_spark">近 5 分钟 GPU 利用率</span>
                         <div class="m-chart sm" aria-hidden="true"><i style="height:38%"></i><i style="height:52%"></i><i style="height:47%"></i><i style="height:61%"></i><i style="height:55%"></i><i style="height:68%"></i><i style="height:72%"></i><i style="height:64%"></i><i style="height:78%"></i><i style="height:71%"></i><i style="height:83%"></i><i style="height:76%"></i><i style="height:88%"></i><i style="height:81%"></i><i style="height:92%"></i><i style="height:86%"></i><i style="height:90%"></i><i style="height:84%"></i></div>
                       </div>
                       <div class="m-mfu">
-                        <div class="mfu-main"><span class="mfu-num">42.3<i>%</i></span><span class="mfu-label">MFU · 引擎无关口径</span></div>
+                        <div class="mfu-main"><span class="mfu-num">42.3<i>%</i></span><span class="mfu-label" data-i18n="s2_mfu_label">MFU · 引擎无关口径</span></div>
                         <div class="mfu-meta">
-                          <span class="mfu-row"><em>模型</em>qwen3.8-flash-next</span>
-                          <span class="mfu-row"><em>引擎</em>vLLM · SGLang · 7 种适配</span>
-                          <span class="mfu-row"><em>口径</em>吞吐 × 系数 / 峰值算力</span>
+                          <span class="mfu-row"><em data-i18n="mfu_l_model">模型</em>qwen3.8-flash-next</span>
+                          <span class="mfu-row"><em data-i18n="mfu_l_engine">引擎</em>vLLM · SGLang · 7 种适配</span>
+                          <span class="mfu-row"><em data-i18n="mfu_l_calc">口径</em>吞吐 × 系数 / 峰值算力</span>
                         </div>
                       </div>
                     </div>
                   </div>
                   <figcaption>
-                    <b>GPU 与 MFU</b>
-                    <span>GPU / 显存 / 温度连续视角，MFU 引擎无关、零配置，vLLM、SGLang 都能算</span>
+                    <b data-i18n="s2_cap">GPU 与 MFU</b>
+                    <span data-i18n="s2_desc">GPU / 显存 / 温度连续视角，MFU 引擎无关、零配置，vLLM、SGLang 都能算</span>
                   </figcaption>
                 </figure>
 
                 <!-- 3 Docker -->
-                <figure class="slide" role="group" aria-roledescription="幻灯片" aria-label="第 3 张，共 6 张：Docker over SSH 容器管理">
+                <figure class="slide" role="group" aria-roledescription="幻灯片" aria-label="第 3 张，共 6 张：Docker over SSH 容器管理" data-i18n-aria="slide3_aria">
                   <div class="mock">
                     <div class="mock-head">
-                      <span class="mock-title">Docker · 4090服务器（SSH 桥接）</span>
+                      <span class="mock-title" data-i18n="s3_mocktitle">Docker · 4090服务器（SSH 桥接）</span>
                       <span class="tag ok">CONNECTED</span>
                     </div>
                     <div class="mock-body">
-                      <div class="m-row head"><span></span><span>容器</span><span>状态</span><span>操作</span></div>
-                      <div class="m-row"><span class="s-dot on"></span><span class="mono">vllm-qwen3</span><span class="st on">运行中</span><span class="acts"><i>日志</i><i>终端</i></span></div>
-                      <div class="m-row"><span class="s-dot on"></span><span class="mono">sglang-router</span><span class="st on">运行中</span><span class="acts"><i>日志</i><i>终端</i></span></div>
-                      <div class="m-row"><span class="s-dot off"></span><span class="mono">embedding-api</span><span class="st off">已退出 1</span><span class="acts"><i>启动</i><i>详情</i></span></div>
-                      <div class="m-row"><span class="s-dot on"></span><span class="mono">openlog-agent</span><span class="st on">运行中</span><span class="acts"><i>日志</i><i>终端</i></span></div>
-                      <div class="m-row"><span class="s-dot off"></span><span class="mono">jupyter-notebook</span><span class="st off">已退出 137</span><span class="acts"><i>启动</i><i>详情</i></span></div>
+                      <div class="m-row head"><span></span><span data-i18n="col_container">容器</span><span data-i18n="col_status">状态</span><span data-i18n="col_actions">操作</span></div>
+                      <div class="m-row"><span class="s-dot on"></span><span class="mono">vllm-qwen3</span><span class="st on" data-i18n="st_running">运行中</span><span class="acts"><i data-i18n="act_logs">日志</i><i data-i18n="act_term">终端</i></span></div>
+                      <div class="m-row"><span class="s-dot on"></span><span class="mono">sglang-router</span><span class="st on" data-i18n="st_running">运行中</span><span class="acts"><i data-i18n="act_logs">日志</i><i data-i18n="act_term">终端</i></span></div>
+                      <div class="m-row"><span class="s-dot off"></span><span class="mono">embedding-api</span><span class="st off" data-i18n="st_exited1">已退出 1</span><span class="acts"><i data-i18n="act_start">启动</i><i data-i18n="act_detail">详情</i></span></div>
+                      <div class="m-row"><span class="s-dot on"></span><span class="mono">openlog-agent</span><span class="st on" data-i18n="st_running">运行中</span><span class="acts"><i data-i18n="act_logs">日志</i><i data-i18n="act_term">终端</i></span></div>
+                      <div class="m-row"><span class="s-dot off"></span><span class="mono">jupyter-notebook</span><span class="st off" data-i18n="st_exited137">已退出 137</span><span class="acts"><i data-i18n="act_start">启动</i><i data-i18n="act_detail">详情</i></span></div>
                       <div class="m-term">
                         <span class="t-line"><b>$</b> docker logs -f --tail 3 embedding-api</span>
                         <span class="t-line dim">[12:08:01] loading model weights…</span>
@@ -165,104 +200,104 @@
                   </div>
                   <figcaption>
                     <b>Docker over SSH</b>
-                    <span>不用在宿主机装 agent：远端 dockerode 桥接，容器生命周期、实时日志、内嵌终端全都在面板里</span>
+                    <span data-i18n="s3_desc">不用在宿主机装 agent：远端 dockerode 桥接，容器生命周期、实时日志、内嵌终端全都在面板里</span>
                   </figcaption>
                 </figure>
 
                 <!-- 4 远程服务器 -->
-                <figure class="slide" role="group" aria-roledescription="幻灯片" aria-label="第 4 张，共 6 张：远程服务器连接池">
+                <figure class="slide" role="group" aria-roledescription="幻灯片" aria-label="第 4 张，共 6 张：远程服务器连接池" data-i18n-aria="slide4_aria">
                   <div class="mock">
                     <div class="mock-head">
-                      <span class="mock-title">远程服务器 · 连接是基础设施</span>
-                      <span class="tag ok">4 台</span>
+                      <span class="mock-title" data-i18n="s4_mocktitle">远程服务器 · 连接是基础设施</span>
+                      <span class="tag ok" data-i18n="s4_tag">4 台</span>
                     </div>
                     <div class="mock-body">
                       <div class="m-srv on">
-                        <span class="srv-top"><i class="s-dot on"></i>4090服务器<em>8ms</em></span>
-                        <span class="srv-sub">连接池复用 · 空闲回收</span>
-                        <span class="srv-sub">文件 / 终端 / AI Shell</span>
+                        <span class="srv-top" data-i18n-html="srv1_top"><i class="s-dot on"></i>4090服务器<em>8ms</em></span>
+                        <span class="srv-sub" data-i18n="srv_pool_sub">连接池复用 · 空闲回收</span>
+                        <span class="srv-sub" data-i18n="srv_files_sub">文件 / 终端 / AI Shell</span>
                       </div>
                       <div class="m-srv on">
-                        <span class="srv-top"><i class="s-dot on"></i>4卡T4<em>12ms</em></span>
-                        <span class="srv-sub">连接池复用 · 空闲回收</span>
-                        <span class="srv-sub">文件 / 终端 / AI Shell</span>
+                        <span class="srv-top" data-i18n-html="srv2_top"><i class="s-dot on"></i>4卡T4<em>12ms</em></span>
+                        <span class="srv-sub" data-i18n="srv_pool_sub">连接池复用 · 空闲回收</span>
+                        <span class="srv-sub" data-i18n="srv_files_sub">文件 / 终端 / AI Shell</span>
                       </div>
                       <div class="m-srv err">
-                        <span class="srv-top"><i class="s-dot err"></i>双卡4090<em>失败 3 次</em></span>
+                        <span class="srv-top" data-i18n-html="srv3_top"><i class="s-dot err"></i>双卡4090<em>失败 3 次</em></span>
                         <span class="srv-err">Timed out while waiting for handshake</span>
-                        <span class="srv-sub">退避重连 5s → 10s → 20s → 5min</span>
+                        <span class="srv-sub" data-i18n="srv_backoff">退避重连 5s → 10s → 20s → 5min</span>
                       </div>
                       <div class="m-pool">
-                        <span><em>连接池</em>2 / 16 活跃</span>
-                        <span><em>空闲回收</em>120s</span>
-                        <span><em>退避上限</em>5min</span>
-                        <span><em>加密</em>AES-256-GCM</span>
+                        <span data-i18n-html="pool_conn"><em>连接池</em>2 / 16 活跃</span>
+                        <span data-i18n-html="pool_idle"><em>空闲回收</em>120s</span>
+                        <span data-i18n-html="pool_backoff"><em>退避上限</em>5min</span>
+                        <span data-i18n-html="pool_enc"><em>加密</em>AES-256-GCM</span>
                       </div>
                     </div>
                   </div>
                   <figcaption>
-                    <b>远程服务器</b>
-                    <span>连接池 + 退避重连，卡片上直接写清失败原因，不用猜是网络、sshd 还是密码</span>
+                    <b data-i18n="remote_servers">远程服务器</b>
+                    <span data-i18n="s4_desc">连接池 + 退避重连，卡片上直接写清失败原因，不用猜是网络、sshd 还是密码</span>
                   </figcaption>
                 </figure>
 
                 <!-- 5 AI 运维助手 -->
-                <figure class="slide" role="group" aria-roledescription="幻灯片" aria-label="第 5 张，共 6 张：AI 运维助手">
+                <figure class="slide" role="group" aria-roledescription="幻灯片" aria-label="第 5 张，共 6 张：AI 运维助手" data-i18n-aria="slide5_aria">
                   <div class="mock">
                     <div class="mock-head">
-                      <span class="mock-title">运维助手 · 多步 Agent</span>
-                      <span class="tag purple">SSH: 4090服务器</span>
+                      <span class="mock-title" data-i18n="s5_mocktitle">运维助手 · 多步 Agent</span>
+                      <span class="tag purple" data-i18n="s5_tag">SSH: 4090服务器</span>
                     </div>
                     <div class="mock-body">
                       <div class="m-chat">
-                        <p class="bubble user">embedding-api 起来就挂，看下什么原因，能修就修掉</p>
+                        <p class="bubble user" data-i18n="s5_bubble_user">embedding-api 起来就挂，看下什么原因，能修就修掉</p>
                         <ol class="steps">
                           <li class="ok"><span>1</span>ssh_exec <em>docker logs --tail 50 embedding-api</em></li>
                           <li class="ok"><span>2</span>read_file <em>/opt/svc/docker-compose.yml</em></li>
                           <li class="ok"><span>3</span>patch_file <em>driver: 535.104 → 535.161</em></li>
-                          <li class="run"><span>4</span>docker_restart <em>容器重建中…</em></li>
+                          <li class="run"><span>4</span>docker_restart <em data-i18n="rebuild_in_progress">容器重建中…</em></li>
                         </ol>
                         <div class="m-diff">
                           <span class="d-line"><i>−</i>image: nvidia/cuda:12.2-runtime</span>
                           <span class="d-line"><i>+</i>image: nvidia/cuda:12.4-runtime</span>
                         </div>
-                        <p class="bubble ai">已定位：宿主驱动 535.161 与镜像内 CUDA 12.2 驱动版本不匹配。已改 compose 并重建，健康检查通过。</p>
+                        <p class="bubble ai" data-i18n="s5_bubble_ai">已定位：宿主驱动 535.161 与镜像内 CUDA 12.2 驱动版本不匹配。已改 compose 并重建，健康检查通过。</p>
                       </div>
                     </div>
                   </div>
                   <figcaption>
-                    <b>AI 运维助手（Agent）</b>
-                    <span>不是聊天机器人：多步工具调用，用现有 SSH 账号真改代码、真改配置，每一步都留审计</span>
+                    <b data-i18n="s5_cap">AI 运维助手（Agent）</b>
+                    <span data-i18n="s5_desc">不是聊天机器人：多步工具调用，用现有 SSH 账号真改代码、真改配置，每一步都留审计</span>
                   </figcaption>
                 </figure>
 
                 <!-- 6 规模 -->
-                <figure class="slide" role="group" aria-roledescription="幻灯片" aria-label="第 6 张，共 6 张：1000 台规模">
+                <figure class="slide" role="group" aria-roledescription="幻灯片" aria-label="第 6 张，共 6 张：1000 台规模" data-i18n-aria="slide6_aria">
                   <div class="mock">
                     <div class="mock-head">
-                      <span class="mock-title">规模与性能 · 1000 台压测</span>
+                      <span class="mock-title" data-i18n="s6_mocktitle">规模与性能 · 1000 台压测</span>
                       <span class="tag ok">PASS</span>
                     </div>
                     <div class="mock-body">
                       <div class="m-nums">
-                        <div class="num"><b>1000</b><span>台服务器接入</span></div>
-                        <div class="num"><b>20<i>ms</i></b><span>全量列表加载</span></div>
-                        <div class="num"><b>0.005<i>ms</i></b><span>单条状态更新</span></div>
+                        <div class="num"><b>1000</b><span data-i18n="n_servers">台服务器接入</span></div>
+                        <div class="num"><b>20<i>ms</i></b><span data-i18n="n_listload">全量列表加载</span></div>
+                        <div class="num"><b>0.005<i>ms</i></b><span data-i18n="n_statusupdate">单条状态更新</span></div>
                       </div>
                       <div class="m-chart" aria-hidden="true">
                         <i style="height:26%"></i><i style="height:34%"></i><i style="height:30%"></i><i style="height:44%"></i><i style="height:39%"></i><i style="height:51%"></i><i style="height:47%"></i><i style="height:58%"></i><i style="height:54%"></i><i style="height:66%"></i><i style="height:61%"></i><i style="height:73%"></i><i style="height:69%"></i><i style="height:80%"></i><i style="height:76%"></i><i style="height:88%"></i><i style="height:83%"></i><i style="height:94%"></i><i style="height:89%"></i><i style="height:97%"></i><i style="height:92%"></i><i style="height:100%"></i><i style="height:96%"></i><i style="height:99%"></i>
                       </div>
                       <div class="m-bars">
-                        <span class="bars-row"><em>批量写 1000 行</em><span class="bar"><i style="width:100%"></i></span><b>674ms</b></span>
-                        <span class="bars-row"><em>PB 级接口延迟</em><span class="bar"><i style="width:6%"></i></span><b>1ms</b></span>
-                        <span class="bars-row"><em>告警通道分发</em><span class="bar"><i style="width:18%"></i></span><b>3ms</b></span>
+                        <span class="bars-row"><em data-i18n="bar_batch">批量写 1000 行</em><span class="bar"><i style="width:100%"></i></span><b>674ms</b></span>
+                        <span class="bars-row"><em data-i18n="bar_latency">PB 级接口延迟</em><span class="bar"><i style="width:6%"></i></span><b>1ms</b></span>
+                        <span class="bars-row"><em data-i18n="bar_alert">告警通道分发</em><span class="bar"><i style="width:18%"></i></span><b>3ms</b></span>
                       </div>
-                      <div class="m-foot">连接池 max 10 · 会话复用 · 状态推送增量 diff</div>
+                      <div class="m-foot" data-i18n="s6_foot">连接池 max 10 · 会话复用 · 状态推送增量 diff</div>
                     </div>
                   </div>
                   <figcaption>
-                    <b>1000 台规模</b>
-                    <span>从几十台到一千台的改造已完成：增量 diff、连接池限流、批量写、分页与虚拟滚动</span>
+                    <b data-i18n="s6_cap">1000 台规模</b>
+                    <span data-i18n="s6_desc">从几十台到一千台的改造已完成：增量 diff、连接池限流、批量写、分页与虚拟滚动</span>
                   </figcaption>
                 </figure>
 
@@ -271,15 +306,15 @@
 
             <div class="deck-bar">
               <div class="deck-caption" id="deck-caption" aria-live="polite">
-                <b>日志监控与告警</b>
-                <span>WS 实时推送 · 级别过滤 · ERROR 关键字命中就弹窗，一键跳到对应容器日志</span>
+                <b data-i18n="s1_cap">日志监控与告警</b>
+                <span data-i18n="s1_desc">WS 实时推送 · 级别过滤 · ERROR 关键字命中就弹窗，一键跳到对应容器日志</span>
               </div>
               <div class="deck-controls">
-                <div class="dots" id="deck-dots" role="tablist" aria-label="选择轮播内容"></div>
+                <div class="dots" id="deck-dots" role="tablist" aria-label="选择轮播内容" data-i18n-aria="deck_dots_aria" data-i18n-tpl="deck_dot_tpl"></div>
                 <div class="arrows">
-                  <button class="circ" id="deck-prev" type="button" aria-label="上一张">‹</button>
+                  <button class="circ" id="deck-prev" type="button" aria-label="上一张" data-i18n-aria="deck_prev">‹</button>
                   <span class="counter" id="deck-counter">1 / 6</span>
-                  <button class="circ" id="deck-next" type="button" aria-label="下一张">›</button>
+                  <button class="circ" id="deck-next" type="button" aria-label="下一张" data-i18n-aria="deck_next">›</button>
                 </div>
               </div>
               <div class="deck-progress"><i id="deck-progress"></i></div>
@@ -291,19 +326,19 @@
   </section>
 
   <!-- ========== 数字带 ========== -->
-  <section class="band" aria-label="关键数字">
+  <section class="band" aria-label="关键数字" data-i18n-aria="band_aria">
     <div class="wrap band-grid">
-      <div class="stat reveal"><b>11</b><span>个功能页面</span></div>
-      <div class="stat reveal"><b>7</b><span>种推理引擎适配</span></div>
-      <div class="stat reveal"><b>1000</b><span>台压测通过</span></div>
-      <div class="stat reveal"><b>625</b><span>项自动化测试</span></div>
-      <div class="stat reveal"><b>3</b><span>种数据库后端</span></div>
-      <div class="stat reveal"><b>1<i>ms</i></b><span>PG 接口延迟</span></div>
+      <div class="stat reveal"><b>11</b><span data-i18n="n_pages">个功能页面</span></div>
+      <div class="stat reveal"><b>7</b><span data-i18n="n_engines">种推理引擎适配</span></div>
+      <div class="stat reveal"><b>1000</b><span data-i18n="n_loadtest">台压测通过</span></div>
+      <div class="stat reveal"><b>625</b><span data-i18n="n_tests">项自动化测试</span></div>
+      <div class="stat reveal"><b>3</b><span data-i18n="n_dbs">种数据库后端</span></div>
+      <div class="stat reveal"><b>1<i>ms</i></b><span data-i18n="n_pg_latency">PG 接口延迟</span></div>
     </div>
   </section>
 
   <!-- ========== 沉浸式滚动叙事 ========== -->
-  <section class="cine" id="cine" aria-label="滚动叙事：一次真实故障的 15 秒处置">
+  <section class="cine" id="cine" aria-label="滚动叙事：一次真实故障的 15 秒处置" data-i18n-aria="cine_aria">
     <div class="cine-track" id="cine-track">
       <div class="cine-stage">
         <div class="cine-bg" aria-hidden="true">
@@ -316,31 +351,31 @@
         <div class="wrap cine-inner">
           <span class="cine-ghost" id="cine-ghost" aria-hidden="true">01</span>
           <div class="cine-copy">
-            <p class="cine-kicker"><span class="k-lat">Scroll story</span> · 一次真实故障的 15 秒</p>
+            <p class="cine-kicker" data-i18n-html="cine_kicker"><span class="k-lat">Scroll story</span> · 一次真实故障的 15 秒</p>
             <ol class="cine-steps">
               <li class="cine-step" data-i="0">
                 <span class="cine-ts">12:05:07 · LOGS</span>
-                <h2>一个 ERROR，<br /><span class="nw">从 412 台机器里浮出来</span></h2>
-                <p>面板不给你刷屏：命中关键字的那些行才被推到面前，哪台机器、哪个容器、什么时候开始，一眼看到。</p>
-                <ul class="cine-chips"><li>412 台在管</li><li>ERROR ×3</li><li>WS 实时推送</li></ul>
+                <h2 data-i18n-html="cine1_h2">一个 ERROR，<br /><span class="nw">从 412 台机器里浮出来</span></h2>
+                <p data-i18n="cine1_p">面板不给你刷屏：命中关键字的那些行才被推到面前，哪台机器、哪个容器、什么时候开始，一眼看到。</p>
+                <ul class="cine-chips"><li data-i18n="cine1_c1">412 台在管</li><li>ERROR ×3</li><li data-i18n="cine1_c3">WS 实时推送</li></ul>
               </li>
               <li class="cine-step" data-i="1">
                 <span class="cine-ts">12:05:09 · COMPUTE</span>
-                <h2>算力在同一根<br /><span class="nw">时间轴上掉了 8 个点</span></h2>
-                <p>不用重新选机器：GPU 利用率、显存、MFU 和日志共用一条时间轴。掉点发生在报错前两秒 —— 因果是看得见的。</p>
-                <ul class="cine-chips"><li>MFU 34.1%</li><li>7 种引擎</li><li>零配置口径</li></ul>
+                <h2 data-i18n-html="cine2_h2">算力在同一根<br /><span class="nw">时间轴上掉了 8 个点</span></h2>
+                <p data-i18n="cine2_p">不用重新选机器：GPU 利用率、显存、MFU 和日志共用一条时间轴。掉点发生在报错前两秒 —— 因果是看得见的。</p>
+                <ul class="cine-chips"><li>MFU 34.1%</li><li data-i18n="cine2_c2">7 种引擎</li><li data-i18n="cine2_c3">零配置口径</li></ul>
               </li>
               <li class="cine-step" data-i="2">
                 <span class="cine-ts">12:05:14 · DOCKER</span>
-                <h2>不切窗口，<br /><span class="nw">直接跳进那台容器</span></h2>
-                <p>Docker over SSH：宿主机零安装、复用现有 SSH 账号。容器列表、实时日志、内嵌终端，全都长在同一个面板里。</p>
-                <ul class="cine-chips"><li>over SSH</li><li>零 agent</li><li>内嵌终端</li></ul>
+                <h2 data-i18n-html="cine3_h2">不切窗口，<br /><span class="nw">直接跳进那台容器</span></h2>
+                <p data-i18n="cine3_p">Docker over SSH：宿主机零安装、复用现有 SSH 账号。容器列表、实时日志、内嵌终端，全都长在同一个面板里。</p>
+                <ul class="cine-chips"><li>over SSH</li><li data-i18n="cine3_c2">零 agent</li><li data-i18n="cine3_c3">内嵌终端</li></ul>
               </li>
               <li class="cine-step" data-i="3">
                 <span class="cine-ts">12:05:22 · AGENT</span>
-                <h2>剩下的事交给 Agent，<br /><span class="nw">你只审一眼 diff</span></h2>
-                <p>读日志、定位到文件行号、改配置、重启、复验，每一步都有记录。交付的不是一段建议，是一个可回滚的变更。</p>
-                <ul class="cine-chips"><li>多步执行</li><li>真实 diff</li><li>全量审计</li></ul>
+                <h2 data-i18n-html="cine4_h2">剩下的事交给 Agent，<br /><span class="nw">你只审一眼 diff</span></h2>
+                <p data-i18n="cine4_p">读日志、定位到文件行号、改配置、重启、复验，每一步都有记录。交付的不是一段建议，是一个可回滚的变更。</p>
+                <ul class="cine-chips"><li data-i18n="cine4_c1">多步执行</li><li data-i18n="cine4_c2">真实 diff</li><li data-i18n="cine4_c3">全量审计</li></ul>
               </li>
             </ol>
           </div>
@@ -357,7 +392,7 @@
                   <div class="cine-fig">
                     <div class="mock">
                       <div class="mock-head">
-                        <span class="mock-title">日志流 · 全量 412 台</span>
+                        <span class="mock-title" data-i18n="cine1_mocktitle">日志流 · 全量 412 台</span>
                         <span class="tag err-live"><i class="dot-live"></i>ERROR 命中</span>
                       </div>
                       <div class="mock-body">
@@ -372,8 +407,8 @@
                         <div class="m-log dim"><span class="lv">DEBUG</span><span class="ts">12:05:23</span><span class="msg">ssh pool warm · 412 hosts · reuse 100%</span></div>
                         <div class="m-toast">
                           <span class="toast-dot"></span>
-                          <span><b>ERROR 命中 3 次</b> · vllm-qwen3 @ 4090服务器</span>
-                          <span class="toast-act">一键跳转 →</span>
+                          <span><b data-i18n="toast_hit">ERROR 命中 3 次</b> · vllm-qwen3 @ 4090服务器</span>
+                          <span class="toast-act" data-i18n="toast_jump">一键跳转 →</span>
                         </div>
                       </div>
                     </div>
@@ -391,8 +426,8 @@
                   <div class="cine-fig">
                     <div class="mock">
                       <div class="mock-head">
-                        <span class="mock-title">算力监控 · 4 × A100 80G</span>
-                        <span class="tag blue">MFU 已接入</span>
+                        <span class="mock-title" data-i18n="s2_mocktitle">算力监控 · 4 × A100 80G</span>
+                        <span class="tag blue" data-i18n="s2_tag">MFU 已接入</span>
                       </div>
                       <div class="mock-body">
                         <div class="m-gpu">
@@ -406,15 +441,15 @@
                           <div class="gpu-tile"><span class="gpu-name">GPU 7</span><span class="gpu-val">78<i>%</i></span><span class="gpu-sub">70 / 80 GB · 71°C</span><span class="bar"><i style="width:78%"></i></span></div>
                         </div>
                         <div class="m-spark">
-                          <span class="m-spark-label">近 5 分钟 GPU 利用率 · 12:05 处掉点</span>
+                          <span class="m-spark-label" data-i18n="cine2_spark">近 5 分钟 GPU 利用率 · 12:05 处掉点</span>
                           <div class="m-chart sm"><i style="height:74%"></i><i style="height:78%"></i><i style="height:81%"></i><i style="height:77%"></i><i style="height:83%"></i><i style="height:88%"></i><i style="height:92%"></i><i style="height:90%"></i><i style="height:86%"></i><i style="height:52%"></i><i style="height:44%"></i><i style="height:61%"></i><i style="height:70%"></i><i style="height:67%"></i><i style="height:73%"></i><i style="height:69%"></i><i style="height:76%"></i><i style="height:72%"></i></div>
                         </div>
                         <div class="m-mfu">
-                          <div class="mfu-main"><span class="mfu-num">34.1<i>%</i></span><span class="mfu-label">MFU · 12:05 前为 42.3%</span></div>
+                          <div class="mfu-main"><span class="mfu-num">34.1<i>%</i></span><span class="mfu-label" data-i18n="cine2_mfu_label">MFU · 12:05 前为 42.3%</span></div>
                           <div class="mfu-meta">
-                            <span class="mfu-row"><em>模型</em>qwen3.8-flash-next</span>
-                            <span class="mfu-row"><em>引擎</em>vLLM · SGLang · 7 种适配</span>
-                            <span class="mfu-row"><em>根因</em>排队堆积 → 有效算力被拖低</span>
+                            <span class="mfu-row"><em data-i18n="mfu_l_model">模型</em>qwen3.8-flash-next</span>
+                            <span class="mfu-row"><em data-i18n="mfu_l_engine">引擎</em>vLLM · SGLang · 7 种适配</span>
+                            <span class="mfu-row"><em data-i18n="mfu_l_root">根因</em>排队堆积 → 有效算力被拖低</span>
                           </div>
                         </div>
                       </div>
@@ -433,26 +468,26 @@
                   <div class="cine-fig">
                     <div class="mock">
                       <div class="mock-head">
-                        <span class="mock-title">Docker · 4090服务器（SSH 桥接）</span>
+                        <span class="mock-title" data-i18n="s3_mocktitle">Docker · 4090服务器（SSH 桥接）</span>
                         <span class="tag ok">CONNECTED</span>
                       </div>
                       <div class="mock-body">
-                        <div class="m-row head"><span></span><span>容器</span><span>状态</span><span>操作</span></div>
-                        <div class="m-row"><span class="s-dot on"></span><span class="mono">openlog-agent</span><span class="st on">运行中</span><span class="acts"><i>日志</i><i>终端</i></span></div>
-                        <div class="m-row"><span class="s-dot on"></span><span class="mono">vllm-qwen3</span><span class="st on">运行中</span><span class="acts"><i>日志</i><i>终端</i></span></div>
-                        <div class="m-row"><span class="s-dot on"></span><span class="mono">sglang-router</span><span class="st on">运行中</span><span class="acts"><i>日志</i><i>终端</i></span></div>
-                        <div class="m-row"><span class="s-dot err"></span><span class="mono">embedding-api</span><span class="st off">已退出 1</span><span class="acts"><i>启动</i><i>详情</i></span></div>
-                        <div class="m-row"><span class="s-dot off"></span><span class="mono">jupyter-notebook</span><span class="st off">已退出 137</span><span class="acts"><i>启动</i><i>详情</i></span></div>
+                        <div class="m-row head"><span></span><span data-i18n="col_container">容器</span><span data-i18n="col_status">状态</span><span data-i18n="col_actions">操作</span></div>
+                        <div class="m-row"><span class="s-dot on"></span><span class="mono">openlog-agent</span><span class="st on" data-i18n="st_running">运行中</span><span class="acts"><i data-i18n="act_logs">日志</i><i data-i18n="act_term">终端</i></span></div>
+                        <div class="m-row"><span class="s-dot on"></span><span class="mono">vllm-qwen3</span><span class="st on" data-i18n="st_running">运行中</span><span class="acts"><i data-i18n="act_logs">日志</i><i data-i18n="act_term">终端</i></span></div>
+                        <div class="m-row"><span class="s-dot on"></span><span class="mono">sglang-router</span><span class="st on" data-i18n="st_running">运行中</span><span class="acts"><i data-i18n="act_logs">日志</i><i data-i18n="act_term">终端</i></span></div>
+                        <div class="m-row"><span class="s-dot err"></span><span class="mono">embedding-api</span><span class="st off" data-i18n="st_exited1">已退出 1</span><span class="acts"><i data-i18n="act_start">启动</i><i data-i18n="act_detail">详情</i></span></div>
+                        <div class="m-row"><span class="s-dot off"></span><span class="mono">jupyter-notebook</span><span class="st off" data-i18n="st_exited137">已退出 137</span><span class="acts"><i data-i18n="act_start">启动</i><i data-i18n="act_detail">详情</i></span></div>
                         <div class="m-term">
                           <span class="t-line"><b>$</b> docker exec -it vllm-qwen3 bash</span>
                           <span class="t-line dim">[12:05:14] cat /etc/vllm/serve.yaml</span>
-                          <span class="t-line err">[12:05:15] max_num_seqs: 64  # 显存预算超了 2.3 GiB</span>
+                          <span class="t-line err" data-i18n-html="term_comment">[12:05:15] max_num_seqs: 64  # 显存预算超了 2.3 GiB</span>
                           <span class="t-line dim">[12:05:16] nvidia-smi · GPU 1 79/80 GB</span>
                         </div>
                         <div class="m-pool">
-                          <span><em>通道</em>SSH 桥接 · 复用现有账号</span>
-                          <span><em>宿主</em>零 agent 安装</span>
-                          <span><em>延迟</em>12ms · 容器 23 个</span>
+                          <span data-i18n-html="pool_channel"><em>通道</em>SSH 桥接 · 复用现有账号</span>
+                          <span data-i18n-html="pool_host"><em>宿主</em>零 agent 安装</span>
+                          <span data-i18n-html="pool_latency"><em>延迟</em>12ms · 容器 23 个</span>
                         </div>
                       </div>
                     </div>
@@ -470,20 +505,20 @@
                   <div class="cine-fig">
                     <div class="mock">
                       <div class="mock-head">
-                        <span class="mock-title">AI 运维助手 · 多步执行</span>
+                        <span class="mock-title" data-i18n="cine4_mocktitle">AI 运维助手 · 多步执行</span>
                         <span class="tag purple">Agent</span>
                       </div>
                       <div class="mock-body">
                         <div class="m-chat">
-                          <p class="bubble user">vllm-qwen3 的 prefill 超时了，定位一下并改掉配置。</p>
-                          <p class="bubble ai">已定位到 <b>serve.yaml: max_num_seqs</b>。按显存预算改成 32，重启并复验。</p>
+                          <p class="bubble user" data-i18n="cine4_bubble_user">vllm-qwen3 的 prefill 超时了，定位一下并改掉配置。</p>
+                          <p class="bubble ai" data-i18n-html="cine4_bubble_ai">已定位到 <b>serve.yaml: max_num_seqs</b>。按显存预算改成 32，重启并复验。</p>
                         </div>
                         <ul class="steps">
-                          <li><span>1</span>读日志 · 命中 ERROR 3 条<em>logs</em></li>
-                          <li><span>2</span>看算力 · MFU 42.3 → 34.1<em>metrics</em></li>
-                          <li><span>3</span>进容器 · 读到 serve.yaml<em>ssh exec</em></li>
-                          <li><span>4</span>改配置 · 写入远端文件<em>file</em></li>
-                          <li class="run"><span>5</span>重启 + 复验 · 进行中<em>verify</em></li>
+                          <li data-i18n-html="cine4_s1"><span>1</span>读日志 · 命中 ERROR 3 条<em>logs</em></li>
+                          <li data-i18n-html="cine4_s2"><span>2</span>看算力 · MFU 42.3 → 34.1<em>metrics</em></li>
+                          <li data-i18n-html="cine4_s3"><span>3</span>进容器 · 读到 serve.yaml<em>ssh exec</em></li>
+                          <li data-i18n-html="cine4_s4"><span>4</span>改配置 · 写入远端文件<em>file</em></li>
+                          <li class="run" data-i18n-html="cine4_s5"><span>5</span>重启 + 复验 · 进行中<em>verify</em></li>
                         </ul>
                         <div class="m-diff">
                           <span class="d-line del"><i>-</i>max_num_seqs: 64</span>
@@ -500,7 +535,7 @@
           </div>
 
           <div class="cine-rail">
-            <span class="cine-hint" id="cine-hint">继续滚动 ↓</span>
+            <span class="cine-hint" id="cine-hint" data-i18n="cine_hint" data-i18n-tpl="cine_hint_done">继续滚动 ↓</span>
             <div class="cine-segs">
               <span class="cine-seg"><i></i></span>
               <span class="cine-seg"><i></i></span>
@@ -519,37 +554,37 @@
     <div class="wrap">
       <div class="sec-head reveal">
         <p class="kicker">Why</p>
-        <h2>手工运维的四个真实痛点</h2>
-        <p class="sec-sub">每一条都是我们自己踩过的，不是假设出来的场景。</p>
+        <h2 data-i18n="why_h2">手工运维的四个真实痛点</h2>
+        <p class="sec-sub" data-i18n="why_sub">每一条都是我们自己踩过的，不是假设出来的场景。</p>
       </div>
       <div class="pain-grid">
         <article class="pain reveal" style="--c:var(--danger)">
           <span class="pain-no">01</span>
-          <h3>日志散落</h3>
-          <p>几十个容器、多台机器，出问题第一反应是 ssh 上去 grep。谁在报错、什么时候开始、影响哪些服务，全靠人肉拼。</p>
-          <p class="pain-foot">→ 一次定位半小时起步，事后还答不出「什么时候开始」</p>
+          <h3 data-i18n="pain1_h">日志散落</h3>
+          <p data-i18n="pain1_p">几十个容器、多台机器，出问题第一反应是 ssh 上去 grep。谁在报错、什么时候开始、影响哪些服务，全靠人肉拼。</p>
+          <p class="pain-foot" data-i18n="pain1_f">→ 一次定位半小时起步，事后还答不出「什么时候开始」</p>
         </article>
         <article class="pain reveal" style="--c:var(--warn)">
           <span class="pain-no">02</span>
-          <h3>算力黑盒</h3>
-          <p>GPU 到底用没用上？模型 MFU 多少、是不是卡在显存或通信？只有 nvidia-smi 的一瞬间快照，没有连续视角。</p>
-          <p class="pain-foot">→ 卡空转、显存泄漏，往往等业务报错才发现</p>
+          <h3 data-i18n="pain2_h">算力黑盒</h3>
+          <p data-i18n="pain2_p">GPU 到底用没用上？模型 MFU 多少、是不是卡在显存或通信？只有 nvidia-smi 的一瞬间快照，没有连续视角。</p>
+          <p class="pain-foot" data-i18n="pain2_f">→ 卡空转、显存泄漏，往往等业务报错才发现</p>
         </article>
         <article class="pain reveal" style="--c:var(--purple)">
           <span class="pain-no">03</span>
-          <h3>救火式修复</h3>
-          <p>定位到问题还得找机器、找文件、改配置、重启服务、再验证。一次故障十几分钟，全在切窗口。</p>
-          <p class="pain-foot">→ 全靠人肉切窗口，改错一次要重来一遍</p>
+          <h3 data-i18n="pain3_h">救火式修复</h3>
+          <p data-i18n="pain3_p">定位到问题还得找机器、找文件、改配置、重启服务、再验证。一次故障十几分钟，全在切窗口。</p>
+          <p class="pain-foot" data-i18n="pain3_f">→ 全靠人肉切窗口，改错一次要重来一遍</p>
         </article>
         <article class="pain reveal" style="--c:var(--blue)">
           <span class="pain-no">04</span>
-          <h3>工具割裂</h3>
-          <p>日志、监控、Docker、SSH 各用一套工具，上下文对不上；告警看完还得回去翻日志。</p>
-          <p class="pain-foot">→ 一次告警要在 4 个工具之间来回跳</p>
+          <h3 data-i18n="pain4_h">工具割裂</h3>
+          <p data-i18n="pain4_p">日志、监控、Docker、SSH 各用一套工具，上下文对不上；告警看完还得回去翻日志。</p>
+          <p class="pain-foot" data-i18n="pain4_f">→ 一次告警要在 4 个工具之间来回跳</p>
         </article>
       </div>
       <p class="flow reveal">
-        <span>日志</span><i>→</i><span>发现异常</span><i>→</i><span>定位机器与容器</span><i>→</i><span>看算力与模型</span><i>→</i><span>让 AI 直接改代码 / 配置</span><i>→</i><span>验证与审计</span>
+        <span data-i18n="act_logs">日志</span><i>→</i><span data-i18n="flow_detect">发现异常</span><i>→</i><span data-i18n="flow_locate">定位机器与容器</span><i>→</i><span data-i18n="flow_compute">看算力与模型</span><i>→</i><span data-i18n="flow_fix">让 AI 直接改代码 / 配置</span><i>→</i><span data-i18n="flow_verify">验证与审计</span>
       </p>
     </div>
   </section>
@@ -559,8 +594,8 @@
     <div class="wrap">
       <div class="sec-head reveal">
         <p class="kicker">FDE · Forward Deployed Engineer</p>
-        <h2>FDE 不是什么新头衔，<span class="nw">是「当天就改」</span></h2>
-        <p class="sec-sub">
+        <h2 data-i18n-html="fde_h2">FDE 不是什么新头衔，<span class="nw">是「当天就改」</span></h2>
+        <p class="sec-sub" data-i18n="fde_sub">
           前沿部署工程师是这两年最抢手的岗位：不坐在总部写需求文档，而是直接进客户内网，
           看真实日志、拿真实权限、把问题改完再走。OpenLog 就是他们随身带的那块面板 ——
           人一进场，观测和动手就已经就位。
@@ -572,66 +607,66 @@
           <li class="reveal">
             <span class="fde-no">01</span>
             <div>
-              <b>进场 10 分钟就要看到全貌</b>
-              <p>客户环境不能装 agent、不能开外网，一个浏览器标签页就要顶上一整套采集。</p>
-              <p class="fde-ans">面板 · <em>单端口自托管，SSH 账号直连，宿主机零安装</em></p>
+              <b data-i18n="fde1_b">进场 10 分钟就要看到全貌</b>
+              <p data-i18n="fde1_p">客户环境不能装 agent、不能开外网，一个浏览器标签页就要顶上一整套采集。</p>
+              <p class="fde-ans" data-i18n-html="fde1_ans">面板 · <em>单端口自托管，SSH 账号直连，宿主机零安装</em></p>
             </div>
           </li>
           <li class="reveal">
             <span class="fde-no">02</span>
             <div>
-              <b>问题不能被「截图 + 周报」糊过去</b>
-              <p>客户说「模型最近变慢了」，你要当场给出 MFU、显存、队列深度，而不是承诺回去拉数据。</p>
-              <p class="fde-ans">算力 · <em>7 种引擎 MFU 零配置，趋势连续留存</em></p>
+              <b data-i18n="fde2_b">问题不能被「截图 + 周报」糊过去</b>
+              <p data-i18n="fde2_p">客户说「模型最近变慢了」，你要当场给出 MFU、显存、队列深度，而不是承诺回去拉数据。</p>
+              <p class="fde-ans" data-i18n-html="fde2_ans">算力 · <em>7 种引擎 MFU 零配置，趋势连续留存</em></p>
             </div>
           </li>
           <li class="reveal">
             <span class="fde-no">03</span>
             <div>
-              <b>定位完必须立刻动手</b>
-              <p>现场没人等你排期：改配置、改代码、重启服务、验证结果，最好在同一屏里完成。</p>
-              <p class="fde-ans">Agent · <em>多步执行，用现有 SSH 账号改代码 / 配置</em></p>
+              <b data-i18n="fde3_b">定位完必须立刻动手</b>
+              <p data-i18n="fde3_p">现场没人等你排期：改配置、改代码、重启服务、验证结果，最好在同一屏里完成。</p>
+              <p class="fde-ans" data-i18n-html="fde3_ans">Agent · <em>多步执行，用现有 SSH 账号改代码 / 配置</em></p>
             </div>
           </li>
           <li class="reveal">
             <span class="fde-no">04</span>
             <div>
-              <b>走之前要把「怎么改的」交接清楚</b>
-              <p>FDE 的价值在于可复制：这次的排障路径要变成下次的资产，而不是只留在个人脑子里。</p>
-              <p class="fde-ans">沉淀 · <em>每次操作留审计，排障流程沉淀为可复用技能</em></p>
+              <b data-i18n="fde4_b">走之前要把「怎么改的」交接清楚</b>
+              <p data-i18n="fde4_p">FDE 的价值在于可复制：这次的排障路径要变成下次的资产，而不是只留在个人脑子里。</p>
+              <p class="fde-ans" data-i18n-html="fde4_ans">沉淀 · <em>每次操作留审计，排障流程沉淀为可复用技能</em></p>
             </div>
           </li>
         </ol>
 
-        <aside class="fde-card reveal" aria-label="FDE 现场装备清单">
+        <aside class="fde-card reveal" aria-label="FDE 现场装备清单" data-i18n-aria="kit_aria">
           <div class="fde-card-head">
             <span class="tag ok"><i class="dot-live"></i>ON SITE</span>
-            <em>fde-kit · 随身清单</em>
+            <em data-i18n="kit_title">fde-kit · 随身清单</em>
           </div>
           <div class="fde-card-body">
-            <span class="c-dim"># 进客户机房前，确认这 6 件事已就位</span>
-            <span class="c-line"><b>[x]</b> 一个 URL，不占用客户外网 <i class="ok">:3001</i></span>
-            <span class="c-line"><b>[x]</b> 现成 SSH 账号就能接管服务器 <i class="ok">1000 台连接池</i></span>
-            <span class="c-line"><b>[x]</b> 容器不装 agent，也能管生命周期 <i class="ok">docker over ssh</i></span>
-            <span class="c-line"><b>[x]</b> 算力与 MFU 当场可解释 <i class="ok">7 engines</i></span>
-            <span class="c-line"><b>[x]</b> AI 能直接改，而不是只给建议 <i class="ok">multi-step</i></span>
-            <span class="c-line"><b>[x]</b> 每一步都留痕，能交给客户 <i class="ok">audit</i></span>
-            <span class="c-dim"># 人走了，面板留下；下次换个环境，同一套动作复用</span>
-            <span class="c-dim"># 两种交付节奏</span>
-            <span class="c-line"><b>×</b> 调研 3 周 → 排期 1 个月 → 远程改 <i>传统</i></span>
-            <span class="c-line"><b>√</b> 进场当天定位 → 当天改完 → 交接 <i class="ok">FDE</i></span>
+            <span class="c-dim" data-i18n="kit_dim1"># 进客户机房前，确认这 6 件事已就位</span>
+            <span class="c-line" data-i18n-html="kit_l1"><b>[x]</b> 一个 URL，不占用客户外网 <i class="ok">:3001</i></span>
+            <span class="c-line" data-i18n-html="kit_l2"><b>[x]</b> 现成 SSH 账号就能接管服务器 <i class="ok">1000 台连接池</i></span>
+            <span class="c-line" data-i18n-html="kit_l3"><b>[x]</b> 容器不装 agent，也能管生命周期 <i class="ok">docker over ssh</i></span>
+            <span class="c-line" data-i18n-html="kit_l4"><b>[x]</b> 算力与 MFU 当场可解释 <i class="ok">7 engines</i></span>
+            <span class="c-line" data-i18n-html="kit_l5"><b>[x]</b> AI 能直接改，而不是只给建议 <i class="ok">multi-step</i></span>
+            <span class="c-line" data-i18n-html="kit_l6"><b>[x]</b> 每一步都留痕，能交给客户 <i class="ok">audit</i></span>
+            <span class="c-dim" data-i18n="kit_dim2"># 人走了，面板留下；下次换个环境，同一套动作复用</span>
+            <span class="c-dim" data-i18n="kit_dim3"># 两种交付节奏</span>
+            <span class="c-line" data-i18n-html="kit_l7"><b>×</b> 调研 3 周 → 排期 1 个月 → 远程改 <i>传统</i></span>
+            <span class="c-line" data-i18n-html="kit_l8"><b>√</b> 进场当天定位 → 当天改完 → 交接 <i class="ok">FDE</i></span>
           </div>
         </aside>
       </div>
 
-      <ol class="fde-day reveal" aria-label="FDE 的一天">
-        <li><span>09:40</span><b>进客户机房</b><p>只有一个内网 IP 和一个 SSH 账号</p></li>
-        <li><span>10:05</span><b>面板连上 412 台</b><p>日志流、GPU、容器一次铺开</p></li>
-        <li><span>10:20</span><b>AI 定位并改配置</b><p>多步执行，diff 当场可见</p></li>
-        <li><span>10:35</span><b>验证 + 交接</b><p>结论、动作、审计一起交付</p></li>
+      <ol class="fde-day reveal" aria-label="FDE 的一天" data-i18n-aria="day_aria">
+        <li><span>09:40</span><b data-i18n="day1_b">进客户机房</b><p data-i18n="day1_p">只有一个内网 IP 和一个 SSH 账号</p></li>
+        <li><span>10:05</span><b data-i18n="day2_b">面板连上 412 台</b><p data-i18n="day2_p">日志流、GPU、容器一次铺开</p></li>
+        <li><span>10:20</span><b data-i18n="day3_b">AI 定位并改配置</b><p data-i18n="day3_p">多步执行，diff 当场可见</p></li>
+        <li><span>10:35</span><b data-i18n="day4_b">验证 + 交接</b><p data-i18n="day4_p">结论、动作、审计一起交付</p></li>
       </ol>
 
-      <p class="fde-quote reveal">
+      <p class="fde-quote reveal" data-i18n="fde_quote">
         「PPT 讲不清的问题，进现场十分钟就有答案 —— 前提是你手里有一块能看、也能改的面板。」
       </p>
     </div>
@@ -642,24 +677,24 @@
     <div class="wrap">
       <div class="sec-head reveal">
         <p class="kicker">Product</p>
-        <h2>11 个页面，一套底座</h2>
-        <p class="sec-sub">所有页面共享同一套鉴权、同一份数据、同一套告警通道 —— 不是把 11 个工具拼在一起。</p>
+        <h2 data-i18n="prod_h2">11 个页面，一套底座</h2>
+        <p class="sec-sub" data-i18n="prod_sub">所有页面共享同一套鉴权、同一份数据、同一套告警通道 —— 不是把 11 个工具拼在一起。</p>
       </div>
       <div class="pages-grid">
-        <article class="page-card reveal"><h3>仪表盘</h3><p>全局总览：告警、机器、算力、容器</p></article>
-        <article class="page-card reveal"><h3>系统监控</h3><p>CPU / 内存 / 磁盘 / GPU / 进程</p></article>
-        <article class="page-card reveal"><h3>算力监控</h3><p>利用率 / 显存 / 温度 / MFU</p></article>
-        <article class="page-card reveal"><h3>日志流</h3><p>WS 实时流 · 级别过滤 · 搜索</p></article>
-        <article class="page-card reveal"><h3>远程服务器</h3><p>SSH 连接池 · 文件 · 终端</p></article>
-        <article class="page-card reveal"><h3>Docker</h3><p>容器列表 · 实时日志 · 内嵌终端</p></article>
-        <article class="page-card reveal"><h3>AI 分析</h3><p>日志与巡检的 AI 归因</p></article>
-        <article class="page-card reveal"><h3>分析历史</h3><p>历史结论回溯与对比</p></article>
-        <article class="page-card reveal"><h3>运维助手</h3><p>Agent：定位 + 改代码 / 配置</p></article>
-        <article class="page-card reveal"><h3>技能管理</h3><p>把排障流程沉淀成可复用技能</p></article>
-        <article class="page-card reveal"><h3>设置</h3><p>模型 / 告警 / 巡检 / 数据库</p></article>
+        <article class="page-card reveal"><h3 data-i18n="prod1_h">仪表盘</h3><p data-i18n="prod1_p">全局总览：告警、机器、算力、容器</p></article>
+        <article class="page-card reveal"><h3 data-i18n="prod2_h">系统监控</h3><p data-i18n="prod2_p">CPU / 内存 / 磁盘 / GPU / 进程</p></article>
+        <article class="page-card reveal"><h3 data-i18n="prod3_h">算力监控</h3><p data-i18n="prod3_p">利用率 / 显存 / 温度 / MFU</p></article>
+        <article class="page-card reveal"><h3 data-i18n="prod4_h">日志流</h3><p data-i18n="prod4_p">WS 实时流 · 级别过滤 · 搜索</p></article>
+        <article class="page-card reveal"><h3 data-i18n="remote_servers">远程服务器</h3><p data-i18n="prod5_p">SSH 连接池 · 文件 · 终端</p></article>
+        <article class="page-card reveal"><h3>Docker</h3><p data-i18n="prod6_p">容器列表 · 实时日志 · 内嵌终端</p></article>
+        <article class="page-card reveal"><h3 data-i18n="prod7_h">AI 分析</h3><p data-i18n="prod7_p">日志与巡检的 AI 归因</p></article>
+        <article class="page-card reveal"><h3 data-i18n="prod8_h">分析历史</h3><p data-i18n="prod8_p">历史结论回溯与对比</p></article>
+        <article class="page-card reveal"><h3 data-i18n="prod9_h">运维助手</h3><p data-i18n="prod9_p">Agent：定位 + 改代码 / 配置</p></article>
+        <article class="page-card reveal"><h3 data-i18n="prod10_h">技能管理</h3><p data-i18n="prod10_p">把排障流程沉淀成可复用技能</p></article>
+        <article class="page-card reveal"><h3 data-i18n="prod11_h">设置</h3><p data-i18n="prod11_p">模型 / 告警 / 巡检 / 数据库</p></article>
         <article class="page-card page-card-cta reveal">
-          <h3>在线体验</h3>
-          <p>单端口部署，浏览器打开即用</p>
+          <h3 data-i18n="prod_cta_h">在线体验</h3>
+          <p data-i18n="prod_cta_p">单端口部署，浏览器打开即用</p>
           <a class="link" href="http://203.0.113.10:3001" target="_blank" rel="noopener">203.0.113.10:3001 →</a>
         </article>
       </div>
@@ -671,68 +706,68 @@
     <div class="wrap">
       <div class="sec-head reveal">
         <p class="kicker">Capability</p>
-        <h2>六个真正「能动手」的能力</h2>
-        <p class="sec-sub">每个能力都能落到一次具体操作上，不只是给个图表看。</p>
+        <h2 data-i18n="feat_h2">六个真正「能动手」的能力</h2>
+        <p class="sec-sub" data-i18n="feat_sub">每个能力都能落到一次具体操作上，不只是给个图表看。</p>
       </div>
       <div class="feat-grid">
 
         <article class="feat reveal">
-          <h3>日志实时告警</h3>
-          <p>采集 → 匹配 → 弹窗 → 跳转，一条链路闭环。</p>
+          <h3 data-i18n="log_alerts">日志实时告警</h3>
+          <p data-i18n="feat1_p">采集 → 匹配 → 弹窗 → 跳转，一条链路闭环。</p>
           <ul>
-            <li>WebSocket 实时推送，多机器多容器并发流</li>
-            <li>按级别、关键字、正则配置告警规则</li>
-            <li>ERROR 告警弹窗点一下直接跳到该容器日志</li>
+            <li data-i18n="feat1_l1">WebSocket 实时推送，多机器多容器并发流</li>
+            <li data-i18n="feat1_l2">按级别、关键字、正则配置告警规则</li>
+            <li data-i18n="feat1_l3">ERROR 告警弹窗点一下直接跳到该容器日志</li>
           </ul>
         </article>
 
         <article class="feat reveal">
-          <h3>GPU 与 MFU</h3>
-          <p>引擎无关的模型算力效率口径。</p>
+          <h3 data-i18n="s2_cap">GPU 与 MFU</h3>
+          <p data-i18n="feat2_p">引擎无关的模型算力效率口径。</p>
           <ul>
-            <li>nvidia-smi 连续采样，保留趋势而非快照</li>
-            <li>MFU 支持 vLLM、SGLang 等 7 种引擎，零配置</li>
-            <li>快照做瘦身，1000 台也不把库写爆</li>
+            <li data-i18n="feat2_l1">nvidia-smi 连续采样，保留趋势而非快照</li>
+            <li data-i18n="feat2_l2">MFU 支持 vLLM、SGLang 等 7 种引擎，零配置</li>
+            <li data-i18n="feat2_l3">快照做瘦身，1000 台也不把库写爆</li>
           </ul>
         </article>
 
         <article class="feat reveal">
           <h3>Docker over SSH</h3>
-          <p>宿主机什么都不用装。</p>
+          <p data-i18n="feat3_p">宿主机什么都不用装。</p>
           <ul>
-            <li>远端 dockerode 桥接，等同本机 Docker API</li>
-            <li>容器生命周期、实时日志、内嵌 PTY 终端</li>
-            <li>exec 能力做开关，生产可关可开</li>
+            <li data-i18n="feat3_l1">远端 dockerode 桥接，等同本机 Docker API</li>
+            <li data-i18n="feat3_l2">容器生命周期、实时日志、内嵌 PTY 终端</li>
+            <li data-i18n="feat3_l3">exec 能力做开关，生产可关可开</li>
           </ul>
         </article>
 
         <article class="feat reveal">
-          <h3>远程服务器</h3>
-          <p>连接是基础设施，不是一次性动作。</p>
+          <h3 data-i18n="remote_servers">远程服务器</h3>
+          <p data-i18n="feat4_p">连接是基础设施，不是一次性动作。</p>
           <ul>
-            <li>连接池 LRU + 空闲回收，限并发重连（默认 16）</li>
-            <li>退避重连 5s → 10s → 20s → 5min，手动断开即停</li>
-            <li>密码 AES-256-GCM 存储，支持密钥轮换</li>
+            <li data-i18n="feat4_l1">连接池 LRU + 空闲回收，限并发重连（默认 16）</li>
+            <li data-i18n="feat4_l2">退避重连 5s → 10s → 20s → 5min，手动断开即停</li>
+            <li data-i18n="feat4_l3">密码 AES-256-GCM 存储，支持密钥轮换</li>
           </ul>
         </article>
 
         <article class="feat reveal">
-          <h3>AI 运维助手（Agent）</h3>
-          <p>看得见，也动得了手。</p>
+          <h3 data-i18n="s5_cap">AI 运维助手（Agent）</h3>
+          <p data-i18n="feat5_p">看得见，也动得了手。</p>
           <ul>
-            <li>多步工具调用：读文件、改代码、改配置、重启、验证</li>
-            <li>用现有 SSH 账号执行，权限不隔离、全程审计</li>
-            <li>排障过程沉淀为可复用技能</li>
+            <li data-i18n="feat5_l1">多步工具调用：读文件、改代码、改配置、重启、验证</li>
+            <li data-i18n="feat5_l2">用现有 SSH 账号执行，权限不隔离、全程审计</li>
+            <li data-i18n="feat5_l3">排障过程沉淀为可复用技能</li>
           </ul>
         </article>
 
         <article class="feat reveal">
-          <h3>AI Shell 与模型兼容</h3>
-          <p>自然语言 → 命令 → 结果 → 下一步。</p>
+          <h3 data-i18n="feat6_h">AI Shell 与模型兼容</h3>
+          <p data-i18n="feat6_p">自然语言 → 命令 → 结果 → 下一步。</p>
           <ul>
-            <li>多步 Agent 循环，执行结果回灌给模型继续判断</li>
-            <li>OpenAI 兼容协议，vLLM / SGLang 都能直接接</li>
-            <li>支持本地与内网模型服务（/v1 接口）</li>
+            <li data-i18n="feat6_l1">多步 Agent 循环，执行结果回灌给模型继续判断</li>
+            <li data-i18n="feat6_l2">OpenAI 兼容协议，vLLM / SGLang 都能直接接</li>
+            <li data-i18n="feat6_l3">支持本地与内网模型服务（/v1 接口）</li>
           </ul>
         </article>
 
@@ -745,47 +780,47 @@
     <div class="wrap">
       <div class="sec-head reveal">
         <p class="kicker">Architecture</p>
-        <h2>分层架构：一层只做一件事</h2>
-        <p class="sec-sub">前端 React 18 + TS + Vite；后端 Node 22 ESM，单端口同时提供 API、WebSocket 与静态资源。</p>
+        <h2 data-i18n="arch_h2">分层架构：一层只做一件事</h2>
+        <p class="sec-sub" data-i18n="arch_sub">前端 React 18 + TS + Vite；后端 Node 22 ESM，单端口同时提供 API、WebSocket 与静态资源。</p>
       </div>
       <div class="arch">
         <div class="layer reveal" style="--c:var(--accent)">
-          <div class="layer-name">接入层</div>
+          <div class="layer-name" data-i18n="arch_l1">接入层</div>
           <ul>
-            <li>Express（ESM）+ WebSocket 统一入口</li>
-            <li>Token 鉴权门禁，生产环境 401 拦截</li>
-            <li>单端口同时托管前端构建产物与 API</li>
+            <li data-i18n="arch1_l1">Express（ESM）+ WebSocket 统一入口</li>
+            <li data-i18n="arch1_l2">Token 鉴权门禁，生产环境 401 拦截</li>
+            <li data-i18n="arch1_l3">单端口同时托管前端构建产物与 API</li>
           </ul>
         </div>
         <div class="layer reveal" style="--c:var(--accent-2)">
-          <div class="layer-name">服务层</div>
+          <div class="layer-name" data-i18n="arch_l2">服务层</div>
           <ul>
-            <li>路由域：logs / gpu / docker / remote / assistant / skills / db-info</li>
-            <li>统一的错误包装、限流与审计埋点</li>
-            <li>配置与状态走 kv，读写穿透内存缓存</li>
+            <li data-i18n="arch2_l1">路由域：logs / gpu / docker / remote / assistant / skills / db-info</li>
+            <li data-i18n="arch2_l2">统一的错误包装、限流与审计埋点</li>
+            <li data-i18n="arch2_l3">配置与状态走 kv，读写穿透内存缓存</li>
           </ul>
         </div>
         <div class="layer reveal" style="--c:var(--blue)">
-          <div class="layer-name">能力层</div>
+          <div class="layer-name" data-i18n="arch_l3">能力层</div>
           <ul>
-            <li>日志采集器 · 告警分发 · GPU 采样与 MFU 适配</li>
-            <li>SSH 连接池 · Docker 桥接 · 文件与 PTY</li>
-            <li>LLM 客户端与 Agent 工具编排（多步）</li>
+            <li data-i18n="arch3_l1">日志采集器 · 告警分发 · GPU 采样与 MFU 适配</li>
+            <li data-i18n="arch3_l2">SSH 连接池 · Docker 桥接 · 文件与 PTY</li>
+            <li data-i18n="arch3_l3">LLM 客户端与 Agent 工具编排（多步）</li>
           </ul>
         </div>
         <div class="layer reveal" style="--c:var(--purple)">
-          <div class="layer-name">数据层</div>
+          <div class="layer-name" data-i18n="arch_l4">数据层</div>
           <ul>
-            <li>SQLite / PostgreSQL / MySQL 统一方言层</li>
-            <li>同一份 DDL 与占位符转换，切换只改一个环境变量</li>
-            <li>连接池 + 批量写，支撑 1000 台规模</li>
+            <li data-i18n="arch4_l1">SQLite / PostgreSQL / MySQL 统一方言层</li>
+            <li data-i18n="arch4_l2">同一份 DDL 与占位符转换，切换只改一个环境变量</li>
+            <li data-i18n="arch4_l3">连接池 + 批量写，支撑 1000 台规模</li>
           </ul>
         </div>
       </div>
       <div class="arch-note reveal">
-        <div><b>前端</b><span>React 18 · TypeScript · Vite · Tailwind</span></div>
-        <div><b>后端</b><span>Node 22 ESM · Express · ws · node-ssh · dockerode</span></div>
-        <div><b>数据</b><span>better-sqlite3 · pg · mysql2</span></div>
+        <div><b data-i18n="arch_note_fe">前端</b><span>React 18 · TypeScript · Vite · Tailwind</span></div>
+        <div><b data-i18n="arch_note_be">后端</b><span>Node 22 ESM · Express · ws · node-ssh · dockerode</span></div>
+        <div><b data-i18n="arch_note_db">数据</b><span>better-sqlite3 · pg · mysql2</span></div>
       </div>
     </div>
   </section>
@@ -795,21 +830,21 @@
     <div class="wrap">
       <div class="sec-head reveal">
         <p class="kicker">Scale</p>
-        <h2>从几十台到 1000 台</h2>
-        <p class="sec-sub">不是「理论上能扩」，是真按 1000 台造了数据、压了接口、修了瓶颈。</p>
+        <h2 data-i18n="scale_h2">从几十台到 1000 台</h2>
+        <p class="sec-sub" data-i18n="scale_sub">不是「理论上能扩」，是真按 1000 台造了数据、压了接口、修了瓶颈。</p>
       </div>
       <div class="scale-grid">
-        <div class="scale-card reveal"><b>20<i>ms</i></b><span>1000 台服务器全量加载</span></div>
-        <div class="scale-card reveal"><b>0.005<i>ms</i></b><span>单条状态更新</span></div>
-        <div class="scale-card reveal"><b>674<i>ms</i></b><span>1000 行批量写入（原 20.6s）</span></div>
-        <div class="scale-card reveal"><b>1<i>ms</i></b><span>PostgreSQL 接口延迟</span></div>
+        <div class="scale-card reveal"><b>20<i>ms</i></b><span data-i18n="sc1">1000 台服务器全量加载</span></div>
+        <div class="scale-card reveal"><b>0.005<i>ms</i></b><span data-i18n="n_statusupdate">单条状态更新</span></div>
+        <div class="scale-card reveal"><b>674<i>ms</i></b><span data-i18n="sc3">1000 行批量写入（原 20.6s）</span></div>
+        <div class="scale-card reveal"><b>1<i>ms</i></b><span data-i18n="sc4">PostgreSQL 接口延迟</span></div>
       </div>
-      <div class="tbl reveal" role="table" aria-label="规模改造清单">
-        <div class="tr th" role="row"><span>曾经的问题</span><span>做法</span><span>结果</span></div>
-        <div class="tr" role="row"><span>全量列表一次渲染卡死</span><span>分页 + 虚拟滚动 + 增量 diff</span><span>20ms 渲染完成</span></div>
-        <div class="tr" role="row"><span>PG 单连接串行、批量写 20.6s</span><span>连接池 + 100 行分批提交</span><span>674ms</span></div>
-        <div class="tr" role="row"><span>重连风暴把 sshd 打满</span><span>限并发 16 + 指数退避</span><span>1000 台不再一轮数小时</span></div>
-        <div class="tr" role="row"><span>GPU 快照把库写爆</span><span>快照瘦身 + 只留趋势点</span><span>存储可长期留存</span></div>
+      <div class="tbl reveal" role="table" aria-label="规模改造清单" data-i18n-aria="tbl_aria">
+        <div class="tr th" role="row"><span data-i18n="tbl_h1">曾经的问题</span><span data-i18n="tbl_h2">做法</span><span data-i18n="tbl_h3">结果</span></div>
+        <div class="tr" role="row"><span data-i18n="r1_a">全量列表一次渲染卡死</span><span data-i18n="r1_b">分页 + 虚拟滚动 + 增量 diff</span><span data-i18n="r1_c">20ms 渲染完成</span></div>
+        <div class="tr" role="row"><span data-i18n="r2_a">PG 单连接串行、批量写 20.6s</span><span data-i18n="r2_b">连接池 + 100 行分批提交</span><span>674ms</span></div>
+        <div class="tr" role="row"><span data-i18n="r3_a">重连风暴把 sshd 打满</span><span data-i18n="r3_b">限并发 16 + 指数退避</span><span data-i18n="r3_c">1000 台不再一轮数小时</span></div>
+        <div class="tr" role="row"><span data-i18n="r4_a">GPU 快照把库写爆</span><span data-i18n="r4_b">快照瘦身 + 只留趋势点</span><span data-i18n="r4_c">存储可长期留存</span></div>
       </div>
     </div>
   </section>
@@ -819,24 +854,24 @@
     <div class="wrap">
       <div class="sec-head reveal">
         <p class="kicker">Security</p>
-        <h2>三道闸门，一把钥匙只开一扇门</h2>
-        <p class="sec-sub">AI 能改代码，所以审计比隔离更重要 —— 每个动作都要留痕、可回溯。</p>
+        <h2 data-i18n="sec_h2">三道闸门，一把钥匙只开一扇门</h2>
+        <p class="sec-sub" data-i18n="sec_sub">AI 能改代码，所以审计比隔离更重要 —— 每个动作都要留痕、可回溯。</p>
       </div>
       <div class="gate-grid">
         <article class="gate reveal">
-          <span class="gate-no">闸门 01</span>
-          <h3>访问鉴权</h3>
-          <p>全站 Token 门禁，未携带或错误直接 401；生产环境与开发环境开关分离。</p>
+          <span class="gate-no" data-i18n="gate1_no">闸门 01</span>
+          <h3 data-i18n="gate1_h">访问鉴权</h3>
+          <p data-i18n="gate1_p">全站 Token 门禁，未携带或错误直接 401；生产环境与开发环境开关分离。</p>
         </article>
         <article class="gate reveal">
-          <span class="gate-no">闸门 02</span>
-          <h3>凭据保护</h3>
-          <p>服务器密码 AES-256-GCM 加密存储，支持 OPENLOG_SECRET_KEY 轮换；迁移链路已修复「二次加密」坑。</p>
+          <span class="gate-no" data-i18n="gate2_no">闸门 02</span>
+          <h3 data-i18n="gate2_h">凭据保护</h3>
+          <p data-i18n="gate2_p">服务器密码 AES-256-GCM 加密存储，支持 OPENLOG_SECRET_KEY 轮换；迁移链路已修复「二次加密」坑。</p>
         </article>
         <article class="gate reveal">
-          <span class="gate-no">闸门 03</span>
-          <h3>操作审计</h3>
-          <p>AI 与运维助手的每一次命令、每一处文件改动都有记录；容器 exec 由环境变量显式开启。</p>
+          <span class="gate-no" data-i18n="gate3_no">闸门 03</span>
+          <h3 data-i18n="gate3_h">操作审计</h3>
+          <p data-i18n="gate3_p">AI 与运维助手的每一次命令、每一处文件改动都有记录；容器 exec 由环境变量显式开启。</p>
         </article>
       </div>
     </div>
@@ -847,25 +882,25 @@
     <div class="wrap quality-grid">
       <div class="reveal">
         <p class="kicker">Engineering</p>
-        <h2>能跑，也要能改</h2>
-        <p class="sec-sub">每一次提交都要过测试、Lint、构建三道闸，数据库迁移与 bug 修复都带回归测试。</p>
+        <h2 data-i18n="q_h2">能跑，也要能改</h2>
+        <p class="sec-sub" data-i18n="q_sub">每一次提交都要过测试、Lint、构建三道闸，数据库迁移与 bug 修复都带回归测试。</p>
         <ul class="gates">
-          <li><b>625</b> 个测试通过（2 skipped）· 31 个测试文件</li>
-          <li><b>npm run lint:all</b>：0 error</li>
-          <li><b>npm run build</b>：前端构建通过后才发布</li>
-          <li>后端约 <b>17k</b> 行、前端约 <b>13k</b> 行，模块边界清晰</li>
+          <li data-i18n-html="q_l1"><b>625</b> 个测试通过（2 skipped）· 31 个测试文件</li>
+          <li data-i18n-html="q_l2"><b>npm run lint:all</b>：0 error</li>
+          <li data-i18n-html="q_l3"><b>npm run build</b>：前端构建通过后才发布</li>
+          <li data-i18n-html="q_l4">后端约 <b>17k</b> 行、前端约 <b>13k</b> 行，模块边界清晰</li>
         </ul>
       </div>
       <div class="code-card reveal" aria-hidden="true">
         <div class="code-head"><span class="lights"><i></i><i></i><i></i></span><em>release checklist</em></div>
         <div class="code-body">
-          <span class="c-dim"># 每次上线前</span>
+          <span class="c-dim" data-i18n="code_dim1"># 每次上线前</span>
           <span class="c-line"><b>$</b> npm test              <i class="ok">625 passed</i></span>
           <span class="c-line"><b>$</b> npm run lint:all      <i class="ok">0 error</i></span>
           <span class="c-line"><b>$</b> npm run build         <i class="ok">built in 6.2s</i></span>
           <span class="c-line"><b>$</b> npm run db:info       <i class="ok">postgres · 1ms</i></span>
           <span class="c-line"><b>$</b> docker compose up -d <i class="ok">openlog + openlog-pg</i></span>
-          <span class="c-dim"># 单端口 3001：API + WS + 前端</span>
+          <span class="c-dim" data-i18n="code_dim2"># 单端口 3001：API + WS + 前端</span>
         </div>
       </div>
     </div>
@@ -876,39 +911,39 @@
     <div class="wrap">
       <div class="sec-head reveal">
         <p class="kicker">Roadmap</p>
-        <h2>下一步</h2>
-        <p class="sec-sub">按「投入 / 收益」排序：先把能稳定跑做扎实，再考虑规模与编排。</p>
+        <h2 data-i18n="road_h2">下一步</h2>
+        <p class="sec-sub" data-i18n="road_sub">按「投入 / 收益」排序：先把能稳定跑做扎实，再考虑规模与编排。</p>
       </div>
       <div class="road-grid">
         <article class="road reveal" style="--c:var(--accent)">
-          <h3>近期 · 1 个月内</h3>
+          <h3 data-i18n="road1_h">近期 · 1 个月内</h3>
           <ul>
-            <li>PG 连接池水位接入告警通道</li>
-            <li>容器面板写操作二次确认模式</li>
-            <li>MFU 长窗口与趋势曲线</li>
-            <li>日志检索保存常用查询</li>
+            <li data-i18n="road1_l1">PG 连接池水位接入告警通道</li>
+            <li data-i18n="road1_l2">容器面板写操作二次确认模式</li>
+            <li data-i18n="road1_l3">MFU 长窗口与趋势曲线</li>
+            <li data-i18n="road1_l4">日志检索保存常用查询</li>
           </ul>
         </article>
         <article class="road reveal" style="--c:var(--blue)">
-          <h3>中期 · 一季度</h3>
+          <h3 data-i18n="road2_h">中期 · 一季度</h3>
           <ul>
-            <li>采集进程与 Web 进程分离</li>
-            <li>多实例分片采集</li>
-            <li>时序数据落库（趋势查询）</li>
-            <li>告警静默与抑制规则</li>
+            <li data-i18n="road2_l1">采集进程与 Web 进程分离</li>
+            <li data-i18n="road2_l2">多实例分片采集</li>
+            <li data-i18n="road2_l3">时序数据落库（趋势查询）</li>
+            <li data-i18n="road2_l4">告警静默与抑制规则</li>
           </ul>
         </article>
         <article class="road reveal" style="--c:var(--purple)">
-          <h3>长期 · 半年+</h3>
+          <h3 data-i18n="road3_h">长期 · 半年+</h3>
           <ul>
-            <li>告警编排（分级 / 静默 / 值班）</li>
-            <li>SLO 看板与容量预测</li>
-            <li>多租户与权限模型</li>
-            <li>审计日志导出与合规报表</li>
+            <li data-i18n="road3_l1">告警编排（分级 / 静默 / 值班）</li>
+            <li data-i18n="road3_l2">SLO 看板与容量预测</li>
+            <li data-i18n="road3_l3">多租户与权限模型</li>
+            <li data-i18n="road3_l4">审计日志导出与合规报表</li>
           </ul>
         </article>
       </div>
-      <p class="principle reveal">原则：先把「能稳定跑」做扎实，再考虑规模与编排 —— 每一步都有测试和回滚点。</p>
+      <p class="principle reveal" data-i18n="road_principle">原则：先把「能稳定跑」做扎实，再考虑规模与编排 —— 每一步都有测试和回滚点。</p>
     </div>
   </section>
 
@@ -917,12 +952,12 @@
     <div class="wrap">
       <div class="cta-card reveal">
         <div>
-          <h2>现在就能打开用</h2>
-          <p>一个端口、一条命令、一个浏览器标签页。内网直接部署，不需要在宿主机装任何 agent。</p>
+          <h2 data-i18n="cta_h2">现在就能打开用</h2>
+          <p data-i18n="cta_p">一个端口、一条命令、一个浏览器标签页。内网直接部署，不需要在宿主机装任何 agent。</p>
         </div>
         <div class="cta-actions">
-          <a class="btn btn-primary" href="http://203.0.113.10:3001" target="_blank" rel="noopener">打开 OpenLog <span aria-hidden="true">→</span></a>
-          <a class="btn btn-ghost" href="https://github.com/XiaoBinGan/OpenLog" target="_blank" rel="noopener">仓库 · node 分支</a>
+          <a class="btn btn-primary" href="http://203.0.113.10:3001" target="_blank" rel="noopener" data-i18n-html="cta_btn1">打开 OpenLog <span aria-hidden="true">→</span></a>
+          <a class="btn btn-ghost" href="https://github.com/XiaoBinGan/OpenLog" target="_blank" rel="noopener" data-i18n="cta_btn2">仓库 · node 分支</a>
         </div>
       </div>
     </div>
@@ -933,13 +968,14 @@
   <div class="wrap foot-inner">
     <div class="foot-brand">
       <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
-      <span>OpenLog · 智能运维监控平台</span>
+      <span data-i18n="foot_brand">OpenLog · 智能运维监控平台</span>
     </div>
-    <p class="foot-meta">日志 · 算力 · 容器 · 服务器 · AI 排查　|　单端口部署 · 自托管 · 内网可用</p>
-    <p class="foot-copy">© 2026 OpenLog · node 分支</p>
+    <p class="foot-meta" data-i18n="foot_meta">日志 · 算力 · 容器 · 服务器 · AI 排查　|　单端口部署 · 自托管 · 内网可用</p>
+    <p class="foot-copy" data-i18n="foot_copy">© 2026 OpenLog · node 分支</p>
   </div>
 </footer>
 
+<script src="assets/i18n.js" defer></script>
 <script src="assets/app.js" defer></script>
 </body>
 </html>

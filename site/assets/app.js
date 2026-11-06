@@ -6,6 +6,21 @@
 
   var prefersReduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
+  /* ---------- i18n 辅助（i18n.js 缺席时退回中文硬编码） ---------- */
+  function T(key, fallback) {
+    var i18n = window.OpenLogI18n;
+    var v = i18n && i18n.t ? i18n.t(key) : '';
+    return v || fallback || '';
+  }
+  function TP(key, vars, fallback) {
+    var i18n = window.OpenLogI18n;
+    var v = i18n && i18n.format ? i18n.format(key, vars) : '';
+    return v || fallback || '';
+  }
+  function syncAria() {
+    if (window.OpenLogI18n && window.OpenLogI18n.refreshAria) window.OpenLogI18n.refreshAria();
+  }
+
   /* ---------- 导航滚动状态 ---------- */
   var nav = document.getElementById('nav');
   function onScroll() {
@@ -22,7 +37,7 @@
     if (!nav || !burger) return;
     nav.classList.toggle('open', open);
     burger.setAttribute('aria-expanded', open ? 'true' : 'false');
-    burger.setAttribute('aria-label', open ? '关闭导航菜单' : '打开导航菜单');
+    syncAria();
   }
   if (nav && burger && navLinks) {
     burger.addEventListener('click', function () {
@@ -157,7 +172,9 @@
       var hintOpacity = p < 0.9
         ? 1 - clamp(p * 2.4, 0, 1) * 0.72
         : clamp(0.28 + ((p - 0.9) / 0.1) * 0.72, 0, 1);
-      var text = p < 0.9 ? '继续滚动 ↓' : '15 秒 · 从告警到可回滚的变更';
+      var text = p < 0.9
+        ? T('cine_hint', '继续滚动 ↓')
+        : T('cine_hint_done', '15 秒 · 从告警到可回滚的变更');
       if (countEl) countEl.textContent = pad2(active + 1) + ' / ' + pad2(total);
       if (hint) {
         hint.style.opacity = hintOpacity.toFixed(2);
@@ -206,16 +223,22 @@
   var btnNext = document.getElementById('deck-next');
 
   var paths = ['/logs', '/metrics/gpu', '/docker', '/remote', '/assistant', '/dashboard'];
-  var meta = slides.map(function (s, i) {
-    var cap = s.querySelector('figcaption');
-    var b = cap && cap.querySelector('b');
-    var span = cap && cap.querySelector('span');
-    return {
-      title: b ? b.textContent : 'OpenLog',
-      desc: span ? span.textContent : '',
-      path: paths[i] || '/dashboard'
-    };
-  });
+  function readMeta() {
+    return slides.map(function (s, i) {
+      var cap = s.querySelector('figcaption');
+      var b = cap && cap.querySelector('b');
+      var span = cap && cap.querySelector('span');
+      return {
+        title: b ? b.textContent : 'OpenLog',
+        desc: span ? span.textContent : '',
+        path: paths[i] || '/dashboard'
+      };
+    });
+  }
+  function dotLabel(i) {
+    return TP('deck_dot_tpl', { n: i + 1, title: meta[i].title }, '第 ' + (i + 1) + ' 张：' + meta[i].title);
+  }
+  var meta = readMeta();
 
   var index = 0;
   var AUTOPLAY_MS = 5600;
@@ -226,7 +249,7 @@
     var b = document.createElement('button');
     b.type = 'button';
     b.setAttribute('role', 'tab');
-    b.setAttribute('aria-label', '第 ' + (i + 1) + ' 张：' + item.title);
+    b.setAttribute('aria-label', dotLabel(i));
     b.setAttribute('aria-selected', i === 0 ? 'true' : 'false');
     b.addEventListener('click', function () { go(i, true); });
     dotsBox.appendChild(b);
@@ -328,6 +351,13 @@
     var bar = deck.querySelector('.deck-controls');
     if (bar) bar.style.display = 'none';
   }
+
+  /* 语言切换后：重读译文标题，同步 caption / 圆点 / 计数器 */
+  document.addEventListener('openlog:lang', function () {
+    meta = readMeta();
+    dots.forEach(function (d, i) { d.setAttribute('aria-label', dotLabel(i)); });
+    paint();
+  });
 
   paint();
   setPaused(false);
