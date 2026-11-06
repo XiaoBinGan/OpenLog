@@ -7,9 +7,10 @@
  * 不引图表库（契约禁止新增依赖），趋势条用 div 高度画。
  */
 import { useCallback, useMemo, useState } from 'react';
-import { Activity, AlertCircle, RefreshCw, Timer } from 'lucide-react';
+import { Activity, AlertCircle, RefreshCw, Timer, FileJson } from 'lucide-react';
 import { apiFetch } from '../../api/client';
 import { usePolling } from '../../utils/usePolling';
+import { openApiDocs, downloadOpenApiJson } from '../../utils/apiDocs';
 import {
   normalizeSnapshot, topSlow, topErrors, formatMs, formatQps, formatBytes,
   errorRateLevel, buildQpsSeries, type ApiRouteStat, type ApiSnapshot,
@@ -66,6 +67,20 @@ export default function ApiSection({ windowRange = '5m', intervalMs = 15_000 }: 
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [minutes, setMinutes] = useState<MinuteSample[]>([]);
+
+  /** 打开接口文档：带凭证取 HTML 再 Blob 打开（详见 utils/apiDocs.ts 的注释） */
+  const handleOpenDocs = useCallback(async () => {
+    try {
+      const opened = await openApiDocs();
+      if (!opened) {
+        // 弹窗被拦时给出可见反馈，而不是静默什么都不发生
+        const size = await downloadOpenApiJson().catch(() => '');
+        setError(`浏览器拦下了新标签页，已改为下载 OpenAPI JSON${size ? `（${size}）` : ''}`);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '打开接口文档失败');
+    }
+  }, []);
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -137,6 +152,19 @@ export default function ApiSection({ windowRange = '5m', intervalMs = 15_000 }: 
             className="flex items-center gap-1 px-2 py-1 rounded-lg text-dark-400 hover:text-dark-200 hover:bg-dark-900/60 transition-colors"
           >
             <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />刷新
+          </button>
+          {/*
+            接口文档入口。
+            不能做成 <a href="/api/docs">：鉴权只认 Authorization 头，浏览器导航带不了，
+            点过去只会看到 401 JSON。这里带凭证取回 HTML 再用 Blob 打开。
+          */}
+          <button
+            type="button"
+            onClick={handleOpenDocs}
+            title="打开接口文档（含 /api/openapi.json 导入用）"
+            className="flex items-center gap-1 px-2 py-1 rounded-lg text-dark-400 hover:text-accent-400 hover:bg-dark-900/60 transition-colors"
+          >
+            <FileJson className="w-3.5 h-3.5" />文档
           </button>
         </div>
       </div>
