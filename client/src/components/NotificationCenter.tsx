@@ -17,6 +17,7 @@ import {
   Search, Filter,
 } from 'lucide-react';
 import { useToast } from '../contexts/ToastContext';
+import { apiFetch } from '../api/client';
 import {
   formatNotificationTime, filterNotifications, listNotificationSources, isFilterActive,
   EMPTY_NOTIFICATION_FILTER, type NotificationItem, type NotificationFilter,
@@ -64,6 +65,29 @@ export default function NotificationCenter() {
   const [searchOpen, setSearchOpen] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
   const navigate = useNavigate();
+  /**
+   * sourceId → 机器 IP。
+   *
+   * 老通知（升级前存的）里没有 sourceHost，导出时只有机器名（「4090服务器」），
+   * 用户要的是能直接定位的 IP。所以导出前按 sourceId 现查一次映射补上 —— 老数据也能导对。
+   */
+  const hostByIdRef = useRef<Record<string, string>>({});
+
+  const loadHostMap = useCallback(async () => {
+    try {
+      const data = await apiFetch<{ sources?: Array<{ sourceId?: string; id?: string; host?: string }> }>('/api/docker/containers')
+        .catch(() => ({ sources: [] as Array<{ sourceId?: string; id?: string; host?: string }> }));
+      const map: Record<string, string> = {};
+      for (const s of data.sources || []) {
+        const id = s.sourceId || s.id;
+        if (id && s.host) map[id] = s.host;
+      }
+      hostByIdRef.current = map;
+      return map;
+    } catch {
+      return hostByIdRef.current;
+    }
+  }, []);
 
   // 打开抽屉：清空选中与筛选（每次打开都是完整列表）；关闭时才把「未读」清掉，
   // 这样「只看未读」筛选在打开期间才有意义，同时关掉抽屉后小红点也会消失。
@@ -132,14 +156,24 @@ export default function NotificationCenter() {
   /**
    * 导出：默认导出「筛选后的全部」；有勾选就只导选中的。
    * Markdown 给程序员直接贴 issue/发给同事；Excel 给需要筛选/统计的场景。
+   *
+   * 机器列要 IP：新通知自带 sourceHost；升级前的老通知没有，这里按 sourceId
+   * 现查一次映射补上（查不到才退回机器名）。
    */
-  const handleExport = (format: 'md' | 'xlsx') => {
-    const items = selected.size > 0
+  const handleExport = async (format: 'md' | 'xlsx') => {
+    const picked = selected.size > 0
       ? filteredNotifications.filter(n => selected.has(n.id))
       : filteredNotifications;
-    if (items.length === 0) {
+    if (picked.length === 0) {
       toastWarning('没有可导出的通知');
       return;
+    }
+    let items = picked;
+    if (picked.some(n => !n.sourceHost && n.sourceId)) {
+      const map = await loadHostMap();
+      items = picked.map(n => (n.sourceHost || !n.sourceId || !map[n.sourceId]
+        ? n
+        : { ...n, sourceHost: map[n.sourceId] }));
     }
     const name = exportFileName(format);
     try {
