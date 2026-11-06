@@ -313,6 +313,19 @@ export async function pingDocker(sourceId, config = {}) {
 }
 
 // 获取容器列表
+/**
+ * 读取单个容器的 inspect 原始信息（诊断要用的真实事实来源）。
+ * 失败返回 null，不抛 —— 调用方自己决定怎么降级。
+ */
+export async function inspectContainer(sourceId, containerId, config = {}) {
+  try {
+    const docker = await getDockerFor(sourceId, config);
+    return await docker.getContainer(containerId).inspect();
+  } catch {
+    return null;
+  }
+}
+
 export async function listContainers(sourceId, config = {}) {
   try {
     const docker = await getDockerFor(sourceId, config);

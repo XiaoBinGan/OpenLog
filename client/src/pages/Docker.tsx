@@ -448,12 +448,16 @@ export default function Docker() {
     setDiagnoseKey(key);
     setDiagnoseContainerName(containerName);
     setDiagnoseLoading(true);
-    setDiagnoseText('');
+    setDiagnoseText('⏳ 正在读取容器状态…');
     setDiagnoseCopied(false);
 
     try {
       const res = await fetch(`/api/docker/container/${encodeURIComponent(sourceId)}/${encodeURIComponent(containerId)}/diagnose`, {
         method: 'POST',
+        // 兼容老后端：以前这里连 body 都没带，导致提示词里出现「退出码: undefined」。
+        // 现在服务端以 docker inspect 为准，这里传的值只作降级兜底。
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
       });
 
       if (!res.ok) {
@@ -472,6 +476,7 @@ export default function Docker() {
 
       const decoder = new TextDecoder();
       let buffer = '';
+      let sawContent = false;
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -484,12 +489,24 @@ export default function Docker() {
             if (payload === '[DONE]') continue;
             try {
               const j = JSON.parse(payload);
-              if (j.content) setDiagnoseText(prev => prev + j.content);
-              if (j.error) setDiagnoseText(prev => prev + `\n\n❌ ${j.error}`);
+              // status：后端报进度（读取状态 / 请求模型 / 模型思考中）
+              if (j.status !== undefined) {
+                if (!sawContent) setDiagnoseText(j.status ? `⏳ ${j.status}` : '');
+              }
+              if (j.content) {
+                sawContent = true;
+                setDiagnoseText(prev => (prev.startsWith('⏳') ? j.content : prev + j.content));
+              }
+              if (j.error) setDiagnoseText(prev => `${prev}\n\n❌ ${j.error}`);
             } catch {}
           }
         }
       }
+      // 流结束但一个字都没出：给明确提示，别留一个空白面板
+      setDiagnoseText(prev => {
+        if (prev && !prev.startsWith('⏳')) return prev;
+        return prev ? '❌ 模型没有返回任何内容，请检查「设置」里的 Base URL / 模型名，或稍后重试。' : '❌ 诊断结束但没有返回内容。';
+      });
     } catch (err: any) {
       setDiagnoseText(`❌ 诊断请求失败: ${err.message}`);
     }

@@ -25,7 +25,7 @@ import {
 } from '../security/shell-command-policy.js';
 import { getServers } from '../remote.js';
 import { resolveDockerTransport } from '../docker-transport.js';
-import { explainExitCode, buildRuleDiagnosis, mergePatrolProblems } from '../diagnosis.js';
+import { explainExitCode, buildRuleDiagnosis, mergePatrolProblems, describeContainerFacts, explainLogReadFailure, buildContainerDiagnosisPrompt } from '../diagnosis.js';
 import { applyPatrolResults } from '../patrol-cache.js';
 import { createShortCache, cached } from '../short-cache.js';
 
@@ -616,41 +616,83 @@ ${containerText}
 // ────────────────────────────────────────
 // 单容器异常诊断（SSE 流式）
 // ────────────────────────────────────────
+//
+// 修的 bug（2026-11-06，用户报「AI 智能诊断好像被改出问题来了」）：
+//   1. 前端 fetch 从来没带 body → exitCode/exitType/image 全是 undefined，
+//      模型对着 "退出码: undefined" 编出「容器可能已被清理」这种假结论；
+//   2. 日志驱动不支持读取（501）被 try/catch 静默吞掉，同样变成假结论；
+//   3. 首字节要等 7~13 秒（模型先吐 reasoning，代码只转发 content），
+//      面板长时间空白，看起来像「坏了 / 卡住了」。
+// 对策：服务端自己 inspect 容器当事实来源；先 flush 一个「正在读取」事件；
+//      把日志读取失败的原因原样告诉模型和用户。
 router.post('/api/docker/container/:sourceId/:containerId/analyze', async (req, res) => {
-  try {
-    const { sourceId, containerId } = req.params;
-    const { exitCode, exitType, exitLabel, image } = req.body;
+  const { sourceId, containerId } = req.params;
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  // 立刻把响应头推下去，前端 res.ok 就不用等到模型出字
+  res.flushHeaders?.();
 
+  try {
     const apiKey = ensureSettings().openaiApiKey;
     const baseUrl = ensureSettings().openaiBaseUrl;
     const model = ensureSettings().model;
 
     const config = await getDockerConfig(sourceId);
-    if (!config) return res.status(404).json({ error: 'Docker 源未找到' });
+    if (!config) {
+      res.write(`data: ${JSON.stringify({ error: 'Docker 源未找到' })}\n\n`);
+      res.write('data: [DONE]\n\n');
+      res.end();
+      return;
+    }
 
-    // 拉取容器最近日志
+    // 给前端一个「已开始」信号，避免长时间空白
+    res.write(`data: ${JSON.stringify({ status: '正在读取容器状态…' })}\n\n`);
+
+    // ── 事实来源 1：服务端 inspect（不信任前端传的值，前端只作兜底）──
+    const info = await docker.inspectContainer(sourceId, containerId, config);
+    let facts = describeContainerFacts(info);
+    if (!facts) {
+      // inspect 失败（容器可能已被删）：退回前端传的值，并标注来源
+      const body = req.body || {};
+      facts = {
+        name: containerId?.slice(0, 12) || 'unknown',
+        image: body.image || '',
+        state: 'unknown',
+        exitCode: Number.isInteger(body.exitCode) ? body.exitCode : null,
+        oomKilled: false,
+        restartCount: null,
+        finishedAt: '',
+        running: false,
+        exitType: body.exitType || 'error',
+        exitLabel: body.exitLabel || '❌ 异常退出',
+      };
+    }
+
+    // ── 事实来源 2：容器日志（读不到就说清楚为什么）──
     let recentErrorLines = [];
-    let containerName = containerId?.slice(0, 12);
+    let logFailure = '';
     try {
       const logs = await docker.getContainerLogs(sourceId, containerId, config);
       recentErrorLines = (logs || [])
         .filter(l => l.level === 'ERROR' || l.level === 'FATAL')
         .slice(-10);
-      // Infer name from latest log or use containerId
-    } catch { /* 容器已被删除，日志读不到 */ }
+    } catch (err) {
+      logFailure = explainLogReadFailure(err);
+    }
 
     // 没配模型：给规则诊断（退出码解释 + 已知错误日志），别让人卡在「未配置 API Key」
     if (!apiKey) {
-      res.setHeader('Content-Type', 'text/event-stream');
-      res.setHeader('Cache-Control', 'no-cache');
       sseText(res, buildRuleDiagnosis({
-        title: `容器 ${containerName} 异常退出诊断（规则诊断）`,
+        title: `容器 ${facts.name} 诊断（规则诊断）`,
         lines: [
-          `- 镜像: ${image || '未知'}`,
-          `- ${explainExitCode(exitCode)}（${exitLabel || exitType || '异常退出'}）`,
+          `- 镜像: ${facts.image || '未知'}`,
+          `- 当前状态: ${facts.state}`,
+          `- ${explainExitCode(facts.exitCode)}（${facts.exitLabel}）`,
           recentErrorLines.length > 0
             ? `- 退出前最后 ${recentErrorLines.length} 条错误:\n${recentErrorLines.map(l => `  - [${l.level}] ${(l.content || l.line || '').slice(0, 200)}`).join('\n')}`
-            : '- 未获取到最近错误日志（容器可能已被清理）',
+            : (logFailure ? `- 日志情况: ${logFailure}` : '- 最近日志里没有 ERROR/FATAL'),
         ],
       }));
       res.write('data: [DONE]\n\n');
@@ -658,26 +700,12 @@ router.post('/api/docker/container/:sourceId/:containerId/analyze', async (req, 
       return;
     }
 
-    const containerText = `- 容器 ID: ${containerId}\n- 镜像: ${image || '未知'}\n- 退出码: ${exitCode} (${exitLabel || exitType || '异常退出'})\n` +
-      (recentErrorLines.length > 0
-        ? `- 退出前最后 ${recentErrorLines.length} 条错误:\n${recentErrorLines.map(l => `  [${l.level}] ${l.content || l.line}`).join('\n')}`
-        : '- 未获取到最近错误日志（容器可能已被清理）');
+    const prompt = buildContainerDiagnosisPrompt({ facts, errorLines: recentErrorLines, logFailure });
 
-    const prompt = `你是资深运维工程师，正在进行单个容器的异常退出诊断。
-
-## 容器信息
-${containerText}
-
-## 诊断要求（用中文回答）：
-### 🔴 退出原因（结合退出码和日志综合判断最可能的根因）
-### 💡 修复建议（给出 2-3 条具体操作步骤）
-### 🛡️ 预防措施（如何避免再次发生）`;
+    res.write(`data: ${JSON.stringify({ status: '正在请求模型…' })}\n\n`);
 
     const OpenAI = (await import('openai')).default;
     const openai = new OpenAI({ apiKey, baseURL: baseUrl });
-
-    res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache');
 
     let fullAnalysis = '';
     const stream = await openai.chat.completions.create({
@@ -688,9 +716,28 @@ ${containerText}
       temperature: 0.3
     });
 
+    // 有些引擎（Qwen3 等）先把思考写进 reasoning_content，正文要等几秒。
+    // 之前只转发 content → 面板长时间空白，用户以为点坏了。
+    // 现在把思考进度当「心跳」转发（不带正文），面板一直有反馈。
+    let sawContent = false;
+    let reasoningChars = 0;
+    let lastPingAt = Date.now();
     for await (const chunk of stream) {
-      const content = chunk.choices[0]?.delta?.content || '';
+      const delta = chunk.choices?.[0]?.delta || {};
+      const content = delta.content || '';
+      const reasoning = delta.reasoning_content || delta.reasoning || '';
+      if (reasoning) {
+        reasoningChars += reasoning.length;
+        if (Date.now() - lastPingAt > 800) {
+          lastPingAt = Date.now();
+          res.write(`data: ${JSON.stringify({ status: `模型思考中…（已推理 ${reasoningChars} 字）` })}\n\n`);
+        }
+      }
       if (content) {
+        if (!sawContent) {
+          sawContent = true;
+          res.write(`data: ${JSON.stringify({ status: '' })}\n\n`);
+        }
         fullAnalysis += content;
         res.write(`data: ${JSON.stringify({ content })}\n\n`);
       }
@@ -702,9 +749,9 @@ ${containerText}
       id: uuidv4(),
       timestamp: new Date().toISOString(),
       type: 'health',
-      sourceName: `容器诊断 · ${containerName}`,
+      sourceName: `容器诊断 · ${facts.name}`,
       analysis: fullAnalysis,
-      summary: containerText.slice(0, 300),
+      summary: prompt.split('## 诊断要求')[0].slice(0, 300),
       status: 'done',
       model
     });
