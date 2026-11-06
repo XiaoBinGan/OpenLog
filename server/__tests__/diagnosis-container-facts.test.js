@@ -148,7 +148,15 @@ describe('接线 —— 路由真的用了这套事实来源和进度事件', ()
   it('首字节立刻下发（flushHeaders）并推送进度事件', () => {
     expect(route).toContain('res.flushHeaders?.()');
     expect(route).toContain("status: '正在读取容器状态…'");
-    expect(route).toContain('模型思考中');
+  });
+
+  it('思考心跳与「关掉思考」统一在 llm-stream 里（三个 SSE 路由共用）', () => {
+    const stream = read('server/llm-stream.js');
+    expect(stream).toContain('模型思考中');
+    expect(stream).toContain('chat_template_kwargs');
+    expect(stream).toContain('enable_thinking: false');
+    expect(route).toContain('pipeChatStreamToSSE');
+    expect(route).toContain('createChatStream');
   });
 
   it('docker.js 提供 inspectContainer', () => {

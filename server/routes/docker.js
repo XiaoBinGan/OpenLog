@@ -26,6 +26,7 @@ import {
 import { getServers } from '../remote.js';
 import { resolveDockerTransport } from '../docker-transport.js';
 import { explainExitCode, buildRuleDiagnosis, mergePatrolProblems, describeContainerFacts, explainLogReadFailure, buildContainerDiagnosisPrompt } from '../diagnosis.js';
+import { createChatStream, pipeChatStreamToSSE, buildThinkingParams } from '../llm-stream.js';
 import { applyPatrolResults } from '../patrol-cache.js';
 import { createShortCache, cached } from '../short-cache.js';
 
@@ -324,7 +325,9 @@ ${logsText}
           model,
           messages: [{ role: 'user', content: analysisPrompt }],
           temperature: 0.3,
-          timeout: 90_000
+          timeout: 90_000,
+          // 批量分析是一次性返回（前端只看最终结论），关掉思考能快 5~20 秒
+          ...buildThinkingParams(Boolean(ensureSettings().thinkingEnabled)),
         });
 
         const analysis = stripThinking(response.choices[0].message.content);
@@ -424,23 +427,20 @@ ${problemText}
 
     let fullAnalysis = '';
 
-    const stream = await openai.chat.completions.create({
+    // 同 llm-stream 说明：思考期发心跳，关掉思考时请求引擎别思考
+    const stream = await createChatStream({
+      openai,
       model,
-      messages: [{ role: 'user', content: prompt }],
-      stream: true,
-      max_tokens: 4096,
-      temperature: 0.3
+      prompt,
+      maxTokens: 4096,
+      temperature: 0.3,
+      thinkingEnabled: Boolean(ensureSettings().thinkingEnabled),
     });
-
-    for await (const chunk of stream) {
-      const content = chunk.choices[0]?.delta?.content || '';
-      if (content) {
-        fullAnalysis += content;
-        res.write(`data: ${JSON.stringify({ content })}\n\n`);
-      }
-    }
-    res.write('data: [DONE]\n\n');
-    res.end();
+    fullAnalysis = await pipeChatStreamToSSE({
+      res,
+      stream,
+      onContent: (c) => { fullAnalysis += c; },
+    });
 
     addAnalysisRecord({
       id: uuidv4(),
@@ -562,26 +562,24 @@ ${containerText}
 
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.flushHeaders?.();
 
     let fullAnalysis = '';
 
-    const stream = await openai.chat.completions.create({
+    const stream = await createChatStream({
+      openai,
       model,
-      messages: [{ role: 'user', content: prompt }],
-      stream: true,
-      max_tokens: 4096,
-      temperature: 0.3
+      prompt,
+      maxTokens: 4096,
+      temperature: 0.3,
+      thinkingEnabled: Boolean(ensureSettings().thinkingEnabled),
     });
-
-    for await (const chunk of stream) {
-      const content = chunk.choices[0]?.delta?.content || '';
-      if (content) {
-        fullAnalysis += content;
-        res.write(`data: ${JSON.stringify({ content })}\n\n`);
-      }
-    }
-    res.write('data: [DONE]\n\n');
-    res.end();
+    fullAnalysis = await pipeChatStreamToSSE({
+      res,
+      stream,
+      onContent: (c) => { fullAnalysis += c; },
+    });
 
     // 保存分析历史
     addAnalysisRecord({
@@ -707,43 +705,23 @@ router.post('/api/docker/container/:sourceId/:containerId/analyze', async (req, 
     const OpenAI = (await import('openai')).default;
     const openai = new OpenAI({ apiKey, baseURL: baseUrl });
 
+    // 统一走 llm-stream：思考期发心跳、正文照常转发、设置里关掉思考时请求引擎别思考
+    // （实测本机 Qwen：正文首字 17s → 0.7s）
     let fullAnalysis = '';
-    const stream = await openai.chat.completions.create({
+    const stream = await createChatStream({
+      openai,
       model,
-      messages: [{ role: 'user', content: prompt }],
-      stream: true,
-      max_tokens: 2048,
-      temperature: 0.3
+      prompt,
+      maxTokens: 2048,
+      temperature: 0.3,
+      thinkingEnabled: Boolean(ensureSettings().thinkingEnabled),
     });
-
-    // 有些引擎（Qwen3 等）先把思考写进 reasoning_content，正文要等几秒。
-    // 之前只转发 content → 面板长时间空白，用户以为点坏了。
-    // 现在把思考进度当「心跳」转发（不带正文），面板一直有反馈。
-    let sawContent = false;
-    let reasoningChars = 0;
-    let lastPingAt = Date.now();
-    for await (const chunk of stream) {
-      const delta = chunk.choices?.[0]?.delta || {};
-      const content = delta.content || '';
-      const reasoning = delta.reasoning_content || delta.reasoning || '';
-      if (reasoning) {
-        reasoningChars += reasoning.length;
-        if (Date.now() - lastPingAt > 800) {
-          lastPingAt = Date.now();
-          res.write(`data: ${JSON.stringify({ status: `模型思考中…（已推理 ${reasoningChars} 字）` })}\n\n`);
-        }
-      }
-      if (content) {
-        if (!sawContent) {
-          sawContent = true;
-          res.write(`data: ${JSON.stringify({ status: '' })}\n\n`);
-        }
-        fullAnalysis += content;
-        res.write(`data: ${JSON.stringify({ content })}\n\n`);
-      }
-    }
-    res.write('data: [DONE]\n\n');
-    res.end();
+    fullAnalysis = await pipeChatStreamToSSE({
+      res,
+      stream,
+      onContent: (c) => { fullAnalysis += c; },
+    });
+    // pipeChatStreamToSSE 已写 [DONE] 并 end()
 
     addAnalysisRecord({
       id: uuidv4(),
