@@ -32,6 +32,11 @@
 }
 .lang button:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
 @media (max-width:720px){.lang button{padding:7px 8px;font-size:11px}}
+/* 小屏：导航空间留给语言切换与汉堡菜单，主 CTA 在 hero 与产品卡片里各有一份 */
+@media (max-width:600px){
+  .nav-inner{gap:8px}
+  .nav-actions .btn-sm{display:none}
+}
 
 /* ===== 英文文案更长：只调整换行策略，不动字号与配色 ===== */
 html[lang="en"] .nw{white-space:normal}
