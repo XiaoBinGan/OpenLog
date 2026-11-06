@@ -128,6 +128,16 @@ export async function startMonitoring(deps) {
     sampler.start();
     out.sampler = sampler;
 
+    // 采样器默认把 heavy（表体积/索引命中）排到 5 分钟后 —— 但用户点开面板的第一眼
+    // 看到「0 张表」会以为功能没做。启动 12s 后补一次 heavy，让首屏就有数据。
+    const firstHeavy = setTimeout(() => {
+      Promise.resolve(sampler.sample('heavy')).catch((err) => {
+        logger('warn', '[Metrics] 首轮 heavy 采样失败:', err);
+      });
+    }, 12_000);
+    if (firstHeavy.unref) firstHeavy.unref();
+    out.timers.firstHeavy = firstHeavy;
+
     timers.sample = setTimer(async () => {
       try {
         const snap = sampler.snapshot();
