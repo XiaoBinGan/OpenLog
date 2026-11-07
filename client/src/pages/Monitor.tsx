@@ -25,6 +25,7 @@ import { useRemote } from '../contexts/RemoteContext';
 import { apiFetch } from '../api/client';
 import ApiSection from '../components/monitor/ApiSection';
 import DbSection from '../components/monitor/DbSection';
+import DatasourceSection from '../components/monitor/DatasourceSection';
 import type { MonitorStats, MonitorHistory, RemoteServer } from '../types';
 
 // ─── Panel drag-and-drop system ───────────────────────────────────────────
@@ -780,6 +781,8 @@ export default function Monitor() {
           deviceName={selectedDevice.name}
           onBackToLocal={isRemote ? resetToLocal : undefined}
         />
+        {/* 真要看别的机器：登记它的数据库 / 探它的接口文档 */}
+        <DatasourceSection />
       </div>
     </div>
   );

@@ -62,6 +62,10 @@ import createApiMonitorRouter from './routes/api-monitor.js';
 import createOpenApiRouter from './routes/openapi.js';
 import { createVerifyClient, createHandleProtocols, evaluateUpgradeRequest } from './ws-auth.js';
 import { startMonitoring, stopMonitoring } from './monitoring.js';
+// ── 外部数据源（切机器看数据的落地方式：登记别人的库 + 探别人的 swagger）──
+import { createDatasourceStore } from './datasource/store.js';
+import { maskSecret } from './datasource/discover.js';
+import createDatasourceRouter from './routes/datasource.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -238,6 +242,21 @@ function saveSettings(data) {
 let monitoringHandle = null;
 
 /**
+ * 外部数据源登记表（别人的库 / 别人的服务）。
+ *
+ * 为什么单独一张表：settings 是「本实例自己的配置」，这里是「一堆外部目标」，
+ * 数量会变、要单独试连、单独启停。密码复用 settings 那套 AES-256-GCM 加密。
+ * 这里先建对象；真正建表放到 initDatabase 之后（那时才有 db 连接）。
+ */
+const datasourceStore = createDatasourceStore({
+  getDb: () => { try { return getDb(); } catch { return null; } },
+  getDbType: () => { try { return getDbType(); } catch { return null; } },
+  encrypt: (v) => encryptField(v),
+  decrypt: (v) => decryptField(v),
+  maskSecret,
+});
+
+/**
  * 启动监控体系。整体包在 try/catch 里 —— 监控是可选能力，
  * 任何一步失败都不能影响主服务启动（这是契约里写死的铁律）。
  */
@@ -361,6 +380,14 @@ async function initDatabase() {
     }
 
     await remote.loadServers();
+
+    // 外部数据源登记表（别人的库/服务）：失败只 warn，不影响主服务
+    try {
+      const ready = await datasourceStore.ensureSchema();
+      if (!ready) console.warn('[Datasource] 登记表创建失败，外部数据源功能不可用（其它功能不受影响）');
+    } catch (err) {
+      console.warn('[Datasource] 登记表初始化异常:', errorMessage(err));
+    }
 
     // ── 监控体系启动（失败只 warn，绝不影响主服务）──────────────────
     await startMonitoringSafe();
@@ -1370,6 +1397,37 @@ app.use(createOpenApiRouter({
 }));
 
 // 接口指标 / 覆盖率 / 告警规则 / 依赖拨测 / 总览状态
+// ─── 外部数据源：登记别人的库 / 探别人的 swagger ───
+// 这是「切机器看数据」的落地方式：远程主机上没有 OpenLog 进程，拿不到我们的埋点，
+// 但可以把它的数据库连接登记进来采集，或者反过来探它的接口文档拿接口清单。
+app.use(createDatasourceRouter({
+  store: datasourceStore,
+  listContainers: docker.listContainers,
+  inspectContainer: docker.inspectContainer,
+  /**
+   * 每个 Docker 源要用自己的传输配置：本机走 socketPath、远程走 SSH 隧道或 TCP。
+   * 统一给空对象会让本机也去连 127.0.0.1:2375 然后 ECONNREFUSED
+   * （本机 Docker 默认不监听 TCP，这是最常见的配置）。
+   */
+  getDockerConfig: (sourceId) => {
+    const src = (ensureSettings().dockerSources || []).find((x) => x.id === (sourceId || 'local'));
+    if (!src) return {};
+    // resolveDockerTransport 是同步函数（只是整理字段），拿不到就退回原 source
+    try { return resolveDockerTransport(src) || {}; } catch { return {}; }
+  },
+  dockerSources: () => (ensureSettings().dockerSources || [])
+    .filter((x) => x && x.id && x.id !== 'local')
+    .map((x) => ({ id: x.id, label: x.name || x.id })),
+  // 远程源的 hostHint 用它配置里的 host（SSH 宿主机地址），本机留空由前端填
+  hostHintFor: (sourceId) => {
+    try {
+      const src = (ensureSettings().dockerSources || []).find((x) => x.id === sourceId);
+      return src?.host && src.host !== 'localhost' ? src.host : '';
+    } catch { return ''; }
+  },
+  enabled: metricsEnabled,
+}));
+
 app.use(lazyRouter(createApiMonitorRouter, () => ({
   registry: apiRegistry,
   store: apiStore,
