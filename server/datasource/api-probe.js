@@ -70,13 +70,16 @@ export function summarizeSpec(doc) {
 /**
  * 探测一个基地址上的 API 文档。
  *
+ * **反误判**：很多 SPA 站点对任意路径都回 200 + 同一个 index.html（前端路由兜底），
+ * 直接按状态码判会把「没有文档」报成「找到文档」。所以先探一个肯定不存在的路径
+ * 当**指纹**，之后凡是内容和指纹一致的，一律当「兜底页面」不算命中。
+ *
  * @param {object} opts
  * @param {string} opts.baseUrl      形如 http://host:8080（不带结尾斜杠）
  * @param {(url: string, init?: object) => Promise<Response>} [opts.fetchImpl]
  * @param {number} [opts.timeoutMs]  单个地址的超时，默认 2500ms
  * @param {string[]} [opts.paths]    覆盖默认探测列表（测试用）
  * @param {Record<string,string>} [opts.headers] 需要带认证时给
- * @returns {Promise<{ ok: boolean, baseUrl: string, found: string|null, ms: number, summary: object|null, attempts: Array<{path:string,status:number|null,error?:string}>, error?: string }>}
  */
 export async function probeApiDocs({
   baseUrl, fetchImpl, timeoutMs = 2500, paths = SPEC_PATHS, headers = {},
@@ -89,39 +92,79 @@ export async function probeApiDocs({
   const attempts = [];
   const t0 = typeof performance !== 'undefined' ? performance.now() : Date.now();
 
-  for (const p of paths) {
-    const url = base + p;
+  const fetchOnce = async (url) => {
     const ctrl = typeof AbortController === 'function' ? new AbortController() : null;
     const timer = ctrl ? setTimeout(() => ctrl.abort(), timeoutMs) : null;
     try {
       const res = await impl(url, { method: 'GET', signal: ctrl?.signal, headers: { Accept: 'application/json, */*', ...headers } });
+      const text = res.ok ? (await res.text()).slice(0, MAX_BODY) : '';
+      return { status: res.status, ok: res.ok, text };
+    } finally {
       if (timer) clearTimeout(timer);
-      attempts.push({ path: p, status: res.status });
-      // 404/401/403 都不算「有文档」，继续试下一个
-      if (!res.ok) continue;
-      const text = (await res.text()).slice(0, MAX_BODY);
-      // 有些 /docs 返回的是 HTML 页面（没给 json），那种只能算「有文档页」，拿不到接口清单
-      const doc = tryParseJson(text);
-      const ms = Math.round(((typeof performance !== 'undefined' ? performance.now() : Date.now()) - t0) * 10) / 10;
-      if (!doc) {
-        return {
-          ok: true, baseUrl: base, found: p, ms, summary: null, attempts,
-          error: '文档地址存在但返回的不是 JSON（可能是 Swagger UI 页面），拿不到接口清单',
-        };
+    }
+  };
+
+  // ① 兜底指纹：探一个几乎不可能存在的路径，看服务器是不是「什么都回 200 + 同一页面」
+  let fallbackSig = null;
+  try {
+    const sentinel = await fetchOnce(base + '/__openlog_probe_no_such_path__');
+    if (sentinel.ok && sentinel.text) fallbackSig = signature(sentinel.text);
+  } catch { /* 探不到指纹就按正常流程走 */ }
+
+  for (const p of paths) {
+    const url = base + p;
+    try {
+      const r = await fetchOnce(url);
+      if (!r.ok) {
+        attempts.push({ path: p, status: r.status });
+        continue;
       }
-      return { ok: true, baseUrl: base, found: p, ms, summary: summarizeSpec(doc), attempts };
+
+      const doc = tryParseJson(r.text);
+      if (doc) {
+        attempts.push({ path: p, status: r.status });
+        const ms = elapsed(t0);
+        return { ok: true, baseUrl: base, found: p, ms, summary: summarizeSpec(doc), attempts };
+      }
+
+      // 不是 JSON：先判断是不是「所有路径都回同一个页面」
+      const isFallback = fallbackSig !== null && signature(r.text) === fallbackSig;
+      // Swagger UI / ReDoc 页面里通常带这些关键词；没有就不是文档页
+      const looksLikeDocUi = /swagger|redoc|openapi|api-?docs/i.test(r.text.slice(0, 4000));
+      if (isFallback || !looksLikeDocUi) {
+        attempts.push({ path: p, status: r.status, error: isFallback ? 'SPA 兜底页面（不是文档）' : '不是文档页面' });
+        continue;
+      }
+
+      attempts.push({ path: p, status: r.status });
+      const ms = elapsed(t0);
+      return {
+        ok: true, baseUrl: base, found: p, ms, summary: null, attempts,
+        error: '这里是一个 Swagger UI 页面，但它要自己再去后端取 JSON 才有接口清单；可以直接打开这个地址看',
+      };
     } catch (err) {
-      if (timer) clearTimeout(timer);
       const msg = err?.name === 'AbortError' ? 'timeout' : String(err?.message || err);
       attempts.push({ path: p, status: null, error: msg });
     }
   }
 
-  const ms = Math.round(((typeof performance !== 'undefined' ? performance.now() : Date.now()) - t0) * 10) / 10;
-  return {
-    ok: false, baseUrl: base, found: null, ms, summary: null, attempts,
-    error: attempts.some((a) => a.status === null) ? '连不上（网络不可达或拒绝连接）' : '没有找到常见的接口文档地址',
-  };
+  const ms = elapsed(t0);
+  const allFallback = attempts.length > 0 && attempts.every((a) => a.error === 'SPA 兜底页面（不是文档）');
+  let hint = '没有找到常见的接口文档地址';
+  if (attempts.some((a) => a.status === null)) hint = '连不上（网络不可达或拒绝连接）';
+  else if (allFallback) hint = '这个服务把所有路径都返回同一个前端页面（SPA 兜底），没有接口文档';
+  return { ok: false, baseUrl: base, found: null, ms, summary: null, attempts, error: hint };
+}
+
+function elapsed(t0) {
+  const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+  return Math.round((now - t0) * 10) / 10;
+}
+
+/** 内容指纹：长度 + 前后各 64 字符。够区分不同页面，又不做无意义哈希 */
+function signature(text) {
+  const s = String(text || '');
+  return `${s.length}:${s.slice(0, 64)}:${s.slice(-64)}`;
 }
 
 function tryParseJson(text) {

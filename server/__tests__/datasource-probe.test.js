@@ -62,15 +62,38 @@ describe('summarizeSpec', () => {
 });
 
 describe('probeApiDocs', () => {
-  it('第一个地址就命中 → 不再往下试（省请求）', async () => {
-    const fetchImpl = vi.fn(async (url) => jsonRes(specV3));
+  it('第一个地址就命中 → 不再往下试（只多一次兜底指纹探测）', async () => {
+    const fetchImpl = vi.fn(async (url) => (url.includes('__openlog_probe') ? jsonRes('nf', 404) : jsonRes(specV3)));
     const r = await probeApiDocs({ baseUrl: 'http://h:8080/', fetchImpl });
     expect(r.ok).toBe(true);
     expect(r.found).toBe('/openapi.json');
     expect(r.summary.endpoints).toHaveLength(4);
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
-    // baseUrl 结尾斜杠被规范化
-    expect(fetchImpl.mock.calls[0][0]).toBe('http://h:8080/openapi.json');
+    // 1 次兜底指纹 + 1 次真命中；命中后不再继续试
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(fetchImpl.mock.calls[1][0]).toBe('http://h:8080/openapi.json');
+  });
+
+  /**
+   * SPA 兜底是真实存在的陷阱：生产上 nifi / supremind 对任意路径都回 200 + index.html，
+   * 按状态码判会把「没有文档」报成「找到文档」。
+   */
+  it('SPA 兜底页面不算命中（生产实测会遇到）', async () => {
+    const spa = '<!doctype html><html><head><title>App</title></head><body><div id=root></div><script src=/app.js></script></body></html>';
+    const fetchImpl = vi.fn(async () => jsonRes(spa, 200));
+    const r = await probeApiDocs({ baseUrl: 'http://h', fetchImpl, paths: ['/openapi.json', '/v3/api-docs'] });
+    expect(r.ok).toBe(false);
+    expect(r.error).toContain('SPA 兜底');
+    expect(r.attempts.every((a) => a.error === 'SPA 兜底页面（不是文档）')).toBe(true);
+  });
+
+  it('真 Swagger UI 页面（带 swagger 关键词）才算找到，但仍说明拿不到清单', async () => {
+    const ui = '<!doctype html><html><head><title>Swagger UI</title></head><body><div id="swagger-ui"></div></body></html>';
+    const fetchImpl = vi.fn(async (url) => (url.includes('__openlog_probe') ? jsonRes('nf', 404) : jsonRes(ui)));
+    const r = await probeApiDocs({ baseUrl: 'http://h', fetchImpl, paths: ['/swagger-ui.html'] });
+    expect(r.ok).toBe(true);
+    expect(r.found).toBe('/swagger-ui.html');
+    expect(r.summary).toBe(null);
+    expect(r.error).toContain('Swagger UI');
   });
 
   it('一路 404 → 穷举后 ok:false，attempts 里能看到每个地址的真实状态码', async () => {
@@ -81,14 +104,7 @@ describe('probeApiDocs', () => {
     expect(r.attempts).toEqual([{ path: '/a', status: 404 }, { path: '/b', status: 404 }]);
   });
 
-  it('文档地址返回 HTML（Swagger UI 页面）→ ok:true 但明确说拿不到清单', async () => {
-    const fetchImpl = async () => jsonRes('<!doctype html><html>swagger ui</html>');
-    const r = await probeApiDocs({ baseUrl: 'http://h', fetchImpl, paths: ['/docs'] });
-    expect(r.ok).toBe(true);
-    expect(r.found).toBe('/docs');
-    expect(r.summary).toBe(null);
-    expect(r.error).toContain('不是 JSON');
-  });
+
 
   it('401/403 不算找到，继续试下一个', async () => {
     const fetchImpl = vi.fn(async (url) => (url.endsWith('/openapi.json') ? jsonRes({ error: 'auth' }, 401) : jsonRes(specV3)));
