@@ -15,7 +15,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Database, Globe, Loader2, Plug, RefreshCw, Search, Trash2, AlertCircle, CheckCircle2, XCircle } from 'lucide-react';
 import { apiFetch } from '../../api/client';
 import {
-  normalizeDatasourceList, normalizeDiscover, candidateToPayload, describeTarget,
+  normalizeDatasourceList, normalizeDiscover, describeTarget,
   summarizeProbe, probeNotes, attemptedPaths, relativeTime, dataNatureLabel,
   type DatasourceItem, type DbCandidate, type ServiceCandidate,
 } from '../../utils/datasource';
@@ -87,6 +87,36 @@ export default function DatasourceSection() {
       setError(err instanceof Error ? err.message : '保存失败');
     } finally {
       setBusy((b) => ({ ...b, [id]: false }));
+    }
+  }, [load]);
+
+  /**
+   * 采纳候选：把 sourceId + containerId 交回服务端，由它重新 inspect 容器取密码、
+   * 加密入库。前端不接触明文密码（容器 env 只有服务端能读）。
+   */
+  const adopt = useCallback(async (c: DbCandidate | ServiceCandidate, host?: string) => {
+    setBusy((b) => ({ ...b, [c.id]: true }));
+    try {
+      const [collection, containerId] = (() => {
+        const parts = String(c.id).split(':');
+        return [parts[1] || 'local', parts[2] || ''];
+      })();
+      const res = await apiFetch<{ ok?: boolean; error?: string; discoveredPassword?: boolean }>('/api/monitor/datasources/adopt', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: c.id, kind: c.kind, sourceId: collection, containerId,
+          host: host || undefined,
+          baseUrl: c.kind === 'service' ? c.baseUrl : undefined,
+        }),
+      });
+      if (res?.ok === false) setError(res.error || '登记失败');
+      else if (res?.discoveredPassword === false) setError('已登记，但没在容器环境变量里找到密码 —— 请在下方补上密码后点「试连」');
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '登记失败');
+    } finally {
+      setBusy((b) => ({ ...b, [c.id]: false }));
     }
   }, [load]);
 
@@ -253,8 +283,9 @@ export default function DatasourceSection() {
                       <div className="flex-1" />
                       <button
                         type="button"
-                        onClick={() => save(candidateToPayload(c))}
+                        onClick={() => adopt(c, manualHost)}
                         disabled={saved || busy[c.id]}
+                        title="服务端会重新读一次容器 env 取密码并加密入库，明文不经过浏览器"
                         className="px-2 py-0.5 rounded text-xs text-accent-400 hover:bg-accent-500/10 disabled:opacity-40 transition-colors"
                       >
                         {saved ? '已登记' : busy[c.id] ? '保存中…' : '登记'}
@@ -283,7 +314,7 @@ export default function DatasourceSection() {
                       <div className="flex-1" />
                       <button
                         type="button"
-                        onClick={() => save(candidateToPayload(c))}
+                        onClick={() => adopt(c, manualHost)}
                         disabled={saved || busy[c.id]}
                         className="px-2 py-0.5 rounded text-xs text-accent-400 hover:bg-accent-500/10 disabled:opacity-40 transition-colors"
                       >

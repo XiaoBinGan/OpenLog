@@ -10,7 +10,7 @@
  * 全部只读、全部要用户确认。挖到密码不回传明文（只回打码），保存时才单独提交。
  */
 import express from 'express';
-import { discoverDbCandidate, discoverServiceCandidate, candidateHint } from '../datasource/discover.js';
+import { discoverDbCandidate, discoverServiceCandidate, candidateHint, envMap, parseDbUrl } from '../datasource/discover.js';
 import { probeExternalDb } from '../datasource/db-probe.js';
 import { probeApiDocs, SPEC_PATHS } from '../datasource/api-probe.js';
 
@@ -122,6 +122,80 @@ export function createDatasourceRouter(deps = {}) {
     const out = await store.upsert({ ...body, id: req.params.id });
     if (!out.ok) return res.status(200).json({ ok: false, error: out.error });
     return res.json({ ok: true, item: await store.get(req.params.id) });
+  });
+
+  /**
+   * 3b. 采纳一个自动发现的候选。
+   *
+   * 为什么不把明文密码交给前端再回传：那样密码会经过浏览器内存、网络、
+   * 以及可能的 XSS —— 而容器 env 本来就在服务端可读。
+   * 这里由**服务端**重新 inspect 一次容器，取出密码直接加密入库，
+   * 明文只在服务端内存里出现一次，前端永远只看到打码。
+   *
+   * body: { id, sourceId, containerId, kind, label?, host?, port?, user?, database?, baseUrl? }
+   *   其余字段允许前端覆盖（用户可能想改 host/port），密码不接受前端传值。
+   */
+  router.post('/api/monitor/datasources/adopt', async (req, res) => {
+    const b = req.body && typeof req.body === 'object' ? req.body : {};
+    const sourceId = String(b.sourceId || 'local');
+    const containerId = String(b.containerId || '');
+    if (!containerId) return res.json({ ok: false, error: '缺少 containerId' });
+
+    let inspect = null;
+    try {
+      const cfg = (await (deps.getDockerConfig ? deps.getDockerConfig(sourceId) : {})) || {};
+      inspect = await deps.inspectContainer(sourceId, containerId, cfg);
+    } catch (err) {
+      return res.json({ ok: false, error: `读取容器信息失败: ${errText(err)}（可改为手动填写密码）` });
+    }
+    if (!inspect) return res.json({ ok: false, error: '读不到该容器的 inspect 信息（可能已被删除），请手动填写密码' });
+
+    const container = { id: containerId, image: inspect?.Config?.Image, names: [String(inspect?.Name || '').replace(/^\//, '')] };
+    const isService = b.kind === 'service';
+    const hint = String(b.host || '') || (deps.hostHintFor ? deps.hostHintFor(sourceId) : '');
+
+    if (isService) {
+      const [svc] = discoverServiceCandidate({ container, inspect, hostHint: hint, collection: sourceId });
+      const baseUrl = String(b.baseUrl || svc?.baseUrl || '');
+      if (!baseUrl) return res.json({ ok: false, error: '推断不出服务地址，请手动填写 baseUrl' });
+      const id = String(b.id || svc?.id || `svc:${sourceId}:${containerId.slice(0, 12)}`);
+      const out = await store.upsert({ id, kind: 'service', collection: sourceId, label: b.label || `${container.names[0] || '服务'} 接口`, baseUrl, enabled: true });
+      if (!out.ok) return res.json({ ok: false, error: out.error });
+      return res.json({ ok: true, item: await store.get(id) });
+    }
+
+    const [cand] = discoverDbCandidate({ container, inspect, hostHint: hint, collection: sourceId });
+    if (!cand) return res.json({ ok: false, error: '这个镜像不是已知数据库，无法推断连接条件' });
+    // 重新从 env 取密码（discoverDbCandidate 内部已取过但只回打码；这里再走一次拿原文）
+    const env = envMap(inspect?.Config?.Env);
+    let password = '';
+    for (const key of ['DATABASE_URL', 'POSTGRES_URL', 'PG_URL', 'MYSQL_URL']) {
+      const p = parseDbUrl(env[key]);
+      if (p && p.password) { password = p.password; break; }
+    }
+    if (!password) {
+      for (const key of ['POSTGRES_PASSWORD', 'PGPASSWORD', 'MYSQL_ROOT_PASSWORD', 'MYSQL_PASSWORD', 'MARIADB_ROOT_PASSWORD', 'MARIADB_PASSWORD']) {
+        if (env[key]) { password = env[key]; break; }
+      }
+    }
+
+    const id = String(b.id || cand.id);
+    const out = await store.upsert({
+      id,
+      kind: 'db',
+      collection: sourceId,
+      label: b.label || `${cand.containerName} (${cand.dialect})`,
+      dialect: b.dialect || cand.dialect,
+      host: String(b.host || cand.host || ''),
+      port: Number(b.port) || cand.port,
+      user: String(b.user || cand.user || ''),
+      password: password || undefined, // 挖不到就让用户自己填，不写空串覆盖
+      database: String(b.database || cand.database || ''),
+      enabled: true,
+    });
+    if (!out.ok) return res.json({ ok: false, error: out.error });
+    const item = await store.get(id);
+    return res.json({ ok: true, item, discoveredPassword: Boolean(password) });
   });
 
   /** 4. 删除 */

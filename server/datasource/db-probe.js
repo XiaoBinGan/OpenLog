@@ -154,6 +154,7 @@ export function explainConnectError(err) {
   if (/ECONNREFUSED/i.test(m)) return '连接被拒绝：端口没有在监听（库没起来，或没发布到这个端口）';
   if (/ETIMEDOUT|timeout/i.test(m)) return '连接超时：网络不通，或防火墙挡了';
   if (/ENOTFOUND|EAI_AGAIN/i.test(m)) return '主机名解析失败';
+  if (/client password must be a string|SASL|SCRAM/i.test(m)) return '没有密码：这个库要求密码认证，请在数据源里补上密码后重试';
   if (/password authentication failed|Access denied for user/i.test(m)) return '认证失败：账号或密码不对';
   if (/database .* does not exist|Unknown database/i.test(m)) return '库不存在：库名写错了';
   if (code === '28P01') return '认证失败：账号或密码不对';
@@ -165,8 +166,11 @@ export function explainConnectError(err) {
 async function createClient({ dialect, host, port, user, password, database, timeoutMs }) {
   if (dialect === 'postgres') {
     const { Client } = await import('pg');
+    // password 必须是 string 或 undefined：传 null 会让 pg 走 SASL 时报
+    // "client password must be a string"（比自己写的一句「连不上」更难排查）
     const client = new Client({
-      host, port: port || 5432, user: user || undefined, password: password || undefined,
+      host, port: port || 5432, user: user || undefined,
+      password: password ? String(password) : undefined,
       database: database || undefined,
       connectionTimeoutMillis: timeoutMs,
       statement_timeout: timeoutMs,
