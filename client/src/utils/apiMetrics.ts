@@ -41,6 +41,14 @@ export interface ApiSnapshot {
   /** 因为基数上限（MAX_ROUTES=300）被丢掉的样本数 */
   dropped?: number;
   storage?: { rows: number; approxBytes: number | null } | null;
+  /**
+   * 这批数字的起始时间（epoch ms）。
+   * 数据源是**内存滑窗**：进程重启后从 0 重新累计，所以和 `api_metrics_minute`
+   * 里的历史行对不上是正常的 —— 界面要把这一点说出来，否则用户会以为在编数。
+   */
+  sinceMs?: number;
+  /** 固定 'memory'：当前快照来自内存，历史来自落库（/api/monitor/api/history） */
+  source?: string;
 }
 
 /** 一分钟后端分钟桶的宽度（ms），与 `api_metrics_minute.bucket_ms` 口径一致 */
@@ -69,6 +77,23 @@ function clampPct(v: unknown): number {
   return Math.min(100, Math.max(0, toNum(v)));
 }
 
+/**
+ * 把后端的**比值**转成界面上要显示的**百分比**。
+ *
+ * 这是踩过的真实 bug：`registry.snapshot()` 的 `errorRate` 是比值
+ * （`rate(e4+e5, calls)`，1/15 → 0.0667），界面直接 `toFixed(2)+'%'` 就成了
+ * 「0.07%」，真实值是 6.67% —— 差 100 倍，还会把红色告警显示成绿色正常
+ * （`errorRateLevel` 的档位是按百分比定的）。
+ *
+ * 这里统一 ×100：**契约上后端只给比值**，换算只在前端做一处。
+ * 不做「>1 就当已是百分比」的猜测 —— 比值 1.0 等于 100%，猜错更糟。
+ */
+function ratioToPct(v: unknown): number {
+  // 保留 2 位小数：0.014 * 100 在浮点下是 1.4000000000000001，
+  // 不收敛会让断言和界面的 toFixed 都对不上
+  return Math.round(clampPct(toNum(v) * 100) * 100) / 100;
+}
+
 function toStr(v: unknown, fallback = ''): string {
   return typeof v === 'string' && v.trim() !== '' ? v : fallback;
 }
@@ -87,7 +112,7 @@ function normalizeRoute(raw: unknown): ApiRouteStat {
     calls: toCount(o.calls),
     err4xx: toCount(o.err4xx),
     err5xx: toCount(o.err5xx),
-    errorRate: clampPct(o.errorRate),
+    errorRate: ratioToPct(o.errorRate),
     qps: Math.max(0, toNum(o.qps)),
     p50: Math.max(0, toNum(o.p50)),
     p95: Math.max(0, toNum(o.p95)),
@@ -128,13 +153,16 @@ export function normalizeSnapshot(raw: unknown): ApiSnapshot {
     // window 只在后端真的给了字符串时保留，否则 undefined（渲染层退到 '5m'）
     window: typeof o.window === 'string' && o.window.trim() !== '' ? o.window : undefined,
     qps: Math.max(0, toNum(o.qps)),
-    errorRate: clampPct(o.errorRate),
+    errorRate: ratioToPct(o.errorRate),
     totalCalls: toCount(o.totalCalls),
     routes: toArr(o.routes).map(normalizeRoute),
     slowest: toArr(o.slowest).map(normalizeRoute),
     errorTop: toArr(o.errorTop).map(normalizeRoute),
     dropped: toCount(o.dropped),
     storage,
+    // 只有后端给了正数才带上，否则让界面当作「未知」，不要伪造一个时间点
+    sinceMs: typeof o.sinceMs === 'number' && Number.isFinite(o.sinceMs) && o.sinceMs > 0 ? o.sinceMs : undefined,
+    source: typeof o.source === 'string' && o.source.trim() !== '' ? o.source : undefined,
   };
 }
 

@@ -43,7 +43,7 @@ describe('normalizeSnapshot —— 保真', () => {
       enabled: true,
       window: '5m',
       qps: 2.35,
-      errorRate: 1.4,
+      errorRate: 0.014, // 后端给的是比值（0.014 = 1.4%），见 ratioToPct 的注释
       totalCalls: 703,
       routes: [route({ route: '/api/monitor/stats', calls: 700, p95: 12.5 })],
       slowest: [route({ route: '/api/docker/containers' })],
@@ -55,13 +55,35 @@ describe('normalizeSnapshot —— 保真', () => {
     expect(s.enabled).toBe(true);
     expect(s.window).toBe('5m');
     expect(s.qps).toBe(2.35);
-    expect(s.errorRate).toBe(1.4);
+    expect(s.errorRate).toBe(1.4); // 比值 0.014 → 百分比 1.4
     expect(s.totalCalls).toBe(703);
     expect(s.routes).toHaveLength(1);
     expect(s.routes![0].p95).toBe(12.5);
     expect(s.errorTop![0].err4xx).toBe(3);
     expect(s.dropped).toBe(7);
     expect(s.storage).toEqual({ rows: 12_345, approxBytes: 2048 });
+  });
+
+  /**
+   * 回归：接口返回的 errorRate 是**比值**，界面必须 ×100。
+   * 曾经的 bug：1/15 的错误率显示成「0.07%」（真实 6.67%），
+   * 而且 errorRateLevel 按百分比分档，会把 6.67% 判成「正常」绿色。
+   */
+  it('errorRate 比值必须转成百分比（1/15 → 6.67%，不是 0.07%）', () => {
+    const s = normalizeSnapshot({ enabled: true, totalCalls: 15, errorRate: 1 / 15 });
+    expect(s.errorRate).toBeCloseTo(6.67, 2);
+    expect(errorRateLevel(s.errorRate!)).toBe('bad'); // ≥5% 该红，不是绿
+  });
+
+  it('比值 100%（1.0）不会被误判成 1%', () => {
+    const s = normalizeSnapshot({ enabled: true, errorRate: 1 });
+    expect(s.errorRate).toBe(100);
+    expect(errorRateLevel(s.errorRate!)).toBe('bad');
+  });
+
+  it('路由级 errorRate 同样转百分比', () => {
+    const s = normalizeSnapshot({ enabled: true, routes: [{ route: '/a', calls: 4, err4xx: 1, errorRate: 0.25 }] });
+    expect(s.routes![0].errorRate).toBe(25);
   });
 
   it('数字型字符串也能解析（REAL 列在部分驱动下回字符串）', () => {

@@ -43,7 +43,7 @@ import { AGENT_TOOLS, AGENT_TOOL_NAMES, executeAgentTool } from './agent-tools.j
 import createAuthRouter from './routes/auth.js';
 import { isLoopbackAddress } from './security/loopback.js';
 import { migrateWatchSourceFields } from './settings-migrations.js';
-import { initDb, getDb, getDbType, getDbInfo, getRawDb, getSqlitePath, getKv, setKv, insertLogRecord, getAlertConfig, closeDb, pruneOldRecords, checkpoint, ensureBuiltinSkills, isDbReady } from './db/index.js';
+import { initDb, getDb, getDbType, getDbInfo, getRawDb, getSqlitePath, getKv, setKv, insertLogRecord, getAlertConfig, closeDb, pruneOldRecords, checkpoint, ensureBuiltinSkills, isDbReady, setSlowQuerySink } from './db/index.js';
 import { BUILTIN_SKILLS } from './default-skills.js';
 import { resolveDockerTransport } from './docker-transport.js';
 import { getRemoteMfu } from './gpu-mfu.js';
@@ -243,6 +243,15 @@ let monitoringHandle = null;
  */
 async function startMonitoringSafe() {
   try {
+    // 慢查询埋点：把 db 适配层每次调用的耗时交给 slowQueryLog 判阈值。
+    // 必须在这里接上，否则「慢查询」面板永远是空的（一开始就漏了这一步，
+    // 面板显示 0 条会让人以为「从来不慢」，实际是根本没人上报）。
+    setSlowQuerySink((entry) => {
+      // 指标表自身的写入不算业务慢查询：那是监控自己在干活，报出来只是噪音
+      if (/api_metrics_minute|db_metric_sample|slow_query_log/i.test(entry.sql)) return;
+      slowQueryLog.record({ sql: entry.sql, ms: entry.ms, source: entry.source });
+    });
+
     monitoringHandle = await startMonitoring({
       registry: apiRegistry,
       createApiStore,

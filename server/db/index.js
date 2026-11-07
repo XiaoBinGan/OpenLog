@@ -154,6 +154,62 @@ function adaptPostgres(pool) {
   };
 }
 
+// ─── 慢查询埋点 ──────────────────────────────────────────────────────────
+
+/** 慢查询接收器（由 server/index.js 注入 createSlowQueryLog 的 record） */
+let slowQuerySink = null;
+
+/**
+ * 注册慢查询接收器。
+ *
+ * 为什么用注入而不是让 db 直接 import 慢查询模块：db 层是最底层，让它依赖监控模块
+ * 会形成「底层依赖上层」的倒挂，也会让 db 的单测被迫拖上监控。注入保持单向。
+ *
+ * @param {((entry: {sql: string, ms: number, source: string}) => void) | null} fn
+ */
+export function setSlowQuerySink(fn) {
+  slowQuerySink = typeof fn === 'function' ? fn : null;
+}
+
+/**
+ * 给适配层包一层耗时统计。
+ *
+ * 用 `process.hrtime.bigint()`（单调时钟）而不是 `Date.now()`：NTP 校时会让
+ * Date.now 回跳，产生负耗时。开销约 50ns/次，相对一次 SQL 往返可忽略。
+ *
+ * 埋点自身**绝不能抛**（吞掉），否则一次统计失败会把正常查询带崩。
+ * 失败（reject）的查询也记 —— 慢的超时查询正是要抓的对象。
+ */
+export function withSlowLog(adapter) {
+  if (!adapter) return adapter;
+  for (const name of ['run', 'get', 'all', 'exec']) {
+    const orig = adapter[name];
+    if (typeof orig !== 'function') continue;
+    adapter[name] = function timedOp(sql, ...rest) {
+      const t0 = process.hrtime.bigint();
+      const report = () => {
+        if (!slowQuerySink) return;
+        try {
+          slowQuerySink({ sql: String(sql ?? ''), ms: Number(process.hrtime.bigint() - t0) / 1e6, source: `db.${name}` });
+        } catch { /* 统计失败不影响查询 */ }
+      };
+      let out;
+      try {
+        out = orig.call(this, sql, ...rest);
+      } catch (err) {
+        report();
+        throw err;
+      }
+      if (out && typeof out.then === 'function') {
+        return out.then((v) => { report(); return v; }, (err) => { report(); throw err; });
+      }
+      report();
+      return out;
+    };
+  }
+  return adapter;
+}
+
 // ─── 配置解析（纯函数，便于测试）──────────────────────────────────────────
 
 /**
@@ -252,7 +308,7 @@ export async function initDb(config = {}) {
       await pool.query('SELECT 1');
       rawDb = pool;
       dbType = 'postgres';
-      db = adaptPostgres(pool);
+      db = withSlowLog(adaptPostgres(pool));
       console.log(`[DB] PostgreSQL connected: ${connectionString ? '(URL)' : `${cfg.host || 'localhost'}:${cfg.port || 5432}`} 连接池上限 ${(Number(cfg.max) || 10)}`);
     } catch (err) {
       failures.push(`PostgreSQL: ${errorMessage(err)}`);
@@ -279,7 +335,7 @@ export async function initDb(config = {}) {
       await pool.query('SELECT 1');
       rawDb = pool;
       dbType = 'mysql';
-      db = adaptMySQL(pool);
+      db = withSlowLog(adaptMySQL(pool));
       console.log(`[DB] MySQL connected: ${cfg.host || 'localhost'} 连接池上限 ${Number(cfg.max) || 10}`);
     } catch (err) {
       failures.push(`MySQL: ${errorMessage(err)}`);
@@ -305,7 +361,7 @@ export async function initDb(config = {}) {
       conn.pragma('busy_timeout = 5000');
       rawDb = conn;
       dbType = 'sqlite';
-      db = adaptSQLite(conn);
+      db = withSlowLog(adaptSQLite(conn));
       console.log('[DB] SQLite initialized:', SQLITE_PATH);
     } catch (err) {
       throw new Error(`[DB] 无法初始化数据库: ${errorMessage(err)}`);

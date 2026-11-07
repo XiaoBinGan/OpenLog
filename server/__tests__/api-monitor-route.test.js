@@ -67,8 +67,12 @@ describe('GET /api/monitor/api', () => {
     expect(body.errorTop.map((r) => r.route)).toEqual(['/api/b']);
     expect(body).toMatchObject({ dropped: 0, droppedRoutes: 0, unavailable: [] });
     expect(body.storage).toMatchObject({ rows: 42 });
+    // sinceMs / source 是「这批数字来自内存、进程重启会归零」的显式标注（见路由里的注释），
+    // 少了它用户会拿内存数字跟落库历史对不上
+    expect(typeof body.sinceMs).toBe('number');
+    expect(body.source).toBe('memory');
     expect(Object.keys(body).sort()).toEqual(['dropped', 'droppedRoutes', 'enabled', 'errorRate', 'errorTop',
-      'qps', 'routes', 'slowest', 'storage', 'totalCalls', 'unavailable', 'window', 'windowMs']);
+      'qps', 'routes', 'sinceMs', 'slowest', 'source', 'storage', 'totalCalls', 'unavailable', 'window', 'windowMs']);
   });
   it('window=bogus → 回退 5m 且 200（不 400，界面别崩）；window=1h 正常透传', async () => {
     const reg = makeRegistry(snapshotOf({ routes: [routeRow()] }));

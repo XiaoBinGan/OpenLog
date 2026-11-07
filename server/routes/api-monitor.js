@@ -203,6 +203,11 @@ export function createApiMonitorRouter(deps = {}) {
       dropped: readDropped(),
       droppedRoutes: snapshot ? numOr(snapshot.droppedRoutes, 0) : null,
       storage: storage.value,
+      // 这些数字是**内存滑窗**里的，进程重启就从 0 重新累计。
+      // 不写清楚，用户会拿它跟 api_metrics_minute 的历史行对不上，
+      // 以为面板在编数 —— 真实原因只是「内存 vs 落库」两个数据源。
+      sinceMs: Date.now() - Math.round(process.uptime() * 1000),
+      source: 'memory',
       unavailable: [reason, storage.reason].filter(Boolean),
     });
   }, (req) => emptySummary(parseWindow(req.query && req.query.window), 'handler'));

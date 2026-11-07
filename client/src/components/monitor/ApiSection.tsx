@@ -122,6 +122,17 @@ export default function ApiSection({ windowRange = '5m', intervalMs = 15_000 }: 
   const series = useMemo(() => buildQpsSeries(minutes, 5 * MINUTE_MS), [minutes]);
   const seriesMax = useMemo(() => series.reduce((acc, p) => Math.max(acc, p.v), 1), [series]);
   const level = errorRateLevel(snapshot?.errorRate ?? 0);
+  /**
+   * 「总请求数」的脚注要说清数据来自内存滑窗。
+   * 进程重启后从 0 累计，和落库历史对不上是正常的 —— 不说明白用户会以为在编数。
+   */
+  const sinceHint = useMemo(() => {
+    if (!snapshot?.sinceMs) return '窗口内累计（进程内存统计）';
+    const t = new Date(snapshot.sinceMs);
+    const hh = String(t.getHours()).padStart(2, '0');
+    const mm = String(t.getMinutes()).padStart(2, '0');
+    return `自 ${hh}:${mm} 起累计（进程内存；重启归零，历史看右侧存储行数）`;
+  }, [snapshot?.sinceMs]);
 
   return (
     <section className="bg-dark-800/60 border border-dark-700 rounded-xl p-4 md:p-5 space-y-4">
@@ -201,7 +212,7 @@ export default function ApiSection({ windowRange = '5m', intervalMs = 15_000 }: 
             <StatCard label="QPS" value={formatQps(snapshot.qps ?? 0)} tone="text-accent-400" hint="每秒请求数（窗口内均值）" />
             <StatCard label="错误率" value={`${(snapshot.errorRate ?? 0).toFixed(2)}%`} tone={TONE_CLASS[level]} hint="4xx + 5xx 占比：<1% 正常，<5% 注意，≥5% 告警" />
             <StatCard label="P95 延迟" value={formatMs(worstP95)} hint="各路由 P95 的最大值（最坏情况）" />
-            <StatCard label="总请求数" value={totalCalls.toLocaleString()} hint="窗口内累计" />
+            <StatCard label="总请求数" value={totalCalls.toLocaleString()} hint={sinceHint} />
           </div>
 
           {/* QPS 分钟趋势：纯 CSS 条 */}
