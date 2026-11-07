@@ -246,10 +246,26 @@ async function startMonitoringSafe() {
     // 慢查询埋点：把 db 适配层每次调用的耗时交给 slowQueryLog 判阈值。
     // 必须在这里接上，否则「慢查询」面板永远是空的（一开始就漏了这一步，
     // 面板显示 0 条会让人以为「从来不慢」，实际是根本没人上报）。
+    //
+    // 同时落库：内存环形缓冲只保留最近 200 条，进程一重启就没了。
+    // `apiStore.insertSlowQuery` 早就写好了但没人调用（slow_query_log 表一直是空的），
+    // 结果「历史慢查询」实际查不到任何东西 —— 这里把它接上。
+    // 写库失败只 warn，绝不影响业务查询（sink 内已整体 try/catch）。
     setSlowQuerySink((entry) => {
       // 指标表自身的写入不算业务慢查询：那是监控自己在干活，报出来只是噪音
       if (/api_metrics_minute|db_metric_sample|slow_query_log/i.test(entry.sql)) return;
-      slowQueryLog.record({ sql: entry.sql, ms: entry.ms, source: entry.source });
+      const recorded = slowQueryLog.record({ sql: entry.sql, ms: entry.ms, source: entry.source });
+      if (!recorded || !apiStore) return;
+      const latest = slowQueryLog.list(1)[0];
+      if (!latest) return;
+      // 落库用指纹而不是原始 SQL：库里不该出现参数值
+      apiStore.insertSlowQuery({
+        tsMs: latest.ts_ms,
+        fingerprint: latest.fingerprint,
+        ms: latest.ms,
+        source: latest.source,
+        sample: latest.sample,
+      }).catch((err) => console.warn('[Metrics] 慢查询落库失败:', errorMessage(err)));
     });
 
     monitoringHandle = await startMonitoring({

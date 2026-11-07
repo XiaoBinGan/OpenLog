@@ -207,6 +207,51 @@ describe('GET/DELETE /api/monitor/db/slow-queries', () => {
     } finally { await close(); }
   });
 
+  /**
+   * 内存环形缓冲重启就空。空了必须回落到 slow_query_log 表，
+   * 否则用户重启后看到「0 条」会以为监控没工作 —— 实际数据还在库里。
+   */
+  it('内存为空时回落到 slow_query_log 表', async () => {
+    const db = {
+      all: vi.fn(async () => ([
+        { ts_ms: 5000, fingerprint: 'select * from t where id = ?', ms: 800, source: 'db.all', sample: 'select * from t where id = ?' },
+      ])),
+    };
+    const { base, close } = await startApp({ slowQueryLog: { list: () => [], reset: vi.fn() }, db });
+    try {
+      const res = await fetch(`${base}/api/monitor/db/slow-queries?limit=5`);
+      const body = await res.json();
+      expect(body.source).toBe('db');
+      expect(body.items).toHaveLength(1);
+      expect(body.items[0].fingerprint).toContain('where id = ?');
+      expect(db.all).toHaveBeenCalledTimes(1);
+    } finally { await close(); }
+  });
+
+  it('内存有数据时不动库（避免每次轮询都多打一次查询）', async () => {
+    const db = { all: vi.fn(async () => []) };
+    const items = [{ ts_ms: 1, fingerprint: 'select 1', ms: 300, source: null, sample: 'select 1' }];
+    const { base, close } = await startApp({ slowQueryLog: { list: () => items, reset: vi.fn() }, db });
+    try {
+      const body = await (await fetch(`${base}/api/monitor/db/slow-queries`)).json();
+      expect(body.source).toBe('memory');
+      expect(body.items).toEqual(items);
+      expect(db.all).not.toHaveBeenCalled();
+    } finally { await close(); }
+  });
+
+  it('回落查询失败（表还没建）→ 仍是 200 + 空列表', async () => {
+    const db = { all: vi.fn(async () => { throw new Error('no such table: slow_query_log'); }) };
+    const { base, close } = await startApp({ slowQueryLog: { list: () => [], reset: vi.fn() }, db });
+    try {
+      const res = await fetch(`${base}/api/monitor/db/slow-queries`);
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.items).toEqual([]);
+      expect(body.source).toBe('memory');
+    } finally { await close(); }
+  });
+
   it('DELETE 调用 reset() 并回 {cleared:true}', async () => {
     const reset = vi.fn();
     const { base, close } = await startApp({ slowQueryLog: { list: () => [], reset } });

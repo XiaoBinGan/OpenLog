@@ -153,18 +153,46 @@ export function createDbMonitorRouter(deps = {}) {
   });
 
   /** 3. 慢查询（内存环形缓冲，list 已按时间倒序；阈值实例没暴露时读 deps 或给 null） */
-  router.get('/api/monitor/db/slow-queries', (req, res) => {
+  router.get('/api/monitor/db/slow-queries', async (req, res) => {
     if (!isEnabled()) return res.json({ enabled: false });
     const limit = boundedInt(req.query.limit, DEFAULT_SLOW_LIMIT, MAX_SLOW_LIMIT);
     const log = d.slowQueryLog;
     const threshold = d.slowQueryThresholdMs ?? log?.thresholdMs ?? null;
     if (!log || typeof log.list !== 'function') return res.json({ threshold, items: [], unavailable: 'slowQueryLog 未接入' });
+    let items = [];
     try {
-      const items = log.list(limit);
-      return res.json({ threshold, items: Array.isArray(items) ? items : [] });
+      items = log.list(limit);
+      items = Array.isArray(items) ? items : [];
     } catch (err) {
       return res.json({ threshold, items: [], unavailable: `slowQueryLog.list: ${errText(err)}` });
     }
+    // 内存是环形的、进程重启就空。空了就回落到 slow_query_log 表（由埋点侧 insertSlowQuery 写入），
+    // 否则用户重启后看到「0 条」会以为监控没工作 —— 实际是数据还在库里。
+    if (items.length === 0) {
+      const db = d.db;
+      if (db && typeof db.all === 'function') {
+        try {
+          const rows = await db.all(
+            'SELECT ts_ms, fingerprint, ms, source, sample FROM slow_query_log ORDER BY ts_ms DESC LIMIT ?',
+            limit,
+          );
+          if (Array.isArray(rows) && rows.length) {
+            return res.json({
+              threshold,
+              items: rows.map((r) => ({
+                ts_ms: Number(r.ts_ms) || 0,
+                fingerprint: String(r.fingerprint ?? ''),
+                ms: Number(r.ms) || 0,
+                source: r.source ?? null,
+                sample: String(r.sample ?? ''),
+              })),
+              source: 'db',
+            });
+          }
+        } catch { /* 表还没建/查不了 → 当作空，不报错 */ }
+      }
+    }
+    return res.json({ threshold, items, source: 'memory' });
   });
 
   /** 4. 清空慢查询：`cleared:false` 只有一种含义 —— 没清掉，前端别把「清空成功」的提示打出来 */
