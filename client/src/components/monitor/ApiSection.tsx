@@ -21,6 +21,19 @@ export interface ApiSectionProps {
   windowRange?: string;
   /** 轮询间隔，默认 15000ms */
   intervalMs?: number;
+  /**
+   * 当前设备选择器的作用域。
+   *
+   * 这两个面板统计的是**运行 OpenLog 的这台进程**收到的 HTTP 请求，
+   * 不是被管理的远程主机的。远程服务器上只跑了 SSH/Docker，没有 OpenLog 进程，
+   * 所以没有「它的接口指标」可切。选了远程机器还显示同一份数据会让用户以为切换坏了，
+   * 因此明确告知 + 给一个「切回本机」的出口。
+   */
+  scope?: 'local' | 'remote';
+  /** 当前选中的设备名（仅用于提示文案） */
+  deviceName?: string;
+  /** 切回本机（scope=remote 时显示按钮） */
+  onBackToLocal?: () => void;
 }
 
 /** 当前分钟的「本轮估算 calls」，用于拼最小的 QPS 趋势条 */
@@ -62,7 +75,9 @@ function StatCard({ label, value, tone = 'text-dark-100', hint }: {
   );
 }
 
-export default function ApiSection({ windowRange = '5m', intervalMs = 15_000 }: ApiSectionProps = {}) {
+export default function ApiSection({
+  windowRange = '5m', intervalMs = 15_000, scope = 'local', deviceName, onBackToLocal,
+}: ApiSectionProps = {}) {
   const [snapshot, setSnapshot] = useState<ApiSnapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -136,12 +151,41 @@ export default function ApiSection({ windowRange = '5m', intervalMs = 15_000 }: 
 
   return (
     <section className="bg-dark-800/60 border border-dark-700 rounded-xl p-4 md:p-5 space-y-4">
+      {/*
+        选了远程机器时，这里的数字仍然属于**本机 OpenLog 进程**。
+        不解释的话，用户切机器看到数据不动会以为功能坏了 ——
+        实际是「远程主机只被 SSH/Docker 管理，它上面没有 OpenLog 进程，不产生接口指标」。
+      */}
+      {scope === 'remote' && (
+        <div className="flex items-start gap-2 rounded-lg border border-yellow-600/40 bg-yellow-500/10 px-3 py-2 text-xs text-yellow-200">
+          <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+          <div className="min-w-0 flex-1">
+            本面板统计的是<strong>运行 OpenLog 的这台机器</strong>收到的请求；当前选中的「{deviceName || '远程设备'}」
+            只通过 SSH 管理，上面没有 OpenLog 进程，所以没有它的接口指标。下面显示的仍是本机数据。
+          </div>
+          {onBackToLocal && (
+            <button
+              type="button"
+              onClick={onBackToLocal}
+              className="shrink-0 px-2 py-1 rounded-md border border-yellow-600/50 hover:bg-yellow-500/20 transition-colors"
+            >
+              切回本机
+            </button>
+          )}
+        </div>
+      )}
       {/* 标题行 */}
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <div className="flex items-center gap-2 min-w-0">
           <Activity className="w-5 h-5 text-accent-500 shrink-0" />
           <h3 className="text-lg font-semibold">接口指标</h3>
           <span className="px-2 py-0.5 rounded-md text-xs bg-dark-900 border border-dark-700 text-dark-400">{windowRange}</span>
+          <span
+            className="px-2 py-0.5 rounded-md text-xs bg-dark-900 border border-dark-700 text-dark-500"
+            title="统计范围：运行 OpenLog 的这台机器（不是被管理的远程主机）"
+          >
+            本机实例
+          </span>
           {enabled && (
             <span className="flex items-center gap-1.5 text-xs text-dark-400">
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />采集运行中

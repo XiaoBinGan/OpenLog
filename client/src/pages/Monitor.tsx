@@ -165,7 +165,7 @@ function DraggablePanel({
 // ─── Main Monitor component ───────────────────────────────────────────────
 
 export default function Monitor() {
-  const { selectedDevice, isRemote } = useDevice();
+  const { selectedDevice, isRemote, resetToLocal } = useDevice();
   const { servers: remoteServers } = useRemote();
   const connectedServers = useMemo(
     () => remoteServers.filter(s => s.status === 'connected'),
@@ -761,13 +761,25 @@ export default function Monitor() {
 
       {/*
         接口 / 数据库监控：放在可拖拽面板之下一段独立区域。
-        为什么不做进抽拽体系：它们的轮询节奏不同（15s / 30s，主机是 5s），
+        为什么不做进拖拽体系：它们的轮询节奏不同（15s / 30s，主机是 5s），
         塞进同一套 drag 状态里会让用户以为它们是同一类指标；而且这两块
         在自己的组件里各自处理「未启用 / 不可用 / 空数据」三种降级。
+
+        为什么要传 scope：这两块统计的是**本机 OpenLog 进程/它连的库**，
+        不是被管理的远程主机。上面那排主机指标能切机器，这两块不能 ——
+        不显式说明，用户切到远程机器看到数据不动会以为坏了。
       */}
       <div className="space-y-6">
-        <ApiSection />
-        <DbSection />
+        <ApiSection
+          scope={isRemote ? 'remote' : 'local'}
+          deviceName={selectedDevice.name}
+          onBackToLocal={isRemote ? resetToLocal : undefined}
+        />
+        <DbSection
+          scope={isRemote ? 'remote' : 'local'}
+          deviceName={selectedDevice.name}
+          onBackToLocal={isRemote ? resetToLocal : undefined}
+        />
       </div>
     </div>
   );

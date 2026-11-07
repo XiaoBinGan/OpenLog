@@ -6,7 +6,7 @@
  * 「数据库监控未启用」；3. 请求失败给「数据库指标不可用：原因」+ 重试，不吞异常。
  */
 import { useCallback, useMemo, useState } from 'react';
-import { AlertTriangle, Database, Loader2, RefreshCw } from 'lucide-react';
+import { AlertCircle, AlertTriangle, Database, Loader2, RefreshCw } from 'lucide-react';
 import { apiFetch } from '../../api/client';
 import { usePolling } from '../../utils/usePolling';
 import {
@@ -44,7 +44,19 @@ const formatMs = (v: number | null | undefined): string =>
   v === null || v === undefined || !Number.isFinite(v) ? '—' : v < 10 ? `${v.toFixed(1)} ms` : `${Math.round(v)} ms`;
 const formatCount = (v: number | null): string => (v === null ? '—' : Math.round(v).toLocaleString('en-US'));
 
-export default function DbSection() {
+/**
+ * 设备选择器作用域。
+ *
+ * 数据库面板统计的是**本机 OpenLog 连的那个库**，不是被管理的远程主机上的库。
+ * 选了远程机器仍显示同一份数据会让用户以为切换坏了 —— 必须明确告知。
+ */
+export interface DbSectionProps {
+  scope?: 'local' | 'remote';
+  deviceName?: string;
+  onBackToLocal?: () => void;
+}
+
+export default function DbSection({ scope = 'local', deviceName, onBackToLocal }: DbSectionProps = {}) {
   const [snapshot, setSnapshot] = useState<DbSnapshot | null>(null);
   const [slowQueries, setSlowQueries] = useState<SlowQueryItem[]>([]);
   const [slowThreshold, setSlowThreshold] = useState<number | null>(null);
@@ -101,12 +113,41 @@ export default function DbSection() {
 
   return (
     <div className="glass rounded-xl p-4 space-y-4">
+      {/*
+        本面板查的是**本机 OpenLog 连的那个数据库**。
+        选了远程机器时数据不动不是 bug，而是「远程主机的库不归这台 OpenLog 管」，
+        所以必须在这里说清楚，并给一个切回本机的出口。
+      */}
+      {scope === 'remote' && (
+        <div className="flex items-start gap-2 rounded-lg border border-yellow-600/40 bg-yellow-500/10 px-3 py-2 text-xs text-yellow-200">
+          <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+          <div className="min-w-0 flex-1">
+            本面板只看<strong>本机 OpenLog 连接的那个数据库</strong>；当前选中的「{deviceName || '远程设备'}」
+            上的数据库不经过这条连接，所以数据不变是正常的。
+          </div>
+          {onBackToLocal && (
+            <button
+              type="button"
+              onClick={onBackToLocal}
+              className="shrink-0 px-2 py-1 rounded-md border border-yellow-600/50 hover:bg-yellow-500/20 transition-colors"
+            >
+              切回本机
+            </button>
+          )}
+        </div>
+      )}
       {/* 头部：类型 + 刷新 */}
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div className="flex items-center gap-2 min-w-0">
           <Database className="w-5 h-5 text-accent-500 shrink-0" />
           <h3 className="text-lg font-semibold">数据库</h3>
           <span className="px-2 py-0.5 rounded bg-dark-900 text-xs text-dark-300 font-mono">{s?.type ?? '—'}</span>
+          <span
+            className="px-2 py-0.5 rounded bg-dark-900 text-xs text-dark-500 border border-dark-700"
+            title="统计范围：本机 OpenLog 连接的数据库"
+          >
+            本机实例
+          </span>
           <span className="text-xs text-dark-500">{updatedAt ? `更新于 ${new Date(updatedAt).toLocaleTimeString()}` : '尚未取到数据'}</span>
         </div>
         <button
