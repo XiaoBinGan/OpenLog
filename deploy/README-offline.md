@@ -1,12 +1,12 @@
-# OpenLog 离线部署包 2f0fc38
+# OpenLog 离线部署包 440030b
 
-- 应用镜像：`openlog:2f0fc38`（`deploy/images/openlog-latest-20261108-093827.tar.gz`）
+- 应用镜像：`openlog:440030b`（`deploy/images/openlog-latest-20261108-154455.tar.gz`）
 - 数据库镜像：`postgres:16-alpine`（`deploy/images/postgres-16-alpine.tar.gz`，仅 PG 部署需要）
 
 ## 安装
 
 ```bash
-tar xf openlog-deploy-2f0fc38.tar && cd openlog-deploy-2f0fc38
+tar xf openlog-deploy-440030b.tar && cd openlog-deploy-440030b
 sha256sum -c SHA256SUMS
 bash deploy/install.sh --yes                    # SQLite
 bash deploy/install.sh --with-postgres --yes    # PostgreSQL
@@ -70,7 +70,44 @@ bash deploy/install.sh --with-postgres --yes    # PostgreSQL
 
 Swagger 给不出 QPS —— 那是流量事实，只在服务自己的访问日志或 Prometheus 里。不拿假数字凑。
 
-## 本次修的第 10 个数据缺陷：SQLite 表体积永远 0 张表
+## 本版重点：容器上下游链路能真的分析出来了
+
+之前「上下游链路」在任何容器上都显示空 —— 生产 86 个容器抽样 8 个，
+上游/下游/同网**全是 0**。查出来是三个判断依据全都读错了字段：
+
+| 原代码读的 | 实际字段 | 后果 |
+|---|---|---|
+| `c.Networks` | `NetworkSettings.Networks` | 恒为 undefined → 网络推断整段失效 |
+| `c.labels.env` | `Config.Env`（inspect 才有） | Docker 从不把 env 写进 labels → 恒为空串 |
+| `labels['depends-on']` | `com.docker.compose.depends_on` | compose v2 默认不写 → 几乎不存在 |
+
+重写为 `server/docker-topology.js`，只认容器配置里能看到的事实，每条边都带**证据与置信度**：
+
+| 证据 | 置信度 | 说明 |
+|---|---|---|
+| `live_tcp` | 高 | 此刻真实存在的 TCP 连接（读每台容器自己的 `/proc/net/tcp`） |
+| `compose_depends_on` | 高 | compose 显式声明依赖 |
+| `docker_link` | 高 | `--link` 声明 |
+| `env_alias` | 高 | env 里的主机名 == 对方容器名 / compose 服务名 / 网络别名 |
+| `env_published_port` | 中 | env 指向 `127.0.0.1:P` 且**只有一台**容器发布 P |
+| `env_container_ip` | 中 | env 直接指向对方容器 IP |
+
+同网但无调用证据 → 只进「同网」一栏，**不算上下游**（同 bridge 里互相可达是网络属性，不是调用关系）。
+
+**生产实测**：openlog → openlog-pg，证据 `live_tcp`，
+「此刻有 4 条已建立的 TCP 连接」；界面显示「实时 TCP 连接 · 高置信 — openlog 与它有 4 条已建立连接」。
+
+**为什么用每台容器自己的 netns**：宿主机连接表里，host 网络容器发起连接的源地址是
+docker 网关 IP（172.17.0.1），无法归到具体容器 —— 实测 86 容器映射出 0 条边。
+换到容器自己的 netns，local 端必然是它自己，方向没有歧义。
+
+其它修正：
+- 列表接口的 `upstreamCount`/`downstreamCount` 改为 `null`（需 inspect，不该在列表里挨个查），
+  不再用 0 冒充「没有上下游」
+- 连接表只读**运行中**容器（77 台里 66 台是停的，逐台 exec 只会刷假失败）
+- 真实连接证据会**升级**已有边（不是「已存在就跳过」）
+
+## 上一版：SQLite 表体积永远 0 张表
 
 在 4卡T4 上实测发现数据库面板「表体积」一直 `available:false`、0 张表，
 而库里明明有 11 张表在写指标。根因是 `sampleSqlite('heavy')` 只做了 `quick_check` ——
@@ -149,7 +186,7 @@ PG 分支有 `pg_total_relation_size` 可查，SQLite 分支当时整段漏了�
 - `server/datasource/*`：discover / api-probe / db-probe / store（本版新增）
 - `server/openapi.js`、`dependency-probe.js`、`monitoring.js`、`ws-auth.js`
 - `client/src/pages/Docker.tsx` 1287 → 399 行；`Settings.tsx` 1968 → 272 行
-- 测试：**1770 passed / 2 skipped（99 文件）**
+- 测试：**1819 passed / 2 skipped（101 文件）**
 
 **沿用**：远程文件面板右键操作、Docker AI 智能诊断、告警导出 Markdown/真实 XLSX、AI 分析进通知中心、GPU 进程解析、路由懒加载。
 
