@@ -1,12 +1,12 @@
-# OpenLog 离线部署包 440030b
+# OpenLog 离线部署包 7132fde
 
-- 应用镜像：`openlog:440030b`（`deploy/images/openlog-latest-20261108-154455.tar.gz`）
+- 应用镜像：`openlog:7132fde`（`deploy/images/openlog-latest-20261109-001508.tar.gz`）
 - 数据库镜像：`postgres:16-alpine`（`deploy/images/postgres-16-alpine.tar.gz`，仅 PG 部署需要）
 
 ## 安装
 
 ```bash
-tar xf openlog-deploy-440030b.tar && cd openlog-deploy-440030b
+tar xf openlog-deploy-7132fde.tar && cd openlog-deploy-7132fde
 sha256sum -c SHA256SUMS
 bash deploy/install.sh --yes                    # SQLite
 bash deploy/install.sh --with-postgres --yes    # PostgreSQL
@@ -70,7 +70,56 @@ bash deploy/install.sh --with-postgres --yes    # PostgreSQL
 
 Swagger 给不出 QPS —— 那是流量事实，只在服务自己的访问日志或 Prometheus 里。不拿假数字凑。
 
-## 本版重点：容器上下游链路能真的分析出来了
+## 本轮修的第 11~13 个缺陷 + 测试补齐
+
+1. **拓扑缓存指纹碰撞**：指纹用 `ids.join(',').length`，两个不同容器集合只要 id 总长度
+   相同就命中同一份缓存 → 拿到另一批容器的拓扑。改成对 id 集合取 sha1。
+2. **同网把退出的容器也算进去**：生产 openlog 属 host 网络，「同网 14 台」里 13 台是
+   exited 的历史容器。现在只算运行中，退出的单独计数并显示「另有 N 台已退出」。
+3. **`/api/monitor/history?limit=abc` 返回空列表**：`slice(0, NaN)` == `[]`，
+   用户会以为历史丢了。非法值退回默认 100，上限 5000。
+4. **GPU 发现脚本给别人制造 404 噪音**：openlog-site（nginx）2 小时内被打了 80 次
+   `GET /metrics` → 每条 404 进它的 error log，容器日志巡检再把它们当 ERROR 报出来。
+   现在取端口时带镜像名，排除 nginx/httpd/caddy/traefik/数据库类。
+
+## 测试情况（诚实版）
+
+| | 文件数 | 平均行覆盖 | 说明 |
+|---|---|---|---|
+| 服务端 | 70 | **81.1%**（分支 82.7%） | 核心逻辑 90%+；12 个文件低于 50% |
+| 前端 | 82 | **22.1%** | 只有 utils 有测试，组件层几乎无测试 |
+
+**服务端覆盖率低于 50% 的 12 个文件**（多数是薄路由层，逻辑在别处已覆盖）：
+
+| 文件 | 行覆盖 | 为什么低 |
+|---|---|---|
+| routes/logs.js | 16% | 日志读/分析/修复，依赖真实文件系统与 LLM |
+| routes/gpu.js | 22% | 依赖真实 nvidia-smi / SSH |
+| routes/docker.js | 25% | 799 行大型路由，多数分支需要真 Docker |
+| routes/remote.js | 26% | 依赖真实 SSH 连接 |
+| index.js | 28% | 2333 行装配层，启动路径难在单测里跑 |
+| routes/db-info.js | 28% | 依赖真实数据库 |
+| docker.js | 35% | 编排层，核心推断逻辑已单独 100% 覆盖 |
+| remote.js | 35% | SSH 生命周期 |
+| routes/skills.js | 38% | 薄封装 |
+| routes/settings.js | 38% | 薄封装 |
+| routes/analysis.js | 45% | 依赖 LLM |
+| routes/chat.js | 50% | 依赖 LLM 流式 |
+
+**前端只有 utils 有测试**（22%）：组件层需要 testing-library + jsdom，当前只装了 jsdom。
+这是已知缺口，不是遗漏。
+
+本轮新增测试（46 条）：
+- `monitoring-orchestration.test.js`（17 条）：`monitoring.js` 此前**零测试**（覆盖率 65%），
+  补的全是降级路径 —— 建表失败、采样器/拨测启动抛错、落库抛错、写回 0 行、stop 幂等
+- `monitor-route.test.js`（9 条）：`routes/monitor.js` 从 22% 提上来；含 GPU 分支
+  （历史上用 `require` 在 ESM 下必抛、被静默吞掉、`gpus` 永远 `[]` 的回归）
+  与磁盘去重（不去重前端相加会显示 476.9%）
+- `docker-trace-orchestration.test.js`（12 条）：链路编排三处易错点
+- `gpu-mfu-discovery.test.js`（7 条）：端口候选 + 注入防护
+- 拓扑/连接/采样等既有文件补 3 条
+
+## 上一版：容器上下游链路能真的分析出来了
 
 之前「上下游链路」在任何容器上都显示空 —— 生产 86 个容器抽样 8 个，
 上游/下游/同网**全是 0**。查出来是三个判断依据全都读错了字段：
@@ -186,7 +235,7 @@ PG 分支有 `pg_total_relation_size` 可查，SQLite 分支当时整段漏了�
 - `server/datasource/*`：discover / api-probe / db-probe / store（本版新增）
 - `server/openapi.js`、`dependency-probe.js`、`monitoring.js`、`ws-auth.js`
 - `client/src/pages/Docker.tsx` 1287 → 399 行；`Settings.tsx` 1968 → 272 行
-- 测试：**1819 passed / 2 skipped（101 文件）**
+- 测试：**1865 passed / 2 skipped（105 文件）**
 
 **沿用**：远程文件面板右键操作、Docker AI 智能诊断、告警导出 Markdown/真实 XLSX、AI 分析进通知中心、GPU 进程解析、路由懒加载。
 
