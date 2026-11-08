@@ -21,17 +21,22 @@ function jsFiles(dir) {
 }
 
 /**
- * 剥掉整个注释行与块注释后再做标识符扫描。
+ * 剥掉注释与字符串字面量后再做标识符扫描。
  *
- * 不这么做就会把文档注释里提到的符号当成真实调用 —— 例如修复
+ * 不剥注释就会把文档里提到的符号当成真实调用 —— 例如修复
  * docker.getContainer 时，注释里为了说明问题写了一句
  * 「原实现调用 docker.getContainer(...)」，测试便把它当成仍在调用。
- * 只剥「整行注释」与「块注释」，不动行尾的字符串字面量，
- * 以免误伤 'http://...' 这类内容。
+ *
+ * 字符串字面量也必须剥掉：`'com.docker.compose.service'`、`'host.docker.internal'`
+ * 这类 label 名 / 主机名里天然带 `docker.`，会被误判成「引用了不存在的 docker.compose」。
+ * 字符串里的 `docker.xxx` 永远不是成员访问，剥掉只会让判断更准。
  */
 function stripComments(src) {
   return src
     .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/'(?:[^'\\]|\\.)*'/g, "''")
+    .replace(/"(?:[^"\\]|\\.)*"/g, '""')
+    .replace(/`(?:[^`\\]|\\.)*`/g, '``')
     .split('\n')
     .filter((line) => !/^\s*\/\//.test(line))
     .join('\n');

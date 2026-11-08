@@ -3,6 +3,7 @@ import { errorMessage } from './errors.js';
 import path from 'path';
 import fs from 'fs';
 import { resolveDockerTransport } from './docker-transport.js';
+import { buildNode, analyzeTopology } from './docker-topology.js';
 import { parseLogLevel } from './log-level.js';
 import { isSelfLogLine, detectSelfContainerId } from './container-log-watch.js';
 
@@ -220,52 +221,6 @@ function parseExitInfo(status, state) {
   return { exitCode: code, exitType: 'error' };
 }
 
-// 从容器 labels 推断上下游关系
-function inferUpstreamDownstream(containers, targetId) {
-  const target = containers.find(c => c.id === targetId);
-  if (!target) return { upstreams: [], downstreams: [] };
-
-  const myService = target.labels?.['com.docker.compose.service']
-    || target.labels?.['app']
-    || target.names?.[0];
-
-  const upstreams = [];
-  const downstreams = [];
-
-  for (const c of containers) {
-    if (c.id === targetId) continue;
-    const svc = c.labels?.['com.docker.compose.service'] || c.labels?.['app'] || c.names?.[0];
-
-    // 检查 label 依赖（Swarm / Compose）
-    const deps = c.labels?.['depends-on'] || c.labels?.['com.docker.compose.depends_on'] || '';
-    if (deps.includes(myService)) upstreams.push(c);
-
-    // 检查环境变量中的服务名
-    const env = (c.labels?.env || '').toLowerCase();
-    if (env.includes(myService?.toLowerCase() || '')) upstreams.push(c);
-
-    // 下游：target 的环境变量里包含对方
-    const targetEnv = (target.labels?.env || '').toLowerCase();
-    if (targetEnv.includes(svc?.toLowerCase() || '')) downstreams.push(c);
-  }
-
-  // 网络共享推断
-  const targetNets = new Set(target.networks || []);
-  if (targetNets.size > 0) {
-    for (const c of containers) {
-      if (c.id === targetId) continue;
-      const sharedNets = (c.networks || []).filter(n => targetNets.has(n));
-      if (sharedNets.length > 0 && !upstreams.find(u => u.id === c.id) && !downstreams.find(d => d.id === c.id)) {
-        downstreams.push(c);
-      }
-    }
-  }
-
-  return {
-    upstreams: [...new Map(upstreams.map(c => [c.id, c])).values()],
-    downstreams: [...new Map(downstreams.map(c => [c.id, c])).values()]
-  };
-}
 
 // 从容器 logs 提取关键事件（启动、错误、异常）
 function extractKeyEvents(logs, maxEvents = 20) {
@@ -331,10 +286,15 @@ export async function listContainers(sourceId, config = {}) {
     const docker = await getDockerFor(sourceId, config);
     const containers = await docker.listContainers({ all: true });
     return containers.map(c => {
-      // 解析网络信息
-      const networks = [];
-      for (const [netName, netInfo] of Object.entries(c.Networks || {})) {
-        networks.push(netName);
+      // 解析网络信息。
+      // 注意：Docker /containers/json 返回的字段是 NetworkSettings.Networks，
+      // 没有顶层 c.Networks —— 之前读错字段，导致 networks 恒为空，
+      // 「同网」与「按网络推断上下游」整段失效（生产 86 个容器实测 0 命中）。
+      const netMap = (c.NetworkSettings && c.NetworkSettings.Networks) || c.Networks || {};
+      const networks = Object.keys(netMap);
+      const networkAliases = [];
+      for (const net of Object.values(netMap)) {
+        for (const a of (net && net.Aliases) || []) networkAliases.push(a);
       }
       // 提取关键 labels
       const labels = c.Labels || {};
@@ -363,25 +323,13 @@ export async function listContainers(sourceId, config = {}) {
         labels,
         envVars,
         networks,
+        networkAliases,
         platform: c.Platform,
-        // 上下游推断
-        ...(() => {
-          const { upstreams, downstreams } = inferUpstreamDownstream(
-            containers.map(cc => ({
-              ...cc,
-              id: cc.Id,
-              names: cc.Names.map(n => n.replace(/^\//, '')),
-              networks: Object.keys(cc.Networks || {})
-            })),
-            c.Id
-          );
-          return {
-            upstreamCount: upstreams.length,
-            downstreamCount: downstreams.length,
-            upstreamIds: upstreams.map(u => u.Id?.slice(0, 12)),
-            downstreamIds: downstreams.map(d => d.Id?.slice(0, 12))
-          };
-        })()
+        // 上下游数量不在这里算：它需要每台容器的 inspect（env / 端口映射 / 网络别名），
+        // 列表接口挨个 inspect 会拖慢整页。真正的链路在 /api/docker/trace 里按需算，
+        // 这里给 null 明确表示「没算」，而不是给 0 冒充「没有上下游」。
+        upstreamCount: null,
+        downstreamCount: null
       };
     });
   } catch (err) {
@@ -522,34 +470,108 @@ export async function listRunningContainersBySource(sources) {
   return out;
 }
 
-// 追踪上下游链路
+/**
+ * 追踪上下游链路。
+ *
+ * 为什么要 inspect 全部容器：判断「谁在调用我」必须看别人 env 里有没有我的名字，
+ * 判断「我在调用谁」必须看我 env 里的地址 —— 这些都是 inspect 才有、list 拿不到的信息。
+ *
+ * 为控制耗时：并发 8 路 inspect，且带 30s 短缓存（同一批容器连续点不同容器的链路时复用）。
+ * inspect 失败的单台容器不参与推断，但会记进 unavailable，不假装「它没有上下游」。
+ */
 export async function traceContainerLinks(sourceId, containerId, config = {}) {
   const containers = await listContainers(sourceId, config);
   const target = containers.find(c => c.id === containerId);
   if (!target) throw new Error('容器不存在');
 
-  const { upstreams, downstreams } = inferUpstreamDownstream(containers, containerId);
+  const nodes = await buildTopologyNodes(sourceId, containers, config);
+  const topo = analyzeTopology(nodes);
+  const byId = new Map(containers.map(c => [c.id, c]));
+  const bucket = topo.get(containerId) || { upstream: [], downstream: [], peers: [] };
 
-  const enrich = async (c) => {
+  const unavailable = [];
+  const missing = containers.length - nodes.length;
+  if (missing > 0) unavailable.push(`topology_inspect: ${missing} 台容器 inspect 失败，未参与推断`);
+
+  const decorate = async (edge, direction) => {
+    const c = byId.get(edge.id);
+    if (!c) return null;
     try {
-      const logs = await getContainerLogs(sourceId, c.id, config);
-      return { ...c, recentLogs: logs.slice(-10), keyEvents: extractKeyEvents(logs) };
+      const logs = await getContainerLogs(sourceId, edge.id, config);
+      return {
+        ...c, direction,
+        confidence: edge.confidence,
+        evidence: edge.evidence,
+        allEvidence: edge.allEvidence,
+        recentLogs: logs.slice(-10),
+        keyEvents: extractKeyEvents(logs),
+      };
     } catch {
-      return { ...c, recentLogs: [], keyEvents: [] };
+      return { ...c, direction, confidence: edge.confidence, evidence: edge.evidence, allEvidence: edge.allEvidence, recentLogs: [], keyEvents: [] };
     }
   };
 
-  const enrichedUp = await Promise.all(upstreams.map(enrich));
-  const enrichedDown = await Promise.all(downstreams.map(enrich));
+  // 上下游都补齐日志；同网只给基本信息（可能几十个，补日志太贵）
+  const [enrichedUp, enrichedDown] = await Promise.all([
+    Promise.all(bucket.upstream.map(e => decorate(e, 'upstream'))),
+    Promise.all(bucket.downstream.map(e => decorate(e, 'downstream'))),
+  ]);
+  const peers = bucket.peers.map(p => {
+    const c = byId.get(p.id);
+    return c ? { ...c, sharedNetworks: p.networks } : null;
+  }).filter(Boolean);
 
   return {
     target,
-    serviceName: target.name,
-    upstream: enrichedUp,
-    downstream: enrichedDown,
-    totalUpstream: upstreams.length,
-    totalDownstream: downstreams.length
+    serviceName: getContainerName(target),
+    upstream: enrichedUp.filter(Boolean),
+    downstream: enrichedDown.filter(Boolean),
+    // 同网 ≠ 上下游：同一 bridge 里互相可达是网络属性，不是调用关系，单独一栏展示
+    networkPeers: peers,
+    totalUpstream: enrichedUp.filter(Boolean).length,
+    totalDownstream: enrichedDown.filter(Boolean).length,
+    totalPeers: peers.length,
+    inspected: nodes.length,
+    unavailable,
   };
+}
+
+/**
+ * 建拓扑节点：并发 inspect + 30s 缓存。
+ * 缓存 key 用 sourceId + 容器 id 列表的指纹，容器增减或重启（id 不变但 created 变）时自动失效。
+ */
+const topologyCache = new Map(); // key -> { at, nodes }
+const TOPOLOGY_TTL_MS = 30_000;
+
+async function buildTopologyNodes(sourceId, containers, config) {
+  const fingerprint = `${sourceId}:${containers.length}:${containers.map(c => c.id).sort().join(',').length}`;
+  const hit = topologyCache.get(fingerprint);
+  const now = Date.now();
+  if (hit && now - hit.at < TOPOLOGY_TTL_MS && hit.count === containers.length) return hit.nodes;
+
+  const nodes = [];
+  const CONCURRENCY = 8;
+  let cursor = 0;
+  const worker = async () => {
+    while (cursor < containers.length) {
+      const c = containers[cursor];
+      cursor += 1;
+      try {
+        const inspect = await getDockerFor(sourceId, config).then(d => d.getContainer(c.id).inspect());
+        if (inspect) nodes.push(buildNode(c, inspect));
+      } catch { /* 单台失败不影响其它 */ }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, containers.length) }, worker));
+
+  const entry = { at: now, nodes, count: containers.length };
+  topologyCache.set(fingerprint, entry);
+  // 简单淘汰：超过 20 个 source 指纹就清最旧的
+  if (topologyCache.size > 20) {
+    const oldest = [...topologyCache.entries()].sort((a, b) => a[1].at - b[1].at)[0];
+    if (oldest) topologyCache.delete(oldest[0]);
+  }
+  return nodes;
 }
 
 // ─── 容器操作 ───────────────────────────────────────────────

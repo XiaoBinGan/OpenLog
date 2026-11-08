@@ -28,12 +28,44 @@ export interface ContainerSource {
   error?: string;
 }
 
+/** 一条链路证据：为什么认为这两台容器有上下游关系 */
+export interface LinkEvidence {
+  kind: 'compose_depends_on' | 'docker_link' | 'env_alias' | 'env_published_port' | 'env_container_ip' | string;
+  confidence: 'high' | 'medium' | string;
+  /** 人能读的一句话，例如「OPENLOG_DATABASE_URL 指向 127.0.0.1:5432，该端口由它发布」 */
+  detail: string;
+  value: string;
+}
+
+export interface LinkedContainer {
+  id: string;
+  names?: string[];
+  shortId?: string;
+  image?: string;
+  state?: string;
+  status?: string;
+  direction: 'upstream' | 'downstream';
+  confidence: 'high' | 'medium' | string;
+  evidence: LinkEvidence;
+  allEvidence?: LinkEvidence[];
+  recentLogs?: string[];
+  keyEvents?: Array<{ type?: string; text?: string }>;
+  sharedNetworks?: string[];
+}
+
 export interface TraceResult {
   target: any;
-  upstream: any[];
-  downstream: any[];
-  networkPeers: any[];
+  upstream: LinkedContainer[];
+  downstream: LinkedContainer[];
+  networkPeers: LinkedContainer[];
   serviceName: string;
+  totalUpstream?: number;
+  totalDownstream?: number;
+  totalPeers?: number;
+  /** 参与推断的容器数（inspect 成功的） */
+  inspected?: number;
+  /** 推断过程中的降级说明，例如「N 台容器 inspect 失败」 */
+  unavailable?: string[];
 }
 
 /** 容器 + 所属源。父页面 flatMap 时附加 `_sourceId` / `_sourceName`。 */

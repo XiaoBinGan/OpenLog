@@ -20,6 +20,45 @@ import {
   getStateColor, getStateDot, getExitLabel, logLevelColor,
 } from './utils';
 import ContainerActions from './ContainerActions';
+
+/** 证据类型 → 中文短标签；界面要能一眼看出「凭什么认为这是上下游」 */
+const EVIDENCE_LABEL: Record<string, string> = {
+  compose_depends_on: 'compose 依赖',
+  docker_link: '--link',
+  env_alias: '环境变量指向主机名',
+  env_published_port: '环境变量指向宿主机端口',
+  env_container_ip: '环境变量指向容器 IP',
+};
+
+/**
+ * 一条上下游关系。
+ *
+ * 必须显示 evidence：链路是「推断」出来的，不给证据用户没法判断可信度，
+ * 也没法在推断错的时候发现是哪里错了。
+ */
+function LinkRow({ item, tone }: { item: import('./types').LinkedContainer; tone: 'up' | 'down' }) {
+  const name = item.names?.[0] || item.shortId || String(item.id).slice(0, 12);
+  const isUp = tone === 'up';
+  const badge = isUp
+    ? 'bg-blue-500/15 text-blue-400 border-blue-500/20'
+    : 'bg-purple-500/15 text-purple-400 border-purple-500/20';
+  const conf = item.confidence === 'high' ? 'text-emerald-500' : 'text-yellow-500';
+  const confText = item.confidence === 'high' ? '高置信' : '中置信';
+  const kindLabel = EVIDENCE_LABEL[item.evidence?.kind] || item.evidence?.kind || '未知依据';
+  return (
+    <div className="flex items-start gap-1.5 max-w-full">
+      <span className="text-xs text-dark-600 flex-shrink-0 w-8 text-right">{isUp ? '上游' : '下游'}</span>
+      <span className={`text-xs px-2 py-0.5 rounded border truncate max-w-[220px] flex-shrink-0 ${badge}`} title={name}>
+        {name}
+      </span>
+      <span className="text-[11px] text-dark-500 min-w-0 break-words" title={item.evidence?.detail || ''}>
+        {kindLabel}
+        <span className={`ml-1 ${conf}`}>· {confText}</span>
+        {item.evidence?.detail ? <span className="text-dark-600"> — {item.evidence.detail}</span> : null}
+      </span>
+    </div>
+  );
+}
 import LiveLogPanel from './LiveLogPanel';
 import TerminalPanel from './TerminalPanel';
 import DiagnosisPanel from './DiagnosisPanel';
@@ -286,39 +325,45 @@ function DockerRow({
               <p className="text-xs font-medium text-dark-400 mb-2 flex items-center gap-1">
                 <ArrowRightLeft className="w-3 h-3" /> 上下游链路 — {trace.serviceName}
               </p>
-              <div className="flex flex-wrap gap-2 max-w-full">
-                {(trace.upstream || []).length > 0 && (
-                  <div className="flex flex-wrap items-center gap-1 max-w-full">
-                    <span className="text-xs text-dark-600 flex-shrink-0">上游:</span>
-                    {(trace.upstream || []).map(u => (
-                      <span key={u.id} className="text-xs px-2 py-0.5 rounded bg-blue-500/15 text-blue-400 border border-blue-500/20 truncate max-w-[200px]" title={u.names?.[0] || u.shortId || u.id}>
-                        {u.names?.[0] || u.shortId || u.id?.slice(0, 12)}
-                      </span>
-                    ))}
-                  </div>
-                )}
-                {(trace.downstream || []).length > 0 && (
-                  <div className="flex flex-wrap items-center gap-1 max-w-full">
-                    <span className="text-xs text-dark-600 flex-shrink-0">下游:</span>
-                    {(trace.downstream || []).map(u => (
-                      <span key={u.id} className="text-xs px-2 py-0.5 rounded bg-purple-500/15 text-purple-400 border border-purple-500/20 truncate max-w-[200px]" title={u.names?.[0] || u.shortId || u.id}>
-                        {u.names?.[0] || u.shortId || u.id?.slice(0, 12)}
-                      </span>
-                    ))}
-                  </div>
-                )}
+              {/*
+                链路证据要展示出来，不能只给个名字。
+                原来只有「无链路信息（检查容器 label）」这一句 —— 而真正的问题
+                是它读的三个字段全都取不到（c.Networks / labels.env / depends-on），
+                用户看到空结果完全无法判断是「真没关系」还是「功能坏了」。
+              */}
+              <div className="space-y-1.5 max-w-full">
+                {(trace.upstream || []).map(u => <LinkRow key={'u' + u.id} item={u} tone="up" />)}
+                {(trace.downstream || []).map(u => <LinkRow key={'d' + u.id} item={u} tone="down" />)}
+
                 {(trace.networkPeers || []).length > 0 && (
                   <div className="flex flex-wrap items-center gap-1 max-w-full">
-                    <span className="text-xs text-dark-600 flex-shrink-0">同网:</span>
-                    {(trace.networkPeers || []).slice(0, 5).map(u => (
-                      <span key={u.id} className="text-xs px-2 py-0.5 rounded bg-dark-800 text-dark-400 truncate max-w-[180px]" title={u.names?.[0] || u.shortId || u.id}>
+                    <span className="text-xs text-dark-600 flex-shrink-0">同网（无调用证据）:</span>
+                    {(trace.networkPeers || []).slice(0, 6).map(u => (
+                      <span
+                        key={u.id}
+                        className="text-xs px-2 py-0.5 rounded bg-dark-800 text-dark-500 truncate max-w-[180px]"
+                        title={`网络: ${(u.sharedNetworks || []).join(', ') || '—'}`}
+                      >
                         {u.names?.[0] || u.shortId || u.id?.slice(0, 12)}
                       </span>
                     ))}
+                    {(trace.networkPeers || []).length > 6 && (
+                      <span className="text-xs text-dark-600">…共 {trace.networkPeers.length} 台</span>
+                    )}
                   </div>
                 )}
+
+                {/* 结果为空时要说清「查了什么」，而不是让用户去猜是不是坏了 */}
                 {(trace.upstream || []).length === 0 && (trace.downstream || []).length === 0 && (
-                  <span className="text-xs text-dark-600">无链路信息（检查容器 label）</span>
+                  <div className="text-xs text-dark-600 space-y-0.5">
+                    <div>没检出上下游调用关系。</div>
+                    <div className="text-dark-700">
+                      已查：compose depends_on / --link / 环境变量里的地址（主机名、容器 IP、宿主机端口）· 参与推断 {trace.inspected ?? '?'} 台
+                    </div>
+                    {(trace.unavailable || []).length > 0 && (
+                      <div className="text-yellow-600/80">{trace.unavailable!.join('；')}</div>
+                    )}
+                  </div>
                 )}
               </div>
             </div>
