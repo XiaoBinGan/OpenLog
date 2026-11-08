@@ -4,7 +4,7 @@ import path from 'path';
 import fs from 'fs';
 import { resolveDockerTransport } from './docker-transport.js';
 import { buildNode, analyzeTopology } from './docker-topology.js';
-import { parseProcNetTcp, mapConnectionsToEdges, buildPortOwnerMap } from './docker-live-conns.js';
+import { parseProcNetTcp, outboundFrom, buildPortOwnerMap } from './docker-live-conns.js';
 import { parseLogLevel } from './log-level.js';
 import { isSelfLogLine, detectSelfContainerId } from './container-log-watch.js';
 
@@ -560,21 +560,61 @@ export async function traceContainerLinks(sourceId, containerId, config = {}) {
  * 只在「本进程与容器共享网络命名空间」（host 网络部署）时能看到全部容器连接；
  * 其它部署方式下命中很少，这是**事实**，所以回一个 error 说明，不假装「没有依赖」。
  */
-async function readLiveConnections(nodes) {
-  let text = '';
-  for (const file of ['/proc/net/tcp', '/proc/net/tcp6']) {
-    try {
-      text += fs.readFileSync(file, 'utf8') + '\n';
-    } catch { /* 单文件读不到就跳过 */ }
-  }
-  if (!text.trim()) return { error: '读不到 /proc/net/tcp' };
-
-  const conns = parseProcNetTcp(text, { establishedOnly: true });
-  if (!conns.length) return { edges: new Map(), total: 0 };
+/**
+ * 读**每台容器自己**的 /proc/net/tcp(6)，得到「它主动连了谁」。
+ *
+ * 为什么不用宿主机连接表：生产实测行不通。OpenLog 跑 host 网络，它发起的连接
+ * 在宿主机表里源地址是 docker 网关 IP（172.17.0.1），没有信息能归到具体容器，
+ * 86 个容器映射出 0 条边。换到容器自己的 netns 里看，local 端必然是它自己，
+ * 方向没有歧义。
+ *
+ * 成本：每台容器一次 exec cat，并发 4 路 + 30s 缓存。容器里没有 /proc/net/tcp
+ * （极简镜像）时跳过并在 unavailable 里说明。
+ */
+async function readLiveConnections(sourceId, nodes, config) {
+  if (!nodes.length) return { edges: new Map(), total: 0, skipped: 0 };
   const ipToId = new Map();
   for (const n of nodes) for (const ip of n.containerIps || []) ipToId.set(ip, n.id);
-  const edges = mapConnectionsToEdges(conns, ipToId, { portToId: buildPortOwnerMap(nodes) });
-  return { edges, total: conns.length };
+  const portToId = buildPortOwnerMap(nodes);
+  const allIds = new Set(nodes.map(n => n.id));
+  // host 网络容器只有一个时，宿主机侧发起/接收的连接可以归给它
+  const hostNodes = nodes.filter(n => n.networkMode === 'host');
+  const soleHostId = hostNodes.length === 1 ? hostNodes[0].id : null;
+
+  const edges = new Map();
+  let total = 0; let skipped = 0;
+  let cursor = 0;
+  const worker = async () => {
+    while (cursor < nodes.length) {
+      const n = nodes[cursor];
+      cursor += 1;
+      try {
+        const docker = await getDockerFor(sourceId, config);
+        const container = docker.getContainer(n.id);
+        const exec = await container.exec({
+          Cmd: ['sh', '-c', 'cat /proc/net/tcp /proc/net/tcp6 2>/dev/null'],
+          AttachStdout: true, AttachStderr: false,
+        });
+        const stream = await exec.start({ hijack: true, stdin: false });
+        const text = await new Promise((resolve, reject) => {
+          const chunks = [];
+          const timer = setTimeout(() => { try { stream.destroy(); } catch { /* ignore */ } resolve(Buffer.concat(chunks).toString('utf8')); }, 4000);
+          stream.on('data', (c) => chunks.push(c));
+          stream.on('end', () => { clearTimeout(timer); resolve(Buffer.concat(chunks).toString('utf8')); });
+          stream.on('error', (e) => { clearTimeout(timer); reject(e); });
+        });
+        const conns = parseProcNetTcp(text, { establishedOnly: true });
+        total += conns.length;
+        if (!conns.length) continue;
+        const out = outboundFrom(n.id, conns, ipToId, { portToId, soleHostId, allIds });
+        if (out.size) edges.set(n.id, out);
+      } catch {
+        skipped += 1;
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(4, nodes.length) }, worker));
+  return { edges, total, skipped };
 }
 
 /** 把真实连接产生的边并入拓扑结果（标为最高置信度 live_tcp） */

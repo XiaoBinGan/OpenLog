@@ -140,3 +140,49 @@ export function buildPortOwnerMap(nodes) {
   }
   return map;
 }
+
+/** 明显不是容器地址的网段（宿主机网关 / 回环 / 公网）—— 用于判断「对端可能是 host 网络容器」 */
+export function isLikelyHostSide(ip) {
+  const s = String(ip || '');
+  if (LOOPBACK.has(s)) return true;
+  // docker 默认网桥的网关是 x.x.x.1；host 网络容器发起的连接，源地址会落在这里
+  if (/^\d+\.\d+\.\d+\.1$/.test(s)) return true;
+  return false;
+}
+
+/**
+ * 单台容器自己的连接表 → 它主动连了谁。
+ *
+ * 为什么按「每台容器各自的 /proc/net/tcp」而不是宿主机连接表：
+ * 在容器自己的 netns 里，local 端**必然是它自己**，方向不会有歧义。
+ * 宿主机连接表里，host 网络容器发起连接的源地址是 docker 网关 IP（172.17.0.1），
+ * 无法归到具体容器 —— 实测就卡在这里（86 容器映射出 0 条边）。
+ *
+ * @param {string} selfId                     这台容器自己的 id
+ * @param {Array}  conns                      parseProcNetTcp(自己容器内 /proc/net/tcp) 的结果
+ * @param {Map<string,string>} ipToId         容器 IP → id
+ * @param {object} [opts]
+ * @param {Map<string,string>} [opts.portToId] 发布端口 → id（对端是 host 容器时靠端口认）
+ * @param {string|null} [opts.soleHostId]      宿主机上唯一的 host 网络容器 id（对端是宿主机侧时归给它）
+ * @param {Set<string>} [opts.allIds]          所有容器 id（用于排除自连）
+ * @returns {Map<string, {count:number, sample:object}>} 目标 id → 连接统计
+ */
+export function outboundFrom(selfId, conns, ipToId, { portToId, soleHostId, allIds } = {}) {
+  const out = new Map();
+  for (const conn of conns || []) {
+    const remoteIp = conn.remoteIp;
+    let target = ipToId instanceof Map ? ipToId.get(remoteIp) : null;
+    // 对端是宿主机网段（host 网络容器 / 网关）：只有能唯一确定时才归，否则放弃
+    if (!target && (LOOPBACK.has(remoteIp) || isLikelyHostSide(remoteIp))) {
+      if (portToId && portToId.has(conn.remotePort)) target = portToId.get(conn.remotePort);
+      else if (soleHostId) target = soleHostId;
+    }
+    if (!target) continue;
+    if (target === selfId) continue; // 自己连自己（同容器内多进程）不算依赖
+    if (allIds instanceof Set && !allIds.has(target)) continue;
+    const cur = out.get(target) || { count: 0, sample: conn };
+    cur.count += 1;
+    out.set(target, cur);
+  }
+  return out;
+}

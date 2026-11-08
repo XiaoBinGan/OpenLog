@@ -4,7 +4,7 @@
  * 这份数据比 env 更强：env 只说明「配置上打算连谁」，连接表说明「此刻真的连着」。
  */
 import { describe, it, expect } from 'vitest';
-import { hexToIp, hexToPort, parseProcNetTcp, mapConnectionsToEdges, buildPortOwnerMap } from '../docker-live-conns.js';
+import { hexToIp, hexToPort, parseProcNetTcp, mapConnectionsToEdges, buildPortOwnerMap, outboundFrom, isLikelyHostSide } from '../docker-live-conns.js';
 
 /** 复刻真实 /proc/net/tcp 片段（生产抓的） */
 const REAL = `  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
@@ -142,5 +142,61 @@ describe('buildPortOwnerMap', () => {
     expect(map.get(5432)).toBe('pg');
     expect(map.get(3003)).toBe('site');
     expect(map.has(80)).toBe(false); // 容器内端口不算发布端口
+  });
+});
+
+
+describe('outboundFrom —— 用单台容器自己的连接表判断它连了谁', () => {
+  const ipToId = new Map([['172.17.0.5', 'pg'], ['172.17.0.7', 'strata']]);
+  const allIds = new Set(['pg', 'strata', 'app', 'openlog']);
+  const conn = (remoteIp, remotePort) => ({ localIp: '172.17.0.2', localPort: 40000, remoteIp, remotePort, state: '01' });
+
+  it('对端是容器 IP → 直接命中', () => {
+    const out = outboundFrom('app', [conn('172.17.0.5', 5432)], ipToId, { allIds });
+    expect(out.get('pg').count).toBe(1);
+  });
+
+  it('多条连接累加', () => {
+    const out = outboundFrom('app', [conn('172.17.0.5', 5432), conn('172.17.0.5', 5433)], ipToId, { allIds });
+    expect(out.get('pg').count).toBe(2);
+  });
+
+  it('自己连自己不算依赖（同容器内多进程）', () => {
+    const out = outboundFrom('app', [conn('172.17.0.2', 9000)], new Map([['172.17.0.2', 'app']]), { allIds });
+    expect(out.size).toBe(0);
+  });
+
+  it('对端是宿主机侧 + 端口归属唯一 → 归到那个容器', () => {
+    const portToId = new Map([[5432, 'pg']]);
+    const out = outboundFrom('openlog', [conn('127.0.0.1', 5432)], new Map(), { portToId, allIds });
+    expect(out.get('pg').count).toBe(1);
+  });
+
+  it('对端是宿主机侧且只有一台 host 容器 → 归给它', () => {
+    const out = outboundFrom('app', [conn('172.17.0.1', 39999)], new Map(), { soleHostId: 'openlog', allIds });
+    expect(out.get('openlog').count).toBe(1);
+  });
+
+  it('对端是公网地址 → 跳过，不瞎连', () => {
+    const out = outboundFrom('app', [conn('93.184.216.34', 443)], ipToId, { allIds });
+    expect(out.size).toBe(0);
+  });
+
+  it('空输入不炸', () => {
+    expect(outboundFrom('app', [], ipToId).size).toBe(0);
+    expect(outboundFrom('app', null, ipToId).size).toBe(0);
+    expect(outboundFrom('app', [conn('172.17.0.5', 5432)], null).size).toBe(0);
+  });
+});
+
+describe('isLikelyHostSide', () => {
+  it('回环与网关地址算宿主机侧', () => {
+    expect(isLikelyHostSide('127.0.0.1')).toBe(true);
+    expect(isLikelyHostSide('172.17.0.1')).toBe(true);
+    expect(isLikelyHostSide('10.0.0.1')).toBe(true);
+  });
+  it('普通容器 IP 不算', () => {
+    expect(isLikelyHostSide('172.17.0.5')).toBe(false);
+    expect(isLikelyHostSide('172.18.0.2')).toBe(false);
   });
 });
