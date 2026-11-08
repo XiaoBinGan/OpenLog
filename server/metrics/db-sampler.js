@@ -24,6 +24,26 @@ const SQL = {
   probe: `SELECT 1 AS ok`,
   mysqlStatus: `SHOW GLOBAL STATUS WHERE Variable_name IN ('Threads_connected', 'Slow_queries', 'Table_locks_waited')`,
   pageCount: `PRAGMA page_count`, pageSize: `PRAGMA page_size`, quickCheck: `PRAGMA quick_check`,
+  /**
+   * SQLite 的表体积。`dbstat` 是 SQLite 自带的虚拟表，按页给出占用字节 ——
+   * 这是**唯一的真实来源**（不像 PG 有 pg_total_relation_size）。
+   *
+   * 坑：dbstat 的行**既包含表也包含索引**（没有 type 列可区分），只按 name 过滤会把
+   * `idx_log_records_timestamp` 这种索引当成表列出来，还对它跑 count(*) 报错。
+   * 所以必须 JOIN sqlite_master 且限定 m.type='table'。
+   *
+   * 有些发行版编译时没开 SQLITE_ENABLE_DBSTAT_VTAB，调用侧必须有兜底：
+   * 拿不到就退到 sqlite_master 只出表名，并把原因写进 unavailable —— 不假装体积是 0。
+   */
+  sqliteTablesByDbstat: `SELECT d.name AS name, SUM(d.pgsize) AS bytes
+   FROM dbstat d
+   JOIN sqlite_master m ON m.name = d.name AND m.type = 'table'
+  WHERE d.name NOT LIKE 'sqlite_%'
+  GROUP BY d.name ORDER BY bytes DESC LIMIT 20`,
+  sqliteTablesByMaster: `SELECT name FROM sqlite_master
+   WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name LIMIT 20`,
+  /** 精确行数：dbstat 只给字节，行数得 count(*)。只在 heavy 里跑，且限表数，避免在别人的大库上全表扫 */
+  sqliteCountRows: (table) => `SELECT COUNT(*) AS n FROM "${String(table).replace(/"/g, '""')}"`,
 };
 const DB_TYPES = { postgres: 'postgres', postgresql: 'postgres', pg: 'postgres', sqlite: 'sqlite', sqlite3: 'sqlite',
   'better-sqlite3': 'sqlite', mysql: 'mysql', mariadb: 'mysql' };
@@ -127,9 +147,14 @@ export function createDbSampler(opts = {}) {
   let running = false, started = false, samples = 0, lastError = null, lastQuickCheckMs = null, lastLight = null, lastHeavy = null;
   const timers = { light: null, heavy: null };
   const unavailableByKind = { light: new Set(), heavy: new Set() };
-  const newRound = (kind) => ({ kind, tsMs: now(), failures: new Set(), errors: [] });
+  // notes：给「降级原因」留的位置（和 failures 的机器键区分开，界面上要能读懂）
+    const newRound = (kind) => ({ kind, tsMs: now(), failures: new Set(), errors: [], notes: [] });
   const sqliteGet = (sql) => withTimeout(() => db.get(sql), timeoutMs, sql), sqliteAll = (sql) => withTimeout(() => db.all(sql), timeoutMs, sql);
-  const finalize = (round, snap) => ({ ...snap, unavailable: [...round.failures], ...(round.errors.length ? { error: round.errors[0] } : {}) });
+  const finalize = (round, snap) => ({
+      ...snap,
+      unavailable: [...round.failures, ...round.notes],
+      ...(round.errors.length ? { error: round.errors[0] } : {}),
+    });
   /** 单条采样失败只记 unavailable + 错误，不把异常抛给调用方/定时器 */
   const attempt = async (round, key, fn) => {
     try {
@@ -194,9 +219,47 @@ export function createDbSampler(opts = {}) {
   async function sampleSqlite(kind) {
     const round = newRound(kind);
     if (kind === 'heavy') {
+      // 表体积：dbstat 给每个表真实占用的字节数（这是唯一的真来源）。
+      // 拿不到 dbstat（发行版没编译进去）就退到 sqlite_master 只出表名，
+      // 并把原因记进 unavailable —— 「看不见体积」和「体积是 0」是两件事。
+      let tables = null;
+      const statRows = await attempt(round, 'sqlite_dbstat', () => sqliteAll(SQL.sqliteTablesByDbstat));
+      if (statRows) {
+        tables = statRows.map((r) => ({
+          relname: String(r.name ?? ''),
+          bytes: asNumber(r.bytes),
+          liveTup: null,
+          deadTup: null,
+        }))
+          // SQL 里已 ORDER BY；再排一次不依赖驱动的排序行为
+          .sort((a, b) => (b.bytes ?? -1) - (a.bytes ?? -1));
+        // 行数：dbstat 只给字节，得 count(*)。只数最大的几张，避免在别人的大库上做无意义全扫。
+        // 单表失败只进 failures（降级），不进 errors —— 一张表数不出来不该让整轮采样算失败。
+        for (const t of tables.slice(0, 8)) {
+          if (!t.relname) continue;
+          try {
+            const row = await sqliteGet(SQL.sqliteCountRows(t.relname));
+            const head = Array.isArray(row) ? row[0] : row;
+            t.liveTup = head ? asNumber(head.n ?? Object.values(head)[0]) : null;
+          } catch {
+            round.failures.add('sqlite_count');
+          }
+        }
+      } else {
+        // dbstat 不可用：至少把表名列出来，体积留 null
+        const names = await attempt(round, 'sqlite_master', () => sqliteAll(SQL.sqliteTablesByMaster));
+        if (names) {
+          tables = names.map((r) => ({ relname: String(r.name ?? ''), bytes: null, liveTup: null, deadTup: null }));
+        }
+        round.notes.push('sqlite_dbstat: 该 SQLite 未启用 dbstat 虚拟表，表体积不可得（只列出了表名）');
+      }
+
       // quick_check 扫全库：距上次不足 6 小时直接跳过，显式记 skipped（不是假装 ok）
       if (lastQuickCheckMs !== null && round.tsMs - lastQuickCheckMs < gapMs) {
-        return finalize(round, { tsMs: round.tsMs, kind, quickCheck: { skipped: true, lastRunMs: lastQuickCheckMs, nextDueMs: lastQuickCheckMs + gapMs } });
+        return finalize(round, {
+          tsMs: round.tsMs, kind, tables,
+          quickCheck: { skipped: true, lastRunMs: lastQuickCheckMs, nextDueMs: lastQuickCheckMs + gapMs },
+        });
       }
       const rows = await attempt(round, 'sqlite_quick_check', () => sqliteAll(SQL.quickCheck));
       let quickCheck = { skipped: false, ok: null, problems: null };
@@ -206,7 +269,7 @@ export function createDbSampler(opts = {}) {
         quickCheck = { skipped: false, ok: problems.length === 0, problems, checkedMs: round.tsMs };
         lastQuickCheckMs = round.tsMs; // 只有真跑过才推进时间戳，失败下轮还得再跑
       }
-      return finalize(round, { tsMs: round.tsMs, kind, quickCheck });
+      return finalize(round, { tsMs: round.tsMs, kind, tables, quickCheck });
     }
     const readPragma = async (key, sql) => pragmaNumber(await attempt(round, 'sqlite_pragma', () => sqliteGet(sql)), key);
     const pageCount = await readPragma('page_count', SQL.pageCount), pageSize = await readPragma('page_size', SQL.pageSize);
