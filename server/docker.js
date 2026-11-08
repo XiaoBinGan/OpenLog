@@ -620,31 +620,41 @@ async function readLiveConnections(sourceId, nodes, config) {
   return { edges, total, skipped, candidates: live.length };
 }
 
-/** 把真实连接产生的边并入拓扑结果（标为最高置信度 live_tcp） */
+/**
+ * 把真实连接产生的边并入拓扑结果（标为最高置信度 live_tcp）。
+ *
+ * 关键点：**已存在的边要升级证据，不是跳过**。
+ * 原来写成「已存在就 continue」，结果 openlog → openlog-pg 已经有 env 推断的边，
+ * 真实连接这条更强的证据就被丢掉了 —— 面板显示 env_published_port 而看不到 live_tcp。
+ */
 function applyLiveEdges(topo, edges, nodes) {
   const byId = new Map(nodes.map(n => [n.id, n]));
+  const upgrade = (list, id, makeEntry) => {
+    const existing = list.find(x => x.id === id);
+    if (existing) {
+      // live_tcp 优先级高于其它证据：覆盖展示用的 evidence，历史证据保留在 allEvidence
+      existing.evidence = makeEntry().evidence;
+      existing.confidence = 'high';
+      existing.allEvidence = [makeEntry().evidence, ...(existing.allEvidence || [])].slice(0, 5);
+    } else {
+      list.push(makeEntry());
+    }
+  };
   for (const [fromId, targets] of edges) {
     const fromBucket = topo.get(fromId);
     if (!fromBucket) continue;
     for (const [toId, stat] of targets) {
       const toBucket = topo.get(toId);
       if (!toBucket) continue;
-      const evidence = {
-        kind: 'live_tcp',
-        confidence: 'high',
-        detail: `此刻有 ${stat.count} 条已建立的 TCP 连接`,
+      const detail = `此刻有 ${stat.count} 条已建立的 TCP 连接`;
+      const downEvidence = { kind: 'live_tcp', confidence: 'high', detail, value: String(stat.count) };
+      const upEvidence = {
+        kind: 'live_tcp', confidence: 'high',
+        detail: `${byId.get(fromId)?.names?.[0] || String(fromId).slice(0, 12)} 与它有 ${stat.count} 条已建立连接`,
         value: String(stat.count),
       };
-      if (!fromBucket.downstream.some(x => x.id === toId)) {
-        fromBucket.downstream.push({ id: toId, direction: 'downstream', confidence: 'high', evidence, allEvidence: [evidence] });
-      }
-      if (!toBucket.upstream.some(x => x.id === fromId)) {
-        toBucket.upstream.push({
-          id: fromId, direction: 'upstream', confidence: 'high',
-          evidence: { ...evidence, detail: `${byId.get(fromId)?.names?.[0] || fromId} 与它有 ${stat.count} 条已建立连接` },
-          allEvidence: [evidence],
-        });
-      }
+      upgrade(fromBucket.downstream, toId, () => ({ id: toId, direction: 'downstream', confidence: 'high', evidence: downEvidence, allEvidence: [downEvidence] }));
+      upgrade(toBucket.upstream, fromId, () => ({ id: fromId, direction: 'upstream', confidence: 'high', evidence: upEvidence, allEvidence: [upEvidence] }));
       // 同网列表里要剔除已经成为上下游的
       fromBucket.peers = fromBucket.peers.filter(p => p.id !== toId);
       toBucket.peers = toBucket.peers.filter(p => p.id !== fromId);
