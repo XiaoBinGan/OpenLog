@@ -312,8 +312,13 @@ export function analyzeTopology(nodes) {
     }
   }
 
-  // 同网但无调用关系：只进 peers
+  // 同网但无调用关系：只进 peers。
+  //
+  // 只算**运行中**的容器：生产上 host 网络的「同网」有 14 台，其中 13 台是 exited 的
+  // 历史容器。把它们算成「同网」会让用户以为有 14 个活着的邻居，而实际只有 1 个。
+  // 已退出的容器单独计数（stoppedPeers），用来解释「这台机器上还躺着一堆旧容器」。
   const netMembers = new Map();
+  const isRunning = (n) => String(n.state || '').toLowerCase() === 'running';
   for (const n of nodes) {
     for (const net of n.networks || []) {
       if (!netMembers.has(net)) netMembers.set(net, []);
@@ -324,10 +329,20 @@ export function analyzeTopology(nodes) {
     const bucket = result.get(n.id);
     const seen = new Set([n.id, ...bucket.upstream.map((x) => x.id), ...bucket.downstream.map((x) => x.id)]);
     const peerIds = new Set();
+    const stopped = new Set();
     for (const net of n.networks || []) {
-      for (const id of netMembers.get(net) || []) if (!seen.has(id)) peerIds.add(id);
+      for (const id of netMembers.get(net) || []) {
+        if (seen.has(id)) continue;
+        const peer = byId.get(id);
+        if (peer && isRunning(peer)) peerIds.add(id);
+        else stopped.add(id);
+      }
     }
-    bucket.peers = [...peerIds].map((id) => ({ id, networks: n.networks.filter((net) => (netMembers.get(net) || []).includes(id)) }));
+    bucket.peers = [...peerIds].map((id) => ({
+      id,
+      networks: n.networks.filter((net) => (netMembers.get(net) || []).includes(id)),
+    }));
+    bucket.stoppedPeerCount = stopped.size;
   }
 
   // 去重 + 稳定排序（按容器名）

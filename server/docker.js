@@ -2,6 +2,7 @@ import Docker from 'dockerode';
 import { errorMessage } from './errors.js';
 import path from 'path';
 import fs from 'fs';
+import { createHash } from 'crypto';
 import { resolveDockerTransport } from './docker-transport.js';
 import { buildNode, analyzeTopology } from './docker-topology.js';
 import { parseProcNetTcp, outboundFrom, buildPortOwnerMap } from './docker-live-conns.js';
@@ -545,6 +546,9 @@ export async function traceContainerLinks(sourceId, containerId, config = {}) {
     totalUpstream: enrichedUp.filter(Boolean).length,
     totalDownstream: enrichedDown.filter(Boolean).length,
     totalPeers: peers.length,
+    // 同网但已退出的容器：界面用它解释「这台机器上还躺着一堆旧容器」，
+    // 不能混进「同网」当成活着的邻居
+    stoppedPeerCount: bucket.stoppedPeerCount || 0,
     inspected: nodes.length,
     unavailable,
   };
@@ -571,7 +575,7 @@ export async function traceContainerLinks(sourceId, containerId, config = {}) {
  * 成本：每台容器一次 exec cat，并发 4 路 + 30s 缓存。容器里没有 /proc/net/tcp
  * （极简镜像）时跳过并在 unavailable 里说明。
  */
-async function readLiveConnections(sourceId, nodes, config) {
+export async function readLiveConnections(sourceId, nodes, config, dockerFor = getDockerFor) {
   // 只读**运行中**容器的连接表：停掉的容器 exec 必然失败，
   // 逐台记录只会刷一堆假失败（实测 77 台里 66 台是停的）。
   const live = nodes.filter(n => String(n.state || '').toLowerCase() === 'running');
@@ -592,7 +596,7 @@ async function readLiveConnections(sourceId, nodes, config) {
       const n = live[cursor];
       cursor += 1;
       try {
-        const docker = await getDockerFor(sourceId, config);
+        const docker = await dockerFor(sourceId, config);
         const container = docker.getContainer(n.id);
         const exec = await container.exec({
           Cmd: ['sh', '-c', 'cat /proc/net/tcp /proc/net/tcp6 2>/dev/null'],
@@ -627,7 +631,7 @@ async function readLiveConnections(sourceId, nodes, config) {
  * 原来写成「已存在就 continue」，结果 openlog → openlog-pg 已经有 env 推断的边，
  * 真实连接这条更强的证据就被丢掉了 —— 面板显示 env_published_port 而看不到 live_tcp。
  */
-function applyLiveEdges(topo, edges, nodes) {
+export function applyLiveEdges(topo, edges, nodes) {
   const byId = new Map(nodes.map(n => [n.id, n]));
   const upgrade = (list, id, makeEntry) => {
     const existing = list.find(x => x.id === id);
@@ -662,14 +666,28 @@ function applyLiveEdges(topo, edges, nodes) {
   }
 }
 
-const topologyCache = new Map(); // key -> { at, nodes }
+const topologyCache = new Map(); // key -> { at, nodes, ids }
 const TOPOLOGY_TTL_MS = 30_000;
 
+/** 拓扑缓存指纹：必须对**容器 id 集合**本身取摘要，不能拿拼接串的长度凑数 */
+export function topologyKey(sourceId, containers) {
+  const ids = containers.map(c => String(c.id)).sort();
+  // sha1 足够：这里只用来区分「换了一批容器」，不是安全用途
+  return `${sourceId}:${createHash('sha1').update(ids.join(',')).digest('hex')}`;
+}
+
 async function buildTopologyNodes(sourceId, containers, config) {
-  const fingerprint = `${sourceId}:${containers.length}:${containers.map(c => c.id).sort().join(',').length}`;
+  const ids = containers.map(c => String(c.id)).sort();
+  const fingerprint = topologyKey(sourceId, containers);
   const hit = topologyCache.get(fingerprint);
   const now = Date.now();
-  if (hit && now - hit.at < TOPOLOGY_TTL_MS && hit.count === containers.length) return hit.nodes;
+  // 命中条件：TTL 内 **且 id 集合完全一致**。
+  // 原来用 `ids.join(',').length` 当指纹 —— 两个不同容器集合只要 id 总长度相同
+  // 就会碰撞，拿到另一批容器的拓扑（容器换掉了但缓存没失效）。
+  if (hit && now - hit.at < TOPOLOGY_TTL_MS && hit.ids.length === ids.length
+    && hit.ids.every((id, i) => id === ids[i])) {
+    return hit.nodes;
+  }
 
   const nodes = [];
   const CONCURRENCY = 8;
@@ -686,7 +704,7 @@ async function buildTopologyNodes(sourceId, containers, config) {
   };
   await Promise.all(Array.from({ length: Math.min(CONCURRENCY, containers.length) }, worker));
 
-  const entry = { at: now, nodes, count: containers.length };
+  const entry = { at: now, nodes, ids };
   topologyCache.set(fingerprint, entry);
   // 简单淘汰：超过 20 个 source 指纹就清最旧的
   if (topologyCache.size > 20) {

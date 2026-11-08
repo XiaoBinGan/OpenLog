@@ -90,8 +90,12 @@ export default function createMonitorRouter({ monitorHistory }) {
 
   router.get('/api/monitor/history', (req, res) => {
     NO_CACHE_HEADERS(res);
-    const { limit = 100 } = req.query;
-    const result = monitorHistory.slice(0, parseInt(limit));
+    // limit 必须是「正整数」才算数。原来直接 `parseInt(limit)`：
+    // 传 `?limit=abc` → NaN → `slice(0, NaN)` = []，用户会以为历史记录丢了。
+    // 非法值退回默认 100，而不是返回空列表；上限 5000 防一次性拉爆。
+    const raw = parseInt(req.query.limit, 10);
+    const limit = Number.isFinite(raw) && raw > 0 ? Math.min(raw, 5000) : 100;
+    const result = monitorHistory.slice(0, limit);
     res.json(result);
   });
 

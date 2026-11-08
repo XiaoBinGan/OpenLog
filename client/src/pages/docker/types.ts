@@ -62,6 +62,8 @@ export interface TraceResult {
   totalUpstream?: number;
   totalDownstream?: number;
   totalPeers?: number;
+  /** 同网但已退出的容器数：解释「这台机器上还躺着一堆旧容器」，不算活着邻居 */
+  stoppedPeerCount?: number;
   /** 参与推断的容器数（inspect 成功的） */
   inspected?: number;
   /** 推断过程中的降级说明，例如「N 台容器 inspect 失败」 */

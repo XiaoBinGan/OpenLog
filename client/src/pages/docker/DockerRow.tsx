@@ -351,6 +351,11 @@ function DockerRow({
                     {(trace.networkPeers || []).length > 6 && (
                       <span className="text-xs text-dark-600">…共 {trace.networkPeers.length} 台</span>
                     )}
+                    {(trace.stoppedPeerCount ?? 0) > 0 && (
+                      <span className="text-xs text-dark-700" title="同网络里已退出的容器，不参与链路推断">
+                        （另有 {trace.stoppedPeerCount} 台已退出）
+                      </span>
+                    )}
                   </div>
                 )}
 

@@ -26,7 +26,8 @@ const inspectOf = ({
 });
 
 const node = (over = {}) => buildNode(
-  { id: over.id || 'id-' + Math.random().toString(16).slice(2, 8), names: over.names || ['app'], ports: [] },
+  // state 默认 running：真实调用方传的是 listContainers 的结果，那里一定有 state
+  { id: over.id || 'id-' + Math.random().toString(16).slice(2, 8), names: over.names || ['app'], ports: [], state: over.state || 'running' },
   inspectOf(over.inspect || {}),
 );
 
@@ -169,6 +170,17 @@ describe('analyzeTopology —— 真机场景', () => {
     expect(topo.get('a').downstream).toEqual([]);
     expect(topo.get('a').peers.map((p) => p.id)).toEqual(['b']);
     expect(topo.get('a').peers[0].networks).toEqual(['bridge']);
+  });
+
+  /** 生产上 host 网络「同网 14 台」里 13 台是 exited 的历史容器，必须排除 */
+  it('已退出的容器不进 peers，只计数', () => {
+    const a = node({ id: 'a3', names: ['a3'], inspect: { networks: { bridge: { Aliases: null, IPAddress: '172.17.0.2' } } } });
+    const b = node({ id: 'b3', names: ['b3'], state: 'exited', inspect: { networks: { bridge: { Aliases: null, IPAddress: '172.17.0.3' } } } });
+    const c = node({ id: 'c3', names: ['c3'], state: 'running', inspect: { networks: { bridge: { Aliases: null, IPAddress: '172.17.0.4' } } } });
+    const topo = analyzeTopology([a, b, c]);
+    const bucket = topo.get('a3');
+    expect(bucket.peers.map((p) => p.id)).toEqual(['c3']);
+    expect(bucket.stoppedPeerCount).toBe(1);
   });
 
   it('自引用不会产生自己指向自己的边', () => {
