@@ -491,13 +491,13 @@ export async function traceContainerLinks(sourceId, containerId, config = {}) {
   const unavailable = [];
 
   // 真实 TCP 连接：比 env 里的地址更确凿。env 说「配置上打算连谁」，
-  // 连接表说「此刻真的连着」。生产上 OpenLog 跑 host 网络时，
-  // 本进程的 /proc/net/tcp 就是宿主机连接表，能直接看到容器之间正在连的 TCP。
+  // 连接表说「此刻真的连着」。读的是**每台容器自己**的 netns —— 宿主机视角
+  // 归不到具体容器（host 网络容器发起连接的源地址是 docker 网关 IP）。
   try {
-    const live = await readLiveConnections(nodes);
-    if (live.error) unavailable.push(`live_conns: ${live.error}`);
-    else if (live.edges && live.edges.size) applyLiveEdges(topo, live.edges, nodes);
-    else unavailable.push('live_conns: 此刻没有可映射到容器的活跃连接（服务空闲，或服务不在 host 网络）');
+    const live = await readLiveConnections(sourceId, nodes, config);
+    if (live.edges && live.edges.size) applyLiveEdges(topo, live.edges, nodes);
+    else unavailable.push(`live_conns: 读了 ${nodes.length} 台容器的连接表（共 ${live.total || 0} 条已建立连接），没有跨容器的活跃连接`);
+    if (live.skipped) unavailable.push(`live_conns: ${live.skipped} 台容器读不到 /proc/net/tcp（镜像里没有 procfs 或没有 sh）`);
   } catch (err) {
     unavailable.push(`live_conns: ${errorMessage(err)}`);
   }
