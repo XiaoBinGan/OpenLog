@@ -386,14 +386,17 @@ export function buildMfuResult({ prev, cur, gpus, procs, paramsB, engine, dtype 
  * 每命中一个可识别的引擎输出一行：
  *   SRC:<b64url>|<engine>|<b64key>|<b64body>
  */
-function buildDiscoveryScript(configuredUrl = '', configuredKey = '') {
+export function buildDiscoveryScript(configuredUrl = '', configuredKey = '') {
   const urlB64 = Buffer.from(configuredUrl || '', 'utf8').toString('base64');
   const keyB64 = Buffer.from(configuredKey || '', 'utf8').toString('base64');
   return `
 set +e
 CONFIGURED=$(printf '%s' '${urlB64}' | base64 -d 2>/dev/null)
 CONFIGURED_KEY=$(printf '%s' '${keyB64}' | base64 -d 2>/dev/null)
-PORTS=$( { docker ps --format '{{.Ports}}' 2>/dev/null | grep -oE '0\\.0\\.0\\.0:[0-9]+' | cut -d: -f2; echo 8000 8001 8002 8003 8080 8081 8899 9000 30000 30001 11434; } | sort -un )
+PORTS=$( { docker ps --format '{{.Image}} {{.Ports}}' 2>/dev/null | grep -viE '^(nginx|httpd|caddy|traefik|mysql|postgres|redis|mongo|memcached|alpine)' | grep -oE '0\\.0\\.0\\.0:[0-9]+' | cut -d: -f2; echo 8000 8001 8002 8003 8080 8081 8899 9000 30000 30001 11434; } | sort -un )
+# 上面排除静态站与服务类容器：它们对 /metrics 一律 404，而 404 会写进对方的 error log。
+# 生产实测：openlog-site（nginx）2 小时内被我们自己的探测打出 80 条 404 ERROR，
+# 容器日志巡检再把它们当故障报出来 —— 自己制造噪音再自己告警。
 KEYS=$( for c in $(docker ps --format '{{.Names}}' 2>/dev/null); do
   docker inspect "$c" --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null
 done | awk -F= 'toupper($1) ~ /(KEY|TOKEN|SECRET)/ && length($2) >= 8 {print $2}' | sort -u | head -20 )
