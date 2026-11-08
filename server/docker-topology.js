@@ -133,6 +133,8 @@ export function buildNode(container, inspect) {
   return {
     id: container?.id || inspect?.Id,
     shortId: String(container?.id || inspect?.Id || '').slice(0, 12),
+    // 容器状态：停掉的容器没法 exec，读连接表时要跳过（否则每台都记一次失败）
+    state: String(container?.state || inspect?.State?.Status || ''),
     names,
     aliases,
     networks,

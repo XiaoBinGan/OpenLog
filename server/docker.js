@@ -496,7 +496,7 @@ export async function traceContainerLinks(sourceId, containerId, config = {}) {
   try {
     const live = await readLiveConnections(sourceId, nodes, config);
     if (live.edges && live.edges.size) applyLiveEdges(topo, live.edges, nodes);
-    else unavailable.push(`live_conns: 读了 ${nodes.length} 台容器的连接表（共 ${live.total || 0} 条已建立连接），没有跨容器的活跃连接`);
+    else unavailable.push(`live_conns: 读了 ${live.candidates ?? 0} 台运行中容器的连接表（共 ${live.total || 0} 条已建立连接），没有跨容器的活跃连接`);
     if (live.skipped) unavailable.push(`live_conns: ${live.skipped} 台容器读不到 /proc/net/tcp（镜像里没有 procfs 或没有 sh）`);
   } catch (err) {
     unavailable.push(`live_conns: ${errorMessage(err)}`);
@@ -572,7 +572,10 @@ export async function traceContainerLinks(sourceId, containerId, config = {}) {
  * （极简镜像）时跳过并在 unavailable 里说明。
  */
 async function readLiveConnections(sourceId, nodes, config) {
-  if (!nodes.length) return { edges: new Map(), total: 0, skipped: 0 };
+  // 只读**运行中**容器的连接表：停掉的容器 exec 必然失败，
+  // 逐台记录只会刷一堆假失败（实测 77 台里 66 台是停的）。
+  const live = nodes.filter(n => String(n.state || '').toLowerCase() === 'running');
+  if (!live.length) return { edges: new Map(), total: 0, skipped: 0, candidates: 0 };
   const ipToId = new Map();
   for (const n of nodes) for (const ip of n.containerIps || []) ipToId.set(ip, n.id);
   const portToId = buildPortOwnerMap(nodes);
@@ -585,8 +588,8 @@ async function readLiveConnections(sourceId, nodes, config) {
   let total = 0; let skipped = 0;
   let cursor = 0;
   const worker = async () => {
-    while (cursor < nodes.length) {
-      const n = nodes[cursor];
+    while (cursor < live.length) {
+      const n = live[cursor];
       cursor += 1;
       try {
         const docker = await getDockerFor(sourceId, config);
@@ -613,8 +616,8 @@ async function readLiveConnections(sourceId, nodes, config) {
       }
     }
   };
-  await Promise.all(Array.from({ length: Math.min(4, nodes.length) }, worker));
-  return { edges, total, skipped };
+  await Promise.all(Array.from({ length: Math.min(4, live.length) }, worker));
+  return { edges, total, skipped, candidates: live.length };
 }
 
 /** 把真实连接产生的边并入拓扑结果（标为最高置信度 live_tcp） */
