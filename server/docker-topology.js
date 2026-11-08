@@ -269,7 +269,7 @@ export function outgoingReferences(node, nodes, index) {
 }
 
 /** 证据强度排序：high 在前；同级按 kind 固定顺序，保证输出稳定 */
-const KIND_ORDER = ['compose_depends_on', 'docker_link', 'env_alias', 'env_published_port', 'env_container_ip'];
+const KIND_ORDER = ['live_tcp', 'compose_depends_on', 'docker_link', 'env_alias', 'env_published_port', 'env_container_ip'];
 export function bestEvidence(evidenceList) {
   const rank = (e) => (e.confidence === 'high' ? 0 : 1) * 10 + KIND_ORDER.indexOf(e.kind);
   return [...evidenceList].sort((a, b) => rank(a) - rank(b));

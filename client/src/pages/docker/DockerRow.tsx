@@ -23,6 +23,7 @@ import ContainerActions from './ContainerActions';
 
 /** 证据类型 → 中文短标签；界面要能一眼看出「凭什么认为这是上下游」 */
 const EVIDENCE_LABEL: Record<string, string> = {
+  live_tcp: '实时 TCP 连接',
   compose_depends_on: 'compose 依赖',
   docker_link: '--link',
   env_alias: '环境变量指向主机名',

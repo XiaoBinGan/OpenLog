@@ -4,6 +4,7 @@ import path from 'path';
 import fs from 'fs';
 import { resolveDockerTransport } from './docker-transport.js';
 import { buildNode, analyzeTopology } from './docker-topology.js';
+import { parseProcNetTcp, mapConnectionsToEdges, buildPortOwnerMap } from './docker-live-conns.js';
 import { parseLogLevel } from './log-level.js';
 import { isSelfLogLine, detectSelfContainerId } from './container-log-watch.js';
 
@@ -487,9 +488,22 @@ export async function traceContainerLinks(sourceId, containerId, config = {}) {
   const nodes = await buildTopologyNodes(sourceId, containers, config);
   const topo = analyzeTopology(nodes);
   const byId = new Map(containers.map(c => [c.id, c]));
+  const unavailable = [];
+
+  // 真实 TCP 连接：比 env 里的地址更确凿。env 说「配置上打算连谁」，
+  // 连接表说「此刻真的连着」。生产上 OpenLog 跑 host 网络时，
+  // 本进程的 /proc/net/tcp 就是宿主机连接表，能直接看到容器之间正在连的 TCP。
+  try {
+    const live = await readLiveConnections(nodes);
+    if (live.error) unavailable.push(`live_conns: ${live.error}`);
+    else if (live.edges && live.edges.size) applyLiveEdges(topo, live.edges, nodes);
+    else unavailable.push('live_conns: 此刻没有可映射到容器的活跃连接（服务空闲，或服务不在 host 网络）');
+  } catch (err) {
+    unavailable.push(`live_conns: ${errorMessage(err)}`);
+  }
+
   const bucket = topo.get(containerId) || { upstream: [], downstream: [], peers: [] };
 
-  const unavailable = [];
   const missing = containers.length - nodes.length;
   if (missing > 0) unavailable.push(`topology_inspect: ${missing} 台容器 inspect 失败，未参与推断`);
 
@@ -540,6 +554,61 @@ export async function traceContainerLinks(sourceId, containerId, config = {}) {
  * 建拓扑节点：并发 inspect + 30s 缓存。
  * 缓存 key 用 sourceId + 容器 id 列表的指纹，容器增减或重启（id 不变但 created 变）时自动失效。
  */
+/**
+ * 读本进程的 /proc/net/tcp(6)，把连接映射成容器之间的边。
+ *
+ * 只在「本进程与容器共享网络命名空间」（host 网络部署）时能看到全部容器连接；
+ * 其它部署方式下命中很少，这是**事实**，所以回一个 error 说明，不假装「没有依赖」。
+ */
+async function readLiveConnections(nodes) {
+  let text = '';
+  for (const file of ['/proc/net/tcp', '/proc/net/tcp6']) {
+    try {
+      text += fs.readFileSync(file, 'utf8') + '\n';
+    } catch { /* 单文件读不到就跳过 */ }
+  }
+  if (!text.trim()) return { error: '读不到 /proc/net/tcp' };
+
+  const conns = parseProcNetTcp(text, { establishedOnly: true });
+  if (!conns.length) return { edges: new Map(), total: 0 };
+  const ipToId = new Map();
+  for (const n of nodes) for (const ip of n.containerIps || []) ipToId.set(ip, n.id);
+  const edges = mapConnectionsToEdges(conns, ipToId, { portToId: buildPortOwnerMap(nodes) });
+  return { edges, total: conns.length };
+}
+
+/** 把真实连接产生的边并入拓扑结果（标为最高置信度 live_tcp） */
+function applyLiveEdges(topo, edges, nodes) {
+  const byId = new Map(nodes.map(n => [n.id, n]));
+  for (const [fromId, targets] of edges) {
+    const fromBucket = topo.get(fromId);
+    if (!fromBucket) continue;
+    for (const [toId, stat] of targets) {
+      const toBucket = topo.get(toId);
+      if (!toBucket) continue;
+      const evidence = {
+        kind: 'live_tcp',
+        confidence: 'high',
+        detail: `此刻有 ${stat.count} 条已建立的 TCP 连接`,
+        value: String(stat.count),
+      };
+      if (!fromBucket.downstream.some(x => x.id === toId)) {
+        fromBucket.downstream.push({ id: toId, direction: 'downstream', confidence: 'high', evidence, allEvidence: [evidence] });
+      }
+      if (!toBucket.upstream.some(x => x.id === fromId)) {
+        toBucket.upstream.push({
+          id: fromId, direction: 'upstream', confidence: 'high',
+          evidence: { ...evidence, detail: `${byId.get(fromId)?.names?.[0] || fromId} 与它有 ${stat.count} 条已建立连接` },
+          allEvidence: [evidence],
+        });
+      }
+      // 同网列表里要剔除已经成为上下游的
+      fromBucket.peers = fromBucket.peers.filter(p => p.id !== toId);
+      toBucket.peers = toBucket.peers.filter(p => p.id !== fromId);
+    }
+  }
+}
+
 const topologyCache = new Map(); // key -> { at, nodes }
 const TOPOLOGY_TTL_MS = 30_000;
 
