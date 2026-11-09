@@ -2,7 +2,8 @@
 
 > 由 `deploy/scripts/save-image.sh` 自动维护。归档文件本身不进 git（见 `.gitignore`），
 > 但这份清单会提交，用来记录「发过哪些版本、对应的 commit、校验和」。
-| `openlog-latest-20261109-001508.tar.gz` | `openlog:7132fde` | `-` | `7132fde` | 217M | 2026-11-09 00:15 | `59e72b396b61…` | **当前生产版本**：修拓扑缓存指纹碰撞、同网误含 exited 容器、`?limit=abc` 返回空列表、GPU 发现给别人制造 404 噪音；测试补齐 46 条（含此前零测试的 monitoring.js），全量 1865 通过 | 本地 + 服务器 |
+| `openlog-latest-20261109-122733.tar.gz` | `openlog:cfbabad` | `-` | `cfbabad` | 217M | 2026-11-09 12:27 | `c99ac77d6abe…` | **当前生产版本**：AI Shell 与运维助手支持多图（最多 6 张，支持点选/粘贴/拖拽）；新增 vision-content.js 解决「base64 当文本估 token 导致上下文爆炸」与 `String(content)` 变 `[object Object]`；只收 data URL（防 SSRF）、白名单 MIME（拒 SVG）、历史图自动剥离 | 本地 + 服务器 |
+| `openlog-latest-20261109-001508.tar.gz` | `openlog:7132fde` | `-` | `7132fde` | 217M | 2026-11-09 00:15 | `59e72b396b61…` | 上一版：修拓扑缓存指纹碰撞、同网误含 exited 容器、`?limit=abc` 返回空列表、GPU 发现给别人制造 404 噪音；测试补齐 46 条（含此前零测试的 monitoring.js），全量 1865 通过 | 仅服务器 |
 | `openlog-latest-20261108-154455.tar.gz` | `openlog:440030b` | `-` | `440030b` | 217M | 2026-11-08 15:44 | `ff41c1d9ec8c…` | 上一版：容器上下游链路重写——三个推断依据原本全读错字段（c.Networks / labels.env / depends-on），整段从未生效；现按 live_tcp（每容器 netns 真实连接）/ compose depends_on / --link / env 主机名 / 端口归属推断，每条边带证据与置信度；同网≠上下游；另修 SQLite 表体积永远 0 张表；全量 1819 测试通过 | 仅服务器 |
 | `openlog-latest-20261108-093827.tar.gz` | `openlog:2f0fc38` | `763bf0c308b8` | `2f0fc38` | 217M | 2026-11-08 09:38 | `90d5c1df6839…` | 上一版：修 SQLite 面板表体积永远 0 张表（heavy 采样漏采 tables，用 dbstat + JOIN sqlite_master 排除索引，另修单表 count 失败拖垮整轮）；前版含外部数据源（容器挖连接条件 + 服务端取密码 + 探 Swagger 防 SPA 误判）与全部监控能力；全量 1770 测试通过；4卡T4 实测 11 张表真实体积与行数 | 仅服务器 |
 | `openlog-latest-20261108-002649.tar.gz` | `openlog:6c18dd7` | `9bfa5bf51a5f` | `6c18dd7` | 217M | 2026-11-08 00:26 | `8ca78d955c67…` | 上一版：外部数据源面板（从容器挖 DB 连接条件 + 服务端取密码加密入库 + 探 Swagger/OpenAPI，含 SPA 兜底防误判）+ 前版全部监控能力与 9 个数据可信度修正；全量 1763 测试通过；生产 PG 实测采到 10 张表/10.6MB，vllm 探到 22 个真接口 | 仅服务器 |

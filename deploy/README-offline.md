@@ -1,12 +1,12 @@
-# OpenLog 离线部署包 7132fde
+# OpenLog 离线部署包 cfbabad
 
-- 应用镜像：`openlog:7132fde`（`deploy/images/openlog-latest-20261109-001508.tar.gz`）
+- 应用镜像：`openlog:cfbabad`（`deploy/images/openlog-latest-20261109-122733.tar.gz`）
 - 数据库镜像：`postgres:16-alpine`（`deploy/images/postgres-16-alpine.tar.gz`，仅 PG 部署需要）
 
 ## 安装
 
 ```bash
-tar xf openlog-deploy-7132fde.tar && cd openlog-deploy-7132fde
+tar xf openlog-deploy-cfbabad.tar && cd openlog-deploy-cfbabad
 sha256sum -c SHA256SUMS
 bash deploy/install.sh --yes                    # SQLite
 bash deploy/install.sh --with-postgres --yes    # PostgreSQL
@@ -70,7 +70,26 @@ bash deploy/install.sh --with-postgres --yes    # PostgreSQL
 
 Swagger 给不出 QPS —— 那是流量事实，只在服务自己的访问日志或 Prometheus 里。不拿假数字凑。
 
-## 本轮修的第 11~13 个缺陷 + 测试补齐
+## 本版重点：AI Shell 与运维助手支持多图
+
+两个入口都能发图片，一次最多 6 张。三种添加方式：点按钮选文件（多选）、Ctrl+V 粘贴截图、把文件拖进消息区。
+
+**服务端新增 `server/vision-content.js`**（纯函数，35 条测试）。核心是这些坑：
+
+| 坑 | 后果 | 修法 |
+|---|---|---|
+| 图片 base64 被当文本估 token | 一张 300KB 的图 ≈ 8.5 万 token，上下文预算当场爆掉，历史被整段丢弃 —— 用户看到的是「助手突然忘了一切」 | 图片按固定值 1100 token 算 |
+| `String(content)` 强转 parts 数组 | 得到 `[object Object]`，AI Shell 的「命令输出压缩」整段失效 | 新增 `contentText()` 统一取纯文本 |
+| 远程图片 URL | 服务端会去取内网地址（SSRF） | 只收 data URL |
+| 每轮重发历史图片 | 6 张图 = 6600 token/轮，几步就把小窗口模型吃光 | 只保留最后一条 user 的图片，更早的剥成「[图片]」 |
+| SVG 当图片传 | 可携带脚本 | 白名单 PNG/JPEG/WebP/GIF |
+
+**前端（两个入口共用）**：`client/src/utils/imageAttach.ts`（纯函数，24 条测试）+ `components/ImageAttach.tsx`。
+压到长边 1568px、JPEG 0.85；GIF 保留原始字节（canvas 只能取第一帧，转 JPEG 会丢动画）；PNG 透明区先铺白底（否则变黑块）；压缩后仍超限就降质量重编，最低 0.55。
+
+真机验收（生产环境，CDP 驱动真实 DOM）：运维助手注入 3 张 → 缩略图 3 + 计数 3/6 + 3 个删除按钮；AI Shell 注入 2 张 → 缩略图 2 + 计数 2/6。
+
+## 上一轮修的第 11~13 个缺陷 + 测试补齐
 
 1. **拓扑缓存指纹碰撞**：指纹用 `ids.join(',').length`，两个不同容器集合只要 id 总长度
    相同就命中同一份缓存 → 拿到另一批容器的拓扑。改成对 id 集合取 sha1。
@@ -235,7 +254,7 @@ PG 分支有 `pg_total_relation_size` 可查，SQLite 分支当时整段漏了�
 - `server/datasource/*`：discover / api-probe / db-probe / store（本版新增）
 - `server/openapi.js`、`dependency-probe.js`、`monitoring.js`、`ws-auth.js`
 - `client/src/pages/Docker.tsx` 1287 → 399 行；`Settings.tsx` 1968 → 272 行
-- 测试：**1865 passed / 2 skipped（105 文件）**
+- 测试：**1924 passed / 2 skipped（107 文件）**
 
 **沿用**：远程文件面板右键操作、Docker AI 智能诊断、告警导出 Markdown/真实 XLSX、AI 分析进通知中心、GPU 进程解析、路由懒加载。
 
