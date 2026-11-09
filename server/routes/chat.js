@@ -24,6 +24,7 @@ import { createChatRunner } from './chat-runner.js';
 import { resolveContextConfig, CONTEXT_DEFAULTS, CONTEXT_BOUNDS, pickPersistableConfig, adaptContextToWindow } from './context-config.js';
 import { planBudget } from '../context-budget.js';
 import { normalizeMessages } from '../vision-content.js';
+import { isImageUnsupportedError, setCachedVisionSupport } from '../vision-probe.js';
 
 // ─── 运维助手 Tool Calling ──────────────────────────────────────────
 
@@ -271,6 +272,8 @@ export default function createChatRouter({
     const vision = normalizeMessages(messages);
     if (!vision.ok) return res.status(400).json({ error: vision.error });
     const safeMessages = vision.messages;
+    // 本次请求是否带图：错误归因要用（"不支持图片" 和 "不支持 tools" 是两种提示）
+    const hasImages = safeMessages.some((m) => Array.isArray(m.content) && m.content.some((p) => p?.type === 'image_url'));
 
     const settings = ensureSettings();
     // 三级优先级：会话覆盖 > 设置页全局 > 环境变量默认；越界会夹紧并给 warnings

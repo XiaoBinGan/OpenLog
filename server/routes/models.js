@@ -11,6 +11,7 @@ import express from 'express';
 
 import { errorMessage } from '../errors.js';
 import { listModels, normalizeBaseUrl, guessEngine, ENGINE_HINTS } from '../llm-provider.js';
+import { probeVisionSupport, probeVisionSupportCached, getCachedVisionSupport, setCachedVisionSupport } from '../vision-probe.js';
 
 export function createModelsRouter({ ensureSettings }) {
   const router = express.Router();
@@ -49,6 +50,40 @@ export function createModelsRouter({ ensureSettings }) {
       res.json({ models: result.models, error: result.ok ? undefined : result.error });
     } catch (err) {
       res.json({ models: [], error: errorMessage(err) });
+    }
+  });
+
+  /**
+   * 视觉能力探测：当前模型到底能不能看图。
+   *
+   * 为什么不猜：Ollama 上多数纯文本模型对 image_url 不报错而是**静默忽略**，
+   * 模型对着空图硬答，用户会以为是「AI 看歪了」，实际它根本没看到。
+   * 所以这里真发一张洋红小图问颜色，答对才算 yes。
+   *
+   * 返回 supported: 'yes' | 'no' | 'unknown'
+   *   unknown ≠ 不支持 —— 超时/限流/答非所问都归 unknown，界面只提示不阻止。
+   */
+  router.get('/api/models/vision', async (req, res) => {
+    try {
+      const settings = ensureSettings();
+      const baseUrl = req.query.baseUrl ? String(req.query.baseUrl) : settings.openaiBaseUrl;
+      const apiKey = req.query.apiKey ? String(req.query.apiKey) : settings.openaiApiKey;
+      const model = req.query.model ? String(req.query.model) : settings.model;
+      // fresh=1 强制重新探测（用户换了模型/引擎，或上次结论不可信）
+      if (String(req.query.fresh || '') === '1') {
+        // 直接用 probeVisionSupport，绕过缓存（ttl=0 那种写法依赖毫秒边界，不可靠）
+        const result = await probeVisionSupport({ baseUrl, apiKey, model });
+        if (result.supported !== 'unknown') setCachedVisionSupport(baseUrl, model, result);
+        return res.json({ model, baseUrl: normalizeBaseUrl(baseUrl), ...result, cached: false });
+      }
+      const cached = getCachedVisionSupport(baseUrl, model);
+      if (cached) {
+        return res.json({ model, baseUrl: normalizeBaseUrl(baseUrl), ...cached, cached: true });
+      }
+      const result = await probeVisionSupportCached({ baseUrl, apiKey, model });
+      res.json({ model, baseUrl: normalizeBaseUrl(baseUrl), ...result });
+    } catch (err) {
+      res.json({ supported: 'unknown', reason: errorMessage(err) });
     }
   });
 

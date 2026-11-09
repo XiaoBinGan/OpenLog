@@ -6,6 +6,7 @@
 import 'dotenv/config';
 import express from 'express';
 import { errorMessage, isTransientNetworkError } from './errors.js';
+import { isImageUnsupportedError, setCachedVisionSupport } from './vision-probe.js';
 import cors from 'cors';
 import { createServer } from 'http';
 import { WebSocketServer } from 'ws';
@@ -2040,7 +2041,14 @@ async function handleAIShellWebSocket(ws, serverId) {
         });
       } catch (err) {
         console.error('[AIShell] agent 执行失败:', errorMessage(err));
-        send(taskId, { type: 'error', error: errorMessage(err) });
+        // 图片被引擎拒绝时单独说清：否则用户看到的是 `image_url is not supported` 这种无从下手的原文
+        let errText = errorMessage(err);
+        if (Array.isArray(msg.images) && msg.images.length > 0 && isImageUnsupportedError(err)) {
+          const vs = ensureSettings();
+          setCachedVisionSupport(vs.openaiBaseUrl, vs.model, { supported: 'no', reason: '引擎明确拒绝图片输入' });
+          errText = `当前模型（${vs.model}）不支持图片输入：请换成支持视觉的模型，或去掉图片后重试。`;
+        }
+        send(taskId, { type: 'error', error: errText });
         send(taskId, { type: 'agent_done', status: 'error', steps: 0 });
       }
     }
