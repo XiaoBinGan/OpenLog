@@ -1023,31 +1023,6 @@ export default function Assistant() {
             />
           )}
 
-          {/* 待发送的图片缩略图（点 × 移除） */}
-          {pendingImages.length > 0 && (
-            <div className="mb-2 flex flex-wrap items-center gap-2">
-              {pendingImages.map((img) => (
-                <div key={img.id} className="relative">
-                  <img
-                    src={img.dataUrl}
-                    alt={img.name}
-                    title={img.name}
-                    className="w-14 h-14 object-cover rounded-lg border border-dark-700 bg-dark-900"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setPendingImages((prev) => prev.filter((i) => i.id !== img.id))}
-                    title="移除"
-                    className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-dark-800 border border-dark-600
-                      text-dark-300 hover:text-red-400 hover:border-red-500/50 flex items-center justify-center"
-                  >
-                    <X className="w-3 h-3" />
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-
           {/* 输入框与发送按钮放在同一个容器里：边框只画一层，两者天然同一水平线，
               输入变高时按钮跟着底部对齐（items-end），不会出现"按钮悬空"的观感 */}
           <div className="flex items-end gap-1.5 rounded-xl border border-dark-800 bg-dark-900 p-1.5
@@ -1095,14 +1070,6 @@ export default function Assistant() {
                 </div>
               )}
             </div>
-            {/* 图片入口常显：没选图时也要能看见，否则用户不知道可以发图 */}
-            <ImageAttachBar
-              images={pendingImages}
-              onChange={setPendingImages}
-              onError={(m: string) => setSseWarning({ level: 'warn', message: m })}
-              disabled={loading}
-              compact
-            />
             {loading ? (
               <button onClick={stopGeneration} title="停止生成"
                 className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg bg-red-500/20 text-red-400 transition-colors hover:bg-red-500/30">
