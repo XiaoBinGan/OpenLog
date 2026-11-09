@@ -496,10 +496,38 @@ app.use(apiMetricsMiddleware);
 // 生产模式：托管前端静态文件
 if (process.env.NODE_ENV === 'production') {
   const clientDist = path.join(__dirname, '..', 'client', 'dist');
-  app.use(express.static(clientDist));
-  // SPA fallback — 所有非 API 路由返回 index.html
+  app.use(express.static(clientDist, {
+    index: false, // `/` 交给下面的 SPA fallback，避免两处都处理首页
+    setHeaders: (res, filePath) => {
+      // Vite 产物带内容 hash：内容一变文件名就变，可以永久缓存
+      // （不这么做的话每次发版用户都要回源校验，弱网下首屏慢得离谱）
+      if (/[\\/]assets[\\/]/.test(filePath)) {
+        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+      } else {
+        // 其它（favicon 等）不缓存，避免换了图标用户看不到
+        res.setHeader('Cache-Control', 'no-cache');
+      }
+    },
+  }));
+
+  // SPA fallback —— 但**只对真正的页面路由**生效。
+  //
+  // 之前这里是 app.get('*') 无差别返回 index.html，后果很严重：
+  // 用户浏览器缓存了旧的 index.html，里面引用旧的 assets/index-<oldhash>.js；
+  // 再次访问时该 chunk 已被新版本替换 → 这个 catch-all 返回的是 HTML（200 text/html）
+  // → 浏览器执行 JS 时抛 `Unexpected token '<'` → 整页白屏。
+  // 用户看到的就是「部署了但页面没变化 / 打不开」。
+  //
+  // 所以带扩展名的路径和 /assets/ 一律返回 404：宁可明确报错，也不要假装成功。
+  const looksLikeAsset = (p) => p.startsWith('/assets/') || /\.[a-z0-9]{1,8}$/i.test(p);
   app.get('*', (req, res, next) => {
     if (isApiPath(req.path)) return next();
+    if (looksLikeAsset(req.path)) {
+      return res.status(404).type('text/plain').send(`Not found: ${req.path}`);
+    }
+    // index.html 绝不能缓存：它决定引用哪个 hash 的 chunk。
+    // 缓存了它，用户就永远停在旧版本的 chunk 名单上。
+    res.setHeader('Cache-Control', 'no-cache, must-revalidate');
     res.sendFile(path.join(clientDist, 'index.html'));
   });
 }
