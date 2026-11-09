@@ -1,12 +1,12 @@
-# OpenLog 离线部署包 cfbabad
+# OpenLog 离线部署包 7ccc4e9
 
-- 应用镜像：`openlog:cfbabad`（`deploy/images/openlog-latest-20261109-122733.tar.gz`）
+- 应用镜像：`openlog:7ccc4e9`（`deploy/images/openlog-latest-20261109-153545.tar.gz`）
 - 数据库镜像：`postgres:16-alpine`（`deploy/images/postgres-16-alpine.tar.gz`，仅 PG 部署需要）
 
 ## 安装
 
 ```bash
-tar xf openlog-deploy-cfbabad.tar && cd openlog-deploy-cfbabad
+tar xf openlog-deploy-7ccc4e9.tar && cd openlog-deploy-7ccc4e9
 sha256sum -c SHA256SUMS
 bash deploy/install.sh --yes                    # SQLite
 bash deploy/install.sh --with-postgres --yes    # PostgreSQL
@@ -70,7 +70,32 @@ bash deploy/install.sh --with-postgres --yes    # PostgreSQL
 
 Swagger 给不出 QPS —— 那是流量事实，只在服务自己的访问日志或 Prometheus 里。不拿假数字凑。
 
-## 本版重点：AI Shell 与运维助手支持多图
+## 本版新增：探测「当前模型能不能看图」
+
+图片发出去后，不同引擎行为差别很大 —— Ollama 上多数纯文本模型对 image_url
+**不报错，直接静默忽略**。图片被丢弃，模型对着空图硬答，用户以为是「AI 看歪了」。
+
+| 做法 | 说明 |
+|---|---|
+| 探测图用**洋红** | 红/蓝/绿是模型不看图也能蒙的高频猜测色；洋红不在常见猜测集合里，答对基本只能是真的看到了 |
+| 真发一张 32×32 纯色 PNG | 服务端没有 canvas，手写最小 PNG 编码（IHDR/IDAT/IEND + CRC32），80 字节 |
+| 三态结论 | yes（答对颜色）/ no（引擎明确拒绝）/ unknown（超时、限流、答非所问）|
+| unknown **不缓存** | 下次可能就好了，缓存住会一直误导 |
+
+前端（`client/src/utils/visionSupport.ts` + `hooks/useVisionSupport.ts`）：
+- **只在第一次选图片时探测**，页面加载不探（不花用户没打算花的 token）
+- no → 红色警示：这个模型不看图，请换模型或去掉图片
+- unknown → 黄色提示：无法确认，可以先发，引擎不支持会明确说明
+
+运行时错误也接上了：/api/chat 与 AI Shell 收到「不支持图片」类错误时单独说清原因
+（而不是甩一句 image_url is not supported），并把 no 写进缓存。
+
+真机验证（生产环境，配置的 qwen3.8-flash-next-q2_0）：
+  首次探测 511ms → yes（模型答「品红」）
+  再查 18ms → 命中缓存
+  浏览器验收：页面加载 0 次探测 / 选图后 1 次探测 / 界面无多余提示
+
+## 上一版：AI Shell 与运维助手支持多图
 
 两个入口都能发图片，一次最多 6 张。三种添加方式：点按钮选文件（多选）、Ctrl+V 粘贴截图、把文件拖进消息区。
 
@@ -254,7 +279,7 @@ PG 分支有 `pg_total_relation_size` 可查，SQLite 分支当时整段漏了�
 - `server/datasource/*`：discover / api-probe / db-probe / store（本版新增）
 - `server/openapi.js`、`dependency-probe.js`、`monitoring.js`、`ws-auth.js`
 - `client/src/pages/Docker.tsx` 1287 → 399 行；`Settings.tsx` 1968 → 272 行
-- 测试：**1924 passed / 2 skipped（107 文件）**
+- 测试：**1968 passed / 2 skipped（109 文件）**
 
 **沿用**：远程文件面板右键操作、Docker AI 智能诊断、告警导出 Markdown/真实 XLSX、AI 分析进通知中心、GPU 进程解析、路由懒加载。
 
