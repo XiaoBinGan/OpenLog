@@ -1,12 +1,12 @@
-# OpenLog 离线部署包 7ccc4e9
+# OpenLog 离线部署包 9571894
 
-- 应用镜像：`openlog:7ccc4e9`（`deploy/images/openlog-latest-20261109-153545.tar.gz`）
+- 应用镜像：`openlog:9571894`（`deploy/images/openlog-latest-20261109-180427.tar.gz`）
 - 数据库镜像：`postgres:16-alpine`（`deploy/images/postgres-16-alpine.tar.gz`，仅 PG 部署需要）
 
 ## 安装
 
 ```bash
-tar xf openlog-deploy-7ccc4e9.tar && cd openlog-deploy-7ccc4e9
+tar xf openlog-deploy-9571894.tar && cd openlog-deploy-9571894
 sha256sum -c SHA256SUMS
 bash deploy/install.sh --yes                    # SQLite
 bash deploy/install.sh --with-postgres --yes    # PostgreSQL
@@ -70,7 +70,31 @@ bash deploy/install.sh --with-postgres --yes    # PostgreSQL
 
 Swagger 给不出 QPS —— 那是流量事实，只在服务自己的访问日志或 Prometheus 里。不拿假数字凑。
 
-## 本版新增：探测「当前模型能不能看图」
+## 本版关键修复：发版后页面打不开（这才是「部署了没用」）
+
+用户报告部署后看不到变化。查下来**不是功能没写对**，而是发版后浏览器加载不到新版本：
+
+旧代码用 `app.get('*')` 无差别返回 index.html。用户浏览器缓存了旧 index.html，
+里面引用 `assets/index-<旧hash>.js`；发版后该文件已不存在，于是：
+
+    请求 JS → 服务器返回 index.html（200 text/html）
+    → 浏览器执行时抛 `Unexpected token '<'`
+    → 整页白屏
+
+三条规则（`server/index.js`）：
+
+| 路径 | 行为 |
+|---|---|
+| `/assets/*` 或带扩展名且不存在 | **404 纯文本**（宁可明确报错，也不假装成功） |
+| 页面路由（/assistant、/remote…） | index.html + `Cache-Control: no-cache, must-revalidate` |
+| `/assets/*` 存在 | `public, max-age=31536000, immutable`（Vite 带内容 hash，可永久缓存） |
+
+配套 8 条测试（`spa-fallback.test.js`）锁死这三条，包括「404 响应体不能以 `<` 开头」。
+
+另外：视觉探测通过时给一条绿色「已确认 <模型> 支持图片」。
+上一版 yes 时什么都不显示，用户选完图界面毫无反应，也会觉得「没用」。
+
+## 上一版：探测「当前模型能不能看图」
 
 图片发出去后，不同引擎行为差别很大 —— Ollama 上多数纯文本模型对 image_url
 **不报错，直接静默忽略**。图片被丢弃，模型对着空图硬答，用户以为是「AI 看歪了」。
@@ -279,7 +303,7 @@ PG 分支有 `pg_total_relation_size` 可查，SQLite 分支当时整段漏了�
 - `server/datasource/*`：discover / api-probe / db-probe / store（本版新增）
 - `server/openapi.js`、`dependency-probe.js`、`monitoring.js`、`ws-auth.js`
 - `client/src/pages/Docker.tsx` 1287 → 399 行；`Settings.tsx` 1968 → 272 行
-- 测试：**1968 passed / 2 skipped（109 文件）**
+- 测试：**1978 passed / 2 skipped（110 文件）**
 
 **沿用**：远程文件面板右键操作、Docker AI 智能诊断、告警导出 Markdown/真实 XLSX、AI 分析进通知中心、GPU 进程解析、路由懒加载。
 

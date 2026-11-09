@@ -2,7 +2,8 @@
 
 > 由 `deploy/scripts/save-image.sh` 自动维护。归档文件本身不进 git（见 `.gitignore`），
 > 但这份清单会提交，用来记录「发过哪些版本、对应的 commit、校验和」。
-| `openlog-latest-20261109-153545.tar.gz` | `openlog:7ccc4e9` | `-` | `7ccc4e9` | 217M | 2026-11-09 15:35 | `9702a43ecc74…` | **当前生产版本**：视觉能力探测——真发一张洋红小图问颜色，三态结论（yes/no/unknown），unknown 不缓存；只在选图时探测不浪费 token；/api/chat 与 AI Shell 的图片错误单独说清原因。全量 1968 测试通过 | 本地 + 服务器 |
+| `openlog-latest-20261109-180427.tar.gz` | `openlog:9571894` | `-` | `9571894` | 217M | 2026-11-09 18:04 | `a3e0f1e9615f…` | **当前生产版本**：修 SPA fallback 把不存在的 /assets/*.js 返回 HTML 导致整页白屏（「部署了没用」的真正原因）；assets 走 immutable、index.html 走 no-cache；视觉探测通过时给正向确认。全量 1978 测试通过 | 本地 + 服务器 |
+| `openlog-latest-20261109-153545.tar.gz` | `openlog:7ccc4e9` | `-` | `7ccc4e9` | 217M | 2026-11-09 15:35 | `9702a43ecc74…` | 上一版：视觉能力探测——真发一张洋红小图问颜色，三态结论（yes/no/unknown），unknown 不缓存；只在选图时探测不浪费 token；/api/chat 与 AI Shell 的图片错误单独说清原因。全量 1968 测试通过 | 仅服务器 |
 | `openlog-latest-20261109-122733.tar.gz` | `openlog:cfbabad` | `-` | `cfbabad` | 217M | 2026-11-09 12:27 | `c99ac77d6abe…` | 上一版：AI Shell 与运维助手支持多图（最多 6 张，支持点选/粘贴/拖拽）；新增 vision-content.js 解决「base64 当文本估 token 导致上下文爆炸」与 `String(content)` 变 `[object Object]`；只收 data URL（防 SSRF）、白名单 MIME（拒 SVG）、历史图自动剥离 | 仅服务器 |
 | `openlog-latest-20261109-001508.tar.gz` | `openlog:7132fde` | `-` | `7132fde` | 217M | 2026-11-09 00:15 | `59e72b396b61…` | 上一版：修拓扑缓存指纹碰撞、同网误含 exited 容器、`?limit=abc` 返回空列表、GPU 发现给别人制造 404 噪音；测试补齐 46 条（含此前零测试的 monitoring.js），全量 1865 通过 | 仅服务器 |
 | `openlog-latest-20261108-154455.tar.gz` | `openlog:440030b` | `-` | `440030b` | 217M | 2026-11-08 15:44 | `ff41c1d9ec8c…` | 上一版：容器上下游链路重写——三个推断依据原本全读错字段（c.Networks / labels.env / depends-on），整段从未生效；现按 live_tcp（每容器 netns 真实连接）/ compose depends_on / --link / env 主机名 / 端口归属推断，每条边带证据与置信度；同网≠上下游；另修 SQLite 表体积永远 0 张表；全量 1819 测试通过 | 仅服务器 |
