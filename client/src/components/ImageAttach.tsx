@@ -11,7 +11,7 @@
  */
 import { useCallback, useRef, useState } from 'react';
 import { ImagePlus, X, Loader2 } from 'lucide-react';
-import { AlertTriangle, ShieldAlert } from 'lucide-react';
+import { AlertTriangle, Check, ShieldAlert } from 'lucide-react';
 import { MAX_IMAGES, formatBytes, filesToAttachments } from '../utils/imageAttach';
 import { useVisionSupport } from '../hooks/useVisionSupport';
 import type { AttachedImage } from '../utils/imageAttach';
@@ -76,18 +76,22 @@ export default function ImageAttachBar({ images, onChange, onError, disabled, co
         </div>
       )}
 
-      {/* 视觉能力提示：明确不支持时用醒目色，测不出来只说「可能」，不拦用户 */}
+      {/* 视觉能力提示：ok 用绿色轻确认、block 用红色警示、warn 用黄色，测不出来不拦用户 */}
       {images.length > 0 && hint.level !== 'none' && (
         <div
           className={`flex items-start gap-1.5 rounded-lg px-2 py-1.5 text-[11px] leading-relaxed border ${
             hint.level === 'block'
               ? 'bg-red-500/10 border-red-500/25 text-red-300'
-              : 'bg-yellow-500/10 border-yellow-500/20 text-yellow-300/90'
+              : hint.level === 'ok'
+                ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-300/90'
+                : 'bg-yellow-500/10 border-yellow-500/20 text-yellow-300/90'
           }`}
         >
           {hint.level === 'block'
             ? <ShieldAlert className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" />
-            : <AlertTriangle className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" />}
+            : hint.level === 'ok'
+              ? <Check className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" />
+              : <AlertTriangle className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" />}
           <span>{hint.text}</span>
         </div>
       )}

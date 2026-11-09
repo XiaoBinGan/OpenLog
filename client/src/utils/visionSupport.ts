@@ -22,8 +22,13 @@ export interface VisionProbeResult {
 }
 
 export interface VisionHint {
-  /** none = 不提示；warn = 可能不支持；block = 明确不支持 */
-  level: 'none' | 'warn' | 'block';
+  /**
+   * none  = 还没探测过（不打扰）
+   * ok    = 探测通过（给一个轻量正向确认，否则用户看不出功能在工作）
+   * warn  = 可能不支持
+   * block = 明确不支持
+   */
+  level: 'none' | 'ok' | 'warn' | 'block';
   text: string;
 }
 
@@ -31,7 +36,11 @@ export interface VisionHint {
 export function describeVision(result: VisionProbeResult | null | undefined): VisionHint {
   if (!result) return { level: 'none', text: '' };
   const model = String(result.model || '当前模型');
-  if (result.supported === 'yes') return { level: 'none', text: '' };
+  if (result.supported === 'yes') {
+    // 正向确认：之前这里返回 none（什么都不显示），用户选完图界面毫无反应，
+    // 会以为「图片功能没生效」。给一句极简的确认，不占地方但能证明它在工作。
+    return { level: 'ok', text: `已确认 ${model} 支持图片` };
+  }
   if (result.supported === 'no') {
     return {
       level: 'block',

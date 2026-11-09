@@ -8,10 +8,16 @@ import { describe, it, expect } from 'vitest';
 import { describeVision, shouldHint, shouldRefetch } from './visionSupport';
 
 describe('describeVision', () => {
-  it('yes → 不提示', () => {
+  it('**yes → 给一条正向确认**（什么都不显示的话，用户会以为功能没生效）', () => {
     const h = describeVision({ supported: 'yes', model: 'qwen-vl' });
-    expect(h.level).toBe('none');
-    expect(h.text).toBe('');
+    expect(h.level).toBe('ok');
+    expect(h.text).toContain('qwen-vl');
+    expect(h.text).toContain('支持图片');
+  });
+
+  it('ok 级文案要短（它占的是输入框上方的空间）', () => {
+    const h = describeVision({ supported: 'yes', model: 'qwen3.8-flash-next-q2_0' });
+    expect(h.text.length).toBeLessThan(60);
   });
 
   it('no → block，文案说清「会被拒绝」并给出出路', () => {
@@ -44,6 +50,15 @@ describe('describeVision', () => {
     expect(describeVision(null).level).toBe('none');
     expect(describeVision(undefined).level).toBe('none');
     expect(describeVision({}).level).toBe('warn'); // 有对象但无 supported：按 unknown 处理
+  });
+
+  it('三种非空级别互不重叠（界面渲染靠这个分支）', () => {
+    const levels = new Set([
+      describeVision({ supported: 'yes', model: 'm' }).level,
+      describeVision({ supported: 'no', model: 'm' }).level,
+      describeVision({ supported: 'unknown', model: 'm' }).level,
+    ]);
+    expect(levels.size).toBe(3);
   });
 
   it('未知的 supported 值按 unknown 处理（后端加新状态时不至于瞎提示）', () => {
