@@ -1023,6 +1023,16 @@ export default function Assistant() {
             />
           )}
 
+          {/* 图片附件（缩略图 + 选择按钮）：独立一行，缩略图在这个组件里渲染 */}
+          <div className="mb-2">
+            <ImageAttachBar
+              images={pendingImages}
+              onChange={setPendingImages}
+              onError={(m: string) => setSseWarning({ level: 'warn', message: m })}
+              disabled={loading}
+            />
+          </div>
+
           {/* 输入框与发送按钮放在同一个容器里：边框只画一层，两者天然同一水平线，
               输入变高时按钮跟着底部对齐（items-end），不会出现"按钮悬空"的观感 */}
           <div className="flex items-end gap-1.5 rounded-xl border border-dark-800 bg-dark-900 p-1.5
