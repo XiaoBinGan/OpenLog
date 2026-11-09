@@ -23,6 +23,7 @@ import {
 import { createChatRunner } from './chat-runner.js';
 import { resolveContextConfig, CONTEXT_DEFAULTS, CONTEXT_BOUNDS, pickPersistableConfig, adaptContextToWindow } from './context-config.js';
 import { planBudget } from '../context-budget.js';
+import { normalizeMessages } from '../vision-content.js';
 
 // ─── 运维助手 Tool Calling ──────────────────────────────────────────
 
@@ -264,6 +265,12 @@ export default function createChatRouter({
     if (!messages || !Array.isArray(messages) || messages.length === 0) {
       return res.status(400).json({ error: 'messages required' });
     }
+    // 多模态归一：校验图片（只收 data URL、白名单 MIME、数量/体积上限），
+    // 并把历史里除最后一条 user 之外的图片剥成文字 —— 否则每轮重发 6 张图，
+    // 6600 token 只是图片，几轮就把窗口吃光。
+    const vision = normalizeMessages(messages);
+    if (!vision.ok) return res.status(400).json({ error: vision.error });
+    const safeMessages = vision.messages;
 
     const settings = ensureSettings();
     // 三级优先级：会话覆盖 > 设置页全局 > 环境变量默认；越界会夹紧并给 warnings
@@ -410,7 +417,7 @@ ${buildAssistantContext()}`;
         openai,
         baseUrl,
         model,
-        messages: messages.filter(m => m.role === 'user' || m.role === 'assistant' || m.role === 'tool'),
+        messages: safeMessages.filter(m => m.role === 'user' || m.role === 'assistant' || m.role === 'tool'),
         tools: ASSISTANT_TOOLS,
         systemPrompt,
         isLocalModel,

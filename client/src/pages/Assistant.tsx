@@ -14,6 +14,11 @@ import { createSSELineSplitter, parseSSEDataLine } from '../utils/sseLines';
 import { applyToolResult, appendToolProgress, settleToolCalls } from '../utils/toolCallState';
 import { toolLabel } from '../utils/toolCallView';
 import ToolCallCard from '../components/ToolCallCard';
+import ImageAttachBar from '../components/ImageAttach';
+import {
+  buildUserContent, contentText, imageFilesFromClipboard, imageFilesFromDrop,
+  filesToAttachments, type AttachedImage,
+} from '../utils/imageAttach';
 import {
   buildUsageAdvice, estimateTextTokens, trimHistoryToBudget, usageLevel,
   type ContextConfigLike,
@@ -91,6 +96,9 @@ export default function Assistant() {
   const cmdParam = searchParams.get('cmd');
 
   const [input, setInput] = useState('');
+  /** 待发送的图片附件（发出去后清空；历史里不保留 base64） */
+  const [pendingImages, setPendingImages] = useState<AttachedImage[]>([]);
+  const [dragActive, setDragActive] = useState(false);
   const [loading, setLoading] = useState(false);
   const [memoryPanelOpen, setMemoryPanelOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -374,8 +382,10 @@ export default function Assistant() {
   };
 
   // 发送消息
-  const sendMessage = async (text?: string) => {    const content = text || input.trim();
-    if (!content || loading) return;
+  const sendMessage = async (text?: string) => {
+    const content = text || input.trim();
+    // 允许「只发图片不写字」：截图本身就是问题
+    if ((!content && pendingImages.length === 0) || loading) return;
 
     setInput('');
     setAtOpen(false);
@@ -398,6 +408,8 @@ export default function Assistant() {
     }
     // 兜底：清除残留的 @ 提及标记
     displayContent = displayContent.replace(/@(?:巡检|诊断|日志)\s*/g, '').trim();
+    // 只发图片没写字：补一句提示，否则气泡是空的、模型也不知道要干什么
+    if (!displayContent && pendingImages.length > 0) displayContent = '请看这些图片。';
 
     // 获取完整记录上下文
     let contextBlock = '';
@@ -420,9 +432,19 @@ export default function Assistant() {
 
     displayContent = displayContent + contextBlock;
 
-    const userMsg = { role: 'user' as const, content: displayContent, ts: Date.now(), streaming: false };
+    const userMsg = {
+      role: 'user' as const,
+      content: displayContent,
+      // 图片只挂在本地展示与**本轮**请求上：历史里存 base64 会撑爆 localStorage，
+      // 每轮重发也会把上下文吃光
+      images: pendingImages.map((i) => ({ id: i.id, dataUrl: i.dataUrl, name: i.name })),
+      ts: Date.now(),
+      streaming: false,
+    };
     const assistantMsg = { role: 'assistant' as const, content: '', ts: Date.now() + 1, streaming: true, toolCalls: [] as any[] };
     setOpsMessages(prev => [...prev, userMsg, assistantMsg]);
+    const sentImages = pendingImages;
+    setPendingImages([]);
     setLoading(true);
     abortRef.current = new AbortController();
 
@@ -462,12 +484,18 @@ export default function Assistant() {
             });
           }
         } else {
-          const msg: any = { role: m.role, content: m.content };
+          // 历史里的 content 一律归一成纯文本：老消息可能带图片 part，
+          // 每轮重发 base64 既贵又没必要（后端也会再剥一次，这里先减负）
+          const msg: any = { role: m.role, content: contentText(m.content) };
           if ((m as any).reasoning_content) msg.reasoning_content = (m as any).reasoning_content;
           history.push(msg);
         }
       }
-      history.push({ role: 'user', content: displayContent });
+      // 本轮 user 消息带图片（parts 数组）；没有图片时 buildUserContent 返回字符串
+      history.push({
+        role: 'user',
+        content: buildUserContent(displayContent, sentImages.map((i) => ({ dataUrl: i.dataUrl }))),
+      });
 
       const res = await fetch('/api/chat', {
         method: 'POST',
@@ -765,8 +793,25 @@ export default function Assistant() {
           </div>
         </div>
 
-        {/* 消息区 */}
-        <div className="flex-1 overflow-y-auto min-h-0">
+        {/* 消息区（整块可接图片拖放） */}
+        <div
+          className={`flex-1 overflow-y-auto min-h-0 ${dragActive ? 'ring-2 ring-inset ring-accent-500/40' : ''}`}
+          onDragOver={(e) => {
+            if (Array.from(e.dataTransfer?.types || []).includes('Files')) {
+              e.preventDefault();
+              setDragActive(true);
+            }
+          }}
+          onDragLeave={() => setDragActive(false)}
+          onDrop={async (e) => {
+            const files = imageFilesFromDrop(e);
+            if (!files.length) { setDragActive(false); return; }
+            e.preventDefault();
+            setDragActive(false);
+            const added = await filesToAttachments(files, pendingImages.length, (m: string) => setSseWarning({ level: 'warn', message: m }));
+            if (added.length) setPendingImages((prev) => [...prev, ...added]);
+          }}
+        >
           {opsMessages.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-full text-dark-500">
               <div className="w-16 h-16 rounded-2xl bg-accent-500/10 flex items-center justify-center mb-4">
@@ -839,6 +884,20 @@ export default function Assistant() {
                             openOverride={isOldMessage ? false : undefined}
                             // 只重跑这一步（只读工具直跑；写操作自动退回对话确认流程）
                             onRetry={() => retryFailedTool(i, ti)}
+                          />
+                        ))}
+                      </div>
+                    )}
+                    {/* 用户消息附带的图片（只回显；历史里不保留 base64） */}
+                    {Array.isArray((msg as any).images) && (msg as any).images.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5 mb-2">
+                        {(msg as any).images.map((img: any) => (
+                          <img
+                            key={img.id}
+                            src={img.dataUrl}
+                            alt={img.name || '图片'}
+                            title={img.name || '图片'}
+                            className="w-20 h-20 object-cover rounded-lg border border-dark-700 bg-dark-900"
                           />
                         ))}
                       </div>
@@ -964,6 +1023,18 @@ export default function Assistant() {
             />
           )}
 
+          {/* 待发送的图片（缩略图 + 选择按钮） */}
+          {pendingImages.length > 0 && (
+            <div className="mb-2">
+              <ImageAttachBar
+                images={pendingImages}
+                onChange={setPendingImages}
+                onError={(m: string) => setSseWarning({ level: 'warn', message: m })}
+                disabled={loading}
+              />
+            </div>
+          )}
+
           {/* 输入框与发送按钮放在同一个容器里：边框只画一层，两者天然同一水平线，
               输入变高时按钮跟着底部对齐（items-end），不会出现"按钮悬空"的观感 */}
           <div className="flex items-end gap-1.5 rounded-xl border border-dark-800 bg-dark-900 p-1.5
@@ -974,7 +1045,15 @@ export default function Assistant() {
                 value={input}
                 onChange={handleInputChange}
                 onKeyDown={handleInputKeyDown}
-                placeholder="输入问题，↑↓ 翻历史，Shift+Enter 换行，@ 引用分析历史..."
+                onPaste={async (e) => {
+                  // 截图粘贴：剪贴板里的图是 file 不是文本，textarea 自己会忽略，这里接住
+                  const files = imageFilesFromClipboard(e);
+                  if (!files.length) return;
+                  e.preventDefault();
+                  const added = await filesToAttachments(files, pendingImages.length, (m: string) => setSseWarning({ level: 'warn', message: m }));
+                  if (added.length) setPendingImages((prev) => [...prev, ...added]);
+                }}
+                placeholder="输入问题，↑↓ 翻历史，Shift+Enter 换行，@ 引用分析历史，可粘贴截图..."
                 rows={1}
                 className="block w-full resize-none border-0 bg-transparent px-2.5 py-2 text-sm text-dark-200
                   placeholder-dark-600 focus:outline-none"
@@ -1009,7 +1088,7 @@ export default function Assistant() {
                 <Square className="h-4 w-4" />
               </button>
             ) : (
-              <button onClick={() => sendMessage()} disabled={!input.trim()} title="发送"
+              <button onClick={() => sendMessage()} disabled={!input.trim() && pendingImages.length === 0} title="发送"
                 className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg bg-accent-500 text-white transition-colors hover:bg-accent-600 disabled:cursor-not-allowed disabled:opacity-40">
                 <Send className="h-4 w-4" />
               </button>

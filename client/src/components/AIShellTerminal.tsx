@@ -19,6 +19,8 @@ import type { RemoteServer } from '../types';
 import { withWsToken, wsProtocols } from '../api/auth';
 import { apiFetch } from '../api/client';
 import { compactTurnsForStorage, saveJsonSafe } from '../utils/conversationStorage';
+import ImageAttachBar from './ImageAttach';
+import { imageFilesFromClipboard, imageFilesFromDrop, filesToAttachments, type AttachedImage } from '../utils/imageAttach';
 import { sanitizeHtml } from '../utils/sanitize';
 
 interface SkillBrief {
@@ -53,6 +55,8 @@ interface Step {
 interface Turn {
   id: string;
   text: string;
+  /** 本轮附带的图片（仅用于显示；发完就不再重发，storage 里也不留 base64） */
+  images?: Array<{ id: string; dataUrl: string; name: string }>;
   steps: Step[];
   final?: string;
   status: 'running' | 'done' | 'cancelled' | 'error' | 'paused';
@@ -121,6 +125,9 @@ export default function AIShellTerminal({ server, onClose, onReady }: AIShellTer
   });
   const [showRestored, setShowRestored] = useState(false);
   const [input, setInput] = useState('');
+  /** 待发送的图片附件（发出去后清空；每轮只带本轮的图，不重发历史图） */
+  const [pendingImages, setPendingImages] = useState<AttachedImage[]>([]);
+  const [dragActive, setDragActive] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [mode, setMode] = useState<'ai' | 'cmd'>('ai');
@@ -357,11 +364,12 @@ export default function AIShellTerminal({ server, onClose, onReady }: AIShellTer
   };
 
   // ─── 发送任务 ──────────────────────────────────────────────────────────
-  const sendTask = useCallback((text: string) => {
+  const sendTask = useCallback((text: string, images: AttachedImage[] = []) => {
     const ws = wsRef.current;
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     const trimmed = text.trim();
-    if (!trimmed) return;
+    // 允许「只发图片不写字」
+    if (!trimmed && images.length === 0) return;
 
     const id = Date.now().toString(36) + Math.random().toString(36).slice(2);
     activeTurnRef.current = id;
@@ -372,8 +380,15 @@ export default function AIShellTerminal({ server, onClose, onReady }: AIShellTer
       ...(t.final ? [{ role: 'assistant', content: t.final }] : []),
     ]));
 
-    setTurns(prev => [...prev, { id, text: trimmed, steps: [], status: 'running' }]);
+    setTurns(prev => [...prev, {
+      id,
+      text: trimmed || '（仅图片）',
+      images: images.map(i => ({ id: i.id, dataUrl: i.dataUrl, name: i.name })),
+      steps: [],
+      status: 'running',
+    }]);
     setInput('');
+    setPendingImages([]);
     setError(null);
     setRunning(true);
     stickToBottomRef.current = true;
@@ -385,6 +400,8 @@ export default function AIShellTerminal({ server, onClose, onReady }: AIShellTer
       text: trimmed,
       autoRun,
       history,
+      // 只发本轮的图：服务端会把它拼在本轮 user 消息里，历史里的图一律剥成文字
+      images: images.map(i => ({ type: 'image_url', image_url: { url: i.dataUrl } })),
       skillContent: combinedContent,
       skillName: selectedSkills.map(s => s.name).join(' + '),
       // 长任务上限（界面可调）
@@ -444,10 +461,16 @@ export default function AIShellTerminal({ server, onClose, onReady }: AIShellTer
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       const text = input.trim();
-      if (!text) return;
-      if (mode === 'cmd') executeDirect(text);
-      else if (text.startsWith('$')) executeDirect(text.slice(1).trim());
-      else sendTask(text);
+      // 只有图片、没有文字时也允许发送（「看看这张图」的图本身就有信息）
+      if (!text && pendingImages.length === 0) return;
+      if (mode === 'cmd') {
+        // 命令模式不吃图片：直接执行命令本身，图片留着提醒用户
+        if (text) executeDirect(text);
+        else setError('命令模式不支持图片，请切到 AI 模式');
+        return;
+      }
+      if (text.startsWith('$')) executeDirect(text.slice(1).trim());
+      else sendTask(text, pendingImages);
     } else if (mode === 'cmd' && e.key === 'ArrowUp') {
       e.preventDefault();
       if (cmdHistory.length === 0) return;
@@ -644,7 +667,28 @@ export default function AIShellTerminal({ server, onClose, onReady }: AIShellTer
       )}
 
       {/* 会话区 */}
-      <div ref={outputRef} onScroll={onScroll} className="flex-1 overflow-y-auto p-4 min-h-0 bg-dark-950 space-y-5">
+      <div
+        ref={outputRef}
+        onScroll={onScroll}
+        // 整块会话区都能接图片拖放：运维场景最常见的动作就是把截图拖进来
+        onDragOver={(e) => {
+          if (Array.from(e.dataTransfer?.types || []).includes('Files')) {
+            e.preventDefault();
+            setDragActive(true);
+          }
+        }}
+        onDragLeave={() => setDragActive(false)}
+        onDrop={async (e) => {
+          const files = imageFilesFromDrop(e);
+          if (!files.length) { setDragActive(false); return; }
+          e.preventDefault();
+          setDragActive(false);
+          if (mode === 'cmd') { setError('命令模式不支持图片，请切到 AI 模式'); return; }
+          const added = await filesToAttachments(files, pendingImages.length, (m: string) => setError(m));
+          if (added.length) setPendingImages((prev) => [...prev, ...added]);
+        }}
+        className={`flex-1 overflow-y-auto p-4 min-h-0 bg-dark-950 space-y-5 ${dragActive ? 'ring-2 ring-inset ring-accent-500/40' : ''}`}
+      >
         {turns.length === 0 && !connecting && (
           <div className="flex flex-col items-center justify-center h-full text-dark-600 gap-3">
             <Sparkles className="w-12 h-12 opacity-20" />
@@ -683,7 +727,23 @@ export default function AIShellTerminal({ server, onClose, onReady }: AIShellTer
             {/* 用户请求 */}
             <div className="flex items-start gap-2.5">
               <div className="flex-shrink-0 mt-0.5 w-6 h-6 rounded-md bg-dark-800 flex items-center justify-center text-[11px]">👤</div>
-              <p className="text-sm text-dark-200 flex-1 min-w-0 break-words">{turn.text}</p>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm text-dark-200 break-words">{turn.text}</p>
+                {/* 本轮附带的图片：只回显，不参与历史重发 */}
+                {turn.images && turn.images.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5 mt-1.5">
+                    {turn.images.map((img) => (
+                      <img
+                        key={img.id}
+                        src={img.dataUrl}
+                        alt={img.name}
+                        title={img.name}
+                        className="w-16 h-16 object-cover rounded-lg border border-dark-700 bg-dark-900"
+                      />
+                    ))}
+                  </div>
+                )}
+              </div>
               <button onClick={() => copyText(turn.text, `u-${turn.id}`)} className="p-1 rounded hover:bg-dark-800 text-dark-600 hover:text-dark-400">
                 {copiedId === `u-${turn.id}` ? <ClipboardCheck className="w-3 h-3 text-green-400" /> : <Clipboard className="w-3 h-3" />}
               </button>
@@ -840,6 +900,19 @@ export default function AIShellTerminal({ server, onClose, onReady }: AIShellTer
           )}
         </div>
 
+        {/* 图片附件（缩略图 + 选择按钮）；AI 模式下才显示 */}
+        {mode === 'ai' && (
+          <div className="px-4 pt-2">
+            <ImageAttachBar
+              images={pendingImages}
+              onChange={setPendingImages}
+              onError={(msg) => setError(msg)}
+              disabled={!connected || running}
+              compact
+            />
+          </div>
+        )}
+
         <div className="flex items-center gap-2 px-4 py-3">
           {mode === 'cmd' ? (
             <span className="text-green-400 font-mono text-sm flex-shrink-0">$</span>
@@ -852,12 +925,21 @@ export default function AIShellTerminal({ server, onClose, onReady }: AIShellTer
             value={input}
             onChange={e => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
+            onPaste={async (e) => {
+              // 截图粘贴：截图在剪贴板里是 file 而不是文本，会被 input 忽略，这里接住
+              const files = imageFilesFromClipboard(e);
+              if (!files.length) return;
+              e.preventDefault();
+              if (mode === 'cmd') { setError('命令模式不支持图片，请切到 AI 模式'); return; }
+              const added = await filesToAttachments(files, pendingImages.length, (m: string) => setError(m));
+              if (added.length) setPendingImages((prev) => [...prev, ...added]);
+            }}
             disabled={!connected}
             placeholder={!connected
               ? '等待连接...'
               : mode === 'cmd'
                 ? '输入命令，回车执行（↑↓ 历史，Ctrl+L 清屏）'
-                : '描述你想做的事，回车让 AI 处理（Shift 不换行）'}
+                : '描述你想做的事，回车让 AI 处理（Shift 不换行，可粘贴截图）'}
             className={`flex-1 bg-transparent outline-none text-sm text-dark-200 placeholder-dark-600 disabled:opacity-50 ${mode === 'cmd' ? 'font-mono' : ''}`}
             autoFocus
           />
@@ -868,8 +950,12 @@ export default function AIShellTerminal({ server, onClose, onReady }: AIShellTer
             </button>
           ) : (
             <button
-              onClick={() => { if (!input.trim()) return; if (mode === 'cmd') executeDirect(input); else sendTask(input); }}
-              disabled={!connected || !input.trim()}
+              onClick={() => {
+                if (mode === 'cmd') { if (input.trim()) executeDirect(input); return; }
+                if (!input.trim() && pendingImages.length === 0) return;
+                sendTask(input, pendingImages);
+              }}
+              disabled={!connected || (!input.trim() && pendingImages.length === 0)}
               className={`flex-shrink-0 p-2 rounded-lg disabled:opacity-30 transition-colors ${mode === 'cmd' ? 'bg-green-500/20 text-green-400 hover:bg-green-500/30' : 'bg-purple-500/20 text-purple-400 hover:bg-purple-500/30'}`}
             >
               {mode === 'cmd' ? <ChevronRightIcon /> : <Send className="w-4 h-4" />}

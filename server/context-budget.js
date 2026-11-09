@@ -19,7 +19,8 @@
  *   3. fitAgentMessages：AI Shell 的文本协议消息（RUN/命令输出）压缩 + 丢老步骤。
  */
 
-import { estimateTokens, messagesTokens, compactMessages } from './routes/chat-context.js';
+import { estimateTokens, messagesTokens, messageTokens, compactMessages } from './routes/chat-context.js';
+import { contentText } from './vision-content.js';
 
 /** 预留给「模板/tokenizer 误差」的安全比例（窗口的 6%） */
 export const SAFETY_RATIO = 0.06;
@@ -237,7 +238,9 @@ export function fitAgentMessages(messages, { promptBudget, tailKeep = 4 } = {}) 
   let compressed = 0;
   let out = rest.map((m, idx) => {
     if (idx >= protectFrom) return m;
-    const content = String(m?.content || '');
+    // 多模态消息的 content 是 parts 数组：取纯文本判断，不能 String() 强转
+    // （强转会得到 "[object Object]"，`[命令输出]` 永远匹配不上，压缩整段失效）
+    const content = contentText(m?.content);
     if (!content.includes('[命令输出]')) return m;
     if (content.length <= OBS_SUMMARY_CHARS) return m;
     compressed += 1;
@@ -263,9 +266,12 @@ export function fitAgentMessages(messages, { promptBudget, tailKeep = 4 } = {}) 
   while (tokens > allowed && head.length > 0) {
     const idx = head.findIndex((m, i) => !(keepFirst && i === firstUserIdx));
     if (idx < 0) break;
-    const removed = head.splice(idx, 1)[0]; // eslint-disable-line no-unused-vars
+    const removed = head.splice(idx, 1)[0];
     dropped += 1;
-    tokens -= estimateTokens(String(removed?.content || '')) + 4;
+    // 用 messageTokens 而不是 estimateTokens(String(content))：后者对 parts 数组
+    // 算出的是 "[object Object]" 的 token（≈3），图片的固定估值会被漏算，
+    // 于是 token 账永远减不到位，循环多丢消息。
+    tokens -= (messageTokens(removed) || 4);
   }
   const result = [system, ...head, ...tail];
   const total = systemTokens + messagesTokens(head) + messagesTokens(tail);

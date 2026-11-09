@@ -2009,6 +2009,9 @@ async function handleAIShellWebSocket(ws, serverId) {
           serverId,
           text,
           history: Array.isArray(msg.history) ? msg.history : [],
+          // 客户端传的是 [{type:'image_url',image_url:{url}}] 数组；校验在 runAgent 里做
+          // （非法图片退回纯文本，不让整轮任务失败）
+          images: Array.isArray(msg.images) ? msg.images : [],
           skillContent: msg.skillContent || '',
           skillName: msg.skillName || '',
           autoRun: msg.autoRun !== false,

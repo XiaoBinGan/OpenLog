@@ -17,6 +17,8 @@
  * 所以压缩只改内容，不改消息结构。
  */
 
+import { contentTokens } from '../vision-content.js';
+
 /** 中文/日文/韩文等宽字符按 1 token 估；其余按 3.5 字符 1 token 估 */
 export function estimateTokens(text) {
   const s = String(text ?? '');
@@ -30,12 +32,18 @@ export function estimateTokens(text) {
   return Math.ceil(wide + narrow / 3.5);
 }
 
-/** 一条消息的 token 估算 */
+/**
+ * 一条消息的 token 估算。
+ *
+ * 多模态注意：图片按固定常量算（`IMAGE_TOKEN_ESTIMATE`），**绝不**对 base64 正文做
+ * `estimateTokens(JSON.stringify(content))` —— 那样一张 300KB 的图会被估成 8.5 万 token，
+ * 预算当场爆掉，历史会被整段丢弃。
+ */
 export function messageTokens(msg) {
   if (!msg) return 0;
   let total = 0;
   if (typeof msg.content === 'string') total += estimateTokens(msg.content);
-  else if (Array.isArray(msg.content)) total += estimateTokens(JSON.stringify(msg.content));
+  else if (Array.isArray(msg.content)) total += contentTokens(msg.content, estimateTokens);
   if (msg.tool_calls) total += estimateTokens(JSON.stringify(msg.tool_calls));
   return total + 4; // 角色/分隔符的固定开销
 }

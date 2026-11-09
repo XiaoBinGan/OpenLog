@@ -16,6 +16,7 @@
 
 import { errorMessage } from './errors.js';
 import { planBudget, fitAgentMessages, truncateTextToTokens } from './context-budget.js';
+import { contentText, normalizeContent } from './vision-content.js';
 
 // ─── 常量 ──────────────────────────────────────────────────────────────────
 
@@ -450,6 +451,8 @@ export async function runAgent(opts) {
     windowTokens,
     resume,
     maxWallMs,
+    /** 本轮附带的图片（OpenAI vision parts）；只在第一条 user 消息里用 */
+    images = [],
   } = opts;
 
   // ── 上下文预算（小窗口模型的关键）────────────────────────────────────
@@ -530,10 +533,23 @@ ${renderDigest(digest)}
     messages = [{ role: 'system', content: systemContent() }, ...resume.messages.filter(m => m?.role !== 'system')];
     messages.push({ role: 'user', content: '继续完成这个任务：从上次的进度接着做，不要重复已经执行过的步骤。' });
   } else {
+    // 图片只挂在**本轮**这条 user 消息上；history 里即使残留图片 part 也剥成文字，
+    // 否则每步重发一遍图片，几步就把小窗口模型的上下文吃光。
+    const historyText = history
+      .filter(h => h && h.role && h.content)
+      .map(h => ({ ...h, content: contentText(h.content) }));
+    const userText = typeof text === 'string' ? text : JSON.stringify(text);
+    const userParts = Array.isArray(images) && images.length > 0
+      ? normalizeContent([{ type: 'text', text: userText }, ...images])
+      : null;
     messages = [
       { role: 'system', content: systemContent() },
-      ...history.filter(h => h && h.role && h.content),
-      { role: 'user', content: typeof text === 'string' ? text : JSON.stringify(text) },
+      ...historyText,
+      {
+        role: 'user',
+        // 校验失败（图片过大/格式不对）就退回纯文本，不让整轮任务失败
+        content: userParts && userParts.ok ? userParts.content : userText,
+      },
     ];
   }
 
