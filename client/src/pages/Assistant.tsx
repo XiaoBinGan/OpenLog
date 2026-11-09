@@ -1082,6 +1082,14 @@ export default function Assistant() {
                 </div>
               )}
             </div>
+            {/* 图片入口常显：没选图时也要能看见，否则用户不知道可以发图 */}
+            <ImageAttachBar
+              images={pendingImages}
+              onChange={setPendingImages}
+              onError={(m: string) => setSseWarning({ level: 'warn', message: m })}
+              disabled={loading}
+              compact
+            />
             {loading ? (
               <button onClick={stopGeneration} title="停止生成"
                 className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg bg-red-500/20 text-red-400 transition-colors hover:bg-red-500/30">

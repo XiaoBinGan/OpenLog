@@ -46,8 +46,8 @@ export default function ImageAttachBar({ images, onChange, onError, disabled, co
 
   return (
     <div className={compact ? 'flex items-center gap-2' : 'space-y-2'}>
-      {/* 缩略图条 */}
-      {images.length > 0 && (
+      {/* 缩略图条（compact 模式由调用方自己渲染，避免和输入行挤在一起重复显示） */}
+      {!compact && images.length > 0 && (
         <div className="flex flex-wrap items-center gap-2">
           {images.map((img) => (
             <div key={img.id} className="relative group">
