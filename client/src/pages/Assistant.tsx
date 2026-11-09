@@ -1023,15 +1023,28 @@ export default function Assistant() {
             />
           )}
 
-          {/* 待发送的图片（缩略图 + 选择按钮） */}
+          {/* 待发送的图片缩略图（点 × 移除） */}
           {pendingImages.length > 0 && (
-            <div className="mb-2">
-              <ImageAttachBar
-                images={pendingImages}
-                onChange={setPendingImages}
-                onError={(m: string) => setSseWarning({ level: 'warn', message: m })}
-                disabled={loading}
-              />
+            <div className="mb-2 flex flex-wrap items-center gap-2">
+              {pendingImages.map((img) => (
+                <div key={img.id} className="relative">
+                  <img
+                    src={img.dataUrl}
+                    alt={img.name}
+                    title={img.name}
+                    className="w-14 h-14 object-cover rounded-lg border border-dark-700 bg-dark-900"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setPendingImages((prev) => prev.filter((i) => i.id !== img.id))}
+                    title="移除"
+                    className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-dark-800 border border-dark-600
+                      text-dark-300 hover:text-red-400 hover:border-red-500/50 flex items-center justify-center"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                </div>
+              ))}
             </div>
           )}
 
