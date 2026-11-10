@@ -16,6 +16,7 @@ import { execFileSync } from 'child_process';
 import * as si from 'systeminformation';
 import { queryHostGpu } from '../gpu-host-ssh.js';
 import { dedupeDisks } from '../disk-utils.js';
+import { evaluateCapacityAlerts, normalizeThresholds } from '../capacity-alerts.js';
 
 const NO_CACHE_HEADERS = (res) => {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
@@ -50,7 +51,7 @@ function readLocalGpus() {
   }
 }
 
-export default function createMonitorRouter({ monitorHistory }) {
+export default function createMonitorRouter({ monitorHistory, ensureSettings }) {
   const router = express.Router();
 
   router.get('/api/monitor/stats', async (req, res) => {
@@ -73,15 +74,41 @@ export default function createMonitorRouter({ monitorHistory }) {
         if (viaSsh.length > 0) gpus = viaSsh;
       }
 
+      const memoryPercent = mem.total > 0 ? (mem.used / mem.total) * 100 : 0;
+      const diskList = dedupeDisks(disks.map((d) => ({ name: d.fs, used: d.used, total: d.size, usePercent: d.use })));
+
+      // 容量告警：服务端**无条件如实报告**，不在这里记「提醒过没有」。
+      // 抑制重复弹窗是浏览器本地状态（localStorage），由前端负责 ——
+      // 这样刷新页面、开新标签页都不会出现「关过了又弹」或「明明超标却不弹」。
+      const settings = typeof ensureSettings === 'function' ? (ensureSettings() || {}) : {};
+      const thresholds = normalizeThresholds({
+        memoryPercent: settings.capacityAlertMemoryPercent,
+        diskPercent: settings.capacityAlertDiskPercent,
+      });
+      const capacityAlerts = settings.capacityAlertEnabled === false
+        ? []
+        : evaluateCapacityAlerts({ memoryPercent, disks: diskList }, thresholds);
+
       res.json({
         cpu: { load: cpu.currentLoad || 0, cores: cpu.cpus.map((c) => c.load) },
-        memory: { used: mem.used || 0, total: mem.total || 1, free: mem.free || 0 },
+        memory: {
+          used: mem.used || 0,
+          total: mem.total || 1,
+          free: mem.free || 0,
+          percent: Math.round(memoryPercent * 10) / 10,
+        },
         // 容器里同一块盘会被 bind mount 重复列出（T4 上 /dev/sda3 出现过 6 次），
         // 不去重的话前端把 6 条加起来会显示 476.9%。这里统一收敛成"一块盘一条"。
-        disk: dedupeDisks(disks.map((d) => ({ name: d.fs, used: d.used, total: d.size, usePercent: d.use }))),
+        disk: diskList,
         network: network.map((n) => ({ iface: n.iface, rx: n.rx_sec, tx: n.tx_sec })),
         processes: processes.list.slice(0, 10).map((p) => ({ pid: p.pid, name: p.name, cpu: p.cpu, mem: p.mem })),
         gpus,
+        // 容量告警（内存 > 阈值、任一磁盘 > 阈值）。没有告警时是空数组，不是 undefined。
+        capacityAlerts,
+        capacityThresholds: thresholds,
+        capacitySnoozeMinutes: Number(settings.capacityAlertSnoozeMinutes) > 0
+          ? Number(settings.capacityAlertSnoozeMinutes)
+          : 60,
       });
     } catch (err) {
       res.status(500).json({ error: errorMessage(err) });

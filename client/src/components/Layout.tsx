@@ -23,6 +23,7 @@ import {
 import clsx from 'clsx';
 import GlobalStatusBar from './GlobalStatusBar';
 import AIAnalysisToast from './AIAnalysisToast';
+import CapacityAlertModal from './CapacityAlertModal';
 import { withWsToken, wsProtocols } from '../api/auth';
 
 const navItems = [
@@ -389,6 +390,11 @@ function LayoutContent() {
 
       {/* AI 错误分析通知（右下角） */}
       <AIAnalysisToast wsRef={{ current: ws }} onViewLogs={handleViewLogs} />
+
+      {/* 容量告警强制确认框：内存 >90% / 磁盘 >80%。
+          内部用 z-[100] 压在所有页面之上；只在超标时渲染，
+          正常状态下对 DOM 没有任何贡献。 */}
+      <CapacityAlertModal />
     </div>
   );
 }

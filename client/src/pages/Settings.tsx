@@ -23,6 +23,7 @@ import WatchSourcesSection from './settings/WatchSourcesSection';
 import DockerSourcesSection from './settings/DockerSourcesSection';
 import ContainerMonitorSection from './settings/ContainerMonitorSection';
 import AlertsSection from './settings/AlertsSection';
+import CapacityAlertSection from './settings/CapacityAlertSection';
 import MfuSection from './settings/MfuSection';
 
 export default function Settings() {
@@ -228,6 +229,14 @@ export default function Settings() {
           onPatch={patchSettings}
         />
       )}
+
+      <CapacityAlertSection
+        capacityAlertEnabled={settings.capacityAlertEnabled}
+        capacityAlertMemoryPercent={settings.capacityAlertMemoryPercent}
+        capacityAlertDiskPercent={settings.capacityAlertDiskPercent}
+        capacityAlertSnoozeMinutes={settings.capacityAlertSnoozeMinutes}
+        onPatch={patchSettings}
+      />
 
       <AlertsSection />
 

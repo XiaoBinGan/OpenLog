@@ -655,6 +655,12 @@ const defaultSettings = {
   // 容器日志实时错误提醒（增量 tail，命中 ERROR/FATAL 立即弹框）
   containerLogWatchEnabled: true,
   containerLogWatchInterval: 5000,    // ms，实时轮询间隔
+  // 容量告警（内存/磁盘）：超阈值时前端弹**强制确认框**，必须手动关；
+  // 关掉后 1 小时内不再弹，1 小时后若仍然超标会继续弹（未处理就得一直提醒）。
+  capacityAlertEnabled: true,
+  capacityAlertMemoryPercent: 90,
+  capacityAlertDiskPercent: 80,
+  capacityAlertSnoozeMinutes: 60,
   // 运维助手上下文配置（默认值与 server/routes/context-config.js 保持一致）
   // 为什么要落到设置里：原先只能靠环境变量，改一次要重启容器，界面上也看不到用量。
   assistantContext: {
@@ -1386,7 +1392,7 @@ app.use(createLogsRouter({ logs, ensureSettings, saveLog, broadcast }));
 
 // ─── 系统监控路由（已抽到 server/routes/monitor.js）────────────────────────
 // monitorHistory 由下方 startMonitor() 的定时器写入，这里通过工厂注入
-app.use(createMonitorRouter({ monitorHistory }));
+app.use(createMonitorRouter({ monitorHistory, ensureSettings }));
 
 // ─── 接口 / 数据库监控路由（依赖在 initDatabase 里创建的实例）──────────────
 // 两个 router 内部都做了「依赖为 null → 返回可用性标记而不是 500」的降级，

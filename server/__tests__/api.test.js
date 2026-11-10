@@ -176,7 +176,7 @@ describe('核心路由 200 冒烟测试', () => {
       // 桩值能证明 si 桩确实注入生效（否则会退回真实冷启动，且数值不可能恰好等于桩值），
       // 结构断言保证 routes/monitor.js 的字段映射没被改坏。
       expect(data.cpu).toEqual({ load: 12.5, cores: [10, 15] });
-      expect(data.memory).toEqual({ used: 512, total: 1024, free: 512 });
+      expect(data.memory).toEqual({ used: 512, total: 1024, free: 512, percent: 50 });
       expect(Array.isArray(data.disk)).toBe(true);
       expect(data.disk).toEqual([{ name: '/dev/stub0', used: 40, total: 100, usePercent: 40 }]);
       expect(data.network).toEqual([{ iface: 'eth0', rx: 10, tx: 20 }]);

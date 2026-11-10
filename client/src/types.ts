@@ -214,6 +214,12 @@ export interface Settings {
   containerPatrolLevels?: string[];
   containerLogWatchEnabled?: boolean;
   containerLogWatchInterval?: number;
+  /** 容量告警（内存/磁盘超阈值弹强制确认框） */
+  capacityAlertEnabled?: boolean;
+  capacityAlertMemoryPercent?: number;
+  capacityAlertDiskPercent?: number;
+  /** 点「我知道了」后的静默分钟数（默认 60） */
+  capacityAlertSnoozeMinutes?: number;
   /** 运维助手上下文配置（模型窗口 / 预算 / 压缩阈值 / 轮数 / 时长） */
   assistantContext?: {
     windowTokens?: number;

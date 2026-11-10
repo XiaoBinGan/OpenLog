@@ -65,7 +65,11 @@ describe('GET /api/monitor/stats', () => {
       process.env.NODE_ENV = prev;
       expect(r.status).toBe(200);
       expect(b.cpu).toEqual({ load: 12.5, cores: [10, 15] });
-      expect(b.memory).toEqual({ used: 2e9, total: 8e9, free: 6e9 });
+      // percent 是本轮新增的（容量告警要用），2e9/8e9 = 25%
+      expect(b.memory).toEqual({ used: 2e9, total: 8e9, free: 6e9, percent: 25 });
+      // 容量告警：25% 内存 / 25% 磁盘都远低于阈值 90/80 → 空数组
+      expect(b.capacityAlerts).toEqual([]);
+      expect(b.capacityThresholds).toEqual({ memoryPercent: 90, diskPercent: 80 });
       expect(b.disk[0]).toMatchObject({ name: '/dev/sda3', usePercent: 25 });
       expect(b.network[0]).toEqual({ iface: 'eth0', rx: 1000, tx: 500 });
       // 进程只取前 10 条
