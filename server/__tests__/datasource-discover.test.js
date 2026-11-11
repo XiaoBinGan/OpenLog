@@ -34,7 +34,7 @@ describe('maskSecret —— 密码只给「够辨认」，不能拿去登录', (
     expect(maskSecret('abcd')).toBe('****');
     expect(maskSecret('abcde')).toBe('a***e');
     expect(maskSecret('secret123')).toBe('se***23');
-    expect(maskSecret('fake-password-01')).toBe('Su***7-');
+    expect(maskSecret('fake-password-01')).toBe('fa***01');
   });
   it('打码结果永远不含完整原文（长度 8 以上）', () => {
     const pw = 'fake-password-01';
