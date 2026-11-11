@@ -1,0 +1,61 @@
+name: Deploy site
+
+# 官网是纯静态（site/index.html + assets/），没有构建步骤 —— 直接发布 site/ 目录。
+# 为什么用 Actions 而不是 gh-pages 分支：site/ 就在 main 里维护，
+# 建个 gh-pages 分支意味着同一份内容存两份、改一次要同步两个地方，必然分叉。
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'site/**'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# 同一时刻只允许一次发布；新的推送取消正在进行的旧发布
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: Publish site/
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # 发布前先自检：站点资源都是相对路径，缺文件只会在浏览器里 404，
+      # 构建期发现不了。这里静态检查一遍，坏链在 CI 阶段就拦住。
+      - name: Verify referenced assets exist
+        run: |
+          set -e
+          cd site
+          missing=0
+          for f in $(grep -oE '(src|href)="[^"#:]+"' index.html | sed -E 's/(src|href)="([^"]+)"/\2/' | sort -u); do
+            case "$f" in
+              http*|//*|mailto:*|#*) continue ;;
+            esac
+            if [ ! -e "$f" ]; then
+              echo "::error file=site/index.html::missing asset: $f"
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then exit 1; fi
+          echo "所有本地引用都存在"
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - id: deployment
+        uses: actions/deploy-pages@v4

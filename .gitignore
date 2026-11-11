@@ -65,3 +65,6 @@ AUDIT.local.md
 
 # 提交信息临时文件
 .git-msg.txt
+
+# 官网临时截图（未被 index.html 引用）
+site/tmp-*
