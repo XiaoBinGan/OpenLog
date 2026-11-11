@@ -12,9 +12,14 @@
 #     bash deploy/install.sh --data-dir /data/openlog --container-name openlog-2 --port 3002
 #     bash deploy/install.sh --port 3031 --env-file /etc/openlog/instance2.env   # 同机多实例
 #     bash deploy/install.sh --dry-run             # 只打印将要做什么
+#     bash deploy/install.sh --skip-load           # 跳过镜像导入（镜像已就位时）
 #
 # 为什么默认 SQLite：离线机器上没有 postgres 镜像就起不来 PG；SQLite 零依赖，
 # 一条命令必定跑通。要 PG 就显式带上 --with-postgres / --db-url。
+#
+# 架构：部署包分 amd64 与 arm64 两种，install.sh 会在导入前校验架构。
+# 装错架构时 docker load 会成功、docker run 才报 exec format error（且不提架构），
+# 所以宁可在导入前拦住。确实要先导入备用可加 --allow-arch-mismatch。
 #
 # 退出码：0 成功；非 0 失败（deploy.sh 会尝试回滚）。
 
@@ -32,6 +37,10 @@ DB_MODE="sqlite"          # sqlite | postgres
 DB_URL=""
 WITH_POSTGRES=0
 SKIP_LOAD=0
+# 架构不匹配时是否放行。默认拦截：装错架构的包，docker load 会成功、
+# 容器一启动就 exec format error，报错信息完全不提「架构」两个字，
+# 排查方向会被带偏。显式传 --allow-arch-mismatch 才允许继续（比如先导入备用）。
+ALLOW_ARCH_MISMATCH=0
 DRY_RUN=0
 ASSUME_YES=0
 PG_IMAGE="postgres:16-alpine"
@@ -61,9 +70,10 @@ while [ $# -gt 0 ]; do
     --db-url)          DB_URL="$2"; DB_MODE="postgres"; EXPLICIT_CONFIG=1; shift 2 ;;
     --image)           IMAGE_ARCHIVE="$2"; shift 2 ;;
     --skip-load)       SKIP_LOAD=1; shift ;;
+    --allow-arch-mismatch) ALLOW_ARCH_MISMATCH=1; shift ;;
     --dry-run)         DRY_RUN=1; shift ;;
     --yes|-y)          ASSUME_YES=1; shift ;;
-    -h|--help)         sed -n '2,26p' "$0"; exit 0 ;;
+    -h|--help)         sed -n '2,24p' "$0"; exit 0 ;;
     *) echo "未知参数: $1（用 --help 看用法）"; exit 1 ;;
   esac
 done
@@ -140,12 +150,106 @@ fi
 
 # ── 4. 导入镜像 ──
 IMAGE_TAG="$(basename "$IMAGE_ARCHIVE" | sed -E 's/^openlog-([0-9a-f]+)-.*/\1/')"
+
+# ── 4.1 架构自检（必须在 docker tag latest 之前）──
+# 为什么在这里而不是启动之后：装错架构时 docker load 完全成功，
+# 直到 docker run 才报 "exec format error"，而那行错误里没有 architecture 字样，
+# 人的第一反应会是"镜像坏了""文件权限不对"，不会想到是架构。
+# 更隐蔽的是：报错发生在容器启动，而此时 install.sh 已经改好了 deploy.env ——
+# 现场被污染，回滚后残留的配置还会影响下一次安装。
+# 所以在打 latest tag、写任何配置之前拦下来。
+host_arch() {
+  local a
+  a="$(docker version --format '{{.Server.Arch}}' 2>/dev/null || true)"
+  [ -n "$a" ] || a="$(uname -m 2>/dev/null || echo unknown)"
+  case "$a" in
+    x86_64|amd64)   echo amd64 ;;
+    aarch64|arm64|armv8*) echo arm64 ;;
+    armv7*|armhf)   echo arm ;;
+    *)              echo "$a" ;;
+  esac
+}
+
+# docker save 出来的 tar 里，镜像的实际架构写在 config json 的 architecture 字段。
+# 不能直接 tar -xOf | grep：tar 里除了 config json 还有 layer.tar 等二进制，
+# grep 会把整个流当二进制处理，输出 "Binary file (standard input) matches" 而不是字段值。
+# 正确顺序是：先读 manifest.json 拿 Config 文件名 → 只解那个文件 → 取 architecture。
+# manifest.json 是 docker save 的固定产出（没有它连 docker load 都不成立）。
+archive_arch() {
+  local f="$1" cfg a=""
+  command -v tar >/dev/null 2>&1 || { echo ""; return; }
+  # 从 manifest.json 里抠出 Config 字段（"Config":"<file>.json"）
+  cfg="$(tar -xzOf "$f" manifest.json 2>/dev/null \
+         | tr -d '\000' \
+         | grep -o '"Config"[[:space:]]*:[[:space:]]*"[^"]*"' \
+         | head -1 \
+         | sed -E 's/.*"([^"]*)"$/\1/')" || true
+
+  if [ -n "$cfg" ]; then
+    a="$(tar -xzOf "$f" "$cfg" 2>/dev/null \
+          | tr -d '\000' \
+          | grep -o '"architecture"[[:space:]]*:[[:space:]]*"[^"]*"' \
+          | head -1 \
+          | sed -E 's/.*"([^"]*)"$/\1/')" || true
+  fi
+
+  # 兜底：manifest 缺失或格式变化时，退回到扫所有顶层 .json
+  if [ -z "$a" ]; then
+    a="$(tar -xzOf "$f" --wildcards '*.json' 2>/dev/null \
+          | tr -d '\000' \
+          | grep -o '"architecture"[[:space:]]*:[[:space:]]*"[^"]*"' \
+          | head -1 \
+          | sed -E 's/.*"([^"]*)"$/\1/')" || true
+  fi
+
+  echo "$a"
+}
+
+check_arch() {
+  local label="$1" want="$2" got="$3"
+  [ -n "$got" ] || { warn "$label 架构未知，跳过校验"; return 0; }
+  [ "$want" = "$got" ] && { ok "$label 架构匹配 ($got)"; return 0; }
+  if [ "$ALLOW_ARCH_MISMATCH" = "1" ]; then
+    warn "$label 架构不匹配：包=$got / 本机=$want（--allow-arch-mismatch 已显式放行）"
+    return 0
+  fi
+  cat >&2 <<EOF
+  ❌ $label 架构不匹配
+       本机: $want
+       包内: $got
+
+  这个部署包是给 $got 机器的，装到 $want 上会在 docker run 阶段
+  报 "exec format error"，而该报错不会提到架构。
+
+  请换用对应架构的包：
+       amd64 (x86_64) → openlog-deploy-*.tar          （镜像文件名不含 -arm64）
+       arm64 (AArch64) → openlog-deploy-*-arm64.tar
+
+  如确实要先导入备用，加 --allow-arch-mismatch
+EOF
+  exit 1
+}
+
+HOST_ARCH="$(host_arch)"
+CHECK_ARCH=1
+[ "$SKIP_LOAD" = "1" ] && CHECK_ARCH=0
+if [ "$CHECK_ARCH" = "1" ]; then
+  log "校验镜像架构"
+  check_arch "应用镜像" "$HOST_ARCH" "$(archive_arch "$IMAGE_ARCHIVE")"
+fi
+
 if [ "$SKIP_LOAD" = "1" ]; then
   warn "跳过镜像导入（--skip-load）"
 else
   log "导入镜像（约 1 分钟）"
   run "docker load -i '$IMAGE_ARCHIVE'"
   ok "已导入 openlog:$IMAGE_TAG"
+  # 导入后再用镜像元数据复核一次：tar 里若有多个 config json，
+  # 上面的 grep 可能取到别的层，这里以真正加载进来的镜像为准。
+  if [ "$DRY_RUN" != "1" ]; then
+    LOADED_ARCH="$(docker image inspect "openlog:$IMAGE_TAG" --format '{{.Architecture}}' 2>/dev/null || true)"
+    check_arch "已导入镜像" "$HOST_ARCH" "$LOADED_ARCH"
+  fi
 fi
 # deploy.sh --no-build 用 latest，这里补 tag
 run "docker tag 'openlog:$IMAGE_TAG' 'openlog:latest'"
@@ -203,6 +307,9 @@ if [ "$DB_MODE" = "postgres" ]; then
         # 部署包里带了 PG 镜像就自动导入（离线机器没法 docker pull）
         PG_ARCHIVE="$(ls -1t "$SCRIPT_DIR"/images/postgres-*.tar.gz 2>/dev/null | head -1 || true)"
         if [ -n "$PG_ARCHIVE" ] && [ "$DRY_RUN" = "0" ]; then
+          # PG 镜像同样要过架构检查：应用镜像对、PG 镜像错了，
+          # 表现是 openlog-pg 容器反复重启，而应用侧只报连接被拒。
+          check_arch "PostgreSQL 镜像" "$HOST_ARCH" "$(archive_arch "$PG_ARCHIVE")"
           echo "  导入 PostgreSQL 镜像 $(basename "$PG_ARCHIVE")（约 1 分钟）..."
           docker load -i "$PG_ARCHIVE" >/dev/null
           ok "已导入 $PG_IMAGE"

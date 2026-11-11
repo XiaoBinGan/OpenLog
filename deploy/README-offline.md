@@ -1,8 +1,8 @@
 # OpenLog 离线部署包 v1.0.0（c99bb354）
 
 - 应用镜像：`openlog:c99bb354`（`deploy/images/openlog-c99bb354-20261111-174628.tar.gz`）
-- **架构**：本包为 **linux/amd64（x86_64）**。ARM 服务器需使用 `openlog-deploy-c99bb354-arm64.tar`（镜像 `openlog:c99bb354-arm64` + arm64 版 postgres）
-- 数据库镜像：`postgres:16-alpine`（arm64 包内为 arm64 版）（`deploy/images/postgres-16-alpine.tar.gz`，仅 PG 部署需要）
+- **架构**：本包为 **linux/amd64（x86_64）**。ARM 服务器需使用 `openlog-deploy-c99bb354-arm64.tar`。`install.sh` 会在导入前校验架构，装错会直接报错并指出该换哪个包（确需先导入备用可加 `--allow-arch-mismatch`）
+- 数据库镜像：`postgres:16-alpine`（`deploy/images/postgres-16-alpine.tar.gz`，仅 PG 部署需要）
 
 ## 安装
 
