@@ -38,18 +38,26 @@ jobs:
         run: |
           set -e
           cd site
+          # 只检查「看起来是相对文件路径」的引用：
+          #   - 排除 http(s)://、//、mailto:、#（锚点）、data:（内联 svg/base64）
+          #   - 排除含空格的（内联 data URI 里的 svg 带空格，不是文件路径）
+          refs=$(grep -oE '(src|href)="[^"]+"' index.html \
+                 | sed -E 's/^[a-zA-Z]+="//; s/"$//' \
+                 | grep -vE '^(https?:|//|mailto:|#|data:)' \
+                 | grep -E '^[A-Za-z0-9_./@-]+$' \
+                 | sort -u || true)
+          echo "本地相对引用:"
+          echo "$refs" | sed 's/^/  /'
           missing=0
-          for f in $(grep -oE '(src|href)="[^"#:]+"' index.html | sed -E 's/(src|href)="([^"]+)"/\2/' | sort -u); do
-            case "$f" in
-              http*|//*|mailto:*|#*) continue ;;
-            esac
+          for f in $refs; do
+            [ -z "$f" ] && continue
             if [ ! -e "$f" ]; then
               echo "::error file=site/index.html::missing asset: $f"
               missing=1
             fi
           done
           if [ "$missing" -ne 0 ]; then exit 1; fi
-          echo "所有本地引用都存在"
+          echo "全部存在"
 
       - uses: actions/configure-pages@v5
 
