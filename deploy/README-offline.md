@@ -1,12 +1,12 @@
-# OpenLog 离线部署包 v1.0.0（7b3b3de）
+# OpenLog 离线部署包 v1.0.0（c99bb354）
 
-- 应用镜像：`openlog:7b3b3de8`（`deploy/images/openlog-7b3b3de8-20261111-172954.tar.gz`）
+- 应用镜像：`openlog:c99bb354`（`deploy/images/openlog-c99bb354-20261111-174628.tar.gz`）
 - 数据库镜像：`postgres:16-alpine`（`deploy/images/postgres-16-alpine.tar.gz`，仅 PG 部署需要）
 
 ## 安装
 
 ```bash
-tar xf openlog-deploy-7b3b3de.tar && cd openlog-deploy-7b3b3de
+tar xf openlog-deploy-c99bb35.tar && cd openlog-deploy-c99bb35
 sha256sum -c SHA256SUMS
 bash deploy/install.sh --yes                    # SQLite
 bash deploy/install.sh --with-postgres --yes    # PostgreSQL
