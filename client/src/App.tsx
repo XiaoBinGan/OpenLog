@@ -50,6 +50,13 @@ function App() {
                   <Route path="monitor" element={<Monitor />} />
                   <Route path="gpu" element={<GPU />} />
                   <Route path="settings" element={<Settings />} />
+                  {/* 未知路径必须显式处理。
+                      原来没有这一条，任何不存在的路径（拼错的链接、旧书签、
+                      官网页脚里的示意路径）都会匹配到 Layout 但没有任何子路由命中，
+                      Outlet 渲染成空 —— 用户看到的是侧边栏加一片全白，
+                      既不知道页面不存在，也没有任何可点的东西。
+                      导航到监控页比显示空页面有用，且不打断当前工作。 */}
+                  <Route path="*" element={<Navigate to="/monitor" replace />} />
                 </Route>
               </Routes>
             </AnalysisProvider>
