@@ -2,10 +2,22 @@
 
 🤖 AI-powered log analysis & monitoring platform for GPU fleets and Docker hosts
 
+[![CI](https://github.com/XiaoBinGan/OpenLog/actions/workflows/ci.yml/badge.svg)](https://github.com/XiaoBinGan/OpenLog/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Node](https://img.shields.io/badge/node-%3E%3D22-brightgreen.svg)](https://nodejs.org/)
+[![Tests](https://img.shields.io/badge/tests-2038%20passed-brightgreen.svg)](#-dev--quality-gates)
+
 **[[English](README.md)] | [[简体中文](README.zh-CN.md)]**
 
 > This is the primary (English) README. The Chinese translation lives in
 > [README.zh-CN.md](README.zh-CN.md); if the two ever disagree, this file wins.
+
+**A self-hosted observability panel that also thinks.** OpenLog pulls system metrics, GPU
+utilization, container state, remote hosts and log streams into one place — then points an
+AI agent at all of it, so you ask "why did this container die at 3am" instead of grepping
+through five terminals.
+
+No cloud dependency, no telemetry, no account. One Node process, one port.
 
 ---
 
@@ -1114,4 +1126,39 @@ instead of a cryptic error.
 
 ## 📄 License
 
-MIT License
+MIT License — see [LICENSE](LICENSE).
+
+Copyright (c) 2026 XiaoBinGan
+
+---
+
+## 🤝 Contributing
+
+Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) first — it covers the
+conventions the codebase actually enforces (business logic in pure functions, tests beside
+the code, comments that explain *why*).
+
+The short version, before opening a pull request:
+
+```bash
+npm run lint:all       # 0 errors required
+npx vitest run         # 2038 tests, must be green
+npm run build          # production client build
+cd client && npx tsc -b
+```
+
+Security issues should go through [SECURITY.md](SECURITY.md), not a public issue.
+
+---
+
+## 🙏 Acknowledgements
+
+Built on the shoulders of [Express](https://expressjs.com/),
+[React](https://react.dev/), [Vite](https://vitejs.dev/),
+[Tailwind CSS](https://tailwindcss.com/),
+[systeminformation](https://systeminformation.io/) and
+[better-sqlite3](https://github.com/WiseLibs/better-sqlite3).
+
+Naming and capability probing are engine-agnostic by design; thanks to the
+[vLLM](https://github.com/vllm-project/vllm), [SGLang](https://github.com/sgl-project/sglang)
+and [Ollama](https://ollama.com/) projects for documenting their OpenAI-compatible surfaces.

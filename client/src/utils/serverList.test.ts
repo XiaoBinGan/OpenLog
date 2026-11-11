@@ -35,7 +35,7 @@ describe('filterServers —— 搜索与状态筛选', () => {
   });
 
   it('按用户名搜索（大小写不敏感）', () => {
-    expect(filterServers(servers, { search: 'SMAI' }).every(s => s.username === 'deploy')).toBe(true);
+    expect(filterServers(servers, { search: 'DEPLOY' }).every(s => s.username === 'deploy')).toBe(true);
   });
 
   it('状态筛选', () => {

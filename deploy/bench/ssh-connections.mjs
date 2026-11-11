@@ -8,7 +8,7 @@ const N = Number(process.env.PROBE_N || 200);
 const CONCURRENCY = Number(process.env.PROBE_CONC || 8);
 const HOST = process.env.PROBE_HOST || '127.0.0.1';
 const PORT = Number(process.env.PROBE_PORT || 40022);
-const USER = process.env.PROBE_USER || 'deploy';
+const USER = process.env.PROBE_USER || 'probe-user';
 const PASS = process.env.PROBE_PASS || '';
 const STATS_SAMPLES = Number(process.env.PROBE_STATS || 10);
 

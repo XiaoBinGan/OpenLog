@@ -1005,4 +1005,38 @@ OPENLOG_ENABLE_CONTAINER_EXEC=1   # 或 OPENLOG_ENABLE_REMOTE_EXEC=1 一并开�
 
 ## 📄 许可证
 
-MIT License
+MIT License — 见 [LICENSE](LICENSE)。
+
+Copyright (c) 2026 XiaoBinGan
+
+---
+
+## 🤝 参与贡献
+
+欢迎贡献。动手前先读 [CONTRIBUTING.md](CONTRIBUTING.md)——里面写了代码库真正在执行的约定
+（业务逻辑抽成纯函数、测试与代码同目录、注释解释「为什么」而不是「做什么」）。
+
+提交 PR 前这几条必须本地跑过：
+
+```bash
+npm run lint:all       # 要求 0 error
+npx vitest run         # 2038 条测试，必须全绿
+npm run build          # 生产构建
+cd client && npx tsc -b
+```
+
+安全问题请走 [SECURITY.md](SECURITY.md)，不要开公开 issue。
+
+---
+
+## 🙏 致谢
+
+本项目构建于这些优秀开源项目之上：[Express](https://expressjs.com/)、
+[React](https://react.dev/)、[Vite](https://vitejs.dev/)、
+[Tailwind CSS](https://tailwindcss.com/)、
+[systeminformation](https://systeminformation.io/)、
+[better-sqlite3](https://github.com/WiseLibs/better-sqlite3)。
+
+模型能力探测按引擎无关的方式设计，感谢 [vLLM](https://github.com/vllm-project/vllm)、
+[SGLang](https://github.com/sgl-project/sglang)、[Ollama](https://ollama.com/)
+公开其 OpenAI 兼容层的行为差异。

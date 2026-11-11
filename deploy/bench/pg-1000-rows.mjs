@@ -44,7 +44,7 @@ await db.query(`CREATE TABLE remote_servers (
 
 const rows = Array.from({ length: N }, (_, i) => [
   `id-${String(i).padStart(4, '0')}`, `server-${i}`, `10.0.${Math.floor(i / 250)}.${i % 250 + 1}`,
-  40022, 'deploy', 'enc:xxxx', null, null, '/var/log', '*.log', 'connected', null, null, null,
+  22, 'probe-user', 'enc:xxxx', null, null, '/var/log', '*.log', 'connected', null, null, null,
   null, 1793290000 + i, 1793290000 + i,
 ]);
 const placeholders = (n) => `(${COLS.map((_, i) => `$${n * COLS.length + i + 1}`).join(', ')})`;

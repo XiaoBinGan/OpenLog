@@ -1,11 +1,11 @@
 {
   "_说明": "复制为 .deploy.json（已 gitignore）并填写真实值。密码/私钥二选一。",
-  "host": "203.0.113.10",
-  "port": 40022,
-  "username": "deploy",
+  "host": "your-server.example.com",
+  "port": 22,
+  "username": "your-ssh-user",
   "password": "改成 SSH 密码",
   "privateKeyPath": "可选：私钥路径（填了就不用 password）",
-  "appDir": "/workspace/Openlog-new",
-  "branch": "node",
+  "appDir": "/opt/openlog",
+  "branch": "main",
   "port_http": 3001
 }

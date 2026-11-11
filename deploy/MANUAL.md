@@ -99,7 +99,7 @@ OPENLOG_ENABLE_CONTAINER_EXEC=1
 {
   "host": "203.0.113.10",
   "port": 40022,
-  "username": "deploy",
+  "username": "your-ssh-user",
   "password": "…",
   "appDir": "/workspace/Openlog-new",
   "branch": "node",

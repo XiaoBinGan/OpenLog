@@ -15,7 +15,7 @@
  * 环境变量：
  *   OPENLOG_GPU_SSH_HOST      默认 127.0.0.1
  *   OPENLOG_GPU_SSH_PORT      默认 40022
- *   OPENLOG_GPU_SSH_USER      默认 deploy
+ *   OPENLOG_GPU_SSH_USER      用户名（留空则用当前系统 SSH 配置）
  *   OPENLOG_GPU_SSH_PASSWORD  密码（与 KEY_PATH 二选一）
  *   OPENLOG_GPU_SSH_KEY_PATH  私钥路径（优先于密码）
  *   OPENLOG_GPU_SSH_STRICT    known_hosts 策略，默认 accept-new
@@ -23,8 +23,8 @@
 import { execFileSync } from 'child_process';
 
 const SSH_HOST = process.env.OPENLOG_GPU_SSH_HOST || '127.0.0.1';
-const SSH_PORT = process.env.OPENLOG_GPU_SSH_PORT || '40022';
-const SSH_USER = process.env.OPENLOG_GPU_SSH_USER || 'deploy';
+const SSH_PORT = process.env.OPENLOG_GPU_SSH_PORT || '22';
+const SSH_USER = process.env.OPENLOG_GPU_SSH_USER || '';
 const SSH_PASSWORD = process.env.OPENLOG_GPU_SSH_PASSWORD || '';
 const SSH_KEY_PATH = process.env.OPENLOG_GPU_SSH_KEY_PATH || '';
 // `no` 会无条件接受任何主机密钥，等于放弃中间人防护。

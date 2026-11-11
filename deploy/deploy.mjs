@@ -17,7 +17,7 @@
  * {
  *   "host": "203.0.113.10",
  *   "port": 40022,
- *   "username": "deploy",
+ *   "username": "your-ssh-user",
  *   "password": "…",            // 或用 "privateKeyPath": "C:\\path\\id_rsa"
  *   "appDir": "/workspace/Openlog-new",
  *   "branch": "node"
