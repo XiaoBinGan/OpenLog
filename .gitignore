@@ -68,3 +68,8 @@ AUDIT.local.md
 
 # 官网临时截图（未被 index.html 引用）
 site/tmp-*
+
+# 根目录临时脚本（部署/抓包/验收用，不提交）
+/_*.mjs
+/_*.sh
+/_*.ps1
