@@ -1,12 +1,12 @@
-# OpenLog 离线部署包 9571894
+# OpenLog 离线部署包 9ba4163
 
-- 应用镜像：`openlog:9571894`（`deploy/images/openlog-latest-20261109-180427.tar.gz`）
+- 应用镜像：`openlog:9ba4163`（`deploy/images/openlog-latest-20261111-142531.tar.gz`）
 - 数据库镜像：`postgres:16-alpine`（`deploy/images/postgres-16-alpine.tar.gz`，仅 PG 部署需要）
 
 ## 安装
 
 ```bash
-tar xf openlog-deploy-9571894.tar && cd openlog-deploy-9571894
+tar xf openlog-deploy-9ba4163.tar && cd openlog-deploy-9ba4163
 sha256sum -c SHA256SUMS
 bash deploy/install.sh --yes                    # SQLite
 bash deploy/install.sh --with-postgres --yes    # PostgreSQL
@@ -70,7 +70,58 @@ bash deploy/install.sh --with-postgres --yes    # PostgreSQL
 
 Swagger 给不出 QPS —— 那是流量事实，只在服务自己的访问日志或 Prometheus 里。不拿假数字凑。
 
-## 本版关键修复：发版后页面打不开（这才是「部署了没用」）
+## 本版新增：容量告警强制弹窗（内存 >90% / 磁盘 >80%）
+
+需求：超标就报警，弹窗**持续展示在屏幕上**，除非手动点击关闭；
+关闭后 **1 小时内不显示**；**未处理继续弹出**。
+
+### 为什么不用 toast
+
+toast 2 秒就没了。用户正在看别的页面，抬头时早消失了 —— 磁盘要满这种事
+不能靠「刚好看见」。所以做成阻塞式遮罩：没有倒计时、没有自动关闭、
+**点遮罩不关、Esc 不关**，只有「我知道了」一个出口。
+
+### 三层职责拆开（前两层是纯函数，可测）
+
+| 模块 | 回答什么 | 测试 |
+|---|---|---|
+| `server/capacity-alerts.js` | 现在超没超 | 28 条 |
+| `client/src/utils/capacityAlert.ts` | 这一轮该不该弹 | 32 条 |
+| `CapacityAlertModal.tsx` | 只负责渲染 + 轮询 | — |
+
+服务端**无条件如实报告**是否超标，不记「提醒过没有」——
+抑制状态是浏览器本地的（localStorage），这样刷新页面、开新标签页
+都不会出现「关过了又弹」或「明明超标却不弹」。
+
+### 抑制规则的关键细节
+
+- **按 key 分别计时**：`memory` / `disk:/data` 各自独立。
+  关掉「/data 满了」不该顺带压住「内存 96%」。
+- **恢复即遗忘**：告警恢复正常时清掉那条关闭时间戳。否则下次再超标
+  会因「1 小时内关过」而不提醒 —— 那是新的一次故障。
+- **脏数据一律丢弃**：抑制表里时间戳在未来（时钟回拨/被手改）直接删掉。
+  宁可多弹一次，也不能因为一条坏记录让告警永久静默。
+- **两块无名盘用下标兜底 key**：共用 key 会让关掉一条压住另一条。
+
+### 阈值可配
+
+设置页新增「容量告警」区块：内存 50-99%、磁盘 50-99%、静默时长 15min-12h。
+90/80 是默认值不是硬编码的真理 —— 有的机器日志盘天生跑到 85%，
+钉死会让用户天天挨弹窗，最后学会无视它，那比不弹更糟。
+
+### 真机验收（生产环境，真实数据）
+
+临时把阈值压到 50/30（真实内存 73.5%、磁盘 39~49% 必然触发）：
+
+    1. 弹窗出现，列出 3 条（内存 + 两块盘），带进度条
+    2. 点遮罩 → 关不掉 ✅
+    3. 点「我知道了」→ 消失，localStorage 写入 3 个 key 的时间戳
+    4. 刷新 → 仍不弹（1 小时抑制生效）✅
+    5. 时间戳改成 2 小时前 → 刷新 → 重新弹（未处理继续弹）✅
+
+4卡T4 上内存真实 99%、磁盘 84%，直接命中告警（critical + warning）。
+
+## 上一版：发版后页面打不开（「部署了没用」的真正原因）
 
 用户报告部署后看不到变化。查下来**不是功能没写对**，而是发版后浏览器加载不到新版本：
 
@@ -303,7 +354,7 @@ PG 分支有 `pg_total_relation_size` 可查，SQLite 分支当时整段漏了�
 - `server/datasource/*`：discover / api-probe / db-probe / store（本版新增）
 - `server/openapi.js`、`dependency-probe.js`、`monitoring.js`、`ws-auth.js`
 - `client/src/pages/Docker.tsx` 1287 → 399 行；`Settings.tsx` 1968 → 272 行
-- 测试：**1978 passed / 2 skipped（110 文件）**
+- 测试：**2038 passed / 2 skipped（112 文件）**
 
 **沿用**：远程文件面板右键操作、Docker AI 智能诊断、告警导出 Markdown/真实 XLSX、AI 分析进通知中心、GPU 进程解析、路由懒加载。
 
