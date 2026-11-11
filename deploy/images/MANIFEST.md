@@ -2,7 +2,8 @@
 
 > 由 `deploy/scripts/save-image.sh` 自动维护。归档文件本身不进 git（见 `.gitignore`），
 > 但这份清单会提交，用来记录「发过哪些版本、对应的 commit、校验和」。
-| `openlog-latest-20261111-142531.tar.gz` | `openlog:9ba4163` | `-` | `9ba4163` | 217M | 2026-11-11 14:25 | `e337b61136ec…` | **当前生产版本**：容量告警——内存>90%/磁盘>80% 弹强制确认框，持续显示直到手动关闭，关闭后 1 小时内不弹，到期仍超标继续弹；阈值可配。全量 2038 测试通过 | 本地 + 服务器 |
+| `openlog-7b3b3de8-20261111-172954.tar.gz` | `openlog:7b3b3de8` | `-` | `7b3b3de` | 217M | 2026-11-11 17:29 | `3615eec2ce37…` | **当前生产版本 v1.0.0**：首个开源发布（MIT + 贡献/安全文档 + 官网 Pages）；含容量告警强制弹窗。243 与 4卡T4 均已运行 | 本地 + 服务器 |
+| `openlog-latest-20261111-142531.tar.gz` | `openlog:9ba4163` | `-` | `9ba4163` | 217M | 2026-11-11 14:25 | `e337b61136ec…` | 上一版：容量告警——内存>90%/磁盘>80% 弹强制确认框，持续显示直到手动关闭，关闭后 1 小时内不弹，到期仍超标继续弹；阈值可配。全量 2038 测试通过 | 本地 + 服务器 |
 | `openlog-latest-20261109-180427.tar.gz` | `openlog:9571894` | `-` | `9571894` | 217M | 2026-11-09 18:04 | `a3e0f1e9615f…` | 上一版：修 SPA fallback 把不存在的 /assets/*.js 返回 HTML 导致整页白屏（「部署了没用」的真正原因）；assets 走 immutable、index.html 走 no-cache；视觉探测通过时给正向确认。全量 1978 测试通过 | 仅服务器 |
 | `openlog-latest-20261109-153545.tar.gz` | `openlog:7ccc4e9` | `-` | `7ccc4e9` | 217M | 2026-11-09 15:35 | `9702a43ecc74…` | 上一版：视觉能力探测——真发一张洋红小图问颜色，三态结论（yes/no/unknown），unknown 不缓存；只在选图时探测不浪费 token；/api/chat 与 AI Shell 的图片错误单独说清原因。全量 1968 测试通过 | 仅服务器 |
 | `openlog-latest-20261109-122733.tar.gz` | `openlog:cfbabad` | `-` | `cfbabad` | 217M | 2026-11-09 12:27 | `c99ac77d6abe…` | 上一版：AI Shell 与运维助手支持多图（最多 6 张，支持点选/粘贴/拖拽）；新增 vision-content.js 解决「base64 当文本估 token 导致上下文爆炸」与 `String(content)` 变 `[object Object]`；只收 data URL（防 SSRF）、白名单 MIME（拒 SVG）、历史图自动剥离 | 仅服务器 |

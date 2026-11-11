@@ -1,12 +1,12 @@
-# OpenLog 离线部署包 9ba4163
+# OpenLog 离线部署包 v1.0.0（7b3b3de）
 
-- 应用镜像：`openlog:9ba4163`（`deploy/images/openlog-latest-20261111-142531.tar.gz`）
+- 应用镜像：`openlog:7b3b3de8`（`deploy/images/openlog-7b3b3de8-20261111-172954.tar.gz`）
 - 数据库镜像：`postgres:16-alpine`（`deploy/images/postgres-16-alpine.tar.gz`，仅 PG 部署需要）
 
 ## 安装
 
 ```bash
-tar xf openlog-deploy-9ba4163.tar && cd openlog-deploy-9ba4163
+tar xf openlog-deploy-7b3b3de.tar && cd openlog-deploy-7b3b3de
 sha256sum -c SHA256SUMS
 bash deploy/install.sh --yes                    # SQLite
 bash deploy/install.sh --with-postgres --yes    # PostgreSQL
@@ -70,7 +70,20 @@ bash deploy/install.sh --with-postgres --yes    # PostgreSQL
 
 Swagger 给不出 QPS —— 那是流量事实，只在服务自己的访问日志或 Prometheus 里。不拿假数字凑。
 
-## 本版新增：容量告警强制弹窗（内存 >90% / 磁盘 >80%）
+## 本版：首个开源发布（v1.0.0）
+
+这是 OpenLog 开源后的第一个发布版本。仓库：https://github.com/XiaoBinGan/OpenLog
+
+除上一版的功能外，本版包含：
+
+- **MIT LICENSE** —— README 里一直写着 MIT，但仓库里没有 LICENSE 文件，等于没有授权
+- **CONTRIBUTING.md / SECURITY.md** —— 后者如实写威胁模型：本项目会执行 shell、连 SSH，
+  那是用途不是缺陷；同时列出使用者必须自己做的四件事
+- **Issue / PR 模板**
+- **官网 Pages** —— https://xiaobingan.github.io/OpenLog/ ，由 Actions 从 site/ 直接发布
+- 仓库瘦身：121 MiB → 6.6 MiB（清掉历史里误提交的归档 zip、编译产物、SQLite 数据库）
+
+## 上一版：容量告警强制弹窗（内存 >90% / 磁盘 >80%）
 
 需求：超标就报警，弹窗**持续展示在屏幕上**，除非手动点击关闭；
 关闭后 **1 小时内不显示**；**未处理继续弹出**。
