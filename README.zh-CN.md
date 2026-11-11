@@ -1040,3 +1040,5 @@ cd client && npx tsc -b
 模型能力探测按引擎无关的方式设计，感谢 [vLLM](https://github.com/vllm-project/vllm)、
 [SGLang](https://github.com/sgl-project/sglang)、[Ollama](https://ollama.com/)
 公开其 OpenAI 兼容层的行为差异。
+**官网：** https://xiaobingan.github.io/OpenLog/ · **仓库：** https://github.com/XiaoBinGan/OpenLog
+

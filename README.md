@@ -1162,3 +1162,5 @@ Built on the shoulders of [Express](https://expressjs.com/),
 Naming and capability probing are engine-agnostic by design; thanks to the
 [vLLM](https://github.com/vllm-project/vllm), [SGLang](https://github.com/sgl-project/sglang)
 and [Ollama](https://ollama.com/) projects for documenting their OpenAI-compatible surfaces.
+**Website:** https://xiaobingan.github.io/OpenLog/ · **Source:** https://github.com/XiaoBinGan/OpenLog
+
