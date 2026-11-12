@@ -59,7 +59,7 @@ COMMIT="$(basename "$APP_ARCHIVE" | sed -E 's/^openlog-([0-9a-f]+)-.*/\1/')"
 
 HEAD_COMMIT="$(cd "$REPO_DIR" && git rev-parse --short=8 HEAD 2>/dev/null || echo unknown)"
 if [ "$HEAD_COMMIT" != "unknown" ] && [ "${HEAD_COMMIT#"$COMMIT"}" = "$HEAD_COMMIT" ]; then
-  echo "  ⚠️  包内镜像是 $COMMIT，但当前 HEAD 是 $HEAD_COMMIT —— 以镜像为准打包"
+  echo "  ⚠️  包内镜像是 ${COMMIT}，但当前 HEAD 是 $HEAD_COMMIT —— 以镜像为准打包"
   echo "     （若这是有意的，忽略即可；否则先重新构建镜像再打包）"
 fi
 
@@ -85,7 +85,7 @@ esac
 PKG_NAME="openlog-deploy-${COMMIT}"
 [ "$ARCH" = "arm64" ] && PKG_NAME="${PKG_NAME}-arm64"
 
-log "装配 $PKG_NAME（$ARCH）"
+log "装配 ${PKG_NAME}（${ARCH}）"
 
 # ── 2. 定位镜像 ──
 # APP_ARCHIVE 已在第 1 步定位（版本号取自它），这里只补 postgres
@@ -99,7 +99,7 @@ ACTUAL_ARCH="$(tar -xzOf "$APP_ARCHIVE" manifest.json 2>/dev/null \
                | tr -d '\000' | grep -o '"architecture"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 \
                | sed -E 's/.*"([^"]*)"$/\1/')"
 [ -z "$ACTUAL_ARCH" ] || [ "$ACTUAL_ARCH" = "$ARCH" ] \
-  || die "归档架构是 $ACTUAL_ARCH，但 --arch 指定了 $ARCH"
+  || die "归档架构是 ${ACTUAL_ARCH}，但 --arch 指定了 $ARCH"
 ok "应用镜像 $(basename "$APP_ARCHIVE")  ($ARCH)"
 [ -n "$PG_ARCHIVE" ] && ok "数据库镜像 $(basename "$PG_ARCHIVE")"
 
@@ -137,7 +137,8 @@ render() {
     -e "s|{{OTHER_SUFFIX}}|$OTHER_SUFFIX|g" \
     -e "s|{{PKG_NAME}}|$PKG_NAME|g" \
     -e "s|{{SELF_TAR}}|$SELF_TAR|g" \
-    "$1"
+    "$1" \
+    | sed '/^<!--$/,/^-->$/d'
 }
 
 render "$REPO_DIR/deploy/README-offline.md" > "$STAGE/README.md"
@@ -150,7 +151,7 @@ if grep -q '{{[A-Z_]*}}' "$STAGE/README.md"; then
   grep -o '{{[A-Z_]*}}' "$STAGE/README.md" | sort -u | sed 's/^/    /' >&2
   die "README 模板里有未知占位符，检查 make-package.sh 的 render()"
 fi
-ok "README 已按实际内容渲染（版本 $COMMIT / 架构 $ARCH）"
+ok "README 已按实际内容渲染（版本 $COMMIT / 架构 ${ARCH}）"
 
 # ── 5. SHA256SUMS ──
 ( cd "$STAGE" && sha256sum deploy/images/*.tar.gz > SHA256SUMS )
@@ -171,12 +172,15 @@ fi
 
 # ── 7. 自查 ──
 log "自查"
-N_TARS="$(tar -tf "$OUT" | grep -c '\.tar\.gz$' || true)"
+# 先整份列表存下来再判断：`tar -tf | grep -q` 在 set -o pipefail 下，
+# grep 命中即退出会让 tar 吃到 SIGPIPE（141），管道被判失败 → 假报错。
+LIST="$(tar -tf "$OUT")"
+N_TARS="$(printf '%s\n' "$LIST" | grep -c '\.tar\.gz$' || true)"
 [ "$N_TARS" -ge 2 ] || die "包内只有 $N_TARS 个镜像 tar，应为 2（应用 + postgres）"
 ok "镜像 tar 数量 $N_TARS"
-tar -tf "$OUT" | grep -q '\.deploy\.json' && die "包里混进了 .deploy.json（含真实凭据）"
+printf '%s\n' "$LIST" | grep -q '\.deploy\.json' && die "包里混进了 .deploy.json（含真实凭据）"
 ok "无 .deploy.json"
-tar -tf "$OUT" | grep -q 'install.sh' || die "包里没有 install.sh"
+printf '%s\n' "$LIST" | grep -q 'install.sh' || die "包里没有 install.sh"
 ok "install.sh 在"
 grep -q 'check_arch' "$STAGE/deploy/install.sh" || die "install.sh 不含架构自检"
 ok "install.sh 带架构自检"
