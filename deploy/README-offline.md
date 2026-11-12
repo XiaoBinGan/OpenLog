@@ -1,13 +1,22 @@
-# OpenLog 离线部署包 v1.0.0（c99bb354）
+# OpenLog 离线部署包 {{VERSION}}
 
-- 应用镜像：`openlog:c99bb354`（`deploy/images/openlog-c99bb354-20261111-174628.tar.gz`）
-- **架构**：本包为 **linux/amd64（x86_64）**。ARM 服务器需使用 `openlog-deploy-c99bb354-arm64.tar`。`install.sh` 会在导入前校验架构，装错会直接报错并指出该换哪个包（确需先导入备用可加 `--allow-arch-mismatch`）
+<!--
+  本文件是模板，由 deploy/scripts/make-package.sh 渲染成包内的 README.md。
+  双花括号里的值在装配时按包内实际内容替换 —— 不要手写死版本号、镜像文件名或架构。
+  为什么：x86 和 arm64 两个包共用这一份文档，手写必然漏改。
+  第一次就漏了（x86 包文档写着上一版的文件名），第二次又漏（arm64 包写着 amd64）。
+  注意：注释里不要出现双花括号字面量，否则渲染后的残留检查会误报。
+-->
+
+- 应用镜像：`openlog:{{IMAGE_TAG}}`（`deploy/images/{{IMAGE_FILE}}`）
+- **架构**：本包为 **{{ARCH_LABEL}}**。另一种架构请用 `openlog-deploy-{{VERSION}}{{OTHER_SUFFIX}}.tar`。
+  `install.sh` 会在导入前校验架构，装错会直接报错并指出该换哪个包（确需先导入备用可加 `--allow-arch-mismatch`）
 - 数据库镜像：`postgres:16-alpine`（`deploy/images/postgres-16-alpine.tar.gz`，仅 PG 部署需要）
 
 ## 安装
 
 ```bash
-tar xf openlog-deploy-c99bb35.tar && cd openlog-deploy-c99bb35
+tar xf {{SELF_TAR}} && cd {{PKG_NAME}}
 sha256sum -c SHA256SUMS
 bash deploy/install.sh --yes                    # SQLite
 bash deploy/install.sh --with-postgres --yes    # PostgreSQL
