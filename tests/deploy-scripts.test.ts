@@ -80,6 +80,38 @@ describe('install.sh —— 一键部署的健壮性', () => {
   });
 });
 
+describe('Dockerfile —— 构建缓存不能吞掉前端产物', () => {
+  const dockerfile = read('Dockerfile');
+
+  it('CACHE_BUST 必须声明在两个阶段内（ARG 作用域不跨阶段）', () => {
+    // 只有第二阶段声明时，stage1 的 `RUN npm run build` 缓存键只由 client/ 内容决定。
+    // 踩过：243 连部署两次，第二次产物仍是上一版 bundle（D_DQ4OgQ），
+    // 而干净重建是 EGEQfdxr。部署出去的代码和源码对不上。
+    const lines = dockerfile.split('\n');
+    const argStages = [];
+    let stage = 0;
+    for (const line of lines) {
+      if (/^FROM\s/i.test(line)) stage += 1;
+      if (/^ARG\s+CACHE_BUST/.test(line)) argStages.push(stage);
+    }
+    expect(argStages, 'CACHE_BUST 应声明在 stage 1 与 stage 2').toEqual([1, 2]);
+  });
+
+  it('前端两个 RUN 都带 cache bust 前缀', () => {
+    // 光声明 ARG 不够，要在 RUN 里引用它才会进入该层的缓存键。
+    const front = dockerfile.slice(0, dockerfile.indexOf('AS client-builder') + 2000);
+    expect(front).toMatch(/RUN echo "Cache bust: \$\{CACHE_BUST\}" && npm install/);
+    expect(front).toMatch(/RUN echo "Cache bust: \$\{CACHE_BUST\}" && npm run build/);
+  });
+
+  it('deploy.sh 传的 --build-arg 与 Dockerfile 的 ARG 同名', () => {
+    // 名字对不上时 build-arg 静默失效，缓存照吃。
+    expect(dockerfile).toContain('ARG CACHE_BUST');
+    const deploy = read('deploy/deploy.sh');
+    expect(deploy).toMatch(/docker build --build-arg CACHE_BUST=\$SHORT_SHA/);
+  });
+});
+
 describe('install.sh —— 架构自检（装错架构的包）', () => {
   const install = read('deploy/install.sh');
 
