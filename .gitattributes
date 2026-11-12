@@ -1,0 +1,35 @@
+# 换行符统一为 LF
+#
+# 为什么必须有这个文件：
+#   开发机是 Windows（core.autocrlf=true，工作区 CRLF），部署目标与 CI 是 Linux（LF）。
+#   同一份源码在两边会构建出**不同**的前端产物 —— 实测 bundle 哈希分别为
+#   index-EGEQfdxr（CRLF 上下文）与 index-D_DQ4OgQ（LF 上下文）。
+#   排查时先后误判为「Docker 构建缓存复用旧层」和「架构差异」，都不是。
+#   把仓库内容钉成 LF 后，任何人任何平台检出都得到同一份字节。
+#
+# 只影响文本文件。二进制靠下面的规则保持原样，否则会损坏。
+* text=auto eol=lf
+
+# ── Windows 批处理：必须 CRLF，cmd.exe 不认 LF ──
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# ── 二进制：禁止任何换行符转换 ──
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.webp binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.eot binary
+*.zip binary
+*.gz binary
+*.tar binary
+*.pdf binary
+*.node binary
+*.so binary
+*.exe binary
+*.db binary

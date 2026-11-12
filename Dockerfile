@@ -4,20 +4,12 @@
 # ── Stage 1: 构建前端 ──
 # Node 20 已 EOL，统一到 22（与 CI / .nvmrc 一致）
 FROM node:22-alpine AS client-builder
-# 这个 ARG 必须声明在**本阶段内**：Docker 的 ARG 作用域不跨阶段，
-# 写在第二阶段的 ARG 对这里不可见。
-# 为什么前端阶段也需要它：没有它时 `RUN npm run build` 的缓存键只由 client/
-# 内容决定 —— 看起来合理，实际踩过：243 上连续部署两次，第二次的前端产物
-# 仍是上一版（bundle index-D_DQ4OgQ），而干净重建是 index-EGEQfdxr。
-# 三个独立构建（本地 / T4 / 243 --no-cache）都得到后者，只有吃缓存的那次不同。
-# 部署出去的产物和源码对不上，是最难查的一类问题。
-ARG CACHE_BUST=1
 WORKDIR /app/client
 COPY client/package*.json ./
-RUN echo "Cache bust: ${CACHE_BUST}" && npm install --legacy-peer-deps
+RUN npm install --legacy-peer-deps
 COPY client/ ./
 # 用 npm run build 而不是 npx vite build，让 tsc -b 的类型错误能中断镜像构建
-RUN echo "Cache bust: ${CACHE_BUST}" && npm run build
+RUN npm run build
 
 # ── Stage 2: 生产镜像 ──
 FROM node:22-alpine

@@ -80,35 +80,34 @@ describe('install.sh —— 一键部署的健壮性', () => {
   });
 });
 
-describe('Dockerfile —— 构建缓存不能吞掉前端产物', () => {
-  const dockerfile = read('Dockerfile');
+describe('构建一致性 —— 换行符必须统一为 LF', () => {
+  const gitattrs = (() => {
+    try { return read('.gitattributes'); } catch { return ''; }
+  })();
 
-  it('CACHE_BUST 必须声明在两个阶段内（ARG 作用域不跨阶段）', () => {
-    // 只有第二阶段声明时，stage1 的 `RUN npm run build` 缓存键只由 client/ 内容决定。
-    // 踩过：243 连部署两次，第二次产物仍是上一版 bundle（D_DQ4OgQ），
-    // 而干净重建是 EGEQfdxr。部署出去的代码和源码对不上。
-    const lines = dockerfile.split('\n');
-    const argStages = [];
-    let stage = 0;
-    for (const line of lines) {
-      if (/^FROM\s/i.test(line)) stage += 1;
-      if (/^ARG\s+CACHE_BUST/.test(line)) argStages.push(stage);
+  it('.gitattributes 强制文本文件用 LF', () => {
+    // 真因记录：Windows 开发机 core.autocrlf=true，工作区 CRLF；
+    // Linux 服务器检出 LF。同一份源码构建出的前端产物 hash 不同：
+    //   CRLF 上下文 → index-EGEQfdxr.js
+    //   LF   上下文 → index-D_DQ4OgQ.js
+    // 排查时先后误判为「Docker 构建缓存复用旧层」和「架构差异」，都不是。
+    // 决定性的对照：在 243 上用同一 commit 的 git 检出（LF）--no-cache 构建
+    // 得到 D_DQ4OgQ；用 Windows 上传的上下文（CRLF）--no-cache 构建得到 EGEQfdxr。
+    expect(gitattrs).toMatch(/text=auto/);
+    expect(gitattrs).toMatch(/eol=lf/);
+  });
+
+  it('Windows 批处理脚本单独豁免（cmd.exe 不认 LF）', () => {
+    if (!gitattrs) return;
+    expect(gitattrs).toMatch(/\*\.(bat|cmd)\s+text eol=crlf/);
+  });
+
+  it('二进制文件禁止换行符转换', () => {
+    if (!gitattrs) return;
+    // 缺了这条，png/woff/node 会被当作文本转换，直接损坏。
+    for (const ext of ['png', 'woff2', 'node', 'gz']) {
+      expect(gitattrs, `${ext} 应声明 binary`).toMatch(new RegExp(`\\*\\.${ext} binary`));
     }
-    expect(argStages, 'CACHE_BUST 应声明在 stage 1 与 stage 2').toEqual([1, 2]);
-  });
-
-  it('前端两个 RUN 都带 cache bust 前缀', () => {
-    // 光声明 ARG 不够，要在 RUN 里引用它才会进入该层的缓存键。
-    const front = dockerfile.slice(0, dockerfile.indexOf('AS client-builder') + 2000);
-    expect(front).toMatch(/RUN echo "Cache bust: \$\{CACHE_BUST\}" && npm install/);
-    expect(front).toMatch(/RUN echo "Cache bust: \$\{CACHE_BUST\}" && npm run build/);
-  });
-
-  it('deploy.sh 传的 --build-arg 与 Dockerfile 的 ARG 同名', () => {
-    // 名字对不上时 build-arg 静默失效，缓存照吃。
-    expect(dockerfile).toContain('ARG CACHE_BUST');
-    const deploy = read('deploy/deploy.sh');
-    expect(deploy).toMatch(/docker build --build-arg CACHE_BUST=\$SHORT_SHA/);
   });
 });
 
