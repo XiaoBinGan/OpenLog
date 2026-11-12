@@ -79,18 +79,20 @@ describe('make-package.sh —— 装配行为的硬性约束', () => {
   });
 
   it('--arch 与归档实际架构不一致时拒绝', () => {
-    expect(maker).toMatch(/归档架构是 \$ACTUAL_ARCH/);
+    // 变量加了花括号（bash 3.2 会把紧跟的多字节字符吞进变量名）
+    expect(maker).toMatch(/归档架构是 \$\{ACTUAL_ARCH\}/);
   });
 
   it('包里不许出现 .deploy.json（含真实凭据）', () => {
     expect(maker).toContain("--exclude='.deploy.json'");
-    // 两条防线：打包时排除 + 打完检查。set -e 下 `cmd && die` 不会因 cmd 失败退出，
-    // 所以这条只在真的命中时触发 die，是有效的守卫写法。
-    expect(maker).toContain('tar -tf "$OUT" | grep -q \'\\.deploy\\.json\' && die');
+    // 两条防线：打包时排除 + 打完检查。
+    // 检查用 case 而不是 `tar -tf | grep -q`：pipefail 下 grep 命中早退，
+    // tar 吃 SIGPIPE(141)，管道被判失败 —— 文件在包里也会报「没有」。
+    expect(maker).toMatch(/case "\$LIST" in\s*\n\s*\*\.deploy\.json\*\)\s*die/);
   });
 
   it('包里必须有 install.sh 且带架构自检', () => {
-    expect(maker).toContain('tar -tf "$OUT" | grep -q \'install.sh\' || die');
+    expect(maker).toMatch(/case "\$LIST" in\s*\n\s*\*\/install\.sh\*\)/);
     expect(maker).toMatch(/grep -q 'check_arch'/);
   });
 

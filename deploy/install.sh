@@ -210,7 +210,7 @@ check_arch() {
   [ -n "$got" ] || { warn "$label 架构未知，跳过校验"; return 0; }
   [ "$want" = "$got" ] && { ok "$label 架构匹配 ($got)"; return 0; }
   if [ "$ALLOW_ARCH_MISMATCH" = "1" ]; then
-    warn "$label 架构不匹配：包=$got / 本机=$want（--allow-arch-mismatch 已显式放行）"
+    warn "$label 架构不匹配：包=$got / 本机=${want}（--allow-arch-mismatch 已显式放行）"
     return 0
   fi
   cat >&2 <<EOF
@@ -317,7 +317,7 @@ if [ "$DB_MODE" = "postgres" ]; then
       fi
       if ! docker image inspect "$PG_IMAGE" >/dev/null 2>&1; then
         # 兜底：机器有外网时直接拉（离线机器会失败，属于预期）
-        warn "本机没有 $PG_IMAGE，尝试 docker pull（无外网会失败）"
+        warn "本机没有 ${PG_IMAGE}，尝试 docker pull（无外网会失败）"
         if docker pull "$PG_IMAGE" >/dev/null 2>&1; then
           ok "已拉取 $PG_IMAGE"
         fi
@@ -398,7 +398,7 @@ if [ "$NEED_WRITE" = "1" ]; then
     echo "OPENLOG_ENABLE_CONTAINER_EXEC=1"
   } > "$ENV_FILE"
   chmod 600 "$ENV_FILE"
-  ok "已生成（端口 $APP_PORT，数据库 $DB_MODE）"
+  ok "已生成（端口 ${APP_PORT}，数据库 ${DB_MODE}）"
 fi
 
 run "mkdir -p '$DATA_DIR'"

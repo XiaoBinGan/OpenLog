@@ -104,7 +104,10 @@ if [ "$SKIP_BACKUP" = "1" ]; then
   warn "跳过备份（--skip-backup）"
 elif [ "$DB_TYPE" = "postgres" ]; then
   log "备份 PostgreSQL"
-  if docker ps --format '{{.Names}}' | grep -qx "openlog-pg"; then
+  PG_RUNNING="$(docker ps --format '{{.Names}}' || true)"
+  # herestring 而不是管道：pipefail 下 grep 命中早退会让上游吃 SIGPIPE(141)，
+  # 整条管道被判失败 —— 于是「容器明明在跑」也会走进 else 分支跳过备份。
+  if grep -qx "openlog-pg" <<< "$PG_RUNNING"; then
     PG_FILE="$BACKUP_DIR/openlog-pg-$(date +%Y%m%d-%H%M%S).sql.gz"
     run "docker exec openlog-pg pg_dump -U \${PG_USER:-openlog} -d \${PG_DATABASE:-openlog} | gzip > '$PG_FILE'"
     run "ls -la '$PG_FILE' | awk '{print \"  ✅ \" \$5 \" bytes → \" \$9}'"
@@ -248,7 +251,8 @@ health_check() {
   local container="$1"
   local deadline=$(( $(date +%s) + 90 ))
   while [ "$(date +%s)" -lt "$deadline" ]; do
-    if ! docker ps --format '{{.Names}}' | grep -qx "$container"; then
+    RUNNING="$(docker ps --format '{{.Names}}' || true)"
+  if ! grep -qx "$container" <<< "$RUNNING"; then
       echo "  容器没在运行"
       docker logs --tail 20 "$container" 2>&1 | sed 's/^/    /'
       return 1
@@ -263,8 +267,9 @@ health_check() {
         | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
       if [ -n "$tok" ]; then
         body=$(http_get "http://127.0.0.1:$APP_PORT/api/db/info" "$tok")
-        if echo "$body" | grep -q '"ok":true'; then
-          echo "  ✅ 页面 200 / 数据库正常（$DB_TYPE）"
+        # 同上：误判成 false 会导致「其实健康却回滚」
+        if grep -q '"ok":true' <<< "$body"; then
+          echo "  ✅ 页面 200 / 数据库正常（${DB_TYPE}）"
           return 0
         fi
       else
@@ -280,11 +285,11 @@ health_check() {
   LOG_TAIL="$(docker logs --tail 30 "$container" 2>&1)"
   echo "$LOG_TAIL" | sed 's/^/    /'
   # 把最常见的两种启动失败直接翻译成可操作的下一步，省得对着日志猜
-  if echo "$LOG_TAIL" | grep -qi 'password authentication failed'; then
+  if grep -qi 'password authentication failed' <<< "$LOG_TAIL"; then
     echo ""
     echo "  💡 数据库密码不对：openlog-pg 数据卷里的旧密码与 deploy.env 里的不一致。"
     echo "     用 --db-url 提供旧密码，或复用已有容器的密码（install.sh 现在会自动复用）。"
-  elif echo "$LOG_TAIL" | grep -qi 'DB.*初始化失败\|数据库未就绪'; then
+  elif grep -qi 'DB.*初始化失败\|数据库未就绪' <<< "$LOG_TAIL"; then
     echo ""
     echo "  💡 数据库没连上：检查 deploy.env 里的 OPENLOG_DATABASE_URL（用户名/密码/库名）"
     echo "     以及数据库容器是否在运行（docker ps | grep -E 'openlog-pg|postgres'）。"
@@ -321,7 +326,7 @@ if [ "$HEALTHY" = "0" ] && [ -n "$PREV_IMAGE" ]; then
   fi
   exit 1
 elif [ "$HEALTHY" = "0" ]; then
-  die "部署失败且没有可回滚的旧镜像；容器保持运行供排查（docker logs $CONTAINER_NAME）"
+  die "部署失败且没有可回滚的旧镜像；容器保持运行供排查（docker logs ${CONTAINER_NAME}）"
 fi
 
 # ─── 6. 清理旧镜像 ─────────────────────────────────────────────────────

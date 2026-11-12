@@ -59,7 +59,7 @@ COMMIT="$(basename "$APP_ARCHIVE" | sed -E 's/^openlog-([0-9a-f]+)-.*/\1/')"
 
 HEAD_COMMIT="$(cd "$REPO_DIR" && git rev-parse --short=8 HEAD 2>/dev/null || echo unknown)"
 if [ "$HEAD_COMMIT" != "unknown" ] && [ "${HEAD_COMMIT#"$COMMIT"}" = "$HEAD_COMMIT" ]; then
-  echo "  ⚠️  包内镜像是 $COMMIT，但当前 HEAD 是 $HEAD_COMMIT —— 以镜像为准打包"
+  echo "  ⚠️  包内镜像是 ${COMMIT}，但当前 HEAD 是 $HEAD_COMMIT —— 以镜像为准打包"
   echo "     （若这是有意的，忽略即可；否则先重新构建镜像再打包）"
 fi
 
@@ -85,7 +85,7 @@ esac
 PKG_NAME="openlog-deploy-${COMMIT}"
 [ "$ARCH" = "arm64" ] && PKG_NAME="${PKG_NAME}-arm64"
 
-log "装配 $PKG_NAME（$ARCH）"
+log "装配 ${PKG_NAME}（${ARCH}）"
 
 # ── 2. 定位镜像 ──
 # APP_ARCHIVE 已在第 1 步定位（版本号取自它），这里只补 postgres
@@ -99,7 +99,7 @@ ACTUAL_ARCH="$(tar -xzOf "$APP_ARCHIVE" manifest.json 2>/dev/null \
                | tr -d '\000' | grep -o '"architecture"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 \
                | sed -E 's/.*"([^"]*)"$/\1/')"
 [ -z "$ACTUAL_ARCH" ] || [ "$ACTUAL_ARCH" = "$ARCH" ] \
-  || die "归档架构是 $ACTUAL_ARCH，但 --arch 指定了 $ARCH"
+  || die "归档架构是 ${ACTUAL_ARCH}，但 --arch 指定了 $ARCH"
 ok "应用镜像 $(basename "$APP_ARCHIVE")  ($ARCH)"
 [ -n "$PG_ARCHIVE" ] && ok "数据库镜像 $(basename "$PG_ARCHIVE")"
 
@@ -137,7 +137,16 @@ render() {
     -e "s|{{OTHER_SUFFIX}}|$OTHER_SUFFIX|g" \
     -e "s|{{PKG_NAME}}|$PKG_NAME|g" \
     -e "s|{{SELF_TAR}}|$SELF_TAR|g" \
-    "$1"
+    "$1" \
+  | awk '
+      # 剥掉模板维护说明那段注释（以 TEMPLATE-NOTE 标记的 HTML 注释块）。
+      # 那份说明是写给改模板的人看的，留在成品包里会让读者困惑
+      # （“本文件是模板”——可它明明是成品）。
+      /<!-- TEMPLATE-NOTE/ { skip=1 }
+      skip && /-->/        { skip=0; next }
+      skip                 { next }
+      { print }
+    '
 }
 
 render "$REPO_DIR/deploy/README-offline.md" > "$STAGE/README.md"
@@ -150,7 +159,7 @@ if grep -q '{{[A-Z_]*}}' "$STAGE/README.md"; then
   grep -o '{{[A-Z_]*}}' "$STAGE/README.md" | sort -u | sed 's/^/    /' >&2
   die "README 模板里有未知占位符，检查 make-package.sh 的 render()"
 fi
-ok "README 已按实际内容渲染（版本 $COMMIT / 架构 $ARCH）"
+ok "README 已按实际内容渲染（版本 $COMMIT / 架构 ${ARCH}）"
 
 # ── 5. SHA256SUMS ──
 ( cd "$STAGE" && sha256sum deploy/images/*.tar.gz > SHA256SUMS )
@@ -171,12 +180,29 @@ fi
 
 # ── 7. 自查 ──
 log "自查"
-N_TARS="$(tar -tf "$OUT" | grep -c '\.tar\.gz$' || true)"
-[ "$N_TARS" -ge 2 ] || die "包内只有 $N_TARS 个镜像 tar，应为 2（应用 + postgres）"
-ok "镜像 tar 数量 $N_TARS"
-tar -tf "$OUT" | grep -q '\.deploy\.json' && die "包里混进了 .deploy.json（含真实凭据）"
+#
+# 注意：不要写 `tar -tf "$OUT" | grep -q ...`。
+# 开了 pipefail 的前提下，grep -q 命中即退出，tar 收到 SIGPIPE 返回 141，
+# 整条管道被判为失败 —— 于是「文件明明在包里」也会报 "包里没有 install.sh"。
+# 打包 300MB 的包时 tar 输出超过管道缓冲，这个假失败必然出现（小包不一定复现，
+# 所以很阴）。这里把文件列表先存进变量，用纯 bash 的 case 匹配，完全不起管道。
+LIST="$(tar -tf "$OUT")"
+
+# grep -c 会读完全部输入，不会提前退出，因此不受 SIGPIPE 影响
+N_TARS="$(printf '%s\n' "$LIST" | grep -c '\.tar\.gz$' || true)"
+[ "$N_TARS" -ge 2 ] || die "包内只有 ${N_TARS} 个镜像 tar，应为 2（应用 + postgres）"
+ok "镜像 tar 数量 ${N_TARS}"
+
+case "$LIST" in
+  *.deploy.json*) die "包里混进了 .deploy.json（含真实凭据）" ;;
+esac
 ok "无 .deploy.json"
-tar -tf "$OUT" | grep -q 'install.sh' || die "包里没有 install.sh"
+
+case "$LIST" in
+  */install.sh*) : ;;
+  *) die "包里没有 install.sh" ;;
+esac
 ok "install.sh 在"
+
 grep -q 'check_arch' "$STAGE/deploy/install.sh" || die "install.sh 不含架构自检"
 ok "install.sh 带架构自检"

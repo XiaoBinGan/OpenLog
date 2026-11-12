@@ -1,11 +1,11 @@
 # OpenLog 离线部署包 {{VERSION}}
 
-<!--
-  本文件是模板，由 deploy/scripts/make-package.sh 渲染成包内的 README.md。
+<!-- TEMPLATE-NOTE
+  这是模板，由 deploy/scripts/make-package.sh 渲染成包内的 README.md。
   双花括号里的值在装配时按包内实际内容替换 —— 不要手写死版本号、镜像文件名或架构。
   为什么：x86 和 arm64 两个包共用这一份文档，手写必然漏改。
   第一次就漏了（x86 包文档写着上一版的文件名），第二次又漏（arm64 包写着 amd64）。
-  注意：注释里不要出现双花括号字面量，否则渲染后的残留检查会误报。
+  这段说明会被渲染过程整块剥掉，成品包里看不到它。
 -->
 
 - 应用镜像：`openlog:{{IMAGE_TAG}}`（`deploy/images/{{IMAGE_FILE}}`）
