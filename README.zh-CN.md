@@ -6,6 +6,10 @@
 
 > 本文是中文版。英文版（[README.md](README.md)）为主版本，内容不一致时以英文版为准。
 
+> **离线包与打包脚本：请用 [v1.0.1](https://github.com/XiaoBinGan/OpenLog/releases/tag/v1.0.1)。**
+> `v1.0.0` 的 tag 是首个开源快照，不包含之后修的三处交付链路问题
+> （`.gitattributes` 钉死 LF、`install.sh` 架构自检、`make-package.sh` 打包脚本）。运行时代码无变化。
+
 ---
 
 ## 📑 目录

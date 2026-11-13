@@ -19,6 +19,10 @@ through five terminals.
 
 No cloud dependency, no telemetry, no account. One Node process, one port.
 
+> **Offline packages & packaging script:** use [v1.0.1](https://github.com/XiaoBinGan/OpenLog/releases/tag/v1.0.1).
+> The `v1.0.0` tag is the initial open-source snapshot and predates three delivery-chain fixes
+> (`.gitattributes` LF pinning, `install.sh` architecture check, `make-package.sh`). Runtime code is unchanged.
+
 ---
 
 ## 📑 Table of Contents
