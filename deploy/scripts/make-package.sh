@@ -175,7 +175,10 @@ if [ "$NO_TAR" = "1" ]; then
 fi
 [ -n "$OUT" ] || OUT="$STAGE_ROOT/$SELF_TAR"
 rm -f "$OUT"
-( cd "$STAGE_ROOT" && tar -cf "$OUT" "$PKG_NAME" )
+# macOS 的 tar 会把每个文件的扩展属性写成 AppleDouble 伴生文件（._xxx），
+# 一个 30 文件的包会多出 27 个 4KB 垃圾，还会让人以为包里有奇怪的东西。
+# COPYFILE_DISABLE=1 是 bsdtar 的开关，Linux 的 GNU tar 忽略它，无害。
+( cd "$STAGE_ROOT" && COPYFILE_DISABLE=1 tar -cf "$OUT" "$PKG_NAME" )
 ok "已打包 $OUT （$(du -h "$OUT" | cut -f1)）"
 if command -v sha256sum >/dev/null 2>&1; then
   echo "     sha256 $(sha256sum "$OUT" | cut -d' ' -f1)"
@@ -210,3 +213,16 @@ ok "install.sh 在"
 
 grep -q 'check_arch' "$STAGE/deploy/install.sh" || die "install.sh 不含架构自检"
 ok "install.sh 带架构自检"
+
+# macOS 上漏掉 COPYFILE_DISABLE=1 会混进 27 个 ._xxx 伴生文件。
+# 它不破坏安装（glob 不匹配 openlog-*），但让包看起来脏，
+# 而且会让人怀疑包是不是被损坏了。宁可在这里拦下来。
+case "$LIST" in
+  */._*) warn "包里混进了 macOS 的 ._ 伴生文件（缺 COPYFILE_DISABLE=1？）" ;;
+esac
+
+# 成品 README 里不该出现模板维护说明
+if grep -q 'TEMPLATE-NOTE\|本文件是模板' "$STAGE/README.md"; then
+  die "成品 README 里残留模板说明，检查 render() 的剥离逻辑"
+fi
+ok "README 无模板残留"

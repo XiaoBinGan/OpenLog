@@ -106,4 +106,16 @@ describe('make-package.sh —— 装配行为的硬性约束', () => {
     const renders = (maker.match(/render "\$REPO_DIR\/deploy\/README-offline\.md"/g) ?? []).length;
     expect(renders).toBe(2);
   });
+
+  it('打包时禁用 macOS 的 AppleDouble 伴生文件', () => {
+    // macOS 的 bsdtar 会为每个文件写一个 ._xxx，实测 30 文件的包多出 27 个垃圾。
+    // 不破坏安装（*.tar.gz 的 glob 不匹配 ._openlog-*），但让人怀疑包被损坏。
+    expect(maker).toContain('COPYFILE_DISABLE=1 tar -cf');
+  });
+
+  it('自查能发现 ._ 伴生文件与 README 模板残留', () => {
+    expect(maker).toMatch(/case "\$LIST" in\s*\n\s*\*\/\._\*\)\s*warn/);
+    expect(maker).toMatch(/TEMPLATE-NOTE/);
+    expect(maker).toContain('README 无模板残留');
+  });
 });
