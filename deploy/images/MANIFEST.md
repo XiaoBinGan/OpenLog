@@ -3,7 +3,7 @@
 > 由 `deploy/scripts/save-image.sh` 自动维护。归档文件本身不进 git（见 `.gitignore`），
 > 但这份清单会提交，用来记录「发过哪些版本、对应的 commit、校验和」。
 | `openlog-6a14c377-20261112-112653.tar.gz` | `openlog:6a14c377` | `-` | `6a14c37` | 217M | 2026-11-12 11:26 | `7c2496fb4d2c…` | **当前生产版本 v1.0.0（x86/amd64）**：加 .gitattributes 钉死 LF（前端 bundle 哈希不一致的真因）；install.sh 带架构自检。243 与 4卡T4 均运行，两端 bundle sha256 一致 | 本地 + 服务器 |
-| `openlog-9ccf4cd-20261112-145810.tar.gz` | `openlog:9ccf4cd` | `-` | `9ccf4cd` | 187M | 2026-11-12 14:58 | `db9c918b9c7f…` | **arm64 构建**（Mac Apple Silicon）：linux/arm64，better-sqlite3 e_machine=0xB7，bundle 与 x86 一致 `index-D_DQ4OgQ.js`；对应分发包 `openlog-deploy-9ccf4cd-arm64.tar` 295M sha256 `6b060cfa6ebc…` | 本地（Mac） |
+| `openlog-9ccf4cd-20261112-145810.tar.gz` | `openlog:9ccf4cd` | `-` | `9ccf4cd` | 187M | 2026-11-12 14:58 | `db9c918b9c7f…` | **arm64 构建**（Mac Apple Silicon）：linux/arm64，better-sqlite3 e_machine=0xB7，bundle 与 x86 一致 `index-D_DQ4OgQ.js`；对应分发包 `openlog-deploy-9ccf4cd-arm64.tar` 295M sha256 `bc58b00a39bf…` | 本地（Mac） |
 | `openlog-9f06a0a6-20261112-085039.tar.gz` | `openlog:9f06a0a6` | `-` | `9f06a0a6` | 217M | 2026-11-12 08:50 | `c33a8c2a0470…` | 上一版：架构自检 | 本地 + 服务器 |
 | `openlog-c99bb354-20261111-174628.tar.gz` | `openlog:c99bb354` | `-` | `c99bb35` | 217M | 2026-11-11 17:46 | `e645996211e3…` | 上一版：v1.0.0 首个开源发布（c99bb354）；含容量告警强制弹窗 + 未知路径路由兜底。243 正在运行 | 本地 + 服务器 |
 | `openlog-c99bb354-20261111-222718.tar.gz` | `openlog:c99bb354` | `-` | `c99bb35` | 187M | 2026-11-11 22:27 | `d937a6fc840a…` | **arm64 构建**（v1.0.0，Mac Apple Silicon 原生构建）：架构 linux/arm64，better-sqlite3 原生模块 ELF e_machine=0xB7(AArch64)，首页 200、缺失 chunk 404、无 bindings 报错 | 本地（Mac） |
