@@ -1446,7 +1446,10 @@ const tsdb = createTsdbSubsystem({
   // 用真正的采集函数而不是 monitorHistory：
   // monitorHistory 里是给前端折线图用的简化形状（cpu 是数字、network 是数字），
   // 与 /api/monitor/stats 的结构完全不同，按它解析会一条指标都导不出来。
-  getSystemStats: () => systemStatsCache.stats,
+  // 返回 Promise 而不是缓存值：自采集循环独立于 /metrics 运行，
+  // 只读缓存的话没人访问 /metrics 时缓存永远是 null，
+  // 系统指标就一条都进不了时序库（生产上实测踩到了）。
+  getSystemStats: () => refreshSystemStats(),
   // 容器指标走缓存而不是每次现查 Docker：/metrics 会被 Prometheus 每 15s 抓一次，
   // 现查会让 docker daemon 的调用量翻倍，而容器数量变化本来就不频繁。
   getContainers: () => dockerContainerCache.containers || [],
@@ -1465,10 +1468,7 @@ app.use(createPrometheusRouter({
    * 不这么做的话，从来没有人访问 /api/monitor/stats 时缓存永远是 null，
    * /metrics 里就一条系统指标都没有，且不报错。
    */
-  getSelfMetrics: async () => {
-    await refreshSystemStats();
-    return refreshSelfMetrics(false);
-  },
+  getSelfMetrics: () => refreshSelfMetrics(false),
 }));
 // /metrics 是抓取热路径，不能每次现算（要读 DB 统计 + 系统指标）。
 // 用一个 5 秒的微缓存：既反映最新状态，又不让高频抓取把主服务拖慢。

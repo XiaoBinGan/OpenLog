@@ -267,6 +267,28 @@ describe('抓取 + 查询闭环（真 HTTP）', () => {
     expect(r.result).toHaveLength(0);
   });
 
+  it('getSystemStats 返回 Promise 时也能采到系统指标', async () => {
+    // 生产上踩到的坑：getSystemStats 是异步的（要触发一次 systeminformation
+    // 采集），早期实现同步取值拿到的是 null，于是系统指标一条都进不了库
+    const sqlite3 = new Database(':memory:');
+    const subAsync = createTsdbSubsystem({
+      dataDir: tmpDir,
+      getDb: () => makeAdapter(sqlite3),
+      getDbType: () => 'sqlite',
+      getSystemStats: async () => ({ cpu: { load: 10, cores: [10, 20] }, memory: { percent: 55, total: 100, used: 55 } }),
+      getContainers: () => [],
+      env: {},
+      log: () => {},
+    });
+    await subAsync.store.ensureSchema();
+    await subAsync.collectSelfIntoStore();
+    const { series } = await subAsync.store.queryRange({
+      metricName: 'openlog_memory_usage_percent', start: 0, end: Date.now() + 10_000,
+    });
+    expect(series.length).toBe(1);
+    subAsync.stop();
+  });
+
   it('内置自采集把自身指标写进库（零配置也有数据）', async () => {
     // 不配任何 scrapeConfigs 时，库里也应该有 openlog_* 指标 ——
     // 否则用户打开 PromQL 查什么都是空的，会以为功能坏了

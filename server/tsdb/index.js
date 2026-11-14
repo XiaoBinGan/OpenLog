@@ -171,7 +171,11 @@ export function createTsdbSubsystem(deps = {}) {
     const ts = now();
     const groups = [];
     try {
-      const sys = getSystemStats();
+      // getSystemStats 可以返回 Promise：真实实现要触发一次 systeminformation
+      // 采集（带 3 秒缓存），同步接口拿不到新鲜数据。
+      // 之前这里是同步取值，而缓存只由 /metrics 端点填充 —— 自采集循环独立
+      // 运行，缓存永远是 null，于是系统指标一条都没写进库。
+      const sys = await getSystemStats();
       if (sys) groups.push(systemStatsToSamples(sys, { timestamp: ts }));
     } catch { /* 系统指标取不到不该让 /metrics 失败 */ }
 
