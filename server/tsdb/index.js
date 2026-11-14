@@ -163,6 +163,7 @@ export function createTsdbSubsystem(deps = {}) {
 
   let ruleTimer = null;
   let retentionTimer = null;
+  let selfTimer = null;
   let started = false;
 
   /** 自身指标：系统 + 容器 + TSDB 自身 + 抓取器 */
@@ -196,6 +197,25 @@ export function createTsdbSubsystem(deps = {}) {
     return ruleEngine.evaluateAll(loaded.ruleGroups);
   }
 
+  /**
+   * 内置自采集：把自身指标**直接写进时序库**，不走 HTTP。
+   *
+   * 为什么必须有这一步：`/metrics` 只是把数据导出来给外部抓。
+   * 没有这个循环的话，零配置部署的 OpenLog 时序库永远是空的 ——
+   * 用户打开 PromQL 查什么都查不到，会以为整个功能坏了。
+   *
+   * 为什么不抓自己的 HTTP 端点：多一次往返、多一次鉴权、还要用户配 token。
+   * 数据本来就在内存里，直接写更简单也更快。
+   */
+  async function collectSelfIntoStore() {
+    const ts = now();
+    const samples = await collectSelfMetrics();
+    if (!samples.length) return { written: 0 };
+    // 时间戳统一成这一轮的 now，避免同一次采集里各指标时间不一致
+    for (const s of samples) s.timestamp = ts;
+    return store.writeSamples(samples, { timestamp: ts });
+  }
+
   /** 清理过期数据 */
   async function prune() {
     const ms = Number(config.retentionDays) * 86_400_000;
@@ -218,6 +238,7 @@ export function createTsdbSubsystem(deps = {}) {
     ruleEngine,
     intervalMs,
     collectSelfMetrics,
+    collectSelfIntoStore,
     evaluateRules,
     prune,
     getRuleConfig: () => ({
@@ -243,6 +264,21 @@ export function createTsdbSubsystem(deps = {}) {
       } else {
         log('没有配置抓取目标（scrapeConfigs 为空），仅采集自身指标');
       }
+
+      // 内置自采集：不管有没有配外部 target，都把自己写进时序库。
+      // 不写的话零配置部署的实例库里永远没数据，PromQL 查什么都是空的。
+      const selfTick = async () => {
+        try {
+          const r = await collectSelfIntoStore();
+          if (r.error) log(`自身指标写入失败: ${r.error}`);
+        } catch (err) {
+          log(`自身指标采集失败: ${String(err?.message || err)}`);
+        }
+        selfTimer = setTimeout(selfTick, intervalMs);
+        if (selfTimer.unref) selfTimer.unref();
+      };
+      selfTick();
+      log(`自身指标采集已启动（间隔 ${intervalMs}ms）`);
 
       if (loaded.ruleGroups.length > 0) {
         const ruleInterval = 15_000;
@@ -274,6 +310,7 @@ export function createTsdbSubsystem(deps = {}) {
       scraper.stop();
       if (ruleTimer) { clearTimeout(ruleTimer); ruleTimer = null; }
       if (retentionTimer) { clearTimeout(retentionTimer); retentionTimer = null; }
+      if (selfTimer) { clearTimeout(selfTimer); selfTimer = null; }
     },
   };
 }

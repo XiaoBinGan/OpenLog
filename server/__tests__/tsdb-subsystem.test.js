@@ -267,6 +267,23 @@ describe('抓取 + 查询闭环（真 HTTP）', () => {
     expect(r.result).toHaveLength(0);
   });
 
+  it('内置自采集把自身指标写进库（零配置也有数据）', async () => {
+    // 不配任何 scrapeConfigs 时，库里也应该有 openlog_* 指标 ——
+    // 否则用户打开 PromQL 查什么都是空的，会以为功能坏了
+    const r = await sub.collectSelfIntoStore();
+    expect(r.written).toBeGreaterThan(0);
+    const { series } = await sub.store.queryRange({ metricName: 'openlog_tsdb_ready', start: 0, end: Date.now() + 10_000 });
+    expect(series.length).toBeGreaterThan(0);
+  });
+
+  it('start 会启动自采集循环', async () => {
+    await sub.start();
+    await new Promise((r) => setTimeout(r, 200));
+    const { series } = await sub.store.queryRange({ metricName: 'openlog_tsdb_ready', start: 0, end: Date.now() + 60_000 });
+    expect(series.length).toBeGreaterThan(0);
+    sub.stop();
+  });
+
   it('start/stop 生命周期不抛错', async () => {
     await sub.start();
     await new Promise((r) => setTimeout(r, 50));
