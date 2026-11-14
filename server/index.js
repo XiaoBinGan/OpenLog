@@ -28,7 +28,9 @@ import { dedupeDisks } from './disk-utils.js';
 import { applyPatrolResults } from './patrol-cache.js';
 import gpuRouter from './routes/gpu.js';
 import skillsRouter from './routes/skills.js';
-import createMonitorRouter from './routes/monitor.js';
+import createMonitorRouter, { collectSystemStats } from './routes/monitor.js';
+import { createTsdbSubsystem } from './tsdb/index.js';
+import { createPrometheusRouter } from './routes/prometheus.js';
 import createLogsRouter from './routes/logs.js';
 import createAnalysisRouter from './routes/analysis.js';
 import assistantMemoryRouter from './routes/assistant-memory.js';
@@ -392,6 +394,19 @@ async function initDatabase() {
 
     // ── 监控体系启动（失败只 warn，绝不影响主服务）──────────────────
     await startMonitoringSafe();
+
+    // ── 时序库启动（同样只 warn）──────────────────────────────────
+    try {
+      await tsdb.start();
+      if (tsdb.enabled) {
+        const st = await tsdb.store.stats();
+        if (st.ready) {
+          console.log(`[TSDB] 已启动（保留 ${tsdb.config.retentionDays} 天，抓取间隔 ${tsdb.intervalMs}ms）`);
+        }
+      }
+    } catch (err) {
+      console.warn('[TSDB] 启动失败，时序库相关接口不可用:', errorMessage(err));
+    }
   } catch (err) {
     console.error('[DB] 初始化失败:', errorMessage(err));
     // 不退出进程（退出会让容器在 --restart 策略下无限重启、把真正的原因刷没），
@@ -478,7 +493,12 @@ function isAllowedOrigin(origin) {
  */
 function isApiPath(p) {
   return p === '/api' || p.startsWith('/api/')
-      || p === '/ws'  || p.startsWith('/ws/');
+      || p === '/ws'  || p.startsWith('/ws/')
+      // /metrics 是给 Prometheus 抓的机器端点，不是页面。
+      // 不在这里排除的话，生产模式的 SPA fallback 会把它当页面路由，
+      // 返回 index.html（200 text/html）—— Prometheus 解析失败但只报
+      // 「invalid metric name」，完全看不出真正原因是「抓到了 HTML」。
+      || p === '/metrics';
 }
 
 // Middleware
@@ -1393,6 +1413,79 @@ app.use(createLogsRouter({ logs, ensureSettings, saveLog, broadcast }));
 // ─── 系统监控路由（已抽到 server/routes/monitor.js）────────────────────────
 // monitorHistory 由下方 startMonitor() 的定时器写入，这里通过工厂注入
 app.use(createMonitorRouter({ monitorHistory, ensureSettings }));
+
+// ─── 时序库（Prometheus 兼容）───────────────────────────────────────────────
+// TSDB 子系统：抓取 / 存储 / PromQL / 规则告警 / 暴露格式。
+// 配置在 <dataDir>/tsdb.json，缺失时只采自身指标（不抓外部 target）。
+const tsdbDataDir = process.env.OPENLOG_DATA_DIR
+  || path.join(__dirname, '..', 'data');
+/** 容器列表缓存：/metrics 每 15s 被抓一次，不能每次都打 docker daemon */
+const dockerContainerCache = { at: 0, containers: [] };
+/**
+ * 系统指标缓存：/metrics 与 /api/monitor/stats 都要这份数据。
+ * 各采一次会让 systeminformation 的整机扫描跑两遍，而两条路径的时效要求
+ * 都只是「秒级」，缓存 3 秒完全够。
+ */
+const systemStatsCache = { at: 0, stats: null };
+const SYSTEM_STATS_TTL = 3000;
+async function refreshSystemStats() {
+  const t = Date.now();
+  if (systemStatsCache.stats && t - systemStatsCache.at < SYSTEM_STATS_TTL) return systemStatsCache.stats;
+  try {
+    systemStatsCache.stats = await collectSystemStats({ settings: ensureSettings() });
+    systemStatsCache.at = t;
+  } catch (err) {
+    console.warn('[TSDB] 系统指标采集失败:', errorMessage(err));
+  }
+  return systemStatsCache.stats;
+}
+const tsdb = createTsdbSubsystem({
+  dataDir: tsdbDataDir,
+  getDb: () => { try { return getDb(); } catch { return null; } },
+  getDbType: () => { try { return getDbType(); } catch { return 'sqlite'; } },
+  // 用真正的采集函数而不是 monitorHistory：
+  // monitorHistory 里是给前端折线图用的简化形状（cpu 是数字、network 是数字），
+  // 与 /api/monitor/stats 的结构完全不同，按它解析会一条指标都导不出来。
+  getSystemStats: () => systemStatsCache.stats,
+  // 容器指标走缓存而不是每次现查 Docker：/metrics 会被 Prometheus 每 15s 抓一次，
+  // 现查会让 docker daemon 的调用量翻倍，而容器数量变化本来就不频繁。
+  getContainers: () => dockerContainerCache.containers || [],
+  log: (m) => console.log(`[TSDB] ${m}`),
+});
+app.use(createPrometheusRouter({
+  store: tsdb.store,
+  getScraper: () => (tsdb.enabled ? tsdb.scraper : null),
+  getRuleEngine: () => (tsdb.enabled ? tsdb.ruleEngine : null),
+  getRuleConfig: () => tsdb.getRuleConfig(),
+  /**
+   * /metrics 的自身指标。
+   *
+   * 每次进来先确保系统指标是新鲜的 —— getSystemStats 读的是缓存，
+   * 而缓存只有在这里被推动才会更新（3 秒 TTL）。
+   * 不这么做的话，从来没有人访问 /api/monitor/stats 时缓存永远是 null，
+   * /metrics 里就一条系统指标都没有，且不报错。
+   */
+  getSelfMetrics: async () => {
+    await refreshSystemStats();
+    return refreshSelfMetrics(false);
+  },
+}));
+// /metrics 是抓取热路径，不能每次现算（要读 DB 统计 + 系统指标）。
+// 用一个 5 秒的微缓存：既反映最新状态，又不让高频抓取把主服务拖慢。
+let selfMetricsCache = [];
+let selfMetricsAt = 0;
+const SELF_METRICS_TTL = 5000;
+async function refreshSelfMetrics(force) {
+  const t = Date.now();
+  if (!force && t - selfMetricsAt < SELF_METRICS_TTL) return selfMetricsCache;
+  try {
+    selfMetricsCache = await tsdb.collectSelfMetrics();
+    selfMetricsAt = t;
+  } catch (err) {
+    console.warn('[TSDB] 自身指标采集失败:', errorMessage(err));
+  }
+  return selfMetricsCache;
+}
 
 // ─── 接口 / 数据库监控路由（依赖在 initDatabase 里创建的实例）──────────────
 // 两个 router 内部都做了「依赖为 null → 返回可用性标记而不是 500」的降级，

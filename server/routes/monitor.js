@@ -51,65 +51,88 @@ function readLocalGpus() {
   }
 }
 
+/**
+ * 采集一次系统指标。
+ *
+ * 抽成独立导出的函数，是为了让 `/api/monitor/stats` 和 TSDB 的 `/metrics`
+ * 用**同一份**数据形状。之前 `/metrics` 自己按「直觉形状」去解 monitorHistory，
+ * 而那里面是简化版（cpu 是数字不是对象、network 是数字不是数组），
+ * 结果一条系统指标都导不出来，而且因为每个字段都走了静默跳过，连报错都没有。
+ *
+ * @param {object} [opts]
+ * @param {object} [opts.settings] 用于算容量告警
+ * @returns {Promise<object>} 与 /api/monitor/stats 完全一致的形状
+ */
+export async function collectSystemStats(opts = {}) {
+  const [cpu, mem, disks, network, processes] = await Promise.all([
+    si.currentLoad(),
+    si.mem(),
+    si.fsSize(),
+    si.networkStats(),
+    si.processes(),
+  ]);
+
+  let gpus = readLocalGpus();
+
+  // 容器内 nvidia-smi 不可用，SSH 到宿主机查询。
+  // 凭据来自环境变量；未配置时 queryHostGpu() 返回 []（不再有硬编码后备值）。
+  if (gpus.length === 0 && process.env.NODE_ENV === 'production') {
+    const viaSsh = await queryHostGpu();
+    if (viaSsh.length > 0) gpus = viaSsh;
+  }
+
+  const memoryPercent = mem.total > 0 ? (mem.used / mem.total) * 100 : 0;
+  const diskList = dedupeDisks(disks.map((d) => ({ name: d.fs, used: d.used, total: d.size, usePercent: d.use })));
+
+  // 容量告警：服务端**无条件如实报告**，不在这里记「提醒过没有」。
+  // 抑制重复弹窗是浏览器本地状态（localStorage），由前端负责 ——
+  // 这样刷新页面、开新标签页都不会出现「关过了又弹」或「明明超标却不弹」。
+  const settings = opts.settings || {};
+  const thresholds = normalizeThresholds({
+    memoryPercent: settings.capacityAlertMemoryPercent,
+    diskPercent: settings.capacityAlertDiskPercent,
+  });
+  const capacityAlerts = settings.capacityAlertEnabled === false
+    ? []
+    : evaluateCapacityAlerts({ memoryPercent, disks: diskList }, thresholds);
+
+  return {
+    cpu: { load: cpu.currentLoad || 0, cores: cpu.cpus.map((c) => c.load) },
+    memory: {
+      used: mem.used || 0,
+      total: mem.total || 1,
+      free: mem.free || 0,
+      percent: Math.round(memoryPercent * 10) / 10,
+    },
+    // 容器里同一块盘会被 bind mount 重复列出（T4 上 /dev/sda3 出现过 6 次），
+    // 不去重的话前端把 6 条加起来会显示 476.9%。这里统一收敛成"一块盘一条"。
+    disk: diskList,
+    network: network.map((n) => ({ iface: n.iface, rx: n.rx_sec, tx: n.tx_sec })),
+    processes: processes.list.slice(0, 10).map((p) => ({ pid: p.pid, name: p.name, cpu: p.cpu, mem: p.mem })),
+    gpus,
+    // 容量告警（内存 > 阈值、任一磁盘 > 阈值）。没有告警时是空数组，不是 undefined。
+    capacityAlerts,
+    capacityThresholds: thresholds,
+    capacitySnoozeMinutes: Number(settings.capacityAlertSnoozeMinutes) > 0
+      ? Number(settings.capacityAlertSnoozeMinutes)
+      : 60,
+    processCount: processes.all,
+    // si.time() 在测试环境/某些容器里可能不存在，取不到就不给（下游按缺省处理）
+    uptime: typeof si.time === 'function' ? si.time().uptime : undefined,
+  };
+}
+
 export default function createMonitorRouter({ monitorHistory, ensureSettings }) {
   const router = express.Router();
 
   router.get('/api/monitor/stats', async (req, res) => {
     NO_CACHE_HEADERS(res);
     try {
-      const [cpu, mem, disks, network, processes] = await Promise.all([
-        si.currentLoad(),
-        si.mem(),
-        si.fsSize(),
-        si.networkStats(),
-        si.processes(),
-      ]);
-
-      let gpus = readLocalGpus();
-
-      // 容器内 nvidia-smi 不可用，SSH 到宿主机查询。
-      // 凭据来自环境变量；未配置时 queryHostGpu() 返回 []（不再有硬编码后备值）。
-      if (gpus.length === 0 && process.env.NODE_ENV === 'production') {
-        const viaSsh = await queryHostGpu();
-        if (viaSsh.length > 0) gpus = viaSsh;
-      }
-
-      const memoryPercent = mem.total > 0 ? (mem.used / mem.total) * 100 : 0;
-      const diskList = dedupeDisks(disks.map((d) => ({ name: d.fs, used: d.used, total: d.size, usePercent: d.use })));
-
-      // 容量告警：服务端**无条件如实报告**，不在这里记「提醒过没有」。
-      // 抑制重复弹窗是浏览器本地状态（localStorage），由前端负责 ——
-      // 这样刷新页面、开新标签页都不会出现「关过了又弹」或「明明超标却不弹」。
       const settings = typeof ensureSettings === 'function' ? (ensureSettings() || {}) : {};
-      const thresholds = normalizeThresholds({
-        memoryPercent: settings.capacityAlertMemoryPercent,
-        diskPercent: settings.capacityAlertDiskPercent,
-      });
-      const capacityAlerts = settings.capacityAlertEnabled === false
-        ? []
-        : evaluateCapacityAlerts({ memoryPercent, disks: diskList }, thresholds);
-
-      res.json({
-        cpu: { load: cpu.currentLoad || 0, cores: cpu.cpus.map((c) => c.load) },
-        memory: {
-          used: mem.used || 0,
-          total: mem.total || 1,
-          free: mem.free || 0,
-          percent: Math.round(memoryPercent * 10) / 10,
-        },
-        // 容器里同一块盘会被 bind mount 重复列出（T4 上 /dev/sda3 出现过 6 次），
-        // 不去重的话前端把 6 条加起来会显示 476.9%。这里统一收敛成"一块盘一条"。
-        disk: diskList,
-        network: network.map((n) => ({ iface: n.iface, rx: n.rx_sec, tx: n.tx_sec })),
-        processes: processes.list.slice(0, 10).map((p) => ({ pid: p.pid, name: p.name, cpu: p.cpu, mem: p.mem })),
-        gpus,
-        // 容量告警（内存 > 阈值、任一磁盘 > 阈值）。没有告警时是空数组，不是 undefined。
-        capacityAlerts,
-        capacityThresholds: thresholds,
-        capacitySnoozeMinutes: Number(settings.capacityAlertSnoozeMinutes) > 0
-          ? Number(settings.capacityAlertSnoozeMinutes)
-          : 60,
-      });
+      const stats = await collectSystemStats({ settings });
+      // processCount / uptime 是给 TSDB 用的附加字段，界面不消费，
+      // 但一起返回没有坏处（前端按需取）
+      res.json(stats);
     } catch (err) {
       res.status(500).json({ error: errorMessage(err) });
     }

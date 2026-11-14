@@ -22,6 +22,7 @@ const siMock = {
   fsSize: vi.fn(),
   networkStats: vi.fn(),
   processes: vi.fn(),
+  time: vi.fn(),
 };
 vi.mock('systeminformation', () => ({ default: siMock, ...siMock }));
 
@@ -50,6 +51,7 @@ beforeEach(() => {
   siMock.fsSize.mockResolvedValue([{ fs: '/dev/sda3', used: 1e9, size: 4e9, use: 25 }]);
   siMock.networkStats.mockResolvedValue([{ iface: 'eth0', rx_sec: 1000, tx_sec: 500 }]);
   siMock.processes.mockResolvedValue({ list: Array.from({ length: 15 }, (_, i) => ({ pid: i + 1, name: `p${i}`, cpu: i, mem: i })) });
+  siMock.time.mockReturnValue({ uptime: 86400 });
   gpuHostSshMock.queryHostGpu.mockResolvedValue([]);
 });
 
