@@ -1,0 +1,94 @@
+{
+  "$schema": "./tsdb.config.schema.json",
+  "retentionDays": 7,
+  "scrapeInterval": "15s",
+  "scrapeConfigs": [
+    {
+      "job": "openlog-self",
+      "targets": [
+        "http://127.0.0.1:3001"
+      ],
+      "metricsPath": "/metrics",
+      "bearerToken": "<从 data/.auth_token 读，或用 docker exec openlog cat /app/data/.auth_token>"
+    },
+    {
+      "job": "node-exporter",
+      "targets": [
+        "http://10.0.0.11:9100",
+        "http://10.0.0.12:9100"
+      ],
+      "metricsPath": "/metrics",
+      "interval": "15s",
+      "timeout": "10s",
+      "labels": {
+        "env": "prod"
+      }
+    }
+  ],
+  "ruleGroups": [
+    {
+      "name": "host",
+      "rules": [
+        {
+          "alert": "HostDown",
+          "expr": "up == 0",
+          "for": "1m",
+          "labels": {
+            "severity": "critical"
+          },
+          "annotations": {
+            "summary": "{{ $labels.instance }} 抓取失败超过 1 分钟"
+          }
+        },
+        {
+          "alert": "HighMemory",
+          "expr": "openlog_memory_usage_percent > 90",
+          "for": "5m",
+          "labels": {
+            "severity": "warning"
+          },
+          "annotations": {
+            "summary": "内存使用率 {{ $value }}%，持续 5 分钟超过 90%"
+          }
+        },
+        {
+          "alert": "DiskFillingUp",
+          "expr": "openlog_disk_usage_percent > 85",
+          "for": "10m",
+          "labels": {
+            "severity": "warning"
+          },
+          "annotations": {
+            "summary": "磁盘 {{ $labels.mount }} 使用率 {{ $value }}%"
+          }
+        },
+        {
+          "record": "instance:node_up:count",
+          "expr": "count(up == 1) by (job)"
+        }
+      ]
+    }
+  ],
+  "inhibitRules": [
+    {
+      "sourceMatch": {
+        "alertname": "HostDown"
+      },
+      "targetMatch": {
+        "severity": "warning"
+      },
+      "equal": [
+        "instance"
+      ]
+    }
+  ],
+  "routes": [
+    {
+      "groupBy": [
+        "alertname",
+        "job"
+      ]
+    }
+  ],
+  "silences": []
+}
