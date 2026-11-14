@@ -23,6 +23,19 @@ No cloud dependency, no telemetry, no account. One Node process, one port.
 > The `v1.0.0` tag is the initial open-source snapshot and predates three delivery-chain fixes
 > (`.gitattributes` LF pinning, `install.sh` architecture check, `make-package.sh`). Runtime code is unchanged.
 
+## Built-in time-series store (Prometheus-compatible)
+
+System metrics are no longer an 83-minute in-memory window — they persist to SQLite / PostgreSQL, with:
+
+- **Scraping** any `/metrics` endpoint (Prometheus text format)
+- **PromQL queries**: `rate()`, `sum by()`, `topk()`, `histogram_quantile()`, and more
+- **Expression-based alerting** with `for:` duration plus grouping / inhibition / silences
+- **Being scraped by Prometheus**: `/metrics` exports system, container, GPU, and self metrics
+
+Grafana can point straight at `/api/v1/*` (same shape as the Prometheus HTTP API).
+See [deploy/README-tsdb.md](deploy/README-tsdb.md).
+
+
 ---
 
 ## 📑 Table of Contents

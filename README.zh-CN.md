@@ -10,6 +10,19 @@
 > `v1.0.0` 的 tag 是首个开源快照，不包含之后修的三处交付链路问题
 > （`.gitattributes` 钉死 LF、`install.sh` 架构自检、`make-package.sh` 打包脚本）。运行时代码无变化。
 
+## 内置时序库（Prometheus 兼容）
+
+系统指标不再只有 83 分钟内存窗口 —— 现在持久化到 SQLite / PostgreSQL，并支持：
+
+- **抓取**任意 `/metrics` 端点（Prometheus 文本格式）
+- **PromQL 查询**：`rate()`、`sum by()`、`topk()`、`histogram_quantile()` 等
+- **表达式告警**：`for` 持续判定 + 分组 / 抑制 / 静默
+- **自己被 Prometheus 抓**：`/metrics` 导出系统 / 容器 / GPU / 时序库自身指标
+
+Grafana 可直接接 `/api/v1/*`（与 Prometheus HTTP API 同形状）。
+详见 [deploy/README-tsdb.md](deploy/README-tsdb.md)。
+
+
 ---
 
 ## 📑 目录
