@@ -171,3 +171,25 @@ describe('离线 compose 文件', () => {
     expect(compose).not.toMatch(/^\s*build:/m);
   });
 });
+
+describe('SQLite 备份 —— WAL 模式下不能 cp', () => {
+  const sh = fs.readFileSync(path.join(ROOT, 'deploy/deploy.sh'), 'utf8');
+
+  it('用 .backup 在线备份（能正确处理 WAL）', () => {
+    expect(sh).toContain('.backup');
+  });
+
+  it('**没有 cp 兜底**（cp 主文件会丢未 checkpoint 的数据）', () => {
+    // 唯一允许出现 cp 的地方不该是备份主 db
+    expect(sh).not.toMatch(/cp -p '\$DATA_DIR\/openlog\.db'/);
+  });
+
+  it('缺 sqlite3 时明确失败并给出安装命令', () => {
+    expect(sh).toMatch(/command -v sqlite3/);
+    expect(sh).toContain('apt-get install -y sqlite3');
+  });
+
+  it('备份后做完整性校验（不是只看文件存在）', () => {
+    expect(sh).toContain('PRAGMA integrity_check');
+  });
+});

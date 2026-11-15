@@ -25,6 +25,16 @@ import { normalizeDbType } from '../metrics/sql-dialect.js';
 import { tsdbDdl, sampleInsertSql, seriesInsertSql } from './schema.js';
 import { normalizeLabels, makeSeries, matchesLabels } from './labels.js';
 
+/** 分辨率毫秒 → 指标名后缀（300000 → "5m"）。与 retention.formatResolution 保持一致 */
+function formatResolutionLoose(ms) {
+  const n = Number(ms);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  if (n % 3_600_000 === 0) return `${n / 3_600_000}h`;
+  if (n % 60_000 === 0) return `${n / 60_000}m`;
+  if (n % 1000 === 0) return `${n / 1000}s`;
+  return null;
+}
+
 /** 单次写入最多拼多少个点。太大容易撞参数上限（SQLite 默认 32766），太小失去批处理意义 */
 const MAX_ROWS_PER_INSERT = 500;
 
@@ -420,6 +430,128 @@ LIMIT ${limit - total}`;
   }
 
   /**
+   * 按绝对截止时间清理原始（非降采样）采样点。
+   *
+   * 与 `pruneSamples(retentionMs)` 的区别：那个是「保留最近 N 毫秒」，
+   * 这个直接给时刻 —— 分层保留里降采样和原始数据用不同截止点，
+   * 传相对量容易算错一天。
+   *
+   * 降采样序列（指标名带 `:5m_max` 这类后缀）**不会**被这个方法删掉，
+   * 由 `pruneDownsampledBefore` 按各自的保留期处理。
+   */
+  async function pruneSamplesBefore(cutoffMs) {
+    const db = getDb();
+    if (!db) return { deleted: 0 };
+    if (!(await ensureSchema())) return { deleted: 0 };
+    const cutoff = Number(cutoffMs);
+    if (!Number.isFinite(cutoff)) return { deleted: 0 };
+    try {
+      // 用 NOT LIKE 排除降采样指标名。为什么不用在 ts_sample 加标记列：
+      // 加列要迁移已有表，而指标名后缀本来就唯一决定「是不是降采样」。
+      const res = await db.run(
+        `DELETE FROM ts_sample
+WHERE ts_ms < ?
+  AND series_id IN (
+    SELECT id FROM ts_series
+     WHERE name NOT LIKE '%:%\\_max' ESCAPE '\\'
+       AND name NOT LIKE '%:%\\_min' ESCAPE '\\'
+       AND name NOT LIKE '%:%\\_avg' ESCAPE '\\'
+       AND name NOT LIKE '%:%\\_count' ESCAPE '\\'
+  )`,
+        cutoff,
+      );
+      return { deleted: Number(res?.changes) || 0 };
+    } catch {
+      return { deleted: 0 };
+    }
+  }
+
+  /**
+   * 按分辨率清理某一档降采样数据。
+   *
+   * @param {number} resolutionMs 桶宽（拼出指标名后缀）
+   * @param {number} cutoffMs 早于这个时刻的删掉
+   */
+  async function pruneDownsampledBefore(resolutionMs, cutoffMs) {
+    const db = getDb();
+    if (!db) return { deleted: 0 };
+    if (!(await ensureSchema())) return { deleted: 0 };
+    const cutoff = Number(cutoffMs);
+    if (!Number.isFinite(cutoff)) return { deleted: 0 };
+    const suffix = formatResolutionLoose(resolutionMs);
+    if (!suffix) return { deleted: 0 };
+    try {
+      const like = `%:${suffix}\\_%`;
+      const res = await db.run(
+        `DELETE FROM ts_sample
+WHERE ts_ms < ?
+  AND series_id IN (SELECT id FROM ts_series WHERE name LIKE ? ESCAPE '\\')`,
+        cutoff, like,
+      );
+      return { deleted: Number(res?.changes) || 0 };
+    } catch {
+      return { deleted: 0 };
+    }
+  }
+
+  /**
+   * 最老的**原始**采样点时刻（排除降采样产物）。
+   *
+   * 分层保留靠它决定从哪开始降采样。没有这个方法就只能猜「从现在往前推一天」，
+   * 而进程停过几天的话，那几天会跳过降采样直接被删。
+   *
+   * @returns {Promise<number|null>}
+   */
+  async function oldestRawTimestamp() {
+    const db = getDb();
+    if (!db) return null;
+    if (!(await ensureSchema())) return null;
+    try {
+      const row = await db.get(
+        `SELECT MIN(s.ts_ms) AS lo FROM ts_sample s
+          JOIN ts_series r ON r.id = s.series_id
+         WHERE r.name NOT LIKE '%:%\\_max' ESCAPE '\\'
+           AND r.name NOT LIKE '%:%\\_min' ESCAPE '\\'
+           AND r.name NOT LIKE '%:%\\_avg' ESCAPE '\\'
+           AND r.name NOT LIKE '%:%\\_count' ESCAPE '\\'`,
+      );
+      return row && row.lo != null ? Number(row.lo) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * 某一分辨率下已降采样到的时刻（水位线）。
+   *
+   * 为什么需要它：分层保留是「从最老的点往后推进」，如果不删原始数据
+   * （降采样没追平时不该删），下一轮会**从同一个最老点重新开始** ——
+   * 永远推进不了。用水位线记录「已经处理到哪」，跨进程重启也有效。
+   *
+   * 实现上不需要额外的元数据表：降采样产物本身的 MAX(ts_ms) 就是水位线。
+   *
+   * @param {string} suffix 指标名后缀，如 "5m"
+   * @returns {Promise<number|null>} 没有降采样数据时返回 null
+   */
+  async function downsampledWatermark(suffix) {
+    const db = getDb();
+    if (!db) return null;
+    if (!(await ensureSchema())) return null;
+    try {
+      const like = `%:${suffix}\\_%`;
+      const row = await db.get(
+        `SELECT MAX(s.ts_ms) AS hi FROM ts_sample s
+          JOIN ts_series r ON r.id = s.series_id
+         WHERE r.name LIKE ? ESCAPE '\\'`,
+        like,
+      );
+      return row && row.hi != null ? Number(row.hi) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * 删除没有任何采样点的序列。
    * 为什么需要：抓取目标删掉后，它的序列会一直留在 ts_series 里，
    * 让 `listMetricNames` 和标签值列表混进已消失的目标。
@@ -476,6 +608,10 @@ LIMIT ${limit - total}`;
     listMetricNames,
     labelValues,
     pruneSamples,
+    oldestRawTimestamp,
+    downsampledWatermark,
+    pruneSamplesBefore,
+    pruneDownsampledBefore,
     pruneOrphanSeries,
     stats,
   };

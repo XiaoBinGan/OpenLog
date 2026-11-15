@@ -27,6 +27,8 @@ import path from 'node:path';
 import { createTsdbStore } from './store.js';
 import { createScraper, normalizeScrapeConfigs, DEFAULT_SCRAPE_INTERVAL_MS } from './scrape.js';
 import { createRuleEngine, normalizeRuleGroups } from './rules.js';
+import { createNotifier } from './notify.js';
+import { createTieredRetention, DEFAULT_TIERS } from './retention.js';
 import {
   systemStatsToSamples, containersToSamples, tsdbStatsToSamples,
   scraperStatsToSamples, mergeSamples,
@@ -159,7 +161,24 @@ export function createTsdbSubsystem(deps = {}) {
     },
   });
 
-  const ruleEngine = createRuleEngine({ store, now });
+  // 把 writeSamples 传进去：记录规则的结果要写回库，否则用户查不到
+  const ruleEngine = createRuleEngine({ store, now, writeSamples: (samples, opts) => store.writeSamples(samples, opts) });
+
+  /**
+   * 通知发送器：把 firing / resolved 真正发出去。
+   *
+   * 接收器来自配置里的 `receivers[]`。没配时 dispatch 会静默返回
+   * （用户可能只想用 /api/v1/alerts 拉取），不算错误。
+   */
+  /** 分层保留：原始短、降采样长。配置里没有 tiers 时用默认一档 */
+  const retention = createTieredRetention({ store, now, log });
+
+  const notifier = createNotifier({
+    getReceivers: () => (Array.isArray(config.receivers) ? config.receivers : []),
+    now,
+    log: (m) => log(`通知: ${m}`),
+    fetchImpl: deps.fetchImpl,
+  });
 
   let ruleTimer = null;
   let retentionTimer = null;
@@ -195,10 +214,26 @@ export function createTsdbSubsystem(deps = {}) {
     return mergeSamples(...groups);
   }
 
-  /** 求值全部规则 */
+  /**
+   * 求值全部规则，并把结果**发出去**。
+   *
+   * 之前只算不发：规则判定为 firing 之后什么都不发生，
+   * 等于「能检测但不会通知」—— 运维不会一直盯着 /api/v1/alerts 看。
+   */
   async function evaluateRules() {
     if (!loaded.ruleGroups.length) return { alerts: [], fired: [], resolved: [], errors: [] };
-    return ruleEngine.evaluateAll(loaded.ruleGroups);
+    const result = await ruleEngine.evaluateAll(loaded.ruleGroups);
+    try {
+      result.notify = await notifier.dispatch(result, {
+        inhibitRules: config.inhibitRules || [],
+        silences: config.silences || [],
+        routes: config.routes || [{ groupBy: ['alertname'] }],
+      });
+    } catch (err) {
+      // 通知失败绝不能影响规则状态 —— 否则一次 webhook 超时会让告警判定失真
+      log(`通知分发失败: ${String(err?.message || err)}`);
+    }
+    return result;
   }
 
   /**
@@ -220,15 +255,27 @@ export function createTsdbSubsystem(deps = {}) {
     return store.writeSamples(samples, { timestamp: ts });
   }
 
-  /** 清理过期数据 */
+  /**
+   * 清理过期数据。
+   *
+   * 走分层保留：先把即将过期的原始数据降采样成 5 分钟粒度存起来，
+   * 再删原始点。这样「查上季度趋势」还能看到，只是精度变粗。
+   * 只做一刀切删除的话，超过保留期的历史就永久没了。
+   */
   async function prune() {
-    const ms = Number(config.retentionDays) * 86_400_000;
-    if (!Number.isFinite(ms) || ms <= 0) return { deleted: 0 };
-    const r = await store.pruneSamples(ms);
-    if (r.deleted > 0) {
-      const orphans = await store.pruneOrphanSeries();
-      log(`清理 ${r.deleted} 个采样点、${orphans.deleted} 条空序列`);
+    const tiers = Array.isArray(config.tiers) && config.tiers.length
+      ? config.tiers
+      : (config.retentionDays ? DEFAULT_TIERS : []);
+    if (!tiers.length) return { rawDeleted: 0 };
+
+    const r = await retention.run(tiers, {
+      rawRetentionDays: Number(config.retentionDays) > 0 ? Number(config.retentionDays) : 7,
+      batchDays: 1,
+    });
+    if (r.rawDeleted > 0 || r.downsampleWritten > 0) {
+      log(`清理 ${r.rawDeleted} 个原始点，降采样写入 ${r.downsampleWritten} 个点`);
     }
+    for (const e of r.errors) log(`保留策略问题: ${e}`);
     return r;
   }
 
@@ -240,6 +287,8 @@ export function createTsdbSubsystem(deps = {}) {
     store,
     scraper,
     ruleEngine,
+    notifier,
+    retention,
     intervalMs,
     collectSelfMetrics,
     collectSelfIntoStore,

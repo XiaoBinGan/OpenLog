@@ -120,12 +120,26 @@ else
   log "备份 SQLite"
   if [ -f "$DATA_DIR/openlog.db" ]; then
     DB_FILE="$BACKUP_DIR/openlog-sqlite-$(date +%Y%m%d-%H%M%S).db"
-    # 用 sqlite3 的在线备份（若可用），否则直接复制（WAL 模式下先落盘）
-    if command -v sqlite3 >/dev/null 2>&1; then
-      run "sqlite3 '$DATA_DIR/openlog.db' \".backup '$DB_FILE'\""
-    else
-      run "cp -p '$DATA_DIR/openlog.db' '$DB_FILE'"
+    # WAL 模式下**绝不能用 cp 复制主 db 文件**。
+    #
+    # 原因：最近的写入先落在 openlog.db-wal 里，只有 checkpoint 时才合并进主 db。
+    # 直接 cp 主文件拿到的是「上次 checkpoint 时的样子」，WAL 里那部分全部丢失 ——
+    # 而且备份文件本身是完全合法的 SQLite，打开不报错，只是少了最近的记录。
+    # 这种「看起来成功」的备份最危险：出事时才发现恢复出来的是旧数据。
+    #
+    # 用 sqlite3 的 .backup 走在线备份协议：它正确处理 WAL，且能在服务运行中安全执行。
+    # 没有 sqlite3 就明确失败，不做「尽力而为的复制」—— 备份的意义是能恢复，
+    # 不是硬盘上有个文件。
+    if ! command -v sqlite3 >/dev/null 2>&1; then
+      die "备份 SQLite 需要 sqlite3（WAL 模式下不能直接 cp 主文件，会丢未 checkpoint 的数据）。
+     安装：apt-get install -y sqlite3   或   apk add sqlite
+     或改用 PostgreSQL 部署（--with-postgres），它走 pg_dump。"
     fi
+    run "sqlite3 '$DATA_DIR/openlog.db' \".backup '$DB_FILE'\""
+    # 校验备份可读且完整 —— 只检查文件存在不够，空文件也让 ls 通过。
+    # 不用 `... | grep -qx ok`：那在开 pipefail 的 shell 里会因为上游吃 SIGPIPE
+    # 而假失败（本项目已在 make-package.sh 踩过一次）。这里存到变量再比。
+    run "INTEG=\$(sqlite3 '$DB_FILE' 'PRAGMA integrity_check;'); [ \"\$INTEG\" = ok ] || { echo '  ❌ 备份完整性校验失败: '\"\$INTEG\"; exit 1; }"
     run "ls -la '$DB_FILE' | awk '{print \"  ✅ \" \$5 \" bytes → \" \$9}'"
     run "ls -1t $BACKUP_DIR/openlog-sqlite-*.db 2>/dev/null | tail -n +11 | xargs -r rm -f"
   else

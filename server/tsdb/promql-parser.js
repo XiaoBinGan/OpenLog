@@ -194,24 +194,33 @@ export function parse(input) {
     return parsePostfix(parsePrimary());
   }
 
-  /** offset 与区间后缀 */
+  /** offset / 区间 / 子查询 / @ 修饰符 后缀 */
   function parsePostfix(node) {
     let out = node;
 
-    // 区间：metric[5m]
+    // 区间 或 子查询：metric[5m] / expr[5m:1m]
     if (at(T.LBRACKET)) {
       const openTok = next();
-      // 子查询 x[5m:1m] 不支持 —— 明确报错
-      if (at(T.DURATION)) {
-        const dur = Number(next().value);
-        if (atValue(':')) fail('子查询 ([5m:1m]) 暂不支持', openTok.pos);
+      if (!at(T.DURATION)) {
+        fail('区间内必须是时长，例如 [5m] 或 [5m:1m]', peek() ? peek().pos : 0);
+      }
+      const dur = Number(next().value);
+
+      if (atValue(':')) {
+        // ── 子查询 expr[range:step] ──
+        // 语义：把 expr 在 [evalAt-range, evalAt] 区间内按 step 步长求值，
+        // 得到一条「合成」的区间向量，外面可以套 rate/sum_over_time 等。
+        next(); // ':'
+        let stepMs = null; // `[5m:]` 表示用默认步长
+        if (at(T.DURATION)) stepMs = Number(next().value);
+        expect(T.RBRACKET, ']');
+        out = { type: 'subquery', expr: out, rangeMs: dur, stepMs };
+      } else {
         expect(T.RBRACKET, ']');
         if (out.type !== 'selector') {
-          fail('区间只能用于向量选择器', openTok.pos);
+          fail('区间只能用于向量选择器；对表达式取区间请用子查询 [5m:1m]', openTok.pos);
         }
         out = { ...out, rangeMs: dur };
-      } else {
-        fail('区间内必须是时长，例如 [5m]', peek() ? peek().pos : 0);
       }
     }
 
@@ -225,7 +234,46 @@ export function parse(input) {
         fail('offset 后必须是时长，例如 offset 5m', offTok.pos);
       }
       next();
-      if (out.type !== 'selector') fail('offset 只能用于向量选择器', offTok.pos);
+      if (out.type === 'selector') {
+        out = { ...out, offsetMs: sign * Number(d.value) };
+      } else if (out.type === 'subquery') {
+        out = { ...out, offsetMs: sign * Number(d.value) };
+      } else {
+        fail('offset 只能用于向量选择器或子查询', offTok.pos);
+      }
+    }
+
+    // @ 修饰符：@ <unix秒> / @ start() / @ end()
+    if (at(T.AT)) {
+      const atTok = next();
+      if (out.type !== 'selector' && out.type !== 'subquery') {
+        fail('@ 只能用于向量选择器或子查询', atTok.pos);
+      }
+      let atMs = null;
+      let atRef = null;
+      if (at(T.NUMBER)) {
+        // Prometheus 的 @ 用秒（可带小数）
+        const sec = Number(next().value);
+        if (!Number.isFinite(sec)) fail('@ 后必须是时间戳（秒）', atTok.pos);
+        atMs = sec * 1000;
+      } else if (atValue('start') || atValue('end')) {
+        atRef = next().value;
+        expect(T.LPAREN, '(');
+        expect(T.RPAREN, ')');
+      } else {
+        fail('@ 后必须是时间戳、start() 或 end()', atTok.pos);
+      }
+      out = { ...out, atMs, atRef };
+    }
+
+    // @ 之后还允许再跟 offset（部分用户会这么写，宽松接受）
+    if (atValue('offset') && (out.atMs != null || out.atRef)) {
+      const offTok = next();
+      let sign = 1;
+      if (atValue('-')) { next(); sign = -1; }
+      const d = peek();
+      if (!d || d.type !== T.DURATION) fail('offset 后必须是时长', offTok.pos);
+      next();
       out = { ...out, offsetMs: sign * Number(d.value) };
     }
 

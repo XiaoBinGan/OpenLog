@@ -92,6 +92,7 @@ export const T = {
   COMMA: ',',
   COLON: ':',
   OP: 'op',
+  AT: '@',
   EOF: 'eof',
 };
 
@@ -238,10 +239,8 @@ export function tokenize(input) {
     if (ch === ',') { push(T.COMMA, ch, i); i += 1; continue; }
     // 单独的冒号（不成标识符时）：分隔符 token
     if (ch === ':') { push(T.COLON, ch, i); i += 1; continue; }
-    if (ch === '@') {
-      // @ 修饰符（@ start() / @ end() / @ <unix>）—— 暂不支持，直接报错更诚实
-      return { tokens, error: { message: '@ 修饰符暂不支持', pos: i } };
-    }
+    // @ 修饰符：@ <unix秒> / @ start() / @ end()
+    if (ch === '@') { push(T.AT, ch, i); i += 1; continue; }
 
     return { tokens, error: { message: `无法识别的字符: ${ch}`, pos: i } };
   }

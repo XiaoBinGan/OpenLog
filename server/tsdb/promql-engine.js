@@ -18,6 +18,12 @@ import { parse } from './promql-parser.js';
 /** 默认回看窗口：抓取间隔的 5 倍。15s 抓取 → 75s，够覆盖两次抓取的抖动 */
 export const DEFAULT_LOOKBACK_MS = 5 * 60_000;
 
+/** 子查询的默认步长。60s 与 Prometheus 的默认 lookback 同量级 */
+export const DEFAULT_SUBQUERY_STEP_MS = 60_000;
+
+/** 子查询单次最多求值多少步（防止 x[1h:1s] 把服务拖死） */
+export const MAX_SUBQUERY_STEPS = 5_000;
+
 /**
  * 创建执行器。
  *
@@ -54,7 +60,15 @@ export function createEvaluator(deps = {}) {
       ? Number(opts.lookbackMs)
       : DEFAULT_LOOKBACK_MS;
 
-    const ctx = { store, now: time, lookback, warnings: [] };
+    // rangeStart/rangeEnd 供 @ start() / @ end() 使用。单点查询时两者都等于 time。
+    const ctx = {
+      store,
+      now: time,
+      lookback,
+      warnings: [],
+      rangeStart: Number.isFinite(opts.rangeStart) ? Number(opts.rangeStart) : time,
+      rangeEnd: Number.isFinite(opts.rangeEnd) ? Number(opts.rangeEnd) : time,
+    };
 
     try {
       const value = await evaluate(ast, ctx);
@@ -127,7 +141,7 @@ export function createEvaluator(deps = {}) {
     let firstError = null;
 
     for (let t = s; t <= e; t += st) {
-      const r = await query(expr, { ...opts, time: t });
+      const r = await query(expr, { ...opts, time: t, rangeStart: s, rangeEnd: e });
       if (r.error) { firstError = r.error; break; }
       if (r.resultType !== 'vector') continue;
       for (const item of r.result) {
@@ -157,12 +171,76 @@ export function createEvaluator(deps = {}) {
       case 'number': return { kind: 'scalar', value: node.value };
       case 'string': return { kind: 'string', value: node.value };
       case 'selector': return evalSelector(node, ctx);
+      case 'subquery': return evalSubquery(node, ctx);
       case 'unary': return evalUnary(node, ctx);
       case 'binary': return evalBinary(node, ctx);
       case 'aggregate': return evalAggregate(node, ctx);
       case 'call': return evalCall(node, ctx);
       default: throw new Error(`未知的 AST 节点: ${node.type}`);
     }
+  }
+
+  /**
+   * 子查询 `expr[range:step]`。
+   *
+   * 语义：把 expr 在 [end-range, end] 区间内每隔 step 求值一次，
+   * 把结果拼成一条**合成的区间向量**（matrix），外面可以套 rate /
+   * max_over_time / sum_over_time 等区间函数。
+   *
+   * 为什么必须有：`rate(sum(x)[5m:])` 这种「先聚合再算变化率」是运维最常用的
+   * 查询之一 —— 例如「整个集群的总 QPS 增速」。没有子查询就只能自己按步长
+   * 多次调 API 再算，而 Prometheus/Grafana 面板里写不出来。
+   *
+   * step 缺省时用 60 秒：太小会让一个 1 小时窗口变成 60 次查询，
+   * 太大则丢掉变化细节。60s 与 Prometheus 的默认 lookback 同量级。
+   */
+  async function evalSubquery(node, ctx) {
+    const rangeMs = Number(node.rangeMs);
+    const stepMs = Number(node.stepMs) > 0 ? Number(node.stepMs) : DEFAULT_SUBQUERY_STEP_MS;
+    if (!Number.isFinite(rangeMs) || rangeMs <= 0) throw new Error('子查询的区间必须大于 0');
+
+    // 子查询自己的 @/offset 决定「终点在什么时刻」
+    let baseTime = ctx.now;
+    if (Number.isFinite(node.atMs)) baseTime = Number(node.atMs);
+    else if (node.atRef === 'start') baseTime = ctx.rangeStart !== undefined ? ctx.rangeStart : ctx.now;
+    else if (node.atRef === 'end') baseTime = ctx.rangeEnd !== undefined ? ctx.rangeEnd : ctx.now;
+    const end = baseTime - (Number(node.offsetMs) || 0);
+    const start = end - rangeMs;
+
+    // 步数上限：防止 `x[1h:1s]` 把服务拖死
+    const steps = Math.floor((end - start) / stepMs) + 1;
+    if (steps > MAX_SUBQUERY_STEPS) {
+      throw new Error(`子查询步数 ${steps} 超过上限 ${MAX_SUBQUERY_STEPS}，请调大 step（当前 ${stepMs}ms）`);
+    }
+
+    // 逐个步长点求值，按 labels 归并成 matrix
+    const byKey = new Map();
+    for (let t = start; t <= end; t += stepMs) {
+      // 关键：把 ctx.now 换成 t，让内部的瞬时选择器在 t 时刻求值。
+      // 不能改 ctx 本身（外层还要用），所以浅拷贝一份。
+      const sub = { ...ctx, now: t };
+      const v = await evaluate(node.expr, sub);
+      if (v.kind === 'vector') {
+        for (const s of v.series) {
+          const key = labelKey(s.labels);
+          if (!byKey.has(key)) byKey.set(key, { labels: s.labels, points: [] });
+          byKey.get(key).points.push({ ts: t, value: s.value });
+        }
+      } else if (v.kind === 'scalar') {
+        const key = labelKey({});
+        if (!byKey.has(key)) byKey.set(key, { labels: {}, points: [] });
+        byKey.get(key).points.push({ ts: t, value: v.value });
+      } else if (v.kind === 'matrix') {
+        // 嵌套子查询：把内层每个序列的点合进来
+        for (const s of v.series) {
+          const key = labelKey(s.labels);
+          if (!byKey.has(key)) byKey.set(key, { labels: s.labels, points: [] });
+          byKey.get(key).points.push(...s.points);
+        }
+      }
+    }
+
+    return { kind: 'matrix', series: [...byKey.values()] };
   }
 
   /**
@@ -187,8 +265,19 @@ export function createEvaluator(deps = {}) {
       matchers.push(m);
     }
 
+    // @ 修饰符：把求值时刻钉在指定时间点（优先级高于 offset，
+    // 与 Prometheus 一致：`x @ 1000 offset 5m` 是「在 1000 时刻看 5 分钟前的值」）
+    let baseTime = ctx.now;
+    if (Number.isFinite(node.atMs)) {
+      baseTime = Number(node.atMs);
+    } else if (node.atRef === 'start') {
+      baseTime = ctx.rangeStart !== undefined ? ctx.rangeStart : ctx.now;
+    } else if (node.atRef === 'end') {
+      baseTime = ctx.rangeEnd !== undefined ? ctx.rangeEnd : ctx.now;
+    }
+
     const offset = Number(node.offsetMs) || 0;
-    const evalAt = ctx.now - offset;
+    const evalAt = baseTime - offset;
 
     if (node.rangeMs) {
       // 区间向量：读 [evalAt - range, evalAt]

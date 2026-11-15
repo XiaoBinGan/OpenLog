@@ -31,6 +31,8 @@ import skillsRouter from './routes/skills.js';
 import createMonitorRouter, { collectSystemStats } from './routes/monitor.js';
 import { createTsdbSubsystem } from './tsdb/index.js';
 import { createPrometheusRouter } from './routes/prometheus.js';
+import { validateQueryArgs as validateMetricQuery, summarizeQueryResult } from './tsdb/ai-tools.js';
+import { createEvaluator as createTsdbEvaluator } from './tsdb/promql-engine.js';
 import createLogsRouter from './routes/logs.js';
 import createAnalysisRouter from './routes/analysis.js';
 import assistantMemoryRouter from './routes/assistant-memory.js';
@@ -1455,6 +1457,8 @@ const tsdb = createTsdbSubsystem({
   getContainers: () => dockerContainerCache.containers || [],
   log: (m) => console.log(`[TSDB] ${m}`),
 });
+// AI 查询时序库用的求值器（与 API 路由各持一个，互不影响缓存状态）
+const tsdbEvaluator = createTsdbEvaluator({ store: tsdb.store });
 app.use(createPrometheusRouter({
   store: tsdb.store,
   getScraper: () => (tsdb.enabled ? tsdb.scraper : null),
@@ -1806,6 +1810,42 @@ async function executeAssistantTool(name, args, hooks = {}) {
         const lines = allLines.slice(-(args.lines || 200));
         return { filePath: args.filePath, totalLines: allLines.length, returnedLines: lines.length, lines };
       }
+
+      // ── 时序库（PromQL）──
+      // AI 要答「昨天 CPU 最高到多少」「磁盘什么时候开始涨」这类问题，
+      // 必须能读时序数据。返回统计摘要（min/max/avg/趋势）而不是原始点 ——
+      // 一小时的 15 秒数据是 240 个点，塞进上下文既浪费又干扰判断。
+      case 'query_metrics': {
+        const v = validateMetricQuery(args, Date.now());
+        if (!v.ok) return { error: v.error, hint: v.hint || '先用 list_metrics 看有哪些指标可用' };
+
+        const isRange = v.end - v.start > 1000;
+        const r = isRange
+          ? await tsdbEvaluator.queryRange(v.query, v.start, v.end, v.step)
+          : await tsdbEvaluator.query(v.query, { time: v.end });
+        const summary = summarizeQueryResult(r);
+        return {
+          ...summary,
+          query: v.query,
+          range: { start: new Date(v.start).toISOString(), end: new Date(v.end).toISOString(), stepMs: v.step },
+        };
+      }
+
+      case 'list_metrics': {
+        if (args.label) {
+          const values = await tsdb.store.labelValues(String(args.label));
+          return { label: args.label, values, count: values.length };
+        }
+        const names = await tsdb.store.listMetricNames();
+        return {
+          metrics: names,
+          count: names.length,
+          hint: names.length === 0
+            ? '时序库还没有数据。tsdb.json 里配了 scrapeConfigs 才会抓外部目标；自身指标每 15 秒自动采一次。'
+            : '用 query_metrics 查具体指标，例如 query = "openlog_memory_usage_percent"',
+        };
+      }
+
       default:
         return { error: `未知工具: ${name}` };
     }

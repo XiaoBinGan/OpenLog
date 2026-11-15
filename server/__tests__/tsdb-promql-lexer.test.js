@@ -164,10 +164,10 @@ describe('词法 —— 错误处理', () => {
     expect(r.error.message).toMatch(/无法识别/);
   });
 
-  it('@ 修饰符明确报不支持（比静默忽略更诚实）', () => {
+  it('@ 修饰符现在产出 AT token（v1.0.2 起支持）', () => {
     const r = tokenize('m @ 1234');
-    expect(r.error).not.toBeNull();
-    expect(r.error.message).toMatch(/@/);
+    expect(r.error).toBeNull();
+    expect(r.tokens.map((t) => t.type)).toContain(T.AT);
   });
 
   it('非法时长', () => {

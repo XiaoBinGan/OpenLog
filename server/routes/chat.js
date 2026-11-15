@@ -15,6 +15,7 @@ import express from 'express';
 import { errorMessage } from '../errors.js';
 import * as remote from '../remote.js';
 import { AGENT_TOOLS, classifyToolRisk } from '../agent-tools.js';
+import { METRICS_TOOL_DEFINITION, LIST_METRICS_TOOL_DEFINITION } from '../tsdb/ai-tools.js';
 import { listAgentActions } from '../agent-audit.js';
 import {
   normalizeBaseUrl, guessEngine, ENGINE_HINTS, isToolUnsupportedError, setCachedToolSupport,
@@ -51,6 +52,12 @@ const ASSISTANT_TOOLS = [
   { type: 'function', function: { name: 'local_read_log', description: '读本机日志文件', parameters: { type: 'object', properties: { filePath: { type: 'string' }, lines: { type: 'number', description: '行数，默认 200' } }, required: ['filePath'] } } },
   // ── 远程代码/配置读写（错误定位 + 修复）──
   ...AGENT_TOOLS,
+  // ── 时序库（PromQL）──
+  // 没有这两个工具，AI 答不了「昨天 CPU 最高多少」这类问题 ——
+  // 而这类事实恰恰是排查时最需要的。返回的是统计摘要不是原始点，
+  // 避免几百个点挤占上下文。
+  METRICS_TOOL_DEFINITION,
+  LIST_METRICS_TOOL_DEFINITION,
 ];
 
 /**

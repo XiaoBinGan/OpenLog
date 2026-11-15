@@ -228,6 +228,39 @@ describe('规则求值 —— for 语义', () => {
     expect(rec.series[0].value).toBe(0.5);
   });
 
+  it('**记录规则的结果写回库，可以用指标名查到**', async () => {
+    // 之前只存内存 Map，重启丢失且查询返回空 —— 看起来像"记录规则没生效"
+    await seedGauge('cpu', { host: 'a' }, 0.5);
+    const engine = createRuleEngine({
+      store, now: () => T0, writeSamples: (samples, opts) => store.writeSamples(samples, opts),
+    });
+    const groups = normalizeRuleGroups({
+      ruleGroups: [{ name: 'g', rules: [{ record: 'cpu:sum', expr: 'sum(cpu)' }] }],
+    }).groups;
+    await engine.evaluateAll(groups);
+
+    const { series } = await store.queryRange({ metricName: 'cpu:sum', start: 0, end: T0 + 1000 });
+    expect(series).toHaveLength(1);
+    expect(series[0].points[0].value).toBe(0.5);
+  });
+
+  it('记录规则写回失败只记错误，不影响其它规则', async () => {
+    await seedGauge('cpu', { host: 'a' }, 0.95);
+    const engine = createRuleEngine({
+      store, now: () => T0,
+      writeSamples: async () => { throw new Error('disk full'); },
+    });
+    const groups = normalizeRuleGroups({
+      ruleGroups: [{ name: 'g', rules: [
+        { record: 'cpu:sum', expr: 'sum(cpu)' },
+        { alert: 'High', expr: 'cpu > 0.9' },
+      ] }],
+    }).groups;
+    const r = await engine.evaluateAll(groups);
+    expect(r.errors.length).toBe(1);
+    expect(r.alerts).toHaveLength(1); // 告警规则照常
+  });
+
   it('reset 清空状态', async () => {
     await seedGauge('cpu', { host: 'a' }, 0.95);
     const engine = createRuleEngine({ store, now: () => T0 });

@@ -5,6 +5,7 @@ import {
   createEvaluator, rateLike, irateLike, deltaLike, derivLike,
   countChanges, countResets, histogramQuantile, quantile,
   arith, compare, labelReplace, labelJoin, labelKey, DEFAULT_LOOKBACK_MS,
+  DEFAULT_SUBQUERY_STEP_MS, MAX_SUBQUERY_STEPS,
 } from '../tsdb/promql-engine.js';
 
 // ────────────────── 纯函数：先测这些，它们是所有查询的地基 ──────────────────
@@ -444,10 +445,32 @@ describe('端到端查询', () => {
     expect(r.error.message).toMatch(/未知函数/);
   });
 
-  it('子查询明确报不支持', async () => {
-    const r = await ev.query('rate(cpu_usage[5m:1m])', { time: T0 });
+  it('**子查询可用：先聚合再算变化率**', async () => {
+    // rate(sum(x)[5m:1m]) 是运维最常用的查询之一（整个集群的增速）
+    const r = await ev.query('rate(sum(http_requests_total)[2m:30s])', { time: T0 });
+    expect(r.error).toBeUndefined();
+    expect(r.result).toHaveLength(1);
+    // a: 10 每 15s = 0.667/s，b: 20 每 15s = 1.333/s，合计 2/s
+    expect(Number(r.result[0].value[1])).toBeCloseTo(2, 1);
+  });
+
+  it('子查询外面的区间函数可用', async () => {
+    const r = await ev.query('max_over_time(rate(http_requests_total[1m])[2m:30s])', { time: T0 });
+    expect(r.error).toBeUndefined();
+    expect(r.result.length).toBeGreaterThan(0);
+  });
+
+  it('子查询步数超上限时报错', async () => {
+    // 上限 5000 步。10h / 1s = 36001 步，必然超
+    const r = await ev.query('rate(sum(http_requests_total)[10h:1s])', { time: T0 });
     expect(r.error).toBeDefined();
-    expect(r.error.message).toMatch(/子查询/);
+    expect(r.error.message).toMatch(/步数/);
+  });
+
+  it('子查询默认步长是 60s', async () => {
+    const r = await ev.query('sum(http_requests_total)[5m:]', { time: T0 });
+    expect(r.error).toBeUndefined();
+    expect(r.resultType).toBe('matrix');
   });
 
   it('lookback 之外的点被视为序列消失', async () => {
@@ -457,6 +480,35 @@ describe('端到端查询', () => {
 
   it('DEFAULT_LOOKBACK_MS 是 5 分钟', () => {
     expect(DEFAULT_LOOKBACK_MS).toBe(300_000);
+  });
+
+  it('**@ 修饰符钉住求值时刻**', async () => {
+    // 数据点每 15s 一个、递增 10，共 9 个点（T0-120s … T0）
+    // T0 时刻 i=8 → 80；T0-60s 时刻 i=4 → 40
+    const now = await ev.query('http_requests_total{instance="a"}', { time: T0 });
+    const past = await ev.query(`http_requests_total{instance="a"} @ ${(T0 - 60_000) / 1000}`, { time: T0 });
+    expect(Number(now.result[0].value[1])).toBe(80);
+    expect(Number(past.result[0].value[1])).toBe(40);
+  });
+
+  it('@ 与 offset 组合：在钉住的时刻再往前看', async () => {
+    // 钉在 T0 再往前 60 秒 → 等价于看 T0-60s → 40
+    const r = await ev.query(`http_requests_total{instance="a"} @ ${T0 / 1000} offset 60s`, { time: T0 });
+    expect(Number(r.result[0].value[1])).toBe(40);
+  });
+
+  it('@ start() / @ end() 在区间查询里取区间两端', async () => {
+    const r = await ev.query('count(http_requests_total @ end())', { time: T0, rangeStart: T0 - 120_000, rangeEnd: T0 });
+    expect(r.result).toHaveLength(1);
+    expect(Number(r.result[0].value[1])).toBe(2);
+  });
+
+  it('@ 用在聚合表达式上报错', async () => {
+    // 括号包住选择器会被解析成同一个节点，所以测不出「非选择器」；
+    // 聚合表达式才是真正的非选择器节点
+    const r = await ev.query('sum(http_requests_total) @ 1700000000', { time: T0 });
+    expect(r.error).toBeDefined();
+    expect(r.error.message).toMatch(/@/);
   });
 });
 

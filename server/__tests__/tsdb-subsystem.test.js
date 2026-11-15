@@ -145,13 +145,26 @@ describe('子系统装配', () => {
     expect(m.map((x) => x.name)).toContain('openlog_tsdb_ready');
   });
 
-  it('保留期清理', async () => {
+  it('保留期清理走分层：先降采样再删原始', async () => {
     sub = makeSub();
     await sub.store.ensureSchema();
     const old = Date.now() - 30 * 86_400_000;
-    await sub.store.writeSamples([{ name: 'x', labels: {}, value: 1, timestamp: old }]);
+    // 写一串点而不是单个点 —— 单点降采样后 count=1、max/min/avg 都等于它，
+    // 但单点本身也能被降采样，所以不是关键。关键是验证清理路径不报错且有产出。
+    const samples = [];
+    for (let i = 0; i < 10; i += 1) {
+      samples.push({ name: 'x', labels: {}, value: i, timestamp: old + i * 15_000 });
+    }
+    await sub.store.writeSamples(samples);
+
     const r = await sub.prune();
-    expect(r.deleted).toBe(1);
+    expect(r.errors).toEqual([]);
+    expect(r.rawDeleted).toBeGreaterThan(0);
+    // 原始点已清，但降采样产物还在
+    const raw = await sub.store.queryRange({ metricName: 'x', start: 0, end: Date.now() });
+    expect(raw.series).toHaveLength(0);
+    const ds = await sub.store.queryRange({ metricName: 'x:5m_max', start: 0, end: Date.now() });
+    expect(ds.series.length).toBeGreaterThan(0);
   });
 
   it('enabled=false 时 start 不做事', async () => {

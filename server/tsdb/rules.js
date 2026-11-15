@@ -175,11 +175,35 @@ export function createRuleEngine(deps = {}) {
           }
 
           if (rule.kind === 'record') {
-            // 记录规则：把结果当成新序列写回（本轮只在内存里，供后续查询）
+            // 记录规则：把结果当成新序列写回时序库。
+            //
+            // 之前只存进内存 Map —— 重启就没了，而且**查不到**：
+            // 用户写了 `record: job:up:count` 之后用 `job:up:count` 查询会返回空，
+            // 看起来像「记录规则没生效」，实际上只是没写库。
             const series = (r.result || []).map((item) => ({
               labels: { ...item.metric, ...rule.labels },
               value: Number(item.value[1]),
             }));
+
+            // 记录规则的样本要带上「由哪条规则产生」的标记，便于排查
+            const samples = series
+              .filter((s) => Number.isFinite(s.value))
+              .map((s) => ({
+                name: rule.name,
+                labels: s.labels,
+                value: s.value,
+                timestamp: evalAt,
+              }));
+
+            if (samples.length && typeof deps.writeSamples === 'function') {
+              try {
+                await deps.writeSamples(samples, { timestamp: evalAt });
+              } catch (err) {
+                // 写回失败不影响其它规则
+                errors.push({ group: group.name, rule: rule.name, error: `写回失败: ${String(err?.message || err)}` });
+              }
+            }
+
             recordedSeries.set(rule.name, { at: evalAt, series });
             groupAlerts.push({
               name: rule.name, kind: 'record', health: 'ok',
