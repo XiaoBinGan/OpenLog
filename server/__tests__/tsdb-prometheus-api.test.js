@@ -393,6 +393,12 @@ describe('HTTP API', () => {
     expect(r.body.data.activeTargets).toEqual([]);
   });
 
+  it('/api/tsdb/test-notify 未注入 notifier 时 503', async () => {
+    // 这个 router 实例没传 getNotifier —— 明确说"模块未启用"而不是静默成功
+    const res = await fetch(server.url + '/api/tsdb/test-notify', { method: 'POST' });
+    expect(res.status).toBe(503);
+  });
+
   afterEach(async () => { await server.close(); });
 });
 

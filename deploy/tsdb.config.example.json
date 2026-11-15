@@ -90,5 +90,33 @@
       ]
     }
   ],
-  "silences": []
+  "silences": [],
+  "receivers": [
+    {
+      "id": "ops-webhook",
+      "name": "运维群",
+      "url": "https://example.com/webhook/alert",
+      "enabled": false,
+      "repeatIntervalMs": 14400000,
+      "sendResolved": true,
+      "timeoutMs": 10000,
+      "_comment": "enabled 改成 true 才生效。payload 是 Alertmanager 兼容格式，钉钉/飞书的中转器直接能收。"
+    }
+  ],
+  "remoteWrite": [
+    {
+      "url": "http://victoria-metrics:8428/api/v1/write",
+      "enabled": false,
+      "timeoutMs": 30000,
+      "_comment": "推给 Thanos / VictoriaMetrics / Mimir 做长期存储。enabled 改成 true 才生效。"
+    }
+  ],
+  "tiers": [
+    {
+      "resolutionMs": 300000,
+      "retentionDays": 90,
+      "sourceRetentionDays": 7,
+      "_comment": "原始 7 天 → 5 分钟粒度保留 90 天"
+    }
+  ]
 }

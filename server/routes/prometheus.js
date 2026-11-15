@@ -97,6 +97,7 @@ export function createPrometheusRouter(deps = {}) {
   const getRuleEngine = deps.getRuleEngine || (() => null);
   const getRuleConfig = deps.getRuleConfig || (() => ({ ruleGroups: [], inhibitRules: [], silences: [] }));
   const getSelfMetrics = deps.getSelfMetrics || (() => []);
+  const getNotifier = deps.getNotifier || (() => null);
   const evaluator = createEvaluator({ store, now });
   const auth = deps.auth || ((req, res, next) => next());
 
@@ -261,6 +262,25 @@ export function createPrometheusRouter(deps = {}) {
     }
     res.setHeader('Content-Type', 'text/plain; version=0.0.4; charset=utf-8');
     res.send(formatExposition(Array.isArray(samples) ? samples : []));
+  });
+
+  // ── 测试通知通道 ──
+  // 配完 webhook 想验证通不通，不用等真出故障。
+  // 之前用户只能自己造一次告警，或者干脆不验证就上线。
+  router.post('/api/tsdb/test-notify', auth, async (req, res) => {
+    const notifier = getNotifier();
+    if (!notifier) return fail(res, 503, 'unavailable', '通知模块未启用');
+    const cfg = getRuleConfig() || {};
+    const receivers = (cfg.receivers || []).filter((r) => r && r.url);
+    if (receivers.length === 0) {
+      return fail(res, 400, 'bad_data', '未配置通知接收器（tsdb.json 里的 receivers）');
+    }
+    const results = [];
+    for (const r of receivers) {
+      const ok = await notifier.sendTest(r);
+      results.push({ receiver: r.id || r.name || r.url, url: r.url, ok });
+    }
+    return ok(res, { results, sent: results.filter((x) => x.ok).length, failed: results.filter((x) => !x.ok).length });
   });
 
   // ── TSDB 运行状态 ──

@@ -1466,6 +1466,7 @@ app.use(createPrometheusRouter({
   getScraper: () => (tsdb.enabled ? tsdb.scraper : null),
   getRuleEngine: () => (tsdb.enabled ? tsdb.ruleEngine : null),
   getRuleConfig: () => tsdb.getRuleConfig(),
+  getNotifier: () => (tsdb.enabled ? tsdb.notifier : null),
   /**
    * /metrics 的自身指标。
    *

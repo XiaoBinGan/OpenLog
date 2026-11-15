@@ -330,6 +330,8 @@ export function createTsdbSubsystem(deps = {}) {
       inhibitRules: config.inhibitRules || [],
       silences: config.silences || [],
       routes: config.routes || [{ groupBy: ['alertname'] }],
+      // receivers 给 /api/tsdb/test-notify 用：配完通道当场验证，不用等真出故障
+      receivers: Array.isArray(config.receivers) ? config.receivers : [],
     }),
 
     async start() {
