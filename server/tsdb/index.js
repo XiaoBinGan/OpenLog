@@ -29,6 +29,8 @@ import { createScraper, normalizeScrapeConfigs, DEFAULT_SCRAPE_INTERVAL_MS } fro
 import { createRuleEngine, normalizeRuleGroups } from './rules.js';
 import { createNotifier } from './notify.js';
 import { createTieredRetention, DEFAULT_TIERS } from './retention.js';
+import { collectApiMetricSamples } from '../metrics/api-tsdb-bridge.js';
+import { createRemoteWriter } from './remote-write.js';
 import {
   systemStatsToSamples, containersToSamples, tsdbStatsToSamples,
   scraperStatsToSamples, mergeSamples,
@@ -173,6 +175,14 @@ export function createTsdbSubsystem(deps = {}) {
   /** 分层保留：原始短、降采样长。配置里没有 tiers 时用默认一档 */
   const retention = createTieredRetention({ store, now, log });
 
+  /** remote write：把数据推给 Thanos / VictoriaMetrics 做长期存储 */
+  const remoteWriter = createRemoteWriter({
+    store,
+    getTargets: () => (Array.isArray(config.remoteWrite) ? config.remoteWrite : []),
+    now,
+    log: (m) => log(m),
+  });
+
   const notifier = createNotifier({
     getReceivers: () => (Array.isArray(config.receivers) ? config.receivers : []),
     now,
@@ -183,6 +193,7 @@ export function createTsdbSubsystem(deps = {}) {
   let ruleTimer = null;
   let retentionTimer = null;
   let selfTimer = null;
+  let remoteWriteTimer = null;
   let started = false;
 
   /** 自身指标：系统 + 容器 + TSDB 自身 + 抓取器 */
@@ -248,7 +259,26 @@ export function createTsdbSubsystem(deps = {}) {
    */
   async function collectSelfIntoStore() {
     const ts = now();
-    const samples = await collectSelfMetrics();
+    let samples = await collectSelfMetrics();
+
+    // 接口指标：api_metrics_minute 里已经有 QPS / 延迟 / 错误率，
+    // 之前只用于界面展示。写进时序库之后用户就能写
+    // `rate(openlog_api_requests_5xx_total[5m]) > 0` 这类告警。
+    try {
+      // apiMetricsStore 可能是 getter（apiStore 在 initDatabase 之后才创建）
+      const apiStore = typeof deps.apiMetricsStore === 'function' ? deps.apiMetricsStore() : deps.apiMetricsStore;
+      if (apiStore) {
+        const apiSamples = await collectApiMetricSamples(apiStore, {
+          sinceMs: ts - 5 * 60_000,
+          untilMs: ts,
+          limit: 5000,
+        });
+        if (apiSamples.length) samples = samples.concat(apiSamples);
+      }
+    } catch (err) {
+      log(`接口指标采集失败: ${String(err?.message || err)}`);
+    }
+
     if (!samples.length) return { written: 0 };
     // 时间戳统一成这一轮的 now，避免同一次采集里各指标时间不一致
     for (const s of samples) s.timestamp = ts;
@@ -289,6 +319,7 @@ export function createTsdbSubsystem(deps = {}) {
     ruleEngine,
     notifier,
     retention,
+    remoteWriter,
     intervalMs,
     collectSelfMetrics,
     collectSelfIntoStore,
@@ -353,6 +384,24 @@ export function createTsdbSubsystem(deps = {}) {
       retentionTimer = setTimeout(pruneTick, 60_000);
       if (retentionTimer.unref) retentionTimer.unref();
 
+      // remote write：每分钟推一次增量。远端（Thanos / VM）负责长期存储，
+      // 本地只保留短期，两边的窗口互补。
+      if (Array.isArray(config.remoteWrite) && config.remoteWrite.length > 0) {
+        const rwTick = async () => {
+          try {
+            const r = await remoteWriter.push({ batchMs: 60_000 });
+            if (r.failed > 0) log(`remote write: ${r.failed} 个目标失败`);
+          } catch (err) {
+            log(`remote write 异常: ${String(err?.message || err)}`);
+          }
+          remoteWriteTimer = setTimeout(rwTick, 60_000);
+          if (remoteWriteTimer.unref) remoteWriteTimer.unref();
+        };
+        remoteWriteTimer = setTimeout(rwTick, 90_000); // 启动后等 90 秒，先让数据攒起来
+        if (remoteWriteTimer.unref) remoteWriteTimer.unref();
+        log(`remote write 已配置 ${config.remoteWrite.length} 个目标`);
+      }
+
       if (loaded.errors.length) {
         for (const e of loaded.errors) log(`配置问题: ${e}`);
       }
@@ -364,6 +413,7 @@ export function createTsdbSubsystem(deps = {}) {
       if (ruleTimer) { clearTimeout(ruleTimer); ruleTimer = null; }
       if (retentionTimer) { clearTimeout(retentionTimer); retentionTimer = null; }
       if (selfTimer) { clearTimeout(selfTimer); selfTimer = null; }
+      if (remoteWriteTimer) { clearTimeout(remoteWriteTimer); remoteWriteTimer = null; }
     },
   };
 }

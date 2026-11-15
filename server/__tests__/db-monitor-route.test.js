@@ -136,7 +136,7 @@ describe('GET /api/monitor/db/history', () => {
       const body = await res.json();
       expect(body.kind).toBe('heavy');
       expect(body.samples).toEqual([]);
-      expect(body.unavailable).toBe('db_metric_sample 读取未接入');
+      expect(body.unavailable).toContain('数据库适配层不可用');
     } finally { await close(); }
   });
 

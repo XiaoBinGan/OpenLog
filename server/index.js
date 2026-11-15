@@ -1455,6 +1455,8 @@ const tsdb = createTsdbSubsystem({
   // 容器指标走缓存而不是每次现查 Docker：/metrics 会被 Prometheus 每 15s 抓一次，
   // 现查会让 docker daemon 的调用量翻倍，而容器数量变化本来就不频繁。
   getContainers: () => dockerContainerCache.containers || [],
+  // 接口指标桥接：apiStore 在 initDatabase 之后才创建，所以传 getter 而不是值
+  apiMetricsStore: () => apiStore,
   log: (m) => console.log(`[TSDB] ${m}`),
 });
 // AI 查询时序库用的求值器（与 API 路由各持一个，互不影响缓存状态）

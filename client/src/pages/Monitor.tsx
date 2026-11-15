@@ -26,6 +26,7 @@ import { apiFetch } from '../api/client';
 import ApiSection from '../components/monitor/ApiSection';
 import DbSection from '../components/monitor/DbSection';
 import DatasourceSection from '../components/monitor/DatasourceSection';
+import TsdbSection from '../components/monitor/TsdbSection';
 import type { MonitorStats, MonitorHistory, RemoteServer } from '../types';
 
 // ─── Panel drag-and-drop system ───────────────────────────────────────────
@@ -781,6 +782,8 @@ export default function Monitor() {
           deviceName={selectedDevice.name}
           onBackToLocal={isRemote ? resetToLocal : undefined}
         />
+        {/* 时序库：PromQL 查询持久化的历史指标（系统 / 接口 / 容器） */}
+        <TsdbSection />
         {/* 真要看别的机器：登记它的数据库 / 探它的接口文档 */}
         <DatasourceSection />
       </div>

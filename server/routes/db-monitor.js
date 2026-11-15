@@ -31,7 +31,10 @@ const MAX_SLOW_LIMIT = 500;
 const DEFAULT_TABLES_TOP = 20;
 const MAX_TABLES_TOP = 50;
 /** history 拿不到数据的统一说明：前端据此显示「历史读取未接入」而不是「没有历史」 */
-const HISTORY_UNAVAILABLE = 'db_metric_sample 读取未接入';
+// 这条文案只在 db 适配层缺失时出现（比如初始化失败）。
+// 正常情况历史是能读的 —— 之前这里写「读取未接入」是过时描述，
+// 会让人以为功能没做，实际只是依赖没就绪。
+const HISTORY_UNAVAILABLE = '数据库适配层不可用（db 未初始化或初始化失败），历史暂不可读';
 
 const errText = (err) => (err && err.message ? String(err.message) : String(err));
 
