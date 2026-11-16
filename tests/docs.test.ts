@@ -141,3 +141,43 @@ describe('镜像归档清单格式', () => {
     }
   });
 });
+
+
+describe('CHANGELOG', () => {
+  const cl = fs.readFileSync(path.join(ROOT, 'CHANGELOG.md'), 'utf8');
+
+  it('存在且有 v1.1.0 段', () => {
+    expect(cl).toContain('## v1.1.0');
+  });
+
+  it('每个版本段都有标题', () => {
+    const heads = cl.match(/^## v[\d.]+ — .+/gm) ?? [];
+    expect(heads.length).toBeGreaterThanOrEqual(3);
+  });
+
+  it('**v1.0.1 段提到 tag 与离线包的对应关系**', () => {
+    // 这个坑踩过：tag 指向旧提交，而 release 里的包是新代码打的
+    expect(cl).toMatch(/v1\.0\.0 的 tag 是首个开源快照/);
+  });
+
+  it('版本号与 package.json 一致', () => {
+    const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
+    // CHANGELOG 最新段必须等于 package.json 的版本
+    const latest = (cl.match(/^## v([\d.]+)/m) ?? [])[1];
+    expect(latest).toBe(pkg.version);
+  });
+});
+
+describe('版本号一致性', () => {
+  it('package.json 与 client/package.json 一致', () => {
+    const a = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
+    const b = JSON.parse(fs.readFileSync(path.join(ROOT, 'client/package.json'), 'utf8'));
+    expect(a.version).toBe(b.version);
+  });
+
+  it('lock 文件顶层版本与 package.json 一致', () => {
+    const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
+    const lock = JSON.parse(fs.readFileSync(path.join(ROOT, 'package-lock.json'), 'utf8'));
+    expect(lock.version).toBe(pkg.version);
+  });
+});
