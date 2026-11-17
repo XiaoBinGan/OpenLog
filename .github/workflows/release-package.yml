@@ -1,0 +1,203 @@
+name: Release package
+
+# 手动触发：把一个架构的离线包构建 + 装配 + 上传到指定 release。
+#
+# 设计要点（都是为了消灭手工装配踩过的坑）：
+#   · 打包一律调用 deploy/scripts/make-package.sh —— README 由模板按实际内容渲染，
+#     不再出现「包里文档写着别的文件名/别的架构」。
+#   · 镜像来自 tag 指向的提交；deploy/ 脚本与文档取自 main 最新（与团队手工流程一致：
+#     镜像用发布提交，脚本用最新）。
+#   · 强制三重架构验证（镜像元数据 / 容器内 Node / better-sqlite3 ELF 头），
+#     任一条不过就中止，不产出包。
+#   · arm64 在 GitHub 的 x86 runner 上需要 QEMU 模拟，better-sqlite3 走源码编译，
+#     约 15-30 分钟且可能偶发失败；如失败，请用 Apple Silicon 机器本地构建后手动上传。
+#
+# 权限：contents: write（上传 release 资产）。
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '要附带离线包的 release tag（如 v1.1.0）'
+        required: true
+        type: string
+      arch:
+        description: '目标架构'
+        required: true
+        default: amd64
+        type: choice
+        options:
+          - amd64
+          - arm64
+      clobber:
+        description: '覆盖同名资产（同名已存在时必须勾选）'
+        required: false
+        default: false
+        type: boolean
+      dry_run:
+        description: '只校验流程（不构建、不打包、不上传）'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-package-${{ inputs.tag }}-${{ inputs.arch }}
+  cancel-in-progress: false
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve tag → commit
+        id: meta
+        run: |
+          set -euo pipefail
+          TAG="${{ inputs.tag }}"
+          git fetch --tags --force origin
+          if ! git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            echo "::error::tag $TAG 不存在（先打 tag 再发版）"; exit 1
+          fi
+          SHA="$(git rev-parse "$TAG^{commit}")"
+          SHORT="$(git rev-parse --short=8 "$SHA")"
+          echo "sha=$SHA"     >> "$GITHUB_OUTPUT"
+          echo "short=$SHORT" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG"     >> "$GITHUB_OUTPUT"
+          echo "已解析 $TAG → $SHORT"
+
+      - name: Check release exists
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release view "${{ inputs.tag }}" --repo "$GITHUB_REPOSITORY" >/dev/null \
+            || { echo "::error::release ${{ inputs.tag }} 不存在"; exit 1; }
+          gh release view "${{ inputs.tag }}" --repo "$GITHUB_REPOSITORY" \
+            --json assets --jq '.assets[] | "现有资产: \(.name)  \(.size) bytes"'
+
+      - name: Dry run summary
+        if: inputs.dry_run
+        run: |
+          echo "### Dry run" >> "$GITHUB_STEP_SUMMARY"
+          echo "- tag: ${{ inputs.tag }} → commit \`${{ steps.meta.outputs.short }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- arch: ${{ inputs.arch }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "未构建、未打包、未上传。" >> "$GITHUB_STEP_SUMMARY"
+
+      # ── 以下步骤在 dry_run 时全部跳过 ──
+      - name: Checkout release commit (build source)
+        if: ${{ !inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          git checkout -q "${{ steps.meta.outputs.sha }}"
+          # 打包脚本与文档取自 main 最新（团队约定：镜像用发布提交，脚本用最新）
+          git fetch -q origin main
+          git checkout -q origin/main -- deploy/
+          echo "构建提交: $(git rev-parse --short=8 HEAD)；deploy/ 取自 $(git rev-parse --short=8 origin/main)"
+
+      - name: Set up QEMU (arm64 only)
+        if: ${{ !inputs.dry_run && inputs.arch == 'arm64' }}
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx (arm64 only)
+        if: ${{ !inputs.dry_run && inputs.arch == 'arm64' }}
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        if: ${{ !inputs.dry_run }}
+        env:
+          ARCH: ${{ inputs.arch }}
+          SHORT: ${{ steps.meta.outputs.short }}
+        run: |
+          set -euo pipefail
+          if [ "$ARCH" = "arm64" ]; then
+            echo "::warning::arm64 走 QEMU 模拟，better-sqlite3 需源码编译，约 15-30 分钟且可能偶发失败"
+            docker buildx build --platform linux/arm64 --load -t "openlog:$SHORT" .
+          else
+            docker build -t "openlog:$SHORT" .
+          fi
+          docker pull --platform "linux/$ARCH" postgres:16-alpine
+
+      - name: Verify architecture (3 checks, all must pass)
+        if: ${{ !inputs.dry_run }}
+        env:
+          ARCH: ${{ inputs.arch }}
+          SHORT: ${{ steps.meta.outputs.short }}
+        run: |
+          set -euo pipefail
+          WANT="linux/$ARCH"
+          GOT="$(docker inspect "openlog:$SHORT" --format '{{.Os}}/{{.Architecture}}')"
+          echo "① 镜像元数据: $GOT"
+          [ "$GOT" = "$WANT" ] || { echo "::error::镜像架构 $GOT ≠ $WANT"; exit 1; }
+
+          GOT2="$(docker run --rm --platform "$WANT" --entrypoint node "openlog:$SHORT" -e 'console.log(process.platform+"/"+process.arch)')"
+          echo "② 容器内 Node: $GOT2"
+          [ "$GOT2" = "$WANT" ] || { echo "::error::运行时架构 $GOT2 ≠ $WANT"; exit 1; }
+
+          docker run --rm --platform "$WANT" --entrypoint node "openlog:$SHORT" -e '
+            const fs=require("fs"),p=require("path");
+            const d="/app/node_modules/better-sqlite3/build/Release";
+            const f=fs.readdirSync(d).find(x=>x.endsWith(".node"));
+            const b=fs.readFileSync(p.join(d,f));
+            const m=b.readUInt16LE(18);
+            console.log("③ better-sqlite3:", f, "e_machine=0x"+m.toString(16));
+            if (m !== (process.arch === "arm64" ? 0xb7 : 0x3e)) { console.error("架构不对"); process.exit(1); }
+          ' | tee /tmp/check3.txt
+          grep -q "e_machine" /tmp/check3.txt
+
+      - name: Save image archives
+        if: ${{ !inputs.dry_run }}
+        env:
+          SHORT: ${{ steps.meta.outputs.short }}
+        run: |
+          set -euo pipefail
+          STAMP="$(date +%Y%m%d-%H%M%S)"
+          mkdir -p deploy/images
+          docker save "openlog:$SHORT" | gzip -1 > "deploy/images/openlog-${SHORT}-${STAMP}.tar.gz"
+          docker save postgres:16-alpine | gzip -1 > deploy/images/postgres-16-alpine.tar.gz
+          ls -lh deploy/images/*.tar.gz
+
+      - name: Assemble package (template-rendered README)
+        if: ${{ !inputs.dry_run }}
+        env:
+          ARCH: ${{ inputs.arch }}
+          SHORT: ${{ steps.meta.outputs.short }}
+        run: |
+          set -euo pipefail
+          bash deploy/scripts/make-package.sh --arch "$ARCH"
+          TAR="$(ls -1t ../openlog-deploy-*.tar | head -1)"
+          ls -lh "$TAR"
+
+      - name: Upload asset
+        if: ${{ !inputs.dry_run }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAR="$(ls -1t ../openlog-deploy-*.tar | head -1)"
+          NAME="$(basename "$TAR")"
+          ARGS=(--repo "$GITHUB_REPOSITORY")
+          [ "${{ inputs.clobber }}" = "true" ] && ARGS+=(--clobber)
+          gh release upload "${{ inputs.tag }}" "$TAR" "${ARGS[@]}"
+
+          SIZE="$(stat -c%s "$TAR")"
+          SHA="$(sha256sum "$TAR" | cut -d' ' -f1)"
+          {
+            echo "### ✅ 已上传 $NAME"
+            echo ""
+            echo "| 项 | 值 |"
+            echo "|---|---|"
+            echo "| release | ${{ inputs.tag }} |"
+            echo "| 镜像提交 | \`${{ steps.meta.outputs.short }}\` |"
+            echo "| 架构 | ${{ inputs.arch }} |"
+            echo "| 大小 | $SIZE bytes |"
+            echo "| sha256 | \`$SHA\` |"
+            echo ""
+            echo "把最后一行记进 \`deploy/images/MANIFEST.md\`。"
+          } >> "$GITHUB_STEP_SUMMARY"
