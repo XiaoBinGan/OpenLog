@@ -5,7 +5,7 @@
 [![CI](https://github.com/XiaoBinGan/OpenLog/actions/workflows/ci.yml/badge.svg)](https://github.com/XiaoBinGan/OpenLog/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D22-brightgreen.svg)](https://nodejs.org/)
-[![Tests](https://img.shields.io/badge/tests-2038%20passed-brightgreen.svg)](#-dev--quality-gates)
+[![Tests](https://img.shields.io/badge/tests-2600%2B%20passed-brightgreen.svg)](#-dev--quality-gates)
 
 **[[English](README.md)] | [[简体中文](README.zh-CN.md)]**
 
@@ -41,6 +41,7 @@ See [deploy/README-tsdb.md](deploy/README-tsdb.md).
 ## 📑 Table of Contents
 
 - [Features](#-features)
+- [Built-in time-series store](#built-in-time-series-store-prometheus-compatible)
 - [Quick Start](#-quick-start)
   - [Prerequisites](#prerequisites) · [Installation](#installation) · [Configuration](#configuration)
   - [Supported inference engines](#supported-inference-engines-vllm--sglang--strata--ollama)
@@ -58,6 +59,7 @@ See [deploy/README-tsdb.md](deploy/README-tsdb.md).
   - Alert rules · Container log alerts · Docker live logs · In-container exec
 - [API Reference](#-api-reference)
 - [License](#-license)
+- [Changelog](CHANGELOG.md) · [Contributing](#-contributing) · [Acknowledgements](#-acknowledgements)
 
 ---
 
@@ -440,7 +442,7 @@ on another machine can't fetch the token automatically — it shows the "token r
 ## 🧪 Dev & Quality Gates
 
 ```bash
-npm test              # unit + integration (~680 cases, incl. security regressions)
+npm test              # unit + integration (2,600+ cases, incl. security regressions)
 npm run test:coverage # with coverage
 npm run lint          # server ESLint
 npm run lint:client   # client ESLint (React + TS)
@@ -537,7 +539,14 @@ openlog/
 
 ## 🕒 Recent Changes
 
-> Only user-visible changes; see `git log` for details.
+> Only the latest release is summarised here; the authoritative history is [CHANGELOG.md](CHANGELOG.md).
+
+### 2026-11-16 · v1.1.0 — built-in time-series store (Prometheus-compatible)
+
+- A TSDB runs **inside the same process**: scrape, store, PromQL subset, recording rules, tiered
+  retention and `remote write` intake — no external Prometheus/Grafana to operate.
+- The Monitor page gained a query panel; alerts can fire on stored series; AI tools can query metrics.
+- Packaging fixes: `make-package.sh` no longer leaves macOS `._` files; self-checks grew 2 → 4.
 
 ### 2026-10-29 · Read-only commands no longer prompt for confirmation
 
@@ -1159,7 +1168,7 @@ The short version, before opening a pull request:
 
 ```bash
 npm run lint:all       # 0 errors required
-npx vitest run         # 2038 tests, must be green
+npx vitest run         # 2,600+ tests, must be green
 npm run build          # production client build
 cd client && npx tsc -b
 ```

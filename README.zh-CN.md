@@ -28,6 +28,7 @@ Grafana 可直接接 `/api/v1/*`（与 Prometheus HTTP API 同形状）。
 ## 📑 目录
 
 - [特性](#-特性)
+- [内置时序库（Prometheus 兼容）](#内置时序库prometheus-兼容)
 - [快速开始](#-快速开始)
   - [前置要求](#前置要求) · [安装](#安装) · [配置](#配置) · [支持的推理服务](#支持的推理服务vllm--sglang--strata--ollama)
   - [访问令牌](#访问令牌) · [运行](#运行) · [Windows 快速开始](#windows-快速开始)
@@ -43,6 +44,7 @@ Grafana 可直接接 `/api/v1/*`（与 Prometheus HTTP API 同形状）。
   - 容器日志告警 · Docker 实时日志 · 容器内执行命令
 - [API 速查](#-api-速查)
 - [许可证](#-许可证)
+- [CHANGELOG](CHANGELOG.md) · [参与贡献](#-参与贡献) · [致谢](#-致谢)
 
 ---
 
@@ -404,7 +406,7 @@ OPENLOG_DATABASE_URL=postgres://openlog:密码@127.0.0.1:5432/openlog \
 ## 🧪 开发与质量门禁
 
 ```bash
-npm test              # 单元 + 集成测试（约 680 个用例，含安全回归）
+npm test              # 单元 + 集成测试（2600+ 用例，含安全回归）
 npm run test:coverage # 带覆盖率
 npm run lint          # 服务端 ESLint
 npm run lint:client   # 客户端 ESLint（React + TS）
@@ -500,6 +502,15 @@ openlog/
 ---
 
 ## 🕒 更新记录
+
+> 这里只保留最近一次发布的摘要；完整历史见 [CHANGELOG.md](CHANGELOG.md)。
+
+### 2026-11-16 · v1.1.0 —— 内置时序库（Prometheus 兼容）
+
+- 时序库跑在**同一个进程**里：抓取 / 存储 / PromQL 子集 / 记录规则 / 分层保留 / 接收 `remote write`，不用再单独运维 Prometheus、Grafana。
+- 监控页新增查询面板；告警可基于入库指标触发；AI 工具可以直接查指标。
+- 打包修复：`make-package.sh` 不再残留 macOS `._` 伴生文件，自查从两项扩到四项。
+
 ### 2026-10-29 · 只读命令不再反复弹确认
 
 - 新增 `server/security/command-risk.js`：引号感知解析 Shell 命令，判断是否为只读。
@@ -1037,7 +1048,7 @@ Copyright (c) 2026 XiaoBinGan
 
 ```bash
 npm run lint:all       # 要求 0 error
-npx vitest run         # 2038 条测试，必须全绿
+npx vitest run         # 2600+ 条测试，必须全绿
 npm run build          # 生产构建
 cd client && npx tsc -b
 ```

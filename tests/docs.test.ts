@@ -112,6 +112,83 @@ describe('README 双语文档', () => {
   });
 });
 
+describe('文档不会悄悄过期（防漂移守卫）', () => {
+  /** 只取二级标题，且跳过代码围栏里的内容 */
+  function level2(md: string): string[] {
+    const out: string[] = [];
+    let inFence = false;
+    for (const line of md.split('\n')) {
+      if (/^\s*```/.test(line)) { inFence = !inFence; continue; }
+      if (inFence) continue;
+      const m = line.match(/^##\s+(.*)$/);
+      if (m) out.push(m[1].trim());
+    }
+    return out;
+  }
+
+  it('目录覆盖了所有二级章节（新增章节必须进目录）', () => {
+    for (const f of FILES) {
+      const src = read(f);
+      const toc = src.match(/^## (?:📑 Table of Contents|📑 目录)\n([\s\S]*?)\n## /m);
+      expect(toc, `${f} 没有目录区`).toBeTruthy();
+      const linked = new Set([...toc![1].matchAll(/\]\(#([^)]+)\)/g)].map((m) => m[1]));
+      const selfSlugs = new Set([
+        slug('📑 Table of Contents'),
+        slug('📑 目录'),
+      ]);
+      const missing = level2(src)
+        .map((h) => slug(h))
+        .filter((a) => a && !selfSlugs.has(a) && !linked.has(a));
+      expect([...new Set(missing)], `${f} 目录缺少这些章节`).toEqual([]);
+    }
+  });
+
+  it('两版 README 都指向 CHANGELOG（单一事实来源）', () => {
+    for (const f of FILES) {
+      expect(read(f), `${f} 没有链接 CHANGELOG`).toContain('CHANGELOG.md');
+    }
+  });
+
+  it('CHANGELOG 最新版本与 package.json 版本一致', () => {
+    const pkg = JSON.parse(read('package.json'));
+    const versions = [...read('CHANGELOG.md').matchAll(/^## v(\d+\.\d+\.\d+)/gm)].map((m) => m[1]);
+    expect(versions.length, 'CHANGELOG 没有版本段').toBeGreaterThan(0);
+    expect(versions[0], 'CHANGELOG 首段必须是当前版本').toBe(pkg.version);
+  });
+
+  it('用例数只能写成下界，不允许过期精确值', () => {
+    // 精确值必然过期（曾出现 2038 / 680 / 111 个文件并存，且与实际差 500+）。
+    // 允许 "2600+"，禁止 "2038 个测试" / "tests-2038"。
+    const exact: string[] = [];
+    const files = ['README.md', 'README.zh-CN.md', 'site/assets/i18n.js'];
+    for (const f of files) {
+      const src = read(f);
+      // shields 徽章：tests-<数字> 必须是 tests-<数字>%2B
+      for (const m of src.matchAll(/tests-(\d+)(%2B)?/g)) {
+        if (!m[2]) exact.push(`${f}: tests-${m[1]}（缺 %2B 下界标记）`);
+      }
+      // 站点/文案里的「N 个测试 / N tests」
+      for (const m of src.matchAll(/(\d{3,5})\s*(?:个|条)?\s*(?:测试|用例|tests?)/g)) {
+        const plus = src.slice(m.index! + m[0].length, m.index! + m[0].length + 1);
+        if (!/[+＋]/.test(m[0]) && !/^\+/.test(plus)) exact.push(`${f}: ${m[0]}`);
+      }
+    }
+    expect(exact, '这些地方写死了精确用例数（应写成 2600+ 这类下界）').toEqual([]);
+  });
+
+  it('站点里用到的 i18n 键在中英字典里都有定义', () => {
+    const html = read('site/index.html');
+    const dict = read('site/assets/i18n.js');
+    const keys = [...new Set(
+      [...html.matchAll(/data-i18n(?:-html|-placeholder|-title|-content|-aria|-tpl)?="([^"]+)"/g)]
+        .map((m) => m[1]),
+    )];
+    expect(keys.length).toBeGreaterThan(50);
+    const missing = keys.filter((k) => (dict.match(new RegExp(`"${k}"\\s*:`, 'g')) || []).length < 2);
+    expect(missing, '这些键在 zh 或 en 字典里缺失').toEqual([]);
+  });
+});
+
 describe('镜像归档清单格式', () => {
   const manifestPath = 'deploy/images/MANIFEST.md';
 
