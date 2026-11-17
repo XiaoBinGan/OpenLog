@@ -141,9 +141,11 @@ jobs:
           echo "① 镜像元数据: $GOT"
           [ "$GOT" = "$WANT" ] || { echo "::error::镜像架构 $GOT ≠ $WANT"; exit 1; }
 
+          # Node 的 process.arch 用 x64 / arm64，不叫 amd64 —— 必须映射，否则永远不等
+          NODE_ARCH="x64"; [ "$ARCH" = "arm64" ] && NODE_ARCH="arm64"
           GOT2="$(docker run --rm --platform "$WANT" --entrypoint node "openlog:$SHORT" -e 'console.log(process.platform+"/"+process.arch)')"
-          echo "② 容器内 Node: $GOT2"
-          [ "$GOT2" = "$WANT" ] || { echo "::error::运行时架构 $GOT2 ≠ $WANT"; exit 1; }
+          echo "② 容器内 Node: $GOT2（期望 linux/$NODE_ARCH）"
+          [ "$GOT2" = "linux/$NODE_ARCH" ] || { echo "::error::运行时架构 $GOT2 ≠ linux/$NODE_ARCH"; exit 1; }
 
           docker run --rm --platform "$WANT" --entrypoint node "openlog:$SHORT" -e '
             const fs=require("fs"),p=require("path");
