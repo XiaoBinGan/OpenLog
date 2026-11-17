@@ -89,6 +89,142 @@ export function mergePatrolProblems(report, patrolResults) {
   return report;
 }
 
+// ─── 未纳入采集的容器：不该报错 ─────────────────────────────────────────────
+//
+// 修的 bug（用户报「将没有完成没测 metrics 的容器的报错过滤掉」）：
+// 生产环境 /api/docker/health-check 报了 51 个「问题容器」，点开一看全是噪音：
+//
+//   · 41 个的"错误"是 `无法获取日志: 读取日志失败: (HTTP code 501) unexpected -
+//     configured logging driver does not support reading` —— 那是**我们读不出日志**，
+//     不是容器报错。实测该主机 87 个容器里 42 个的 log driver 是 `none`，
+//     它们从创建那天起就没有任何日志/指标被采集过。
+//   · 剩下 10 个连一行错误都没有（errors 为空），只有一个月前甚至七个月前的退出码。
+//   · 51 个全部 state=exited，退出时间中位数在 3 个月前，最近的也在 4 天前。
+//
+// 也就是说：**这些容器从来没被"测"过**（没有日志、没有指标序列），它们的退出码
+// 属于历史考古，不是当前故障；而 TSDB 侧只产出 openlog_docker_containers_total
+// 这类聚合计数，没有 per-container 序列可以直接反查，所以「有没有被采集」只能用
+// 「日志能不能读 + 退出多久了」这两个可观测量做代理。
+//
+// 分成三类，前两类不进 problems、不算 unhealthy，但都显式计数返回，不静默吞掉：
+//   problem    —— 有证据的当前问题
+//   stale      —— 退出超过 staleHours 的历史容器（默认 24h）
+//   unobserved —— 日志读不出来且没有其它证据，等于没采集过
+
+/** 退出超过多少小时算「历史容器」。生产实测最近一次退出是 4 天前。 */
+export const DEFAULT_EXITED_STALE_HOURS = 24;
+
+const AGE_UNIT_MS = {
+  second: 1_000,
+  minute: 60_000,
+  hour: 3_600_000,
+  day: 86_400_000,
+  week: 604_800_000,
+  month: 2_592_000_000,   // 30 天
+  year: 31_536_000_000,   // 365 天
+};
+
+/**
+ * 从 docker 的 Status 文案里解析「多久以前」。
+ *
+ * 输入是 docker API 原样返回的英文串（服务端生成，与客户端 locale 无关）：
+ *   "Exited (2) 7 days ago" / "Exited (137) About an hour ago"
+ *   "Exited (0) Less than a second ago" / "Up 5 days"
+ *
+ * @param {string} status
+ * @returns {number|null} 毫秒；Up 中的容器返回 0；解析不出来返回 null
+ */
+export function parseExitedAgoMs(status) {
+  if (!status || typeof status !== 'string') return null;
+  const s = status.trim();
+  if (/^Up\b/i.test(s)) return 0;
+  const tail = s.replace(/^Exited\s*\(\s*\d+\s*\)\s*/i, '').trim();
+  if (!tail) return null;
+  if (/less than a second/i.test(tail)) return 0;
+  const about = tail.match(/^about an?\s+(second|minute|hour|day|week|month|year)/i);
+  if (about) return AGE_UNIT_MS[about[1].toLowerCase()] ?? null;
+  const m = tail.match(/^(\d+)\s+(second|minute|hour|day|week|month|year)s?\b/i);
+  if (m) {
+    const unit = AGE_UNIT_MS[m[2].toLowerCase()];
+    return unit === undefined ? null : Number(m[1]) * unit;
+  }
+  return null;
+}
+
+/**
+ * 这条报错是不是「日志驱动不支持读取」这类**采集侧**问题（而不是容器报错）。
+ *
+ * docker 的 `local`/`journald`/`none`/`syslog` 等驱动都不支持 logs 读取，
+ * 调用会返回 HTTP 501。历史上这串文案被直接塞进了 problems[].errors，
+ * 于是 41 个只是「看不见」的容器被报成了「有错误」。
+ *
+ * @param {string} message
+ * @returns {boolean}
+ */
+export function isLogDriverUnreadable(message) {
+  if (!message) return false;
+  const s = String(message);
+  return /logging driver does not support reading/i.test(s)
+    || /configured logging driver/i.test(s)
+    || /HTTP code 501/i.test(s);
+}
+
+/** @typedef {'problem'|'stale'|'unobserved'} ProblemKind */
+
+/**
+ * 判断一个已退出容器的异常退出该不该出现在「问题容器」里。
+ *
+ * @param {object} entry healthCheck 收集到的候选条目
+ * @param {number|null} entry.exitedAgoMs 退出距今毫秒（parseExitedAgoMs 的结果）
+ * @param {string[]} [entry.errors] 真实的错误日志行（不含「无法获取日志」这类伪错误）
+ * @param {boolean} [entry.logUnavailable] 日志是否读不出来
+ * @param {boolean} [entry.logDriverUnreadable] 是否属于日志驱动不支持读取
+ * @param {string} [entry.state]
+ * @param {string} [entry.exitType]
+ * @param {{staleHours?: number, ignoreUnobserved?: boolean}} [opts]
+ * @returns {ProblemKind}
+ */
+export function classifyProblemEvidence(entry, opts = {}) {
+  const e = entry || {};
+  if (e.state === 'running') return 'problem';
+
+  const raw = Number(opts.staleHours);
+  const staleHours = Number.isFinite(raw) && raw >= 0 ? raw : DEFAULT_EXITED_STALE_HOURS;
+  const age = e.exitedAgoMs;
+  if (staleHours > 0 && typeof age === 'number' && Number.isFinite(age) && age > staleHours * 3_600_000) {
+    return 'stale';
+  }
+
+  const ignoreUnobserved = opts.ignoreUnobserved !== false;
+  const errors = Array.isArray(e.errors) ? e.errors : [];
+  // OOM / 段错误的退出码本身就是证据，即使日志读不出来也照报。
+  const hasExitCodeEvidence = e.exitType === 'oom' || e.exitType === 'segfault';
+  if (ignoreUnobserved && !hasExitCodeEvidence && errors.length === 0 && (e.logUnavailable || e.logDriverUnreadable)) {
+    return 'unobserved';
+  }
+  return 'problem';
+}
+
+/**
+ * 按证据强度把候选问题分成「要报的」和「过滤掉的」。
+ *
+ * @param {object[]} entries
+ * @param {{staleHours?: number, ignoreUnobserved?: boolean}} [opts]
+ * @returns {{problems: object[], stale: object[], unobserved: object[], counts: {stale: number, unobserved: number}}}
+ */
+export function splitHealthProblems(entries, opts = {}) {
+  const problems = [];
+  const stale = [];
+  const unobserved = [];
+  for (const e of Array.isArray(entries) ? entries : []) {
+    const kind = classifyProblemEvidence(e, opts);
+    if (kind === 'stale') stale.push(e);
+    else if (kind === 'unobserved') unobserved.push(e);
+    else problems.push(e);
+  }
+  return { problems, stale, unobserved, counts: { stale: stale.length, unobserved: unobserved.length } };
+}
+
 /**
  * 同一条诊断 toast 的去重键（前端也有一份等价实现，这里给后端推送用）。
  * 同一容器/来源只占一条，避免反复弹。

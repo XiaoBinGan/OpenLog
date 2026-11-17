@@ -226,6 +226,8 @@ export default function Settings() {
           containerPatrolEnabled={settings.containerPatrolEnabled}
           containerPatrolInterval={settings.containerPatrolInterval}
           containerPatrolLevels={settings.containerPatrolLevels}
+          containerHealthStaleHours={settings.containerHealthStaleHours}
+          containerHealthIgnoreUnobserved={settings.containerHealthIgnoreUnobserved}
           onPatch={patchSettings}
         />
       )}

@@ -214,6 +214,10 @@ export interface Settings {
   containerPatrolLevels?: string[];
   containerLogWatchEnabled?: boolean;
   containerLogWatchInterval?: number;
+  /** 健康检查：退出超过多少小时算历史容器（0 = 不过滤） */
+  containerHealthStaleHours?: number;
+  /** 健康检查：过滤"无日志无指标"的容器（OOM/段错误不受影响） */
+  containerHealthIgnoreUnobserved?: boolean;
   /** 容量告警（内存/磁盘超阈值弹强制确认框） */
   capacityAlertEnabled?: boolean;
   capacityAlertMemoryPercent?: number;

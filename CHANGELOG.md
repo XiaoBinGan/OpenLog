@@ -5,6 +5,44 @@
 
 ---
 
+## v1.1.1 — 健康检查只说有证据的问题
+
+「容器健康诊断」在生产上报了 51 个问题容器，点进去发现 41 个"错误"是
+`(HTTP code 501) configured logging driver does not support reading` —— 那是**我们读不出日志**，
+不是容器报错；剩下 10 个连一行错误都没有。51 个全部是 exited，退出时间从 4 天前到 7 个月前。
+换句话说：一堆从来没被采集过的容器，把真正的当前故障埋掉了。
+
+### 修复
+
+- **健康检查不再把「读不到日志」当成容器报错**：`getContainerLogs()` 返回的是数组，
+  `healthCheck()` 却按 `logResult.logs` 取值，恒为 `undefined` → 错误行永远是空；
+  失败分支还把 `无法获取日志: …` 塞进 `errors[]`，于是 501 变成了"容器错误"。
+  两处都修了。
+- **`getContainerLogs()` 补上第 4 个参数**：`routes/docker.js` 一直在传
+  `{ tail: 200 }` / `{ tail: 50 }`，函数签名只有 3 个参数，静默丢弃，永远按 `tail: 500` 拉。
+  同时补上 `since` / `startTime` / `filterLevel`（都是前端传了、后端没生效的参数）。
+- **按证据分流，不再只数退出码**：
+  - `problem` —— 有证据的当前问题，照报
+  - `stale` —— 退出超过 `containerHealthStaleHours`（默认 24h）的历史容器
+  - `unobserved` —— 日志驱动不支持读取、且没有退出码证据，等于从未被采集
+  后两类不进 `problems`、不计入 `unhealthy`，但都在 `summary.ignoredStale` /
+  `summary.ignoredUnobserved` 显式计数，前端可展开看名单，不静默吞掉。
+- **OOM(137) / 段错误(139) 不受过滤影响**：退出码本身就是硬证据，即使日志读不出来照报。
+
+### 新增
+
+- 设置项 `containerHealthStaleHours`（0 / 1 / 6 / 24 / 72 / 168 小时，0 = 不过滤）
+  与 `containerHealthIgnoreUnobserved`（默认开），在设置页「容器异常监控 → 健康检查过滤」里可调。
+- 健康报告与诊断 prompt 都会带上过滤条数，AI 不会再对着噪音编故事。
+
+### 生产实测
+
+87 个容器（12 运行中 / 75 exited），日志驱动 `json-file` 45 个、`none` 42 个。
+默认参数下 `unhealthy` 从 **51 → 0**，`ignoredStale 51` / `ignoredUnobserved 0`（全部都是 4 天以上）。
+关掉时间过滤（`staleHours: 0`）单独看未采集过滤：`unhealthy 51 → 9`，42 个 `none` 驱动容器被正确识别。
+
+---
+
 ## v1.1.0 — 内置时序库
 
 系统指标从「83 分钟的内存数组」变成真正的时序数据库，并补齐了围绕它的

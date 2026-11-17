@@ -239,6 +239,43 @@ export default function Analytics() {
               <div><div className="text-red-400 font-bold text-lg">{report.summary?.unhealthy || 0}</div><div className="text-xs text-dark-500">异常</div></div>
               <div><div className="text-dark-400 font-bold text-lg">{report.summary?.normalExited || 0}</div><div className="text-xs text-dark-500">正常退出</div></div>
             </div>
+            {(report.summary?.ignoredTotal > 0) && (
+              <div className="mt-2 pt-2 border-t border-dark-800 text-xs text-dark-500 space-y-0.5">
+                <div>
+                  已过滤 {report.summary.ignoredTotal} 个不构成问题的容器：
+                </div>
+                {report.summary.ignoredStale > 0 && (
+                  <div>· {report.summary.ignoredStale} 个历史容器（退出超过 {report.summary.staleHours ?? 24} 小时）</div>
+                )}
+                {report.summary.ignoredUnobserved > 0 && (
+                  <div>· {report.summary.ignoredUnobserved} 个未采集容器（无日志 / 无指标，日志驱动不支持读取）</div>
+                )}
+                {Array.isArray(report.ignoredStale) && report.ignoredStale.length > 0 && (
+                  <details className="mt-1">
+                    <summary className="cursor-pointer text-dark-400 hover:text-dark-300">展开历史容器名单</summary>
+                    <div className="mt-1 max-h-32 overflow-y-auto font-mono text-[11px] text-dark-500 space-y-0.5">
+                      {report.ignoredStale.map((p: any) => (
+                        <div key={`stale-${p.sourceName || ''}-${p.name}`} className="truncate">
+                          {p.name} · {p.status}
+                        </div>
+                      ))}
+                    </div>
+                  </details>
+                )}
+                {Array.isArray(report.ignoredUnobserved) && report.ignoredUnobserved.length > 0 && (
+                  <details className="mt-1">
+                    <summary className="cursor-pointer text-dark-400 hover:text-dark-300">展开未采集容器名单</summary>
+                    <div className="mt-1 max-h-32 overflow-y-auto font-mono text-[11px] text-dark-500 space-y-0.5">
+                      {report.ignoredUnobserved.map((p: any) => (
+                        <div key={`unobs-${p.sourceName || ''}-${p.name}`} className="truncate" title={p.logNote || ''}>
+                          {p.name} · {p.status} · {p.logNote || '无日志'}
+                        </div>
+                      ))}
+                    </div>
+                  </details>
+                )}
+              </div>
+            )}
           </div>
           <div className="space-y-2 max-h-64 overflow-y-auto">
             {report.problems?.map((p: any) => (

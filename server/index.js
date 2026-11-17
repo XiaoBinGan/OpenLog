@@ -677,6 +677,13 @@ const defaultSettings = {
   // 容器日志实时错误提醒（增量 tail，命中 ERROR/FATAL 立即弹框）
   containerLogWatchEnabled: true,
   containerLogWatchInterval: 5000,    // ms，实时轮询间隔
+  // 健康检查过滤：退出超过 N 小时的容器算历史遗留，不进「问题容器」
+  // （0 = 不过滤，全都报）。生产上 51 个"问题"里 41 个是几个月前退出的旧容器。
+  containerHealthStaleHours: 24,
+  // 健康检查过滤：日志驱动不支持读取（log driver 非 json-file）且没有任何退出码证据的容器
+  // 等于从未被采集过（没有日志也没有 per-container 指标），不算问题。
+  // OOM(137)/段错误(139) 这类退出码本身就是证据，不受这个开关影响，永远照报。
+  containerHealthIgnoreUnobserved: true,
   // 容量告警（内存/磁盘）：超阈值时前端弹**强制确认框**，必须手动关；
   // 关掉后 1 小时内不再弹，1 小时后若仍然超标会继续弹（未处理就得一直提醒）。
   capacityAlertEnabled: true,
@@ -1715,7 +1722,15 @@ async function executeAssistantTool(name, args, hooks = {}) {
         return { output: r.output, exitCode: r.exitCode };
       }
       case 'docker_health_check': {
-        const r = await docker.healthCheck(dockerSources);
+        // 与 HTTP 端点用同一套过滤参数，否则 AI 工具会报出网页上看不到的"问题"
+        const hs = (() => {
+          const h = Number(ensureSettings().containerHealthStaleHours);
+          return {
+            staleHours: Number.isFinite(h) && h >= 0 ? h : 24,
+            ignoreUnobserved: ensureSettings().containerHealthIgnoreUnobserved !== false,
+          };
+        })();
+        const r = await docker.healthCheck(dockerSources, hs);
         return r;
       }
       // ── 远程服务器 ──

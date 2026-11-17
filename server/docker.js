@@ -8,6 +8,12 @@ import { buildNode, analyzeTopology } from './docker-topology.js';
 import { parseProcNetTcp, outboundFrom, buildPortOwnerMap } from './docker-live-conns.js';
 import { parseLogLevel } from './log-level.js';
 import { isSelfLogLine, detectSelfContainerId } from './container-log-watch.js';
+import {
+  parseExitedAgoMs,
+  isLogDriverUnreadable,
+  classifyProblemEvidence,
+  DEFAULT_EXITED_STALE_HOURS,
+} from './diagnosis.js';
 
 // ─── 工具函数 ──────────────────────────────────────────
 
@@ -340,17 +346,27 @@ export async function listContainers(sourceId, config = {}) {
 }
 
 // 读取容器日志
-export async function getContainerLogs(sourceId, containerId, config = {}) {
+//
+// opts 以前是**不存在的第 4 个参数**：routes/docker.js 一直在传 `{ tail: 200 }`、
+// `{ tail: 50 }`，函数签名只有 3 个参数，全部被丢掉，永远按 tail: 500 拉。
+// 再加 healthCheck 那边把返回值当成 `{ logs: [...] }` 取值（实际返回的是数组本身），
+// 「读最近 50 行找错误」整条链路都是失效的。现在两处都修了。
+export async function getContainerLogs(sourceId, containerId, config = {}, opts = {}) {
   try {
     const docker = await getDockerFor(sourceId, config);
     const container = docker.getContainer(containerId);
 
-    const logs = await container.logs({
-      stdout: true,
-      stderr: true,
-      tail: 500,
-      timestamps: true
-    });
+    const tailNum = Number(opts.tail);
+    const tail = Number.isFinite(tailNum) && tailNum > 0 ? Math.min(Math.floor(tailNum), 5000) : 500;
+    const logOpts = { stdout: true, stderr: true, tail, timestamps: true };
+    // since 支持 unix 秒/相对时长（docker API 两种都吃），startTime 是旧调用方传的 ISO
+    if (opts.since) logOpts.since = opts.since;
+    else if (opts.startTime) {
+      const t = Math.floor(new Date(opts.startTime).getTime() / 1000);
+      if (Number.isFinite(t) && t > 0) logOpts.since = t;
+    }
+
+    const logs = await container.logs(logOpts);
 
     // Docker logs 返回 Buffer，格式：[4字节头][数据][4字节头][数据]...
     const lines = [];
@@ -383,6 +399,14 @@ export async function getContainerLogs(sourceId, containerId, config = {}) {
 
       i += 8 + size;
     }
+
+    // filterLevel 也是以前被静默丢掉的参数：前端一直在传，后端从来不生效。
+    // 支持单值或多值（, 分隔），大小写不敏感。
+    const wanted = String(opts.filterLevel || '')
+      .split(',')
+      .map(s => s.trim().toUpperCase())
+      .filter(Boolean);
+    if (wanted.length > 0) return lines.filter(l => wanted.includes(String(l.level || '').toUpperCase()));
 
     return lines;
   } catch (err) {
@@ -942,8 +966,18 @@ ${combined.map(d => `### ${d.container}${d.success ? '' : ' ⚠️ ' + d.error}`
 }
 
 // ─── Docker 容器健康诊断 ────────────────────────────────
-export async function healthCheck(sources) {
+//
+// 只报「有证据的当前问题」。详见 diagnosis.js 里未纳入采集容器的说明：
+//   · 早已退出（默认 > 24h）的容器 → 历史遗留，进 ignoredStale，不算 unhealthy
+//   · 日志驱动不支持读取、又没有任何退出码证据（非 OOM/段错误）、也没有错误行的容器
+//     → 等于从未被采集过，进 ignoredUnobserved，也不算 unhealthy
+// 两类过滤都会显式计数返回，前端能看到「过滤了多少」，不是悄悄吞掉。
+export async function healthCheck(sources, opts = {}) {
   if (!sources || sources.length === 0) throw new Error('未配置 Docker 源');
+
+  const rawHours = Number(opts.staleHours);
+  const staleHours = Number.isFinite(rawHours) && rawHours >= 0 ? rawHours : DEFAULT_EXITED_STALE_HOURS;
+  const filterOpts = { staleHours, ignoreUnobserved: opts.ignoreUnobserved !== false };
 
   const allContainers = [];
   const sourceMap = {};
@@ -970,40 +1004,65 @@ export async function healthCheck(sources) {
   const errorExited = exited.filter(c => c.exitType === 'error' || c.exitType === 'segfault');
   const normalExited = exited.filter(c => c.exitType === 'normal');
 
-  // 为异常容器拉取最近日志（last 50 lines, filter errors）
-  const problemContainers = [...oomKilled, ...errorExited];
+  const candidates = [...oomKilled, ...errorExited];
   const problemDetails = [];
+  const ignoredStale = [];
+  const ignoredUnobserved = [];
 
-  for (const c of problemContainers) {
-    try {
-      const config = sourceMap[c._sourceId];
-      const logResult = await getContainerLogs(c._sourceId, c.id, config, { tail: 50 });
-      const errorLines = (logResult.logs || [])
-        .filter(l => /error|fatal|panic|exception|traceback|killed|oom/i.test(l.line || ''))
-        .map(l => `[${l.timestamp || ''}] ${l.line}`);
-      problemDetails.push({
-        name: c.names[0] || c.shortId,
-        image: c.image,
-        state: c.state,
-        exitCode: c.exitCode,
-        exitType: c.exitType,
-        status: c.status,
-        errors: errorLines.slice(-10),
-        sourceName: c._sourceName,
-      });
-    } catch (err) {
-      problemDetails.push({
-        name: c.names[0] || c.shortId,
-        image: c.image,
-        state: c.state,
-        exitCode: c.exitCode,
-        exitType: c.exitType,
-        status: c.status,
-        errors: [`无法获取日志: ${errorMessage(err)}`],
-        sourceName: c._sourceName,
-      });
+  for (const c of candidates) {
+    const config = sourceMap[c._sourceId];
+    const name = c.names[0] || c.shortId;
+    const exitedAgoMs = parseExitedAgoMs(c.status);
+
+    const base = {
+      name,
+      image: c.image,
+      state: c.state,
+      exitCode: c.exitCode,
+      exitType: c.exitType,
+      status: c.status,
+      exitedAgoMs,
+      sourceName: c._sourceName,
+    };
+
+    // 先按"退出多久了"做一次廉价判定：历史容器根本不用拉日志，
+    // 省掉每个容器一次 SSH/HTTP 往返（生产上原来 51 个候选全都会拉）。
+    const pre = classifyProblemEvidence({ ...base, errors: [], logUnavailable: false }, filterOpts);
+    if (pre === 'stale') {
+      ignoredStale.push(base);
+      continue;
     }
+
+    let errors = [];
+    let logUnavailable = false;
+    let logDriverUnreadable = false;
+    let logNote = null;
+    try {
+      // getContainerLogs 返回的是**数组**，不是 { logs } —— 老代码按对象取值，
+      // 恒为 undefined，错误行永远是空。
+      const logs = await getContainerLogs(c._sourceId, c.id, config, { tail: 50 });
+      errors = (Array.isArray(logs) ? logs : [])
+        .filter(l => /error|fatal|panic|exception|traceback|killed|oom/i.test(l.line || ''))
+        .map(l => `[${l.timestamp || ''}] ${l.line}`)
+        .slice(-10);
+    } catch (err) {
+      const msg = errorMessage(err);
+      logUnavailable = true;
+      logDriverUnreadable = isLogDriverUnreadable(msg);
+      // 读不到日志不是容器的错误，单独放 logNote，绝不混进 errors
+      logNote = logDriverUnreadable
+        ? '日志驱动不支持读取（log driver 非 json-file），这个容器没有可采集的日志'
+        : `未取到日志：${msg}`;
+    }
+
+    const entry = { ...base, errors, logUnavailable, logDriverUnreadable, logNote };
+    const kind = classifyProblemEvidence(entry, filterOpts);
+    if (kind === 'stale') ignoredStale.push(entry);
+    else if (kind === 'unobserved') ignoredUnobserved.push(entry);
+    else problemDetails.push(entry);
   }
+
+  const runningList = running.map(c => ({ name: c.names[0] || c.shortId, image: c.image, status: c.status, sourceName: c._sourceName }));
 
   return {
     summary: {
@@ -1014,11 +1073,24 @@ export async function healthCheck(sources) {
       errorExited: errorExited.length,
       normalExited: normalExited.length,
       healthy: running.length + normalExited.length,
-      unhealthy: oomKilled.length + errorExited.length,
+      unhealthy: problemDetails.length,
+      // 被过滤掉的两类：不计入 unhealthy，但要让人看得见
+      staleHours,
+      ignoredStale: ignoredStale.length,
+      ignoredUnobserved: ignoredUnobserved.length,
+      ignoredTotal: ignoredStale.length + ignoredUnobserved.length,
     },
-    running: running.map(c => ({ name: c.names[0] || c.shortId, image: c.image, status: c.status, sourceName: c._sourceName })),
+    running: runningList,
     problems: problemDetails,
     normalExited: normalExited.map(c => ({ name: c.names[0] || c.shortId, image: c.image, exitCode: c.exitCode, sourceName: c._sourceName })),
+    ignoredStale: ignoredStale.map(p => ({
+      name: p.name, image: p.image, exitCode: p.exitCode, exitType: p.exitType,
+      status: p.status, exitedAgoMs: p.exitedAgoMs, sourceName: p.sourceName,
+    })),
+    ignoredUnobserved: ignoredUnobserved.map(p => ({
+      name: p.name, image: p.image, exitCode: p.exitCode, exitType: p.exitType,
+      status: p.status, exitedAgoMs: p.exitedAgoMs, sourceName: p.sourceName, logNote: p.logNote,
+    })),
   };
 }
 

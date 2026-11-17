@@ -230,9 +230,21 @@ export function AnalysisProvider({ children }: { children: React.ReactNode }) {
           }
         }
       } else {
-        setHealthAnalysis(report.analysis || '🎉 所有容器运行正常');
+        // 注意：problems 为空不代表「从来没问题」——服务端会把历史容器 / 未采集容器过滤掉，
+        // 这里把过滤了多少说出来，避免用户以为报告在骗他。
+        const s: any = (report as any).summary || {};
+        const filtered = Number(s.ignoredTotal) || 0;
+        setHealthAnalysis(
+          report.analysis
+          || (filtered
+            ? `🎉 没有需要处理的容器问题（已过滤 ${filtered} 个历史/未采集容器）`
+            : '🎉 所有容器运行正常'),
+        );
         if (!isOnAnalyticsPage) {
-          toast.success('健康检查通过 · 所有容器正常', { group: 'health-check' });
+          toast.success(
+            filtered ? `健康检查通过 · 已过滤 ${filtered} 个历史/未采集容器` : '健康检查通过 · 所有容器正常',
+            { group: 'health-check' },
+          );
         }
       }
     } catch (err: any) {

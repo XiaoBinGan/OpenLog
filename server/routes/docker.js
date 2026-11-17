@@ -354,10 +354,26 @@ ${logsText}
 });
 
 // ─── Docker 容器健康诊断 API ────────────────────────────
+/**
+ * 从设置里取健康检查的过滤参数，一次装配，两个端点共用。
+ * 端点自己别再各写一遍默认值 —— 那就是两处会分叉的地方。
+ */
+function healthCheckOptions() {
+  const s = ensureSettings();
+  const hours = Number(s.containerHealthStaleHours);
+  return {
+    staleHours: Number.isFinite(hours) && hours >= 0 ? hours : 24,
+    ignoreUnobserved: s.containerHealthIgnoreUnobserved !== false,
+  };
+}
+
 router.get('/api/docker/health-check', async (req, res) => {
   try {
     const sources = ensureSettings().dockerSources || [];
-    const report = mergePatrolProblems(await docker.healthCheck(sources), getLastPatrolResults());
+    const report = mergePatrolProblems(
+      await docker.healthCheck(sources, healthCheckOptions()),
+      getLastPatrolResults(),
+    );
     res.json(report);
   } catch (err) {
     res.status(500).json({ error: errorMessage(err) });
@@ -367,12 +383,19 @@ router.get('/api/docker/health-check', async (req, res) => {
 router.post('/api/docker/health-check/analyze', async (req, res) => {
   try {
     const sources = ensureSettings().dockerSources || [];
-    const report = mergePatrolProblems(await docker.healthCheck(sources), getLastPatrolResults());
+    const report = mergePatrolProblems(
+      await docker.healthCheck(sources, healthCheckOptions()),
+      getLastPatrolResults(),
+    );
     const { summary, problems } = report;
 
     if (problems.length === 0) {
-      return res.json({ analysis: '🎉 所有容器运行正常，无需诊断。\n\n' +
-        `- ${summary.running} 个运行中\n- ${summary.normalExited} 个正常退出` });
+      const skipped = [];
+      if (summary.ignoredStale) skipped.push(`${summary.ignoredStale} 个历史容器（退出超过 ${summary.staleHours || 24} 小时）`);
+      if (summary.ignoredUnobserved) skipped.push(`${summary.ignoredUnobserved} 个未采集容器（无日志/无指标）`);
+      return res.json({ analysis: '🎉 没有需要处理的容器问题。\n\n' +
+        `- ${summary.running} 个运行中\n- ${summary.normalExited} 个正常退出` +
+        (skipped.length ? `\n- 已过滤：${skipped.join('，')}` : '') });
     }
 
     const apiKey = ensureSettings().openaiApiKey;
@@ -388,7 +411,8 @@ router.post('/api/docker/health-check/analyze', async (req, res) => {
         title: `容器健康诊断（规则诊断）· ${problems.length} 个问题容器`,
         lines: problems.map(p =>
           `- **${p.name}**（${p.sourceName || ''}）· ${p.exitType === 'log' ? '日志异常（运行中）' : explainExitCode(p.exitCode)}\n` +
-          (p.errors?.length ? `  - 最近异常：${p.errors.slice(-3).join(' / ')}` : '  - 未取到最近异常日志')),
+          (p.errors?.length ? `  - 最近异常：${p.errors.slice(-3).join(' / ')}`
+            : `  - ${p.logNote || '未取到最近异常日志（这类容器没有可读日志，退出码/状态是唯一依据）'}`)),
       }));
       res.write('data: [DONE]\n\n');
       res.end();
@@ -401,8 +425,12 @@ router.post('/api/docker/health-check/analyze', async (req, res) => {
       `- 状态: ${p.state}\n` +
       `- 退出码: ${p.exitCode} (` +
       (p.exitType === 'oom' ? 'OOM内存溢出' : p.exitType === 'segfault' ? '段错误' : p.exitType === 'log' ? '日志异常（容器仍在运行）' : '异常退出') + `)\n` +
-      `- 最近错误日志:\n${p.errors.map(l => '  ' + l).join('\n') || '  无'}`
+      `- 最近错误日志:\n${p.errors.map(l => '  ' + l).join('\n') || `  ${p.logNote || '无'}`}`
     ).join('\n\n');
+
+    const ignoredLines = [];
+    if (summary.ignoredStale) ignoredLines.push(`- 已过滤历史容器: ${summary.ignoredStale}（退出超过 ${summary.staleHours || 24} 小时，按历史遗留处理）`);
+    if (summary.ignoredUnobserved) ignoredLines.push(`- 已过滤未采集容器: ${summary.ignoredUnobserved}（日志驱动不支持读取且无退出码证据，等于从未被采集）`);
 
     const prompt = `你是资深运维工程师，正在进行 Docker 容器健康诊断。
 
@@ -411,7 +439,7 @@ router.post('/api/docker/health-check/analyze', async (req, res) => {
 - 运行中: ${summary.running}
 - OOM被杀: ${summary.oomKilled}
 - 异常退出: ${summary.errorExited}
-- 正常退出: ${summary.normalExited}
+- 正常退出: ${summary.normalExited}${ignoredLines.length ? '\n' + ignoredLines.join('\n') : ''}
 
 ## 问题容器详情
 ${problemText}

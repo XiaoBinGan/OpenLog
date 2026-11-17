@@ -144,8 +144,11 @@ describe('源码约束 —— 别再退回「未配置 API Key」死路', () => 
     expect(src).not.toContain("res.status(400).json({ error: '未配置 API Key' })");
   });
 
-  it('health-check 合并了巡检结果', () => {
-    expect(src).toContain('mergePatrolProblems(await docker.healthCheck(sources), getLastPatrolResults())');
+  it('health-check 合并了巡检结果（并透传过滤参数）', () => {
+    // 现在两个端点都走 healthCheckOptions() 统一装配过滤参数，
+    // 断言绑定在「必须调用 mergePatrolProblems(… healthCheck(sources, opts) …)」这件事上。
+    expect(src).toMatch(/mergePatrolProblems\(\s*await docker\.healthCheck\(sources, healthCheckOptions\(\)\),\s*getLastPatrolResults\(\),?\s*\)/);
+    expect(src).toContain('docker.healthCheck(sources, healthCheckOptions())');
   });
 
   it('规则诊断走 SSE，前端 readSSEStream 能直接消费', () => {

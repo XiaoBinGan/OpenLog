@@ -20,6 +20,10 @@ export interface ContainerMonitorSectionProps {
   containerPatrolEnabled?: boolean;
   containerPatrolInterval?: string;
   containerPatrolLevels?: string[];
+  /** 健康检查：退出超过多少小时算历史容器（0 = 不过滤） */
+  containerHealthStaleHours?: number;
+  /** 健康检查：过滤「无日志无指标」的容器 */
+  containerHealthIgnoreUnobserved?: boolean;
   /** 只写 settings，不带 dirty 标记（原实现这几处也没有 setSaved(false)） */
   onPatch: (patch: Partial<SettingsType>) => void;
 }
@@ -31,6 +35,8 @@ function ContainerMonitorSection({
   containerPatrolEnabled,
   containerPatrolInterval,
   containerPatrolLevels,
+  containerHealthStaleHours,
+  containerHealthIgnoreUnobserved,
   onPatch,
 }: ContainerMonitorSectionProps) {
   return (
@@ -162,6 +168,51 @@ function ContainerMonitorSection({
             </div>
           </div>
         )}
+      </div>
+
+      {/* 健康检查过滤：没完成、没被采集的容器不该报错 */}
+      <div className="mt-4 pt-4 border-t border-dark-800">
+        <div className="mb-3">
+          <p className="font-medium">健康检查过滤</p>
+          <p className="text-sm text-dark-400">
+            早已退出的旧容器、以及日志驱动不支持读取（没有日志也没有指标）的容器，
+            不该算成「异常」。退出码 137/139（OOM / 段错误）属于硬证据，永远照报。
+          </p>
+        </div>
+        <div className="space-y-3">
+          <div>
+            <label className="block text-sm text-dark-400 mb-1">退出超过多久算历史容器</label>
+            <select
+              value={String(containerHealthStaleHours ?? 24)}
+              onChange={e => onPatch({ containerHealthStaleHours: Number(e.target.value) })}
+              className="w-full px-3 py-2 bg-dark-900 border border-dark-700 rounded-lg text-dark-200 text-sm"
+            >
+              <option value="0">不过滤（全部报告）</option>
+              <option value="1">1 小时</option>
+              <option value="6">6 小时</option>
+              <option value="24">24 小时（推荐）</option>
+              <option value="72">3 天</option>
+              <option value="168">7 天</option>
+            </select>
+          </div>
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm text-dark-200">过滤未采集容器</p>
+              <p className="text-xs text-dark-500">
+                日志驱动非 json-file（读日志返回 501）且无退出码证据的容器不进「问题容器」
+              </p>
+            </div>
+            <label className="relative inline-flex items-center cursor-pointer">
+              <input
+                type="checkbox"
+                checked={containerHealthIgnoreUnobserved !== false}
+                onChange={e => onPatch({ containerHealthIgnoreUnobserved: e.target.checked })}
+                className="sr-only peer"
+              />
+              <div className="w-10 h-5 bg-dark-700 rounded-full peer peer-checked:bg-accent-500 peer-checked:after:translate-x-5 after:content-[''] after:absolute after:top-0.5 after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all"></div>
+            </label>
+          </div>
+        </div>
       </div>
     </div>
   );
