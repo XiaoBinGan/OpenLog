@@ -158,25 +158,6 @@ jobs:
           ' | tee /tmp/check3.txt
           grep -q "e_machine" /tmp/check3.txt
 
-      - name: Summary (skip_upload)
-        if: ${{ !inputs.dry_run && inputs.skip_upload }}
-        env:
-          ARCH: ${{ inputs.arch }}
-          SHORT: ${{ steps.meta.outputs.short }}
-        run: |
-          set -euo pipefail
-          TAR="$(ls -1t ../openlog-deploy-*.tar | head -1)"
-          {
-            echo "### 构建/打包已通过（未上传）"
-            echo ""
-            echo "| 项 | 值 |"
-            echo "|---|---|"
-            echo "| 包 | \`$(basename "$TAR")\` |"
-            echo "| 架构 | $ARCH |"
-            echo "| 大小 | $(stat -c%s "$TAR") bytes |"
-            echo "| sha256 | \`$(sha256sum "$TAR" | cut -d' ' -f1)\` |"
-          } >> "$GITHUB_STEP_SUMMARY"
-
       - name: Save image archives
         if: ${{ !inputs.dry_run }}
         env:
@@ -199,6 +180,25 @@ jobs:
           bash deploy/scripts/make-package.sh --arch "$ARCH"
           TAR="$(ls -1t ../openlog-deploy-*.tar | head -1)"
           ls -lh "$TAR"
+
+      - name: Summary (skip_upload)
+        if: ${{ !inputs.dry_run && inputs.skip_upload }}
+        env:
+          ARCH: ${{ inputs.arch }}
+          SHORT: ${{ steps.meta.outputs.short }}
+        run: |
+          set -euo pipefail
+          TAR="$(ls -1t ../openlog-deploy-*.tar | head -1)"
+          {
+            echo "### 构建/打包已通过（未上传）"
+            echo ""
+            echo "| 项 | 值 |"
+            echo "|---|---|"
+            echo "| 包 | \`$(basename "$TAR")\` |"
+            echo "| 架构 | $ARCH |"
+            echo "| 大小 | $(stat -c%s "$TAR") bytes |"
+            echo "| sha256 | \`$(sha256sum "$TAR" | cut -d' ' -f1)\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload asset
         if: ${{ !inputs.dry_run && !inputs.skip_upload }}
