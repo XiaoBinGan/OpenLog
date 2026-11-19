@@ -350,10 +350,16 @@ export default function createK8sRouter({ ensureSettings, saveSettings } = {}) {
     try {
       const { client } = connectCluster(req.k8sCluster);
 
-      let version = '';
-      if (typeof client.apiServerVersion === 'function') {
-        version = await Promise.resolve(client.apiServerVersion());
-      }
+        // apiServerVersion() 返回的是对象（{ version, gitVersion, platform }），
+        // 直接 String() 会得到 "[object Object]" —— 真实集群上实测踩到过。
+        let version = '';
+        if (typeof client.apiServerVersion === 'function') {
+          const info = await Promise.resolve(client.apiServerVersion());
+          // 兼容两种返回：字符串（部分实现直接给版本号）或对象（{ version, gitVersion }）
+          version = typeof info === 'string'
+            ? info
+            : String((info && (info.gitVersion || info.version)) || '');
+        }
       // 版本能读到不代表有节点读权限，再打一次 nodes 才算「真连上了且权限对」
       const nodeList = await Promise.resolve(client.getJson('/api/v1/nodes'));
       const nodes = itemsOf(nodeList);
@@ -412,7 +418,13 @@ export default function createK8sRouter({ ensureSettings, saveSettings } = {}) {
 
       const versionResult = settled[OVERVIEW_ENDPOINTS.length];
       let version = '';
-      if (versionResult && versionResult.status === 'fulfilled') version = String(versionResult.value ?? '');
+        if (versionResult && versionResult.status === 'fulfilled') {
+          // 同 /test：apiServerVersion() 可能是对象 { version, gitVersion } 或字符串
+          const info = versionResult.value;
+          version = typeof info === 'string'
+            ? info
+            : String((info && (info.gitVersion || info.version)) || '');
+        }
 
       const nodes = normalizeSafe('节点', () => k8sResources.normalizeNodes(itemsOf(raw.nodes)), warnings);
       const pods = normalizeSafe('Pod', () => k8sResources.normalizePods(itemsOf(raw.pods)), warnings);
@@ -421,7 +433,11 @@ export default function createK8sRouter({ ensureSettings, saveSettings } = {}) {
         ...normalizeSafe('StatefulSet', () => k8sResources.normalizeWorkloads('StatefulSet', itemsOf(raw.statefulsets)), warnings),
         ...normalizeSafe('DaemonSet', () => k8sResources.normalizeWorkloads('DaemonSet', itemsOf(raw.daemonsets)), warnings),
       ];
-      const events = normalizeSafe('事件', () => k8sResources.normalizeEvents(itemsOf(raw.events)), warnings);
+      const allEvents = normalizeSafe('事件', () => k8sResources.normalizeEvents(itemsOf(raw.events)), warnings);
+      // 契约：overview 只回 Warning 事件（与前端「Warning 事件」卡片同口径）。
+      // Normal 事件（Scheduled/Pulled/Created/ApplyingManifest…）量大且没排障价值，
+      // 实测本地 k3s 一次 overview 会带回 60+ 条，payload 从几 KB 涨到几十 KB。
+      const events = allEvents.filter((e) => String(e?.type || '').toLowerCase() === 'warning');
 
       const parts = { nodes, pods, workloads, events };
       res.json({

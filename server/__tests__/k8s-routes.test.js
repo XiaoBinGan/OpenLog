@@ -20,6 +20,7 @@ const h = vi.hoisted(() => ({
   failAll: false,
   failLogs: false,
   failVersion: false,
+    versionObject: false,
   summarizeThrows: false,
   logRequests: [],
   parseCalls: [],
@@ -107,6 +108,8 @@ vi.mock('../k8s/client.js', () => ({
     }),
     apiServerVersion: vi.fn(async () => {
       if (h.failVersion) throw new Error('版本接口超时');
+      // 真实 kube-apiserver 的 /version 是对象（{ version, gitVersion }）；也有实现直接给字符串
+      if (h.versionObject) return { version: '1.31', gitVersion: 'v1.31.4+k3s1', platform: 'linux/arm64' };
       return 'v1.33.2+k3s1';
     }),
   })),
@@ -242,6 +245,7 @@ function resetState() {
   h.failAll = false;
   h.failLogs = false;
   h.failVersion = false;
+  h.versionObject = false;
   h.summarizeThrows = false;
   h.logRequests = [];
   h.parseCalls = [];
@@ -467,6 +471,19 @@ describe('POST /api/k8s/clusters/:id/test', () => {
     expect(res.body).toEqual({ ok: true, version: 'v1.33.2+k3s1', nodes: 2 });
   });
 
+  it('版本接口返回对象时取 gitVersion，不能出现 [object Object]', async () => {
+    seedCluster();
+    h.versionObject = true;
+    const t = await request('POST', '/api/k8s/clusters/c-1/test');
+    expect(t.status).toBe(200);
+    expect(t.body.version).toBe('v1.31.4+k3s1');
+
+    const ov = await request('GET', '/api/k8s/clusters/c-1/overview');
+    expect(ov.status).toBe(200);
+    expect(ov.body.cluster.version).toBe('v1.31.4+k3s1');
+    expect(JSON.stringify(ov.body)).not.toContain('[object Object]');
+  });
+
   it('连不上 API → 502 + error（透出底层网络原因）', async () => {
     seedCluster();
     h.failAll = true;
@@ -507,7 +524,9 @@ describe('GET /api/k8s/clusters/:id/overview', () => {
     expect(res.body.workloads).toHaveLength(4);
     expect(res.body.workloads.map((w) => w.kind).sort())
       .toEqual(['DaemonSet', 'Deployment', 'Deployment', 'StatefulSet']);
-    expect(res.body.events).toHaveLength(2);
+      // 契约：overview 只回 Warning 事件（Normal 的 Scheduled/Pulled 不返回）
+      expect(res.body.events).toHaveLength(1);
+      expect(res.body.events[0].type).toBe('Warning');
     expect(res.body.warnings).toEqual([]);
 
     const summary = res.body.summary;
@@ -537,7 +556,9 @@ describe('GET /api/k8s/clusters/:id/overview', () => {
     // 其它资源不受影响
     expect(res.body.nodes).toHaveLength(2);
     expect(res.body.workloads).toHaveLength(4);
-    expect(res.body.events).toHaveLength(2);
+      // 契约：overview 只回 Warning 事件（Normal 的 Scheduled/Pulled 不返回）
+      expect(res.body.events).toHaveLength(1);
+      expect(res.body.events[0].type).toBe('Warning');
     expect(res.body.summary.pods).toBe(0);
     expect(res.body.summary.nodes).toBe(2);
   });
