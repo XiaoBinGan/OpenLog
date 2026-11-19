@@ -28,10 +28,21 @@ export const SENSITIVE_KEYS = ['openaiApiKey'];
  * 会把明文 openaiApiKey 回显在响应体里 —— 同一个 key 在 GET 里是脱敏的，
  * 在 PUT 里却是明文，只要两处各写一遍就一定会再次分叉。
  */
+const K8S_KUBECONFIG_MASK = '***kubeconfig***';
+
 function sanitizeSettings(source) {
   const sanitized = { ...source };
   if (sanitized.openaiApiKey && sanitized.openaiApiKey.length > 8) {
     sanitized.openaiApiKey = sanitized.openaiApiKey.slice(0, 4) + '***' + sanitized.openaiApiKey.slice(-4);
+  }
+
+  // kubeconfig 里有 client-key-data / token，绝不能经 GET /api/settings 下发。
+  // 只保留元信息，明文统一替换为占位符（PUT 时按 id 保留服务端旧值，见下）。
+  if (Array.isArray(sanitized.k8sClusters)) {
+    sanitized.k8sClusters = sanitized.k8sClusters.map((c) => {
+      if (!c || typeof c !== 'object') return c;
+      return { ...c, kubeconfig: c.kubeconfig ? K8S_KUBECONFIG_MASK : '' };
+    });
   }
   return sanitized;
 }
@@ -64,7 +75,22 @@ export default function createSettingsRouter({
       nextAssistantContext = pickPersistableConfig(clamped.config);
       contextWarnings = clamped.warnings;
     }
+    // k8sClusters：前端拿到的是打码后的 kubeconfig，回写时按 id 保留服务端旧值，
+    // 否则「保存设置」会把集群凭据清空。
+    if (Array.isArray(updates.k8sClusters)) {
+      const prevList = Array.isArray(currentSettings.k8sClusters) ? currentSettings.k8sClusters : [];
+      const prevById = new Map(prevList.map((c) => [c && c.id, c]));
+      currentSettings.k8sClusters = updates.k8sClusters.map((c) => {
+        if (!c || typeof c !== 'object') return c;
+        const prev = prevById.get(c.id);
+        const incoming = typeof c.kubeconfig === 'string' ? c.kubeconfig : '';
+        const masked = incoming === K8S_KUBECONFIG_MASK || incoming.includes('***') || incoming.trim() === '';
+        return { ...(prev || {}), ...c, kubeconfig: masked ? (prev && prev.kubeconfig) || '' : incoming };
+      });
+    }
+
     for (const [key, value] of Object.entries(updates)) {
+      if (key === 'k8sClusters') continue;
       // 拒绝保存脱敏后的敏感字段（含 *** 占位符）
       if (SENSITIVE_KEYS.includes(key) && typeof value === 'string' && value.includes('***') && value.length < 30) {
         continue;

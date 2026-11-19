@@ -43,6 +43,7 @@ import { createStatsScheduler } from './stats-scheduler.js';
 import { mapLimit } from './concurrency.js';
 import createSettingsRouter, { SENSITIVE_KEYS } from './routes/settings.js';
 import createDockerRouter from './routes/docker.js';
+import createK8sRouter from './routes/k8s.js';
 import createChatRouter from './routes/chat.js';
 import { AGENT_TOOLS, AGENT_TOOL_NAMES, executeAgentTool } from './agent-tools.js';
 import createAuthRouter from './routes/auth.js';
@@ -1885,6 +1886,14 @@ app.use(createDockerRouter({
   ensureSettings, broadcast, addAnalysisRecord, buildHostExecMap, stripThinking,
   getLastPatrolResults, setLastPatrolResults,
 }));
+
+// ============================================================
+// Kubernetes 只读监控路由 —— 已抽到 server/routes/k8s.js
+// 路径写全 `/api/k8s/...`，这里不套前缀（与 docker/settings 同一惯例）；
+// 全局 authMiddleware 在上面统一生效，路由内部不再处理鉴权。
+// 注入两项：ensureSettings 读 settings.k8sClusters，saveSettings 落库/落文件。
+// ============================================================
+app.use(createK8sRouter({ ensureSettings, saveSettings }));
 
 // ========================================
 // Remote Server API Routes

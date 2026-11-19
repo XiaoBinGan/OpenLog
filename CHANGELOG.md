@@ -5,6 +5,29 @@
 
 ---
 
+## Unreleased — Kubernetes 监控（增量 ①）
+
+只读接入 Kubernetes：节点上不装 agent，跑 OpenLog 的机器上也不需要 `kubectl`。
+
+### 新增
+
+- **只读 kubeconfig 接入**：粘贴 kubeconfig 后直连 kube-apiserver，支持客户端证书（mTLS，
+  k3s 默认形态）与 ServiceAccount token 两种认证，另支持自定义 CA 与 `insecure-skip-tls-verify`。
+  所有请求都是 GET，不往集群写任何东西，单次请求默认 10s 超时。
+- **集群 / 节点 / Pod / 工作负载 / Warning 事件 / Pod 日志**六类视图：
+  节点 Ready 状态、角色、版本与 conditions；Pod 的 `ready` 比例、重启次数与逐容器状态，
+  并单独识别 **OOMKilled** 与 **CrashLoopBackOff**；Deployment / StatefulSet / DaemonSet 的
+  期望-就绪-已更新-可用对比；只取 `type=Warning` 的事件（含 reason / 关联对象 / 次数 / 最后发生时间）；
+  以及经 apiserver 直接 tail 的 Pod 日志（默认 `?tail=200`）。
+- **多集群**：任意多个 kubeconfig 并存，可指定 context（留空用 `current-context`），
+  逐个启用/停用，并有独立的「测试连接」探活，返回 apiserver 版本与节点数，失败给出上游原始错误。
+- **只读 RBAC 资产**：`deploy/k8s/rbac.yaml`（只读 ServiceAccount + ClusterRole）、
+  `deploy/k8s/make-kubeconfig.sh` 与 `deploy/k8s/README.md`（权限模型与最小 verb 说明）。
+
+> 尚未发版：`package.json` 版本仍是 1.1.1，本节只作增量记录，正式发布时并入对应版本段。
+
+---
+
 ## v1.1.1 — 健康检查只说有证据的问题
 
 「容器健康诊断」在生产上报了 51 个问题容器，点进去发现 41 个"错误"是

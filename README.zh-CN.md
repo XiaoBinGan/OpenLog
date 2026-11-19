@@ -41,7 +41,8 @@ Grafana 可直接接 `/api/v1/*`（与 Prometheus HTTP API 同形状）。
 - [核心功能详解](#-核心功能详解)
   - 远程服务器管理 · 规模与性能 · 运维助手 · AI Shell · 技能管理
   - 算力监控 · MFU 计算方式 · 接入自定义推理服务 · 告警规则
-  - 容器日志告警 · Docker 实时日志 · 容器内执行命令
+  - 容器日志告警 · Docker 实时日志 · 容器内执行命令 · Kubernetes 监控
+- [Kubernetes 监控](#kubernetes-监控)
 - [API 速查](#-api-速查)
 - [许可证](#-许可证)
 - [CHANGELOG](CHANGELOG.md) · [参与贡献](#-参与贡献) · [致谢](#-致谢)
@@ -64,6 +65,7 @@ Grafana 可直接接 `/api/v1/*`（与 Prometheus HTTP API 同形状）。
 | 🔧 技能管理 | Skills Management (import/export, Markdown spec) |
 | 🔔 告警规则 + Webhook 通知 | Alert Rules + Webhook Notifications |
 | 🐳 Docker 管理 | Docker Management |
+| ☸️ Kubernetes 监控 | Kubernetes Monitoring (read-only, multi-cluster) |
 | 🖥️ 远程服务器管理 | Remote Server Management |
 | 📜 分析历史 | Analysis History |
 | ⚙️ 灵活配置 | Flexible Configuration |
@@ -998,6 +1000,33 @@ OPENLOG_ENABLE_CONTAINER_EXEC=1   # 或 OPENLOG_ENABLE_REMOTE_EXEC=1 一并开�
 > ⚠️ 「元字符过滤 + 命令名白名单」**不是安全边界**：命令本身可能有逃逸口。
 > 真正的边界是这个开关默认关闭 + 页面 token 鉴权。看完整日志/排障建议用只读面板，
 > 需要交互式 shell 时走 `/remote` 页的 AI Shell 或 SSH 终端。
+
+---
+
+## Kubernetes 监控
+
+在同一个面板里看 Kubernetes，**只读接入** —— 节点上不装 agent，跑 OpenLog 的机器上也不需要 `kubectl`。
+
+- **只读，写不进去。** 粘贴 kubeconfig 后 OpenLog 直接对 kube-apiserver 发 HTTPS 请求：
+  不往集群里装任何东西、不调用 `kubectl`，所有请求都是 GET。
+- **kubeconfig 直连 apiserver。** 支持多集群 kubeconfig —— 可指定任意 `context`，留空则用
+  `current-context`。两种认证方式都支持：客户端证书 + 私钥（mTLS，k3s kubeconfig 的默认形态）
+  与 bearer token（ServiceAccount token），另外支持自定义 CA 与 `insecure-skip-tls-verify`
+  （自签的实验集群）。单次请求默认 10s 超时。
+- **能看到什么：**
+  - **节点** —— Ready 状态、角色、kubelet 版本、OS/架构、内网 IP、可分配 CPU/内存/Pod 数，
+    以及每条 node condition 的 reason 与 message
+  - **Pod** —— 阶段、`ready` 比例、重启总次数、所在节点与 Pod IP、逐容器状态，并把
+    **OOMKilled** 与 **CrashLoopBackOff** 单独标出来
+  - **工作负载** —— Deployment / StatefulSet / DaemonSet 的期望数 / 就绪数 / 已更新 / 可用数
+  - **Warning 事件** —— 只取 `type=Warning`，带 reason、关联对象、消息、发生次数与最后出现时间
+  - **Pod 日志** —— 经 apiserver 直接 tail 某个 Pod 的日志（默认 `?tail=200`），不用登机器
+- **多集群。** 可以并存任意多个 kubeconfig，各自有显示名与 context；可按集群启用/停用，
+  并有独立的「测试连接」探活 —— 成功返回 apiserver 版本与节点数，失败给出上游原始错误。
+- **权限模型。** 凭据只存在服务端，接口永远不回显明文：集群视图只有名称、context、server、
+  认证类型与 `hasKubeconfig` 标记。推荐用**只读 ServiceAccount**（对 nodes、pods、pods/log、
+  events、deployments、statefulsets、daemonsets 给 `get` / `list` / `watch`）。
+  清单与 kubeconfig 生成脚本在 `deploy/k8s/`，具体核对清单见 `deploy/k8s/README.md`。
 
 ---
 

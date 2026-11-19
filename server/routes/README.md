@@ -51,6 +51,7 @@ export default function createBarRouter({ ensureSettings, broadcast }) {
 | `docker.js` | 24 | 工厂函数 | `/api/docker/*` 全部。注入 7 项（见下）。 |
 | `chat.js` | 1 | 工厂函数 | `/api/chat` SSE + 工具调用。注入 3 项；`ASSISTANT_TOOLS` 与 `ThinkingStreamFilter` 一并搬入本文件。 |
 | `auth.js` | 1 | 工厂函数 | `/api/auth/token`。注入 `authToken`。 |
+| `k8s.js` | 9 | 工厂函数 | `/api/k8s/*` 只读 Kubernetes 监控：集群配置 CRUD + `test`/`overview`/`pods`/`events`/`logs`。注入 `ensureSettings`、`saveSettings`；领域逻辑在 `server/k8s/`（kubeconfig 解析 / apiserver 客户端 / 资源归一化 / 集群配置存储），`kubeconfig` 明文只留在服务端。 |
 
 ## ✅ 拆分完成：84 / 84 路由
 
@@ -66,6 +67,7 @@ assistant-memory.js 95   analysis.js 86   models.js 43   auth.js 32
 | 符号 | 为什么必须注入而不是直接 import |
 |---|---|
 | `ensureSettings` | settings 是可重新赋值的绑定，必须取函数而不是值 |
+| `saveSettings` | 唯一的持久化入口（写 SQLite `app_settings`，回退到加密的 settings 文件），路由自己不许写文件/写库 |
 | `broadcast` | 依赖 index.js 的 `wsClients` |
 | `addAnalysisRecord` | 写 index.js 的 `analysisHistory` |
 | `buildHostExecMap` | 同时依赖 docker 与 remote 两侧信息 |

@@ -54,9 +54,10 @@ See [deploy/README-tsdb.md](deploy/README-tsdb.md).
 - [Recent Changes](#-recent-changes)
 - [Tech Stack](#-tech-stack)
 - [Core Features](#-core-features)
+- [Kubernetes monitoring](#kubernetes-monitoring)
   - Remote server management · Scale & performance (1,000 servers) · Ops assistant · AI Shell
   - Skills · GPU monitoring · How MFU is computed · Integrating a custom inference service
-  - Alert rules · Container log alerts · Docker live logs · In-container exec
+  - Alert rules · Container log alerts · Docker live logs · In-container exec · Kubernetes monitoring
 - [API Reference](#-api-reference)
 - [License](#-license)
 - [Changelog](CHANGELOG.md) · [Contributing](#-contributing) · [Acknowledgements](#-acknowledgements)
@@ -79,6 +80,7 @@ See [deploy/README-tsdb.md](deploy/README-tsdb.md).
 | 🔧 Skills | Markdown skill specs, import/export, usable by assistant & AI Shell |
 | 🔔 Alert rules | Keyword/level rules + webhook notifications with cooldown |
 | 🐳 Docker management | Containers, live logs, upstream/downstream topology, exec |
+| ☸️ Kubernetes monitoring | Read-only nodes / pods / workloads / warning events / pod logs, multi-cluster |
 | 🖥️ Remote servers | SSH pool, file browser, PTY terminal, auto-reconnect |
 | 📜 Analysis history | Browse and revisit past analyses |
 | ⚙️ Flexible configuration | vLLM/SGLang presets, DB backends, scale knobs |
@@ -1117,6 +1119,39 @@ instead of a cryptic error.
 > themselves may have escape hatches. The real boundary is this switch being off by default plus
 > page token auth. Use the read-only panel for log inspection/troubleshooting; use the AI Shell or
 > SSH terminal on the `/remote` page when you need an interactive shell.
+
+---
+
+## Kubernetes monitoring
+
+Read-only Kubernetes visibility from the same panel — no agent on the nodes, no `kubectl`
+required on the machine running OpenLog.
+
+- **Read-only by design.** Paste a kubeconfig and OpenLog talks straight to the
+  kube-apiserver over HTTPS. It never installs anything into the cluster and never shells out to
+  `kubectl`; every request it makes is a plain GET.
+- **kubeconfig → kube-apiserver, directly.** Multi-cluster kubeconfigs are handled: pick any
+  `context`, or fall back to `current-context`. Both auth styles work — client certificate + key
+  (mTLS, the default shape of a k3s kubeconfig) and bearer token (a ServiceAccount token) — plus a
+  custom CA bundle and `insecure-skip-tls-verify` for self-signed lab clusters. Requests default to
+  a 10s timeout.
+- **What you can see:**
+  - **Nodes** — readiness, roles, kubelet version, OS/arch, internal IP, allocatable CPU / memory /
+    pods, and every node condition with its reason and message
+  - **Pods** — phase, `ready` ratio, total restarts, node and pod IP, per-container state, with
+    **OOMKilled** and **CrashLoopBackOff** surfaced as first-class flags
+  - **Workloads** — Deployment / StatefulSet / DaemonSet: desired vs ready vs up-to-date vs available
+  - **Warning events** — filtered to `type=Warning`, with reason, involved object, message,
+    occurrence count and last-seen time
+  - **Pod logs** — tail a pod's log through the apiserver (`?tail=200` by default), no SSH needed
+- **Multiple clusters.** Any number of kubeconfigs can be stored side by side, each with its own
+  display name and context; enable or disable them per cluster, and hit **Test** to probe
+  connectivity — it reports the apiserver version and node count, or the upstream error verbatim.
+- **Permission model.** Credentials are persisted server-side and never echoed back in plaintext:
+  cluster views expose only name, context, server, auth type and a `hasKubeconfig` flag.
+  The recommended setup is a dedicated read-only ServiceAccount (`get` / `list` / `watch` on nodes,
+  pods, pods/log, events, deployments, statefulsets and daemonsets). The manifests and the
+  kubeconfig generator live in `deploy/k8s/` — the checklist is in `deploy/k8s/README.md`.
 
 ---
 

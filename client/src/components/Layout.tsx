@@ -17,6 +17,7 @@ import {
   History,
   MessageSquare,
   Boxes,
+  Layers,
   BookOpen,
   Cpu,
 } from 'lucide-react';
@@ -33,6 +34,7 @@ const navItems = [
   { path: '/logs', icon: FileText, label: '日志流' },
   { path: '/remote', icon: Server, label: '远程服务器' },
   { path: '/docker', icon: Boxes, label: 'Docker 容器' },
+  { path: '/k8s', icon: Layers, label: 'K8s 集群' },
   // { path: '/dev-assistant', icon: Code2, label: '开发助手' },
   { path: '/analytics', icon: Brain, label: 'AI 分析' },
   { path: '/analysis-history', icon: History, label: '分析历史' },

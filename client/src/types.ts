@@ -214,6 +214,13 @@ export interface Settings {
   containerPatrolLevels?: string[];
   containerLogWatchEnabled?: boolean;
   containerLogWatchInterval?: number;
+  /**
+   * Kubernetes 集群（kubeconfig 原文持久化，敏感：读取时默认打码）。
+   *
+   * 缺省为空数组；context 为空表示用 kubeconfig 的 current-context。
+   * 与 server 端 settings.k8sClusters 同名同形，字段名不得改。
+   */
+  k8sClusters?: { id: string; name: string; kubeconfig?: string; context?: string; enabled: boolean }[];
   /** 健康检查：退出超过多少小时算历史容器（0 = 不过滤） */
   containerHealthStaleHours?: number;
   /** 健康检查：过滤"无日志无指标"的容器（OOM/段错误不受影响） */

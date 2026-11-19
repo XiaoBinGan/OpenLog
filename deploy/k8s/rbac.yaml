@@ -1,0 +1,121 @@
+# OpenLog 只读 Kubernetes 监控 —— RBAC 与长期 token
+#
+# 用途：
+#   让 OpenLog 以「只读 ServiceAccount」直连 kube-apiserver，展示节点 / Pod / 工作负载 /
+#   事件 / 日志 / 指标。本文件只授予 get、list、watch，不授予 create / update / patch /
+#   delete，也不授予 secrets 读取权限（即 OpenLog 拿不到任何密钥材料）。
+#
+# 使用：
+#   kubectl apply -f deploy/k8s/rbac.yaml
+#   bash deploy/k8s/make-kubeconfig.sh --server https://127.0.0.1:6443
+#
+# 安全提示：
+#   1. 本文件创建的 Secret 内是长期有效的 SA token，等同于「整个集群只读权限」的凭据。
+#      不要把生成出来的 kubeconfig 提交进任何仓库，也不要贴进聊天工具。
+#   2. 只读权限仍会暴露 Pod 日志（可能含业务敏感信息）、节点信息与事件内容，
+#      请按最小授权原则决定是否在共享集群上启用。
+#   3. 轮换方式见 deploy/k8s/README.md「token 轮换」一节。
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: openlog
+  labels:
+    app.kubernetes.io/name: openlog
+    app.kubernetes.io/component: monitoring
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: openlog-readonly
+  namespace: openlog
+  labels:
+    app.kubernetes.io/name: openlog
+    app.kubernetes.io/component: monitoring
+# 只读用途，不需要挂载任何业务 Secret，也不参与 token 自动挂载
+automountServiceAccountToken: false
+
+---
+# 只读 ClusterRole：全部资源只允许 get / list / watch
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: openlog-readonly
+  labels:
+    app.kubernetes.io/name: openlog
+    app.kubernetes.io/component: monitoring
+rules:
+  # 核心资源
+  - apiGroups: [""]
+    resources:
+      - nodes
+      - nodes/status
+      - pods
+      - pods/log
+      - pods/status
+      - namespaces
+      - services
+      - endpoints
+      - events
+    verbs: ["get", "list", "watch"]
+
+  # 工作负载：Deployment / StatefulSet / DaemonSet / ReplicaSet
+  - apiGroups: ["apps"]
+    resources:
+      - deployments
+      - statefulsets
+      - daemonsets
+      - replicasets
+    verbs: ["get", "list", "watch"]
+
+  # 批处理任务
+  - apiGroups: ["batch"]
+    resources:
+      - jobs
+      - cronjobs
+    verbs: ["get", "list", "watch"]
+
+  # 资源用量指标（需要集群装有 metrics-server；k3s 默认内置）
+  - apiGroups: ["metrics.k8s.io"]
+    resources:
+      - nodes
+      - pods
+    verbs: ["get", "list", "watch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: openlog-readonly
+  labels:
+    app.kubernetes.io/name: openlog
+    app.kubernetes.io/component: monitoring
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: openlog-readonly
+subjects:
+  - kind: ServiceAccount
+    name: openlog-readonly
+    namespace: openlog
+
+---
+# k8s >= 1.24 不再为 ServiceAccount 自动签发长期 token Secret，
+# 这里显式声明一个 kubernetes.io/service-account-token 类型的 Secret，
+# 由 kube-controller-manager（k3s 内置）异步填充 token 与 ca.crt。
+# 注意：apply 之后 token 不是立刻可读，通常 1~10 秒；k3s 上偶发更久，
+#       请用 `kubectl -n openlog get secret openlog-readonly-token` 确认 token 字段非空后再生成
+#       kubeconfig（make-kubeconfig.sh 会在 token 为空时直接报错退出）。
+apiVersion: v1
+kind: Secret
+metadata:
+  name: openlog-readonly-token
+  namespace: openlog
+  labels:
+    app.kubernetes.io/name: openlog
+    app.kubernetes.io/component: monitoring
+  annotations:
+    kubernetes.io/service-account.name: openlog-readonly
+type: kubernetes.io/service-account-token
