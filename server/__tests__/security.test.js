@@ -61,21 +61,29 @@ async function startServer({ port, extraEnv = {} }) {
   // 随后所有带 token 的断言都会莫名其妙地 401（曾真实发生过：一个手工起的
   // 验收服务占着 30971，整套测试跑在了它上面）。
   // 所以这里必须核对拿到的 token 就是本次 spawn 传进去的那个。
-  const deadline = Date.now() + 30000;
+  const deadline = Date.now() + 45000;
   while (Date.now() < deadline) {
     try {
       const res = await fetch(`http://127.0.0.1:${port}/api/auth/token`);
       if (res.ok) {
         const body = await res.json().catch(() => ({}));
-        if (body.token === TOKEN) return { proc, port };
-        // 端口被占用：有别的服务在应答，且它不是我们起的
-        try { proc.kill('SIGKILL'); } catch { /* 已退出 */ }
-        throw new Error(
-          `端口 ${port} 上应答的服务不是本次启动的实例`
-          + `（期望 token=${TOKEN}，实际=${String(body.token).slice(0, 12)}…）。`
-          + `多半是该端口已被其他进程占用，本测试进程启动的服务因 EADDRINUSE 退出了。\n`
-          + `子进程日志:\n${log}`,
-        );
+        // 先辨身份：token 不等说明端口被别的服务占着（EADDRINUSE 后我们自己的进程已退出）
+        if (body.token !== TOKEN) {
+          try { proc.kill('SIGKILL'); } catch { /* 已退出 */ }
+          throw new Error(
+            `端口 ${port} 上应答的服务不是本次启动的实例`
+            + `（期望 token=${TOKEN}，实际=${String(body.token).slice(0, 12)}…）。`
+            + `多半是该端口已被其他进程占用，本测试进程启动的服务因 EADDRINUSE 退出了。\n`
+            + `子进程日志:\n${log}`,
+          );
+        }
+        // 身份对了还不够：initDb() 异步，进程开始监听时 DB 可能还没就绪，
+        // 依赖 DB 的端点会被「数据库未就绪闸门」统一挡成 503（Windows CI 曾随机失败）。
+          // /api/health 也在鉴权后面，必须带 token，否则永远 401 → 探测超时
+          const health = await fetch(`http://127.0.0.1:${port}/api/health`, { headers: AUTH }).catch(() => null);
+        const hb = health && health.ok ? await health.json().catch(() => ({})) : {};
+        if (hb.dbReady === true) return { proc, port };
+        // 未就绪 → 继续轮询（不杀进程、不抛错）
       }
     } catch (err) {
       if (err instanceof Error && err.message.includes('应答的服务不是本次启动的实例')) throw err;
@@ -84,7 +92,7 @@ async function startServer({ port, extraEnv = {} }) {
     await new Promise((r) => setTimeout(r, 300));
   }
   try { proc.kill('SIGKILL'); } catch { /* 已退出 */ }
-  throw new Error(`服务未能在 30s 内就绪:\n${log}`);
+  throw new Error(`服务未能在 45s 内就绪（含数据库就绪检查）:\n${log}`);
 }
 
 function stopServer(proc) {
@@ -114,7 +122,7 @@ describe('安全回归 — 默认配置（OPENLOG_ENABLE_REMOTE_EXEC 未设置�
   const BASE = `http://127.0.0.1:${PORT}`;
   let proc;
 
-  beforeAll(async () => { ({ proc } = await startServer({ port: PORT })); }, 45000);
+  beforeAll(async () => { ({ proc } = await startServer({ port: PORT })); }, 60000);
   afterAll(() => stopServer(proc));
 
   describe('HTTP 鉴权', () => {
