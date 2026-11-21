@@ -29,6 +29,36 @@ import * as k8sStore from '../k8s/store.js';
 import * as k8sKubeconfig from '../k8s/kubeconfig.js';
 import * as k8sClientModule from '../k8s/client.js';
 import * as k8sResources from '../k8s/resources.js';
+import { isDemoMode, DEMO_DISABLED } from '../demo/mode.js';
+import * as demoFixtures from '../demo/fixtures.js';
+
+// ─── 演示模式（OPENLOG_DEMO=1）────────────────────────────────────────
+// 数据只来自 server/demo/fixtures.js（命名空间导入，导出缺失不会在链接阶段崩整条路由）。
+// 关闭演示模式时下面的分支都不会进，原有 kube-apiserver / store 逻辑保持原样。
+
+/** 给模拟响应打上 demo:true 标记（契约：演示数据必须可识别） */
+function demoJson(payload) {
+  if (payload && typeof payload === 'object' && !Array.isArray(payload)) return { demo: true, ...payload };
+  return { demo: true, data: payload };
+}
+
+/** 取一份演示数据；fixture 缺失/抛错时返回 undefined，让端点降级而非 500 */
+function demoValue(name, ...args) {
+  const fn = demoFixtures[name];
+  if (typeof fn !== 'function') return undefined;
+  try {
+    return fn(...args);
+  } catch (err) {
+    console.warn(`[demo] ${name} 调用失败:`, errorMessage(err));
+    return undefined;
+  }
+}
+
+/** 演示集群列表（数组，形状同 GET /api/k8s/clusters 的 clusters[]） */
+function demoClusters() {
+  const data = demoValue('demoK8sClusters');
+  return Array.isArray(data) ? data : (data?.clusters || []);
+}
 
 /** 路由前缀：index.js 里 `app.use(createK8sRouter(...))` 直接挂根，所以每条路径都写全 */
 const PREFIX = '/api/k8s';
@@ -223,6 +253,18 @@ export default function createK8sRouter({ ensureSettings, saveSettings } = {}) {
       res.status(404).json({ error: '缺少集群 id' });
       return;
     }
+    // 演示模式：settings 里没有真实集群，白名单改为校验演示集群 ——
+    // 否则前端拿着 /api/k8s/clusters 返回的演示 id 请求 overview 会先被这里 404。
+    if (isDemoMode()) {
+      const hit = demoClusters().find((c) => String(c?.id ?? '') === clusterId);
+      if (!hit) {
+        res.status(404).json({ demo: true, error: `Kubernetes 集群不存在: ${clusterId}` });
+        return;
+      }
+      req.k8sCluster = hit;
+      next();
+      return;
+    }
     let record = null;
     try {
       record = k8sStore.getClusterRecord(ensureSettings(), clusterId);
@@ -241,6 +283,8 @@ export default function createK8sRouter({ ensureSettings, saveSettings } = {}) {
   // ── 集群配置 CRUD ──────────────────────────────────────────────────
 
   router.get(`${PREFIX}/clusters`, async (req, res) => {
+    // 演示模式：只替换响应，绝不把假集群写进 settings
+    if (isDemoMode()) return res.json(demoJson({ clusters: demoClusters() }));
     try {
       // store.listClusters() 已经返回 K8sClusterView（见 store.js），这里不能再套 toView，
       // 否则对 view 再解析一次会把 server / authType / hasKubeconfig 全丢掉。
@@ -252,6 +296,8 @@ export default function createK8sRouter({ ensureSettings, saveSettings } = {}) {
   });
 
   router.post(`${PREFIX}/clusters`, async (req, res) => {
+    // 演示模式：写操作（落 settings）一律禁用
+    if (isDemoMode()) return res.status(409).json(DEMO_DISABLED);
     try {
       const body = req.body || {};
       const name = typeof body.name === 'string' ? body.name.trim() : '';
@@ -289,6 +335,7 @@ export default function createK8sRouter({ ensureSettings, saveSettings } = {}) {
   });
 
   router.put(`${PREFIX}/clusters/:id`, async (req, res) => {
+    if (isDemoMode()) return res.status(409).json(DEMO_DISABLED);
     try {
       const existing = req.k8sCluster;
       const body = req.body || {};
@@ -333,6 +380,7 @@ export default function createK8sRouter({ ensureSettings, saveSettings } = {}) {
   });
 
   router.delete(`${PREFIX}/clusters/:id`, async (req, res) => {
+    if (isDemoMode()) return res.status(409).json(DEMO_DISABLED);
     try {
       const existing = req.k8sCluster;
       const result = await call(k8sStore.deleteCluster, ensureSettings(), existing.id);
@@ -347,6 +395,8 @@ export default function createK8sRouter({ ensureSettings, saveSettings } = {}) {
   // ── 连通性测试 ────────────────────────────────────────────────────
 
   router.post(`${PREFIX}/clusters/:id/test`, async (req, res) => {
+    // 演示模式：连通性测试会真连 kube-apiserver，禁用
+    if (isDemoMode()) return res.status(409).json(DEMO_DISABLED);
     try {
       const { client } = connectCluster(req.k8sCluster);
 
@@ -373,6 +423,8 @@ export default function createK8sRouter({ ensureSettings, saveSettings } = {}) {
   // ── 概览 ──────────────────────────────────────────────────────────
 
   router.get(`${PREFIX}/clusters/:id/overview`, async (req, res) => {
+    // 演示模式：概览直接给 fixture（形状与真实响应一致：nodes/pods/workloads/events/summary）
+    if (isDemoMode()) return res.json(demoJson(demoValue('demoK8sOverview', req.params.id) || {}));
     try {
       const { client, resolved } = connectCluster(req.k8sCluster);
       const warnings = [];
@@ -462,6 +514,14 @@ export default function createK8sRouter({ ensureSettings, saveSettings } = {}) {
   // ── Pod 列表 ──────────────────────────────────────────────────────
 
   router.get(`${PREFIX}/clusters/:id/pods`, async (req, res) => {
+    // 演示模式：Pod 列表从演示概览里取（同一份数据，避免两处不一致）
+    if (isDemoMode()) {
+      const overview = demoValue('demoK8sOverview', req.params.id) || {};
+      const namespace = queryString(req.query.namespace);
+      const pods = (Array.isArray(overview.pods) ? overview.pods : [])
+        .filter((p) => !namespace || String(p?.namespace ?? '') === namespace);
+      return res.json(demoJson({ pods }));
+    }
     try {
       const { client } = connectCluster(req.k8sCluster);
       const namespace = queryString(req.query.namespace);
@@ -481,6 +541,16 @@ export default function createK8sRouter({ ensureSettings, saveSettings } = {}) {
   // ── 事件列表 ──────────────────────────────────────────────────────
 
   router.get(`${PREFIX}/clusters/:id/events`, async (req, res) => {
+    // 演示模式：事件同样取自演示概览
+    if (isDemoMode()) {
+      const overview = demoValue('demoK8sOverview', req.params.id) || {};
+      const namespace = queryString(req.query.namespace);
+      const type = queryString(req.query.type).toLowerCase();
+      const events = (Array.isArray(overview.events) ? overview.events : [])
+        .filter((e) => !namespace || String(e?.namespace ?? '') === namespace)
+        .filter((e) => !type || String(e?.type ?? '').toLowerCase() === type);
+      return res.json(demoJson({ events }));
+    }
     try {
       const { client } = connectCluster(req.k8sCluster);
       const namespace = queryString(req.query.namespace);
@@ -509,6 +579,15 @@ export default function createK8sRouter({ ensureSettings, saveSettings } = {}) {
 
   router.get(`${PREFIX}/clusters/:id/pods/:namespace/:pod/logs`, async (req, res) => {
     try {
+      // 演示模式：Pod 日志来自 fixture（不连 apiserver，也不读 kubeconfig）
+      if (isDemoMode()) {
+        const namespace = String(req.params.namespace ?? '').trim();
+        const pod = String(req.params.pod ?? '').trim();
+        if (!namespace || !pod) throw badRequest('namespace 与 pod 不能为空');
+        const data = demoValue('demoK8sPodsLogs', { ns: namespace, pod });
+        const logs = typeof data === 'string' ? data : (data?.logs ?? '');
+        return res.json(demoJson({ logs }));
+      }
       const { client } = connectCluster(req.k8sCluster);
       const namespace = String(req.params.namespace ?? '').trim();
       const pod = String(req.params.pod ?? '').trim();

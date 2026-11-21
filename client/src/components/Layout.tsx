@@ -23,6 +23,7 @@ import {
 } from 'lucide-react';
 import clsx from 'clsx';
 import GlobalStatusBar from './GlobalStatusBar';
+import DemoBanner from './DemoBanner';
 import AIAnalysisToast from './AIAnalysisToast';
 import CapacityAlertModal from './CapacityAlertModal';
 import { withWsToken, wsProtocols } from '../api/auth';
@@ -365,6 +366,10 @@ function LayoutContent() {
         'flex-1 min-w-0 max-w-full overflow-x-hidden transition-all duration-300',
         sidebarOpen ? 'md:ml-64' : 'md:ml-16'
       )}>
+        {/* 演示模式横幅：只在 GET /api/demo 返回 demo === true 时出现，
+            未加载完/请求失败时渲染 null，对现有布局零影响 */}
+        <DemoBanner />
+
         {/* Global Status Bar (desktop only) */}
         <GlobalStatusBar />
         

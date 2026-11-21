@@ -23,6 +23,8 @@ import { formatExposition } from '../tsdb/exposition.js';
 import { createEvaluator } from '../tsdb/promql-engine.js';
 import { parse } from '../tsdb/promql-parser.js';
 import { groupAlerts, applyInhibition, applySilences } from '../tsdb/rules.js';
+import { isDemoMode, DEMO_DISABLED } from '../demo/mode.js';
+import * as demoFixtures from '../demo/fixtures.js';
 
 /**
  * 解析 Prometheus 风格的时间参数。
@@ -77,6 +79,34 @@ function ok(res, data, warnings) {
   res.json(body);
 }
 
+// ─── 演示模式（OPENLOG_DEMO=1）────────────────────────────────────────
+// 时序数据只来自 server/demo/fixtures.js（命名空间导入，导出缺失不会在链接阶段崩掉整条路由）。
+// 关闭演示模式时下面的分支都不会进，原有的 PromQL 求值/存储读取保持原样。
+
+/** 取一份演示数据；fixture 缺失/抛错时返回 undefined，让端点降级而非 500 */
+function demoValue(name, ...args) {
+  const fn = demoFixtures[name];
+  if (typeof fn !== 'function') return undefined;
+  try {
+    return fn(...args);
+  } catch (err) {
+    console.warn(`[demo] ${name} 调用失败:`, String(err?.message || err));
+    return undefined;
+  }
+}
+
+/**
+ * 演示模式的查询结果，包成 Prometheus 响应形状：`{ demo:true, status:'success', data }`。
+ * fixture 可能返回 `{resultType,result}`（Prometheus data 本体）或已包一层 `{data}`，两种都接受。
+ */
+function okDemo(res, params) {
+  const raw = demoValue('demoTsdbQuery', params);
+  const data = (raw && typeof raw === 'object' && raw.data && typeof raw.data === 'object')
+    ? raw.data
+    : (raw && typeof raw === 'object' ? raw : { resultType: 'matrix', result: [] });
+  res.json({ demo: true, status: 'success', data });
+}
+
 /**
  * 创建路由。
  *
@@ -105,6 +135,8 @@ export function createPrometheusRouter(deps = {}) {
   router.get('/api/v1/query', auth, async (req, res) => {
     const query = req.query.query;
     if (!query) return fail(res, 400, 'bad_data', '缺少 query 参数');
+    // 演示模式：不查存储、不求值 PromQL，直接回 fixture 序列
+    if (isDemoMode()) return okDemo(res, { query: String(query), time: parseTimeParam(req.query.time) });
     const time = parseTimeParam(req.query.time);
     const r = await evaluator.query(String(query), time === undefined ? {} : { time });
     if (r.error) return fail(res, 400, r.error.type || 'bad_data', r.error.message);
@@ -121,6 +153,8 @@ export function createPrometheusRouter(deps = {}) {
     if (start === undefined || end === undefined) {
       return fail(res, 400, 'bad_data', 'start 与 end 必须是有效时间');
     }
+    // 演示模式：区间查询同样走 fixture（60 点 1 小时序列由 fixture 负责）
+    if (isDemoMode()) return okDemo(res, { query: String(query), start, end, step });
     const stepMs = step === undefined ? Math.max(1000, Math.floor((end - start) / 100)) : step;
     const r = await evaluator.queryRange(String(query), start, end, stepMs);
     if (r.error) return fail(res, 400, r.error.type || 'bad_data', r.error.message);
@@ -268,6 +302,8 @@ export function createPrometheusRouter(deps = {}) {
   // 配完 webhook 想验证通不通，不用等真出故障。
   // 之前用户只能自己造一次告警，或者干脆不验证就上线。
   router.post('/api/tsdb/test-notify', auth, async (req, res) => {
+    // 演示模式：测试通知会真发 webhook 请求，属于写操作/外部动作，禁用
+    if (isDemoMode()) return res.status(409).json(DEMO_DISABLED);
     const notifier = getNotifier();
     if (!notifier) return fail(res, 503, 'unavailable', '通知模块未启用');
     const cfg = getRuleConfig() || {};

@@ -29,6 +29,49 @@ import { explainExitCode, buildRuleDiagnosis, mergePatrolProblems, describeConta
 import { createChatStream, pipeChatStreamToSSE, buildThinkingParams } from '../llm-stream.js';
 import { applyPatrolResults } from '../patrol-cache.js';
 import { createShortCache, cached } from '../short-cache.js';
+import { isDemoMode, DEMO_DISABLED } from '../demo/mode.js';
+import * as demoFixtures from '../demo/fixtures.js';
+
+// ─── 演示模式（OPENLOG_DEMO=1）────────────────────────────────────────
+// 数据只来自 server/demo/fixtures.js。这里用命名空间导入 + 运行时取函数：
+// 某个导出缺失时只是对应端点拿不到数据，不会在 ESM 链接阶段把整条路由带崩。
+// 关闭演示模式时下面的分支一个都不会进，原有逻辑（含缓存、错误处理）保持原样。
+
+/** 给模拟响应打上 demo:true 标记（契约：演示数据必须可识别） */
+function demoJson(payload) {
+  if (payload && typeof payload === 'object' && !Array.isArray(payload)) return { demo: true, ...payload };
+  return { demo: true, data: payload };
+}
+
+/** 取一份演示数据；fixture 缺失/抛错时返回 undefined，让端点降级而非 500 */
+function demoValue(name, ...args) {
+  const fn = demoFixtures[name];
+  if (typeof fn !== 'function') return undefined;
+  try {
+    return fn(...args);
+  } catch (err) {
+    console.warn(`[demo] ${name} 调用失败:`, errorMessage(err));
+    return undefined;
+  }
+}
+
+/** 演示模式下的 Docker 源列表（与 /api/docker/containers 的 sources[] 同形） */
+function demoSources() {
+  const data = demoValue('demoDockerSources');
+  return Array.isArray(data) ? data : (data?.sources || []);
+}
+
+/**
+ * 演示源里按 id 找容器。返回 { source, container }，找不到给 null。
+ * 用于「详情 / 链路 / 批量日志」这类**没有专属 fixture**、但会去连真实 Docker 的读端点：
+ * 演示模式下宁可回演示容器（或空结果），也不能让它带着假 sourceId 去连本机 2375。
+ */
+function demoContainerOf(sourceId, containerId) {
+  const source = demoSources().find((s) => (s.sourceId || s.id) === sourceId);
+  if (!source) return null;
+  const container = (source.containers || []).find((c) => c.id === containerId || c.shortId === containerId);
+  return container ? { source, container } : null;
+}
 
 export default function createDockerRouter({
   ensureSettings, broadcast, addAnalysisRecord, buildHostExecMap, stripThinking,
@@ -66,6 +109,18 @@ function sseText(res, text) {
  * 是「保存前先测一下能不能连」用的，必须保留原行为。
  */
 router.param('sourceId', (req, res, next, sourceId) => {
+  // 演示模式：settings 里没有真实源，白名单改为校验演示源 ——
+  // 否则前端拿着 /api/docker/containers 返回的演示 sourceId 请求日志会先被这里 404。
+  if (isDemoMode()) {
+    const source = demoSources().find((s) => (s.sourceId || s.id) === sourceId);
+    if (!source) {
+      res.status(404).json({ demo: true, error: `Docker 源不存在: ${sourceId}` });
+      return;
+    }
+    req.dockerSource = source;
+    next();
+    return;
+  }
   const sources = ensureSettings().dockerSources || [];
   const source = sources.find((s) => s.id === sourceId);
   if (!source) {
@@ -82,6 +137,8 @@ router.param('sourceId', (req, res, next, sourceId) => {
 
 // 获取 Docker 连接状态（测试连接）
 router.post('/api/docker/ping', async (req, res) => {
+  // 演示模式绝不连真实 Docker：这类「测一下能不能连」的动作统一禁用
+  if (isDemoMode()) return res.status(409).json(DEMO_DISABLED);
   const { sourceId, config } = req.body;
   console.log('[Docker ping] sourceId:', sourceId, 'config:', JSON.stringify(config));
   const result = await docker.pingDocker(sourceId || 'local', config || {});
@@ -94,6 +151,7 @@ router.post('/api/docker/ping', async (req, res) => {
 // Docker 页面的「容器内执行命令」面板打的就是这条路由（真实 bug）。
 // 安全策略与 REST 远程命令执行共用：默认关闭 + 元字符过滤 + 只读白名单。
 router.post('/api/docker/:sourceId/:containerId/exec', async (req, res) => {
+  if (isDemoMode()) return res.status(409).json(DEMO_DISABLED);
   const { sourceId, containerId } = req.params;
   const { command } = req.body;
   if (rejectUnlessContainerExecEnabled(res)) return;
@@ -117,6 +175,8 @@ router.post('/api/docker/:sourceId/:containerId/exec', async (req, res) => {
 });
 // Docker 容器操作（stop/start/restart/remove）
 router.post('/api/docker/:sourceId/:containerId/:op', async (req, res) => {
+  // 容器启停/删除是写操作：演示模式下一律拒绝，绝不下发到真实 Docker
+  if (isDemoMode()) return res.status(409).json(DEMO_DISABLED);
   try {
     const { sourceId, containerId, op } = req.params;
     const source = (ensureSettings().dockerSources || []).find(s => s.id === sourceId);
@@ -139,6 +199,8 @@ router.post('/api/docker/:sourceId/:containerId/:op', async (req, res) => {
 
 // 获取所有 Docker 配置的容器列表（3 秒短缓存，容器操作后主动失效；?refresh=1 可强制刷新）
 router.get('/api/docker/containers', async (req, res) => {
+  // 演示模式：直接回演示源（不读设置、不连 Docker、不进短缓存）
+  if (isDemoMode()) return res.json(demoJson({ sources: demoSources() }));
   try {
     const forceRefresh = req.query?.refresh === '1' || req.query?.refresh === 'true';
     if (forceRefresh) containersCache.invalidate('containers');
@@ -181,6 +243,12 @@ router.get('/api/docker/containers', async (req, res) => {
 
 // 获取单个容器的详情
 router.get('/api/docker/containers/:sourceId/:containerId', async (req, res) => {
+  // 演示模式：回演示源里那个容器（没有专属 fixture，也不去连真实 Docker）
+  if (isDemoMode()) {
+    const hit = demoContainerOf(req.params.sourceId, req.params.containerId);
+    if (!hit) return res.status(404).json({ demo: true, error: `容器不存在: ${req.params.containerId}` });
+    return res.json(demoJson({ ...hit.container, containerId: hit.container.id, sourceId: req.params.sourceId }));
+  }
   try {
     const { sourceId, containerId } = req.params;
     const source = (ensureSettings().dockerSources || []).find(s => s.id === sourceId);
@@ -200,6 +268,14 @@ router.get('/api/docker/containers/:sourceId/:containerId', async (req, res) => 
 
 // 读取容器日志
 router.get('/api/docker/containers/:sourceId/:containerId/logs', async (req, res) => {
+  // 演示模式：日志来自 fixture，不读真实容器（关闭时走下面的原逻辑）
+  if (isDemoMode()) {
+    const { sourceId, containerId } = req.params;
+    const tail = parseInt(req.query.tail, 10) || 200;
+    const data = demoValue('demoDockerLogs', { containerId, sourceId, tail });
+    const logs = Array.isArray(data) ? data : (data?.logs || []);
+    return res.json(demoJson({ logs, containerId, sourceId }));
+  }
   try {
     const { sourceId, containerId } = req.params;
     const { tail = 200, since, startTime, filterLevel } = req.query;
@@ -218,6 +294,20 @@ router.get('/api/docker/containers/:sourceId/:containerId/logs', async (req, res
 
 // 读取多个容器的日志（联合会诊）
 router.post('/api/docker/logs/batch', async (req, res) => {
+  // 演示模式：逐台容器取演示日志（不读真实容器）
+  if (isDemoMode()) {
+    const { containers, tail = 200 } = req.body || {};
+    const results = (Array.isArray(containers) ? containers : []).map(({ sourceId, containerId, name }) => {
+      const hit = demoContainerOf(sourceId, containerId);
+      const data = demoValue('demoDockerLogs', { containerId, sourceId, tail: parseInt(tail, 10) || 200 });
+      return {
+        sourceId, containerId, name: name || hit?.container?.names?.[0] || hit?.container?.name || '',
+        logs: Array.isArray(data) ? data : (data?.logs || []),
+        ok: true,
+      };
+    });
+    return res.json(demoJson({ results }));
+  }
   try {
     const { containers, tail = 200 } = req.body; // containers: [{sourceId, containerId, name}]
     const results = [];
@@ -241,6 +331,23 @@ router.post('/api/docker/logs/batch', async (req, res) => {
 
 // 上下游链路追踪
 router.get('/api/docker/trace/:sourceId/:containerId', async (req, res) => {
+  // 演示模式：拓扑推断要 inspect 同主机所有容器，这里回空拓扑（只标出被查的容器）
+  if (isDemoMode()) {
+    const hit = demoContainerOf(req.params.sourceId, req.params.containerId);
+    if (!hit) return res.status(404).json({ demo: true, error: `容器不存在: ${req.params.containerId}` });
+    return res.json(demoJson({
+      target: hit.container,
+      upstream: [],
+      downstream: [],
+      networkPeers: [],
+      serviceName: hit.container.name || hit.container.names?.[0] || '',
+      totalUpstream: 0,
+      totalDownstream: 0,
+      totalPeers: 0,
+      inspected: 0,
+      unavailable: ['演示模式：未连接任何真实 Docker'],
+    }));
+  }
   try {
     const { sourceId, containerId } = req.params;
     const source = (ensureSettings().dockerSources || []).find(s => s.id === sourceId);
@@ -255,6 +362,8 @@ router.get('/api/docker/trace/:sourceId/:containerId', async (req, res) => {
 
 // 批量分析多个容器日志（联合会诊）
 router.post('/api/docker/analyze/batch', async (req, res) => {
+  // 演示模式：批量分析会读真实容器日志并调用 LLM，直接禁用
+  if (isDemoMode()) return res.status(409).json(DEMO_DISABLED);
   try {
     const { containers, prompt: customPrompt, sourceId = 'docker-batch' } = req.body;
     if (!containers || containers.length === 0) {
@@ -368,6 +477,8 @@ function healthCheckOptions() {
 }
 
 router.get('/api/docker/health-check', async (req, res) => {
+  // 演示模式：健康检查报告用 fixture（不执行 docker healthCheck / 不读巡检缓存）
+  if (isDemoMode()) return res.json(demoJson(demoValue('demoDockerHealthCheck') || {}));
   try {
     const sources = ensureSettings().dockerSources || [];
     const report = mergePatrolProblems(
@@ -381,6 +492,8 @@ router.get('/api/docker/health-check', async (req, res) => {
 });
 
 router.post('/api/docker/health-check/analyze', async (req, res) => {
+  // 演示模式：会跑真实健康检查 + 调 LLM，直接禁用
+  if (isDemoMode()) return res.status(409).json(DEMO_DISABLED);
   try {
     const sources = ensureSettings().dockerSources || [];
     const report = mergePatrolProblems(
@@ -508,6 +621,8 @@ router.get('/api/docker/patrol', (req, res) => {
 
 // 立即触发一次巡检
 router.post('/api/docker/patrol/now', async (req, res) => {
+  // 演示模式：巡检会 SSH/Docker 读真实日志，直接禁用
+  if (isDemoMode()) return res.status(409).json(DEMO_DISABLED);
   try {
     const sources = ensureSettings().dockerSources || [];
     const levels = ensureSettings().containerPatrolLevels || ['ERROR', 'FATAL'];
@@ -525,6 +640,8 @@ router.post('/api/docker/patrol/now', async (req, res) => {
 
 // 重置巡检检查点（容器重启后需要调用）
 router.post('/api/docker/patrol/reset', async (_req, res) => {
+  // 演示模式：重置检查点是写操作
+  if (isDemoMode()) return res.status(409).json(DEMO_DISABLED);
   docker.resetPatrolCheckpoints();
   res.json({ success: true });
 });
@@ -536,6 +653,8 @@ router.get('/api/docker/patrol/last', async (_req, res) => {
 
 // AI 分析巡检结果（SSE 流式）
 router.post('/api/docker/patrol/analyze', async (req, res) => {
+  // 演示模式：分析触发（LLM + 写分析历史）禁用
+  if (isDemoMode()) return res.status(409).json(DEMO_DISABLED);
   try {
     // 直接用缓存结果；如果没数据说明还没有异常日志
     let results = getLastPatrolResults();
@@ -652,6 +771,8 @@ ${containerText}
 // 对策：服务端自己 inspect 容器当事实来源；先 flush 一个「正在读取」事件；
 //      把日志读取失败的原因原样告诉模型和用户。
 router.post('/api/docker/container/:sourceId/:containerId/analyze', async (req, res) => {
+  // 演示模式：单容器诊断会 inspect 真实容器 + 调 LLM，直接禁用
+  if (isDemoMode()) return res.status(409).json(DEMO_DISABLED);
   const { sourceId, containerId } = req.params;
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
@@ -782,6 +903,8 @@ router.post('/api/docker/container/:sourceId/:containerId/analyze', async (req, 
 
 // 别名：/diagnose → /analyze（兼容前端 Docker 诊断按钮）
 router.post('/api/docker/container/:sourceId/:containerId/diagnose', async (req, res) => {
+  // 演示模式：同 /analyze，直接禁用（不必改写 URL 再走一遍）
+  if (isDemoMode()) return res.status(409).json(DEMO_DISABLED);
   req.url = req.url.replace('/diagnose', '/analyze');
   // router 内没有 app 绑定；req.app 就是主应用，语义与原来完全一致
   req.app.handle(req, res);
@@ -798,6 +921,8 @@ function getDockerConfig(sourceId) {
 
 
 async function runDockerOp(req, res, opName, args = []) {
+  // 演示模式：容器 start/stop/restart/pause/unpause/remove 一律禁用
+  if (isDemoMode()) return res.status(409).json(DEMO_DISABLED);
   const { sourceId, containerId } = req.params;
   const config = await getDockerConfig(sourceId);
   if (!config) return res.status(404).json({ error: 'Docker 源未找到' });

@@ -21,6 +21,7 @@ import { apiFetch, apiJson } from '../api/client';
 import ShellTerminal from '../components/ShellTerminal';
 import AIShellTerminal from '../components/AIShellTerminal';
 import FileContextMenu, { type FileMenuTarget, type FileOpKind } from '../components/FileContextMenu';
+import { DEMO_DISABLED_HINT, useDemoMode } from '../hooks/useDemoMode';
 import {
   validateFileName, validateRemotePathInput, validateMode,
   joinPath, baseName, parentDir, deleteConfirmText,
@@ -225,7 +226,7 @@ function FileEditor({
 }
 
 // 单个服务器卡片组件
-const ServerCard = ({ server, isActive, selected, onToggleSelect, onConnect, onDisconnect, onEdit, onDelete, onShell, onAIShell, onSelect, aiShellOpening, connecting }: {
+const ServerCard = ({ server, isActive, selected, onToggleSelect, onConnect, onDisconnect, onEdit, onDelete, onShell, onAIShell, onSelect, aiShellOpening, connecting, demo }: {
   server: RemoteServer;
   isActive: boolean;
   selected: boolean;
@@ -240,6 +241,8 @@ const ServerCard = ({ server, isActive, selected, onToggleSelect, onConnect, onD
   onOpenEditor?: () => void;
   aiShellOpening?: boolean;
   connecting: boolean;
+  /** 演示模式：远程命令入口（Shell / AI Shell）禁用 —— 不会连任何真实主机。 */
+  demo?: boolean;
 }) => (
   <div
     className={`group cursor-pointer rounded-xl border p-2.5 transition-all ${
@@ -310,10 +313,20 @@ const ServerCard = ({ server, isActive, selected, onToggleSelect, onConnect, onD
         <button onClick={onDisconnect} className="flex h-7 flex-1 items-center justify-center gap-1 rounded-md border border-dark-800 bg-dark-800/50 text-[11px] text-dark-300 transition-colors hover:border-red-500/30 hover:bg-red-500/10 hover:text-red-400">
           <WifiOff className="w-3 h-3" /> 断开
         </button>
-        <button onClick={onShell} className="flex h-7 flex-1 items-center justify-center gap-1 rounded-md border border-dark-800 bg-dark-800/50 text-[11px] text-dark-300 transition-colors hover:border-accent-500/30 hover:bg-accent-500/10 hover:text-accent-300">
+        <button
+          onClick={onShell}
+          disabled={demo}
+          title={demo ? DEMO_DISABLED_HINT : '打开 Shell（远程命令执行）'}
+          className="flex h-7 flex-1 items-center justify-center gap-1 rounded-md border border-dark-800 bg-dark-800/50 text-[11px] text-dark-300 transition-colors hover:border-accent-500/30 hover:bg-accent-500/10 hover:text-accent-300 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-dark-800 disabled:hover:bg-dark-800/50 disabled:hover:text-dark-300"
+        >
           <Terminal className="w-3 h-3" /> Shell
         </button>
-        <button onClick={onAIShell} disabled={aiShellOpening} className="flex h-7 flex-1 items-center justify-center gap-1 rounded-md border border-purple-500/25 bg-purple-500/10 text-[11px] text-purple-300 transition-colors hover:bg-purple-500/20 disabled:cursor-wait disabled:opacity-50">
+        <button
+          onClick={onAIShell}
+          disabled={aiShellOpening || demo}
+          title={demo ? DEMO_DISABLED_HINT : '打开 AI Shell（自然语言 → 远程命令）'}
+          className="flex h-7 flex-1 items-center justify-center gap-1 rounded-md border border-purple-500/25 bg-purple-500/10 text-[11px] text-purple-300 transition-colors hover:bg-purple-500/20 disabled:cursor-wait disabled:opacity-40"
+        >
           {aiShellOpening ? <Loader className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
           {aiShellOpening ? '启动中' : 'AI Shell'}
         </button>
@@ -331,6 +344,9 @@ const ServerCard = ({ server, isActive, selected, onToggleSelect, onConnect, onD
 export default function Remote() {
   const _toastCtx = useToast();
   const showToast = (msg: string, type: string) => _toastCtx.toast(type as any, msg);
+  /** 演示模式：远程命令执行入口（Shell / AI Shell）禁用 —— 演示数据不连任何真实主机。 */
+  const { demo } = useDemoMode();
+  const blockInDemo = (label: string) => showToast(`${DEMO_DISABLED_HINT}（${label}）`, 'warning');
   const {
     servers, activeServer, setActiveServer, selectServer, connect, disconnect, refreshServers,
     loadFiles, navigateDir, goUp,
@@ -885,10 +901,17 @@ export default function Remote() {
                 onDisconnect={() => disconnect(server.id)}
                 onEdit={() => openEdit(server)}
                 onDelete={() => deleteServer(server)}
-                onShell={() => { selectServer(server); setShowShell(true); }}
-                onAIShell={() => { selectServer(server); setAiShellOpening(true); setShowAIShell(true); }}
+                onShell={() => {
+                  if (demo) { blockInDemo('远程命令执行'); return; }
+                  selectServer(server); setShowShell(true);
+                }}
+                onAIShell={() => {
+                  if (demo) { blockInDemo('AI Shell 远程命令'); return; }
+                  selectServer(server); setAiShellOpening(true); setShowAIShell(true);
+                }}
                 connecting={connectingId === server.id}
                 aiShellOpening={aiShellOpening}
+                demo={demo}
                 onSelect={() => {
                   if (server.status !== 'connected') {
                     setActiveServer(null); // 未连接 → 显示默认空白状态

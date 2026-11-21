@@ -26,6 +26,7 @@ import { Boxes, Plus, RefreshCw } from 'lucide-react';
 import { apiFetch, apiJson } from '../api/client';
 import { useToast } from '../contexts/ToastContext';
 import { usePolling } from '../utils/usePolling';
+import { DEMO_DISABLED_HINT, useDemoMode } from '../hooks/useDemoMode';
 import type {
   K8sClusterListResponse,
   K8sClusterView,
@@ -57,6 +58,8 @@ const OVERVIEW_POLL_MS = 30_000;
 
 export default function K8s() {
   const toast = useToast();
+  /** 演示模式：K8s 集群只能看，新增/删除一律挡在入口（并给出提示）。 */
+  const { demo } = useDemoMode();
 
   const [clusters, setClusters] = useState<K8sClusterView[]>([]);
   const [clustersLoading, setClustersLoading] = useState(true);
@@ -148,9 +151,13 @@ export default function K8s() {
   }, [fetchClusters, fetchOverview, selectedId]);
 
   const handleAdd = useCallback(() => {
+    if (demo) {
+      toast.warning(DEMO_DISABLED_HINT, { description: '演示模式不能新增集群（OPENLOG_DEMO=1）' });
+      return;
+    }
     setFormCluster(null);
     setFormOpen(true);
-  }, []);
+  }, [demo, toast]);
 
   const handleSaved = useCallback(
     (view: K8sClusterView) => {
@@ -182,6 +189,10 @@ export default function K8s() {
 
   const handleDelete = useCallback(
     async (cluster: K8sClusterView) => {
+      if (demo) {
+        toast.warning(DEMO_DISABLED_HINT, { description: '演示模式不能删除集群（OPENLOG_DEMO=1）' });
+        return;
+      }
       const confirmed = window.confirm(
         `删除集群「${cluster.name}」？\n只会删除本地保存的 kubeconfig，集群本身不受影响。`,
       );
@@ -203,7 +214,7 @@ export default function K8s() {
         setBusyId(null);
       }
     },
-    [fetchClusters, toast],
+    [demo, fetchClusters, toast],
   );
 
   const handleSelectPod = useCallback((pod: K8sPod) => {
@@ -249,7 +260,9 @@ export default function K8s() {
           </button>
           <button
             onClick={handleAdd}
-            className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-accent-500 text-white text-sm font-medium hover:bg-accent-600 transition-colors"
+            disabled={demo}
+            title={demo ? DEMO_DISABLED_HINT : '新增集群'}
+            className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-accent-500 text-white text-sm font-medium hover:bg-accent-600 transition-colors disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-accent-500"
           >
             <Plus className="w-4 h-4" />
             新增集群
@@ -259,19 +272,29 @@ export default function K8s() {
 
       {clustersError && <ErrorBar message={clustersError} onRetry={() => void fetchClusters()} />}
 
+      {demo && (
+        <div className="rounded-lg border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-[11px] leading-snug text-amber-300">
+          演示模式：集群<span className="font-medium">新增 / 删除</span>已禁用，只保留只读浏览
+          （节点、Pod、事件与 Pod 日志照常可见）。
+        </div>
+      )}
+
       <div className="flex flex-col lg:flex-row gap-5 items-start">
-        <ClusterList
-          clusters={clusters}
-          selectedId={selectedId}
-          loading={clustersLoading}
-          busyId={busyId}
-          testResults={testResults}
-          onSelect={setSelectedId}
-          onAdd={handleAdd}
-          onDelete={(cluster) => void handleDelete(cluster)}
-          onTest={(cluster) => void handleTest(cluster)}
-          onRefresh={() => void fetchClusters()}
-        />
+        {/* display:contents 容器：只挂演示模式的「变灰」样式，不参与 flex 布局 */}
+        <div className="contents [&_[title='添加集群']]:opacity-40 [&_[title='删除集群']]:opacity-40 [&_[title='删除集群']]:cursor-not-allowed">
+          <ClusterList
+            clusters={clusters}
+            selectedId={selectedId}
+            loading={clustersLoading}
+            busyId={busyId}
+            testResults={testResults}
+            onSelect={setSelectedId}
+            onAdd={handleAdd}
+            onDelete={(cluster) => void handleDelete(cluster)}
+            onTest={(cluster) => void handleTest(cluster)}
+            onRefresh={() => void fetchClusters()}
+          />
+        </div>
 
         <div className="flex-1 min-w-0 w-full space-y-4">
           {clustersLoading && clusters.length === 0 ? (

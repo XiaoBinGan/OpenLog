@@ -32,14 +32,34 @@ import type { ContainerInfo, ContainerRowItem, ContainerSource, TermLine, TraceR
 import { EMPTY_CMDS, EMPTY_LOGS, EMPTY_LIVE_LINES } from './docker/utils';
 import { useDiagnosis } from './docker/useDiagnosis';
 import { useLiveLogStream } from './docker/useLiveLogStream';
+import { DEMO_DISABLED_HINT, useDemoMode } from '../hooks/useDemoMode';
 import DockerHeader from './docker/DockerHeader';
 import DockerFilters from './docker/DockerFilters';
 import BatchAnalysis from './docker/BatchAnalysis';
 import DockerRow from './docker/DockerRow';
 
+/** 演示模式下被禁用的写操作 → 提示里用的中文名（与 ContainerActions 的文案一致）。 */
+const OP_LABELS: Record<string, string> = {
+  stop: '停止容器',
+  start: '启动容器',
+  restart: '重启容器',
+  remove: '删除容器',
+};
+
+/**
+ * 命中行内的写操作按钮（停止 / 启动 / 重启 / 删除容器）。
+ * 用 aria-label 结尾匹配：「进入容器终端」以「终端」结尾，不会被误伤。
+ */
+function demoOpButtonOf(target: EventTarget | null): HTMLElement | null {
+  if (!(target instanceof HTMLElement)) return null;
+  const btn = target.closest('button[aria-label$="容器"]');
+  return btn instanceof HTMLElement ? btn : null;
+}
+
 export default function Docker() {
   const { selectedDevice, isRemote } = useDevice();
   const toast = useToast();
+  const { demo } = useDemoMode();
   const [searchParams, setSearchParams] = useSearchParams();
   const [sources, setSources] = useState<ContainerSource[]>([]);
   const [loading, setLoading] = useState(true);
@@ -156,7 +176,47 @@ export default function Docker() {
     if (!silent) setLoading(false);
   }, [isRemote, selectedDevice.id]);
 
+  /**
+   * 演示模式（OPENLOG_DEMO=1）下，容器写操作一律不发出请求。
+   *
+   * 说明：行内按钮由 ./docker/ContainerActions.tsx 渲染（那里不感知演示状态），
+   * 所以这里做两层拦截：
+   *   1. doOp 入口再判一次（真正保证「不发请求」）；
+   *   2. 列表容器上的捕获阶段处理器：先把点击吃掉再弹提示 —— 按钮不会进入
+   *      loading、不会改本地 state，视觉上用 opacity/not-allowed 变灰。
+   * 只拦「启停重启删除」，终端/实时日志/诊断这些读路径保持可用。
+   */
+  const demoBlocked = useCallback((label: string) => {
+    toast.warning(DEMO_DISABLED_HINT, {
+      description: `${label}：演示数据是只读的（OPENLOG_DEMO=1）`,
+      group: 'demo-write-guard',
+    });
+  }, [toast]);
+
+  /** 演示模式下被锁定的行内按钮（停止 / 启动 / 重启 / 删除容器）。 */
+  const handleDemoClickCapture = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    if (!demo) return;
+    const btn = demoOpButtonOf(e.target);
+    if (!btn) return;
+    e.preventDefault();
+    e.stopPropagation();
+    demoBlocked(btn.getAttribute('aria-label') || '容器操作');
+  }, [demo, demoBlocked]);
+
+  /** 悬停时把 title 换成演示提示，替代「停止容器」这种会误导人的原始文案。 */
+  const handleDemoHoverCapture = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    if (!demo) return;
+    const btn = demoOpButtonOf(e.target);
+    if (btn && btn.getAttribute('title') !== DEMO_DISABLED_HINT) {
+      btn.setAttribute('title', DEMO_DISABLED_HINT);
+    }
+  }, [demo]);
+
   const doOp = useCallback(async (sourceId: string, containerId: string, op: string, key: string) => {
+    if (demo) {
+      demoBlocked(OP_LABELS[op] || '容器操作');
+      return;
+    }
     setOpLoading(prev => new Set([...prev, key]));
     try {
       await apiFetch(`/api/docker/${sourceId}/${containerId}/${op}`, { method: 'POST' });
@@ -168,7 +228,7 @@ export default function Docker() {
       toast.error(`操作失败：${e?.message || '未知错误'}`);
     }
     setOpLoading(prev => { const s = new Set(prev); s.delete(key); return s; });
-  }, [fetchContainers, toast]);
+  }, [demo, demoBlocked, fetchContainers, toast]);
 
   useEffect(() => { fetchContainers(); }, [fetchContainers]);
 
@@ -391,6 +451,14 @@ export default function Docker() {
         sources={sources}
       />
 
+      {/* 演示模式提示：说清哪些按钮被锁，别让人以为界面坏了 */}
+      {demo && (
+        <div className="rounded-lg border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-[11px] leading-snug text-amber-300">
+          演示模式：容器 <span className="font-medium">启动 / 停止 / 重启 / 删除</span> 已禁用；
+          日志、实时日志流、终端输出与 AI 诊断仍可查看。
+        </div>
+      )}
+
       {/* Loading */}
       {loading ? (
         <div className="flex items-center justify-center py-20 text-dark-500">
@@ -403,7 +471,16 @@ export default function Docker() {
           <p className="text-xs mt-1 text-dark-600">请检查设置中的 Docker 配置</p>
         </div>
       ) : (
-        <div className="space-y-2 min-w-0 max-w-full">
+        <div
+          className={
+            demo
+              // 演示模式：启停重启删除按钮变灰 + 禁用光标（读路径不受影响）
+              ? "space-y-2 min-w-0 max-w-full [&_[aria-label$='容器']]:cursor-not-allowed [&_[aria-label$='容器']]:opacity-40"
+              : 'space-y-2 min-w-0 max-w-full'
+          }
+          onClickCapture={handleDemoClickCapture}
+          onMouseOverCapture={handleDemoHoverCapture}
+        >
           {filtered.map(c => {
             const key = `${c._sourceId}:${c.id}`;
             const isTerminalOpen = terminalOpen.has(key);

@@ -18,14 +18,113 @@ import {
   hasShellMetaChars, rejectUnlessRemoteExecEnabled,
   READONLY_COMMANDS, commandBaseName,
 } from '../security/shell-command-policy.js';
+import { isDemoMode, DEMO_DISABLED } from '../demo/mode.js';
+import * as demoFixtures from '../demo/fixtures.js';
 
 export default function createRemoteRouter({ ensureSettings, stripThinking, statsScheduler }) {
   const router = express.Router();
+
+  // ─── 演示模式（OPENLOG_DEMO=1）───────────────────────────────────────
+  // 数据只来自 server/demo/fixtures.js（命名空间导入，导出缺失不会在链接阶段崩整条路由）。
+  // 关闭演示模式时下面的分支都不会进，原有的 SSH / 采集器逻辑保持原样。
+
+  /** 给模拟响应打上 demo:true 标记（契约：演示数据必须可识别） */
+  function demoJson(payload) {
+    if (payload && typeof payload === 'object' && !Array.isArray(payload)) return { demo: true, ...payload };
+    return { demo: true, data: payload };
+  }
+
+  /** 取一份演示数据；fixture 缺失/抛错时返回 undefined，让端点降级而非 500 */
+  function demoValue(name, ...args) {
+    const fn = demoFixtures[name];
+    if (typeof fn !== 'function') return undefined;
+    try {
+      return fn(...args);
+    } catch (err) {
+      console.warn(`[demo] ${name} 调用失败:`, errorMessage(err));
+      return undefined;
+    }
+  }
+
+  /**
+   * 演示模式下没有专属 fixture 的远程读接口（文件浏览 / 日志 tail / 搜索 / 读文件）：
+   * 演示服务器 id 在真实 remote-servers.json 里并不存在，落到真实分支只会得到
+   * 「服务器不存在」的 500。这里统一先回演示数据（能拼的用 fixture 拼，拼不了的空结果），
+   * 绝不让请求走到 SSH 那一层。
+   */
+  function demoLogRows(file, lines) {
+    const data = demoValue('demoLogTail', { file, lines });
+    const rows = Array.isArray(data) ? data : (data?.logs || []);
+    return Array.isArray(rows) ? rows : [];
+  }
+
+  /**
+   * 演示日志行 → 纯文本。fixture 的行有两种写法（与真实接口一致）：
+   * Log 记录用 `message`，容器/文件 tail 的原始行用 `line` / `content`。
+   */
+  function demoRowText(row) {
+    return String(row?.content ?? row?.line ?? row?.message ?? '');
+  }
+
+  /** 演示服务器列表（数组，形状同 GET /api/remote/servers 的 servers[]） */
+  function demoServers() {
+    const data = demoValue('demoRemoteServers');
+    return Array.isArray(data) ? data : (data?.servers || []);
+  }
+
+  /**
+   * 演示模式下的批量状态快照 —— 形状与 statsScheduler.snapshot() 完全一致
+   * （{ servers:[{serverId,serverName,stats,statsAt,statsError,mfu,mfuAt}], meta }）。
+   * 算力监控页一次拿所有机器，所以这里按演示服务器逐台拼出 stats/mfu。
+   */
+  function demoStatsSnapshot() {
+    const now = new Date().toISOString();
+    const servers = demoServers().map((s) => ({
+      serverId: s.id,
+      serverName: s.name,
+      stats: demoValue('demoRemoteStats', s.id) || null,
+      statsAt: now,
+      statsError: null,
+      mfu: demoValue('demoMfu', s.id) || null,
+      mfuAt: now,
+    }));
+    return {
+      servers,
+      meta: {
+        total: servers.length,
+        intervalMs: 5000,
+        concurrency: 8,
+        lastPass: null,
+        collectedAt: now,
+      },
+    };
+  }
 
 // ========================================
 
 // 批量状态快照：算力监控页一次拿所有机器（替代前端 1000 路扇出）
 router.get('/api/remote/servers/stats', async (req, res) => {
+  // 演示模式：不触发采集器（那会真去 SSH），直接用 fixture 拼同样的快照形状
+  if (isDemoMode()) {
+    const ids = req.query.ids ? String(req.query.ids).split(',').filter(Boolean) : null;
+    const snap = demoStatsSnapshot();
+    if (ids) snap.servers = snap.servers.filter(s => ids.includes(s.serverId));
+    if (req.query.fields === 'gpu') {
+      return res.json(demoJson({
+        ...snap,
+        servers: snap.servers.map(s => ({
+          serverId: s.serverId,
+          serverName: s.serverName,
+          statsAt: s.statsAt,
+          statsError: s.statsError,
+          gpus: s.stats?.gpus ?? [],
+          mfu: s.mfu ?? null,
+          mfuAt: s.mfuAt ?? null,
+        })),
+      }));
+    }
+    return res.json(demoJson(snap));
+  }
   try {
     if (!statsScheduler) return res.status(503).json({ error: '状态采集器未启动' });
     const ids = req.query.ids ? String(req.query.ids).split(',').filter(Boolean) : null;
@@ -61,6 +160,8 @@ router.get('/api/remote/servers/stats', async (req, res) => {
 
 // Get all remote servers
 router.get('/api/remote/servers', (req, res) => {
+  // 演示模式：真实服务器清单来自 remote-servers.json，这里换 fixture
+  if (isDemoMode()) return res.json(demoJson({ servers: demoServers() }));
   try {
     const servers = remote.getServers();
     res.json({ servers });
@@ -71,6 +172,8 @@ router.get('/api/remote/servers', (req, res) => {
 
 // Add a new remote server
 router.post('/api/remote/servers', async (req, res) => {
+  // 演示模式：写操作（落盘 remote-servers.json）一律禁用
+  if (isDemoMode()) return res.status(409).json(DEMO_DISABLED);
   try {
     const server = remote.addServer(req.body);
     res.json({ success: true, server });
@@ -81,6 +184,7 @@ router.post('/api/remote/servers', async (req, res) => {
 
 // Update remote server
 router.put('/api/remote/servers/:id', (req, res) => {
+  if (isDemoMode()) return res.status(409).json(DEMO_DISABLED);
   try {
     const server = remote.updateServer(req.params.id, req.body);
     if (!server) {
@@ -94,6 +198,7 @@ router.put('/api/remote/servers/:id', (req, res) => {
 
 // Delete remote server
 router.delete('/api/remote/servers/:id', (req, res) => {
+  if (isDemoMode()) return res.status(409).json(DEMO_DISABLED);
   try {
     const deleted = remote.deleteServer(req.params.id);
     if (!deleted) {
@@ -107,6 +212,8 @@ router.delete('/api/remote/servers/:id', (req, res) => {
 
 // Test connection to a remote server
 router.post('/api/remote/test', async (req, res) => {
+  // 演示模式：绝不建立真实 SSH 连接
+  if (isDemoMode()) return res.status(409).json(DEMO_DISABLED);
   const b = req.body || {};
   try {
     // 诊断日志：把「浏览器实际发来了什么」记下来。
@@ -156,6 +263,7 @@ function normalizeIds(body) {
  * 单台失败不影响其它台（用户可能就是想"能连的都连上"）。
  */
 router.post('/api/remote/servers/batch/connect', async (req, res) => {
+  if (isDemoMode()) return res.status(409).json(DEMO_DISABLED);
   const ids = normalizeIds(req.body);
   if (ids.length === 0) return res.status(400).json({ error: '缺少 ids' });
   const known = new Set(remote.getServers().map(s => s.id));
@@ -180,6 +288,7 @@ router.post('/api/remote/servers/batch/connect', async (req, res) => {
  * 断开原本就是本地清理（不依赖网络），串行也很快，但仍限并发避免同时 dispose 太多连接。
  */
 router.post('/api/remote/servers/batch/disconnect', async (req, res) => {
+  if (isDemoMode()) return res.status(409).json(DEMO_DISABLED);
   const ids = normalizeIds(req.body);
   if (ids.length === 0) return res.status(400).json({ error: '缺少 ids' });
   const known = new Set(remote.getServers().map(s => s.id));
@@ -200,6 +309,7 @@ router.post('/api/remote/servers/batch/disconnect', async (req, res) => {
 
 // Connect to a remote server
 router.post('/api/remote/servers/:id/connect', async (req, res) => {
+  if (isDemoMode()) return res.status(409).json(DEMO_DISABLED);
   try {
     const result = await remote.connectServer(req.params.id);
     res.json(result);
@@ -210,6 +320,7 @@ router.post('/api/remote/servers/:id/connect', async (req, res) => {
 
 // Disconnect from a remote server
 router.post('/api/remote/servers/:id/disconnect', async (req, res) => {
+  if (isDemoMode()) return res.status(409).json(DEMO_DISABLED);
   try {
     await remote.disconnectServer(req.params.id);
     res.json({ success: true });
@@ -234,6 +345,7 @@ function decryptFinalShellPassword(encrypted) {
 
 // 导入 FinalShell 配置
 router.post('/api/remote/import', async (req, res) => {
+  if (isDemoMode()) return res.status(409).json(DEMO_DISABLED);
   try {
     const { configs } = req.body;
     if (!configs || !Array.isArray(configs)) {
@@ -301,6 +413,13 @@ router.get('/api/remote/export', async (req, res) => {
 
 // List remote files
 router.get('/api/remote/servers/:id/files', async (req, res) => {
+  // 演示模式：目录列表用演示日志文件名拼（形状同真实响应 { files, dirs, currentPath }）
+  if (isDemoMode()) {
+    const data = demoValue('demoLogFiles');
+    const list = Array.isArray(data) ? data : (data?.files || []);
+    const files = list.map((f) => ({ name: f.name, path: f.path, size: f.size, isLog: String(f.name).endsWith('.log') }));
+    return res.json(demoJson({ files, dirs: [], currentPath: String(req.query.path || '') }));
+  }
   try {
     const { path: subPath } = req.query;
     const result = await remote.listRemoteFiles(req.params.id, subPath);
@@ -312,6 +431,19 @@ router.get('/api/remote/servers/:id/files', async (req, res) => {
 
 // Read remote log file
 router.get('/api/remote/servers/:id/logs', async (req, res) => {
+  // 演示模式：日志 tail 来自 demoLogTail（这就是契约里 demoLogTail 对应的读取端点）
+  if (isDemoMode()) {
+    const { file, lines } = req.query;
+    if (!file) {
+      return res.status(400).json({ demo: true, error: '缺少文件路径' });
+    }
+    // fixture 与真实 readRemoteFile 同形：{ logs, fileInfo?, totalLines? }
+    const data = demoValue('demoLogTail', { file: String(file), lines: parseInt(lines, 10) || 200 });
+    const logs = Array.isArray(data) ? data : (data?.logs || []);
+    const payload = { logs, totalLines: Number.isFinite(data?.totalLines) ? data.totalLines : logs.length };
+    if (data?.fileInfo) payload.fileInfo = data.fileInfo;
+    return res.json(demoJson(payload));
+  }
   try {
     const { file, lines, search, level } = req.query;
     if (!file) {
@@ -330,6 +462,23 @@ router.get('/api/remote/servers/:id/logs', async (req, res) => {
 
 // Search remote logs
 router.get('/api/remote/servers/:id/search', async (req, res) => {
+  // 演示模式：不 grep 远程机器。演示日志里能对上的行按真实结果形状回，
+  // 对不上就是空结果（{ results, files, total }），绝不建 SSH。
+  if (isDemoMode()) {
+    const { q } = req.query;
+    if (!q) {
+      return res.status(400).json({ demo: true, error: '缺少搜索关键词' });
+    }
+    const needle = String(q).toLowerCase();
+    const rows = demoLogRows('', 500).filter((r) => demoRowText(r).toLowerCase().includes(needle));
+    const results = rows.map((r, i) => ({
+      file: String(req.query.path || ''),
+      line: i + 1,
+      content: demoRowText(r),
+      level: r.level,
+    }));
+    return res.json(demoJson({ results, files: [], total: results.length }));
+  }
   try {
     const { q, path: searchPath, pattern } = req.query;
     if (!q) {
@@ -347,6 +496,13 @@ router.get('/api/remote/servers/:id/search', async (req, res) => {
 
 // 读取远程文件原始内容（编辑器用）
 router.get('/api/remote/servers/:id/file/read', async (req, res) => {
+  // 演示模式：文件内容用 demoLogTail 的行拼出来（形状同真实响应 { content }），不读远程文件
+  if (isDemoMode()) {
+    const { path: filePath } = req.query;
+    if (!filePath) return res.status(400).json({ demo: true, error: '缺少文件路径' });
+    const content = demoLogRows(String(filePath), 400).map(demoRowText).join('\n');
+    return res.json(demoJson({ content }));
+  }
   try {
     const { path: filePath } = req.query;
     if (!filePath) return res.status(400).json({ error: '缺少文件路径' });
@@ -360,6 +516,7 @@ router.get('/api/remote/servers/:id/file/read', async (req, res) => {
 
 // 写入远程文件内容（编辑器用）
 router.post('/api/remote/servers/:id/file/write', async (req, res) => {
+  if (isDemoMode()) return res.status(409).json(DEMO_DISABLED);
   try {
     const { path: filePath, content } = req.body;
     if (!filePath || content === undefined) return res.status(400).json({ error: '缺少参数' });
@@ -378,6 +535,7 @@ router.post('/api/remote/servers/:id/file/write', async (req, res) => {
  * 路径校验、危险目录拦截、shell 转义都在 remote-file-ops.js（纯函数，有单测）。
  */
 router.post('/api/remote/servers/:id/file/op', async (req, res) => {
+  if (isDemoMode()) return res.status(409).json(DEMO_DISABLED);
   try {
     const { op, path: targetPath, newPath, mode } = req.body || {};
     if (!op) return res.status(400).json({ error: '缺少 op 参数' });
@@ -392,6 +550,7 @@ router.post('/api/remote/servers/:id/file/op', async (req, res) => {
 
 // 上传文件到远程服务器
 router.post('/api/remote/servers/:id/file/upload', async (req, res) => {
+  if (isDemoMode()) return res.status(409).json(DEMO_DISABLED);
   try {
     const { path: remotePath, content: base64Content, name } = req.body;
     if (!remotePath || !base64Content) return res.status(400).json({ error: '缺少参数' });
@@ -408,6 +567,7 @@ router.post('/api/remote/servers/:id/file/upload', async (req, res) => {
 
 // 初始化分片上传
 router.post('/api/remote/servers/:id/file/upload/init', async (req, res) => {
+  if (isDemoMode()) return res.status(409).json(DEMO_DISABLED);
   try {
     const { path: remotePath, fileSize } = req.body;
     if (!remotePath || !fileSize) return res.status(400).json({ error: '缺少参数' });
@@ -421,6 +581,7 @@ router.post('/api/remote/servers/:id/file/upload/init', async (req, res) => {
 
 // 上传单个分片
 router.post('/api/remote/servers/:id/file/upload/chunk', async (req, res) => {
+  if (isDemoMode()) return res.status(409).json(DEMO_DISABLED);
   try {
     const { uploadId, chunkIndex, data: base64Data } = req.body;
     if (!uploadId || chunkIndex === undefined || !base64Data) return res.status(400).json({ error: '缺少参数' });
@@ -434,6 +595,7 @@ router.post('/api/remote/servers/:id/file/upload/chunk', async (req, res) => {
 
 // 完成分片上传
 router.post('/api/remote/servers/:id/file/upload/complete', async (req, res) => {
+  if (isDemoMode()) return res.status(409).json(DEMO_DISABLED);
   try {
     const { uploadId, totalChunks } = req.body;
     if (!uploadId || !totalChunks) return res.status(400).json({ error: '缺少参数' });
@@ -451,6 +613,7 @@ router.post('/api/remote/servers/:id/file/upload/complete', async (req, res) => 
 
 // 取消分片上传
 router.post('/api/remote/servers/:id/file/upload/cancel', async (req, res) => {
+  if (isDemoMode()) return res.status(409).json(DEMO_DISABLED);
   try {
     const { uploadId } = req.body;
     await remote.cancelChunkedUpload(req.params.id, uploadId);
@@ -462,6 +625,8 @@ router.post('/api/remote/servers/:id/file/upload/cancel', async (req, res) => {
 
 // Get remote system stats
 router.get('/api/remote/servers/:id/stats', async (req, res) => {
+  // 演示模式：不读采集器缓存、不 SSH
+  if (isDemoMode()) return res.json(demoJson(demoValue('demoRemoteStats', req.params.id) || {}));
   try {
     // 采集器刚采过就直接给缓存，避免同一台机器被前端和后台重复 SSH 一遍
     if (statsScheduler?.isFresh(req.params.id)) {
@@ -488,6 +653,8 @@ router.get('/api/remote/servers/:id/stats', async (req, res) => {
  * 前端单独请求、失败不影响显卡状态展示。
  */
 router.get('/api/remote/servers/:id/mfu', async (req, res) => {
+  // 演示模式：MFU 要读 vLLM /metrics 并做两次差分采样，这里直接给 fixture
+  if (isDemoMode()) return res.json(demoJson(demoValue('demoMfu', req.params.id) || {}));
   try {
     const result = await getRemoteMfu(req.params.id);
     res.json(result);
@@ -499,6 +666,8 @@ router.get('/api/remote/servers/:id/mfu', async (req, res) => {
 
 // Execute command on remote server (with caution!)
 router.post('/api/remote/servers/:id/exec', async (req, res) => {
+  // 演示模式：远程执行一律禁用（先于安全策略判断，口径统一为 409）
+  if (isDemoMode()) return res.status(409).json(DEMO_DISABLED);
   try {
     if (rejectUnlessRemoteExecEnabled(res)) return;
     const { command } = req.body;
@@ -522,6 +691,7 @@ router.post('/api/remote/servers/:id/exec', async (req, res) => {
 
 // Execute shell command on remote server
 router.post('/api/remote/servers/:id/shell', async (req, res) => {
+  if (isDemoMode()) return res.status(409).json(DEMO_DISABLED);
   try {
     if (rejectUnlessRemoteExecEnabled(res)) return;
     const { command, timeout } = req.body;
@@ -545,6 +715,7 @@ router.post('/api/remote/servers/:id/shell', async (req, res) => {
 
 // AI Shell: 自然语言转 Shell 命令并执行
 router.post('/api/remote/:id/aishell', async (req, res) => {
+  if (isDemoMode()) return res.status(409).json(DEMO_DISABLED);
   try {
     if (rejectUnlessRemoteExecEnabled(res)) return;
     const { prompt } = req.body;

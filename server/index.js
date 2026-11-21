@@ -44,6 +44,7 @@ import { mapLimit } from './concurrency.js';
 import createSettingsRouter, { SENSITIVE_KEYS } from './routes/settings.js';
 import createDockerRouter from './routes/docker.js';
 import createK8sRouter from './routes/k8s.js';
+import { isDemoMode } from './demo/mode.js';
 import createChatRouter from './routes/chat.js';
 import { AGENT_TOOLS, AGENT_TOOL_NAMES, executeAgentTool } from './agent-tools.js';
 import createAuthRouter from './routes/auth.js';
@@ -1413,6 +1414,20 @@ function restartContainerLogWatch() {
 }
 
 // API Routes
+
+// ─── 演示模式标记（客户端横幅读这个）──────────────────────────────────────
+/**
+ * 极轻查询：`GET /api/demo` → `{ demo: boolean }`
+ *
+ * 客户端启动时读一次，`demo === true` 就在 Layout 顶部挂「演示数据」横幅。
+ * 只回环境变量推导出的事实（OPENLOG_DEMO=1），**不**读库、不读设置、不连任何下游。
+ * 位置放在 DB 就绪闸门之后，与其它 API 同口径：关闭演示模式时这条新增路由
+ * 不改动任何既有行为（仍是原来的鉴权 + 闸门链）。
+ */
+app.get('/api/demo', (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  res.json({ demo: isDemoMode() });
+});
 
 // ─── 日志路由（已抽到 server/routes/logs.js）──────────────────────────────
 // logs 是下方的实时日志缓冲，ensureSettings 是配置读取，均通过工厂注入

@@ -48,6 +48,7 @@ See [deploy/README-tsdb.md](deploy/README-tsdb.md).
   - [Access token](#-access-token) · [Running](#running) · [Windows](#windows-quick-start)
   - [Production (single port)](#production-single-port) · [One-command deploy](#-one-command-deploy)
   - [Database](#-database) · [Remote access & token](#-remote-access--token)
+- [Demo mode](#demo-mode)
 - [Dev & Quality Gates](#-dev--quality-gates)
 - [Page Navigation](#-page-navigation)
 - [Project Structure](#-project-structure)
@@ -438,6 +439,38 @@ on another machine can't fetch the token automatically — it shows the "token r
   (Chrome asks you to type "allow pasting" the first time — that's the browser's anti-XSS
   protection, not this project. The normal flow doesn't need the console; just type the token
   into the page.)
+
+---
+
+## Demo mode
+
+Set `OPENLOG_DEMO=1` and the server answers from **built-in fixtures** instead of touching SSH,
+Docker or Kubernetes: containers, GPUs, MFU, logs, time-series points and Kubernetes objects are
+all synthetic, deterministic, and labelled as such.
+
+```bash
+OPENLOG_DEMO=1 npm run dev     # development
+OPENLOG_DEMO=1 npm start       # production single port
+```
+
+What to expect:
+
+- Every simulated response carries `demo: true`, and `GET /api/demo` returns `{ "demo": true }`.
+  That endpoint is what the client reads to switch itself into read-only mode; the banner and the
+  pages share one cached probe, so they can never disagree.
+- An amber bar sits at the top of the content area: **demo data, not connected to any real
+  server**. It can be dismissed for the current session only - a reload brings it back, so nobody
+  mistakes a demo for a live fleet.
+- Write operations are disabled in the UI - container start / stop / restart / remove, remote
+  **Shell** and **AI Shell**, adding or deleting Kubernetes clusters - each with a toast or a
+  tooltip explaining why. The server refuses them too: `409` with `{ "error": "...", "demo": true }`.
+- Nothing is written to the database, and no outbound connection is made to a real host.
+- The switch defaults to off. Without `OPENLOG_DEMO=1` the behaviour is exactly the previous one.
+  If the server predates `GET /api/demo`, the client silently stays in normal mode: no banner and
+  no disabled buttons.
+
+Demo mode is for screenshots, UI work, and reviewing the panel on a machine with no fleet
+attached - not for validating real cluster behaviour.
 
 ---
 

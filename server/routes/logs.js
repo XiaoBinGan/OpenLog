@@ -16,9 +16,27 @@ import os from 'os';
 import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
 import { getDb, listLogRecords } from '../db/index.js';
+import { isDemoMode, DEMO_DISABLED } from '../demo/mode.js';
+import * as demoFixtures from '../demo/fixtures.js';
 
 export default function createLogsRouter({ logs, ensureSettings, saveLog, broadcast }) {
   const router = express.Router();
+
+  // ─── 演示模式（OPENLOG_DEMO=1）───────────────────────────────────────
+  // 数据只来自 server/demo/fixtures.js（命名空间导入，导出缺失不会在链接阶段崩整条路由）。
+  // 关闭演示模式时下面的分支都不会进，原有逻辑保持原样。
+
+  /** 取一份演示数据；fixture 缺失/抛错时返回 undefined，让端点降级而非 500 */
+  function demoValue(name, ...args) {
+    const fn = demoFixtures[name];
+    if (typeof fn !== 'function') return undefined;
+    try {
+      return fn(...args);
+    } catch (err) {
+      console.warn(`[demo] ${name} 调用失败:`, errorMessage(err));
+      return undefined;
+    }
+  }
 
 // Get logs
 router.get('/api/logs', (req, res) => {
@@ -71,6 +89,8 @@ router.get('/api/logs/history', async (req, res) => {
 
 // 清理过期持久化日志
 router.delete('/api/logs/history', async (req, res) => {
+  // 演示模式：删历史日志是写操作
+  if (isDemoMode()) return res.status(409).json(DEMO_DISABLED);
   try {
     const { maxAgeDays } = req.query;
     const days = parseInt(maxAgeDays) || ensureSettings().logPersistenceMaxAge || 7;
@@ -87,6 +107,8 @@ router.delete('/api/logs/history', async (req, res) => {
 
 // Analyze logs with AI
 router.post('/api/logs/analyze', async (req, res) => {
+  // 演示模式：分析触发（调用 LLM）禁用
+  if (isDemoMode()) return res.status(409).json(DEMO_DISABLED);
   console.log('[AI] 收到分析请求');
   const { logs: analyzeLogs, prompt } = req.body;
   
@@ -206,6 +228,8 @@ ${analyzeLogs.map(l => `[${l.timestamp}] [${l.level}] ${l.message}`).join('\n')}
 
 // AI 修复代码（需要三次确认）
 router.post('/api/logs/fix', async (req, res) => {
+  // 演示模式：修复建议生成（调用 LLM）禁用
+  if (isDemoMode()) return res.status(409).json(DEMO_DISABLED);
   const { errorLog, codeContext, filePath } = req.body;
   
   const apiKey = ensureSettings().openaiApiKey;
@@ -269,11 +293,19 @@ ${filePath ? `可能相关的文件：${filePath}` : ''}
 
 // Clear logs
 router.delete('/api/logs', (req, res) => {
+  // 演示模式：清空日志缓冲是写操作
+  if (isDemoMode()) return res.status(409).json(DEMO_DISABLED);
   logs.length = 0;
   res.json({ success: true });
 });
 // Get available log files
 router.get('/api/logs/files', (req, res) => {
+  // 演示模式：不读磁盘日志目录。真实响应是**数组**，顶层塞不进字段，所以逐项打 demo:true
+  if (isDemoMode()) {
+    const data = demoValue('demoLogFiles');
+    const list = Array.isArray(data) ? data : (data?.files || []);
+    return res.json(list.map(f => ({ ...f, demo: true })));
+  }
   const logPath = ensureSettings().logPath || path.join(os.homedir(), 'logs');
 
   try {
@@ -296,6 +328,8 @@ router.get('/api/logs/files', (req, res) => {
 
 // Generate sample logs for testing
 router.post('/api/logs/generate-sample', (req, res) => {
+  // 演示模式：生成样例日志会写缓冲 + 推 WS，禁用
+  if (isDemoMode()) return res.status(409).json(DEMO_DISABLED);
   const levels = ['INFO', 'WARN', 'ERROR', 'DEBUG'];
   const messages = [
     'Server started on port 3000',
