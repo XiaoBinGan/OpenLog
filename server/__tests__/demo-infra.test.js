@@ -884,7 +884,15 @@ describe('演示模式 · startMonitor() 不采真机、不广播', () => {
     } finally {
       try { ws?.close(); } catch { /* ignore */ }
       child.kill('SIGKILL');
-      fs.rmSync(tmpDir, { recursive: true, force: true });
+      // Windows：子进程退出后 sqlite 句柄可能还没释放，直接 rm 会 EBUSY；
+      // 先等 exit（最多 3s），再用 maxRetries 兜住句柄释放的延迟。
+      await new Promise((resolve) => {
+        let done = false;
+        const finish = () => { if (!done) { done = true; resolve(); } };
+        child.once('exit', finish);
+        setTimeout(finish, 3000).unref?.();
+      });
+      fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
     }
   });
 });
@@ -968,7 +976,15 @@ describe('负向对照 · 关闭演示模式时 startMonitor 照常广播', () =
     } finally {
       try { ws?.close(); } catch { /* ignore */ }
       child.kill('SIGKILL');
-      fs.rmSync(tmpDir, { recursive: true, force: true });
+      // Windows：子进程退出后 sqlite 句柄可能还没释放，直接 rm 会 EBUSY；
+      // 先等 exit（最多 3s），再用 maxRetries 兜住句柄释放的延迟。
+      await new Promise((resolve) => {
+        let done = false;
+        const finish = () => { if (!done) { done = true; resolve(); } };
+        child.once('exit', finish);
+        setTimeout(finish, 3000).unref?.();
+      });
+      fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
     }
   });
 });
