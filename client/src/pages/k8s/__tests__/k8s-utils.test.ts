@@ -10,6 +10,7 @@ import { describe, it, expect } from 'vitest';
 import {
   ALL_NAMESPACES,
   LOG_TAIL,
+  MISSING,
   buildStatCards,
   clusterApiPath,
   deriveSummary,
@@ -17,6 +18,10 @@ import {
   errorText,
   filterPods,
   formatAge,
+  formatCores,
+  formatMib,
+  gpuPodsByNode,
+  hasHamiData,
   isPodReady,
   isPodUnhealthy,
   listNamespaces,
@@ -26,9 +31,12 @@ import {
   podMarkers,
   podSeverity,
   sortPods,
+  usagePercent,
+  vgpuLabel,
   warningEvents,
+  withPodVgpu,
 } from '../utils';
-import type { K8sEvent, K8sNode, K8sPod, K8sWorkload } from '../types';
+import type { K8sEvent, K8sGpuOverview, K8sNode, K8sPod, K8sWorkload } from '../types';
 
 function pod(over: Partial<K8sPod> = {}): K8sPod {
   return {
@@ -403,5 +411,136 @@ describe('buildStatCards', () => {
     });
     expect(cards[0]).toMatchObject({ value: '0/0', tone: 'neutral' });
     expect(cards[3]).toMatchObject({ value: '0', tone: 'ok', hint: '暂无告警' });
+  });
+});
+// ─── HAMi vGPU 纯函数 ─────────────────────────────────────────────────────
+// 这些函数决定「卡片上显示什么」：单位换算、百分比夹取、缺字段兜「—」。
+// 算错了不会报错，只会显示成另一回事（56 GiB 显示成 57344 MiB、NaN%、undefined%），
+// 所以逐条钉死。
+describe('HAMi vGPU · 格式化', () => {
+  it('formatMib：整 GiB 不带小数，非整带一位，缺失/负数给「—」', () => {
+    expect(formatMib(98304)).toBe('96 GiB');
+    expect(formatMib(12288)).toBe('12 GiB');
+    expect(formatMib(1536)).toBe('1.5 GiB');
+    expect(formatMib(512)).toBe('512 MiB');
+    expect(formatMib(0)).toBe('0 MiB');
+    expect(formatMib(null)).toBe(MISSING);
+    expect(formatMib(undefined)).toBe(MISSING);
+    expect(formatMib(-1)).toBe(MISSING);
+    expect(formatMib(Number.NaN)).toBe(MISSING);
+  });
+
+  it('formatCores：算力点按百分比展示，缺失给「—」', () => {
+    expect(formatCores(40)).toBe('40%');
+    expect(formatCores(10)).toBe('10%');
+    expect(formatCores(0)).toBe('0%');
+    expect(formatCores(undefined)).toBe(MISSING);
+    expect(formatCores(Number.NaN)).toBe(MISSING);
+  });
+
+  it('usagePercent：夹在 0..100，总量为 0 时给 null（不画进度条）', () => {
+    expect(usagePercent(57344, 98304)).toBe(58);
+    expect(usagePercent(16384, 98304)).toBe(17);
+    expect(usagePercent(0, 98304)).toBe(0);
+    expect(usagePercent(98304, 98304)).toBe(100);
+    // 异常数据：已分配 > 总量、总量 0、字段缺失
+    expect(usagePercent(196608, 98304)).toBe(100);
+    expect(usagePercent(10, 0)).toBeNull();
+    expect(usagePercent(undefined, 100)).toBeNull();
+    expect(usagePercent(10, undefined)).toBeNull();
+  });
+
+  it('vgpuLabel：Pod 表格那一列是「显存 · 算力」', () => {
+    const vgpu = {
+      hasVgpu: true,
+      devices: [{ id: 'GPU-3f2a', memMiB: 12288, cores: 40 }],
+      totalMemMiB: 12288,
+      totalCores: 40,
+      nodeName: 'node-1',
+    };
+    expect(vgpuLabel(vgpu)).toBe('12 GiB · 40%');
+    // 合计缺失时按设备重算
+    expect(vgpuLabel({ ...vgpu, totalMemMiB: 0, totalCores: 0 })).toBe('12 GiB · 40%');
+    expect(vgpuLabel({ hasVgpu: false, devices: [], totalMemMiB: 0, totalCores: 0, nodeName: null })).toBe(MISSING);
+    expect(vgpuLabel(null)).toBe(MISSING);
+    expect(vgpuLabel(undefined)).toBe(MISSING);
+    // 坏字段不产生 NaN
+    expect(vgpuLabel({ hasVgpu: true, devices: [], totalMemMiB: Number.NaN, totalCores: undefined } as never)).toBe(MISSING);
+  });
+});
+
+describe('HAMi vGPU · gpu 段', () => {
+  const gpu = (over: Partial<K8sGpuOverview> = {}): K8sGpuOverview => ({
+    hasHami: true,
+    nodes: [
+      { name: 'node-1', count: 4, memMiB: 98304, cores: 400, allocatedMemMiB: 16384, allocatedCores: 50, podCount: 2 },
+    ],
+    pods: [
+      {
+        namespace: 'inference',
+        name: 'vllm-qwen27b-0',
+        nodeName: 'node-1',
+        devices: [{ id: 'GPU-a', memMiB: 12288, cores: 40 }],
+        totalMemMiB: 12288,
+        totalCores: 40,
+        phase: 'Running',
+      },
+      {
+        namespace: 'inference',
+        name: 'sglang-router',
+        nodeName: 'node-1',
+        devices: [{ id: 'GPU-a', memMiB: 4096, cores: 10 }],
+        totalMemMiB: 4096,
+        totalCores: 10,
+        phase: 'Running',
+      },
+    ],
+    totals: { gpuCount: 4, memMiB: 98304, cores: 400, allocatedMemMiB: 16384, allocatedCores: 50, podCount: 2 },
+    warnings: [],
+    ...over,
+  });
+
+  it('hasHamiData：只有 hasHami === true 才算有 HAMi', () => {
+    expect(hasHamiData(gpu())).toBe(true);
+    expect(hasHamiData(gpu({ hasHami: false }))).toBe(false);
+    expect(hasHamiData(null)).toBe(false);
+    expect(hasHamiData(undefined)).toBe(false);
+  });
+
+  it('gpuPodsByNode：按节点分组，节点顺序跟 nodes 一致，缺 nodeName 归到「—」', () => {
+    const groups = gpuPodsByNode(
+      gpu({
+        nodes: [
+          { name: 'node-1', count: 4, memMiB: 98304, cores: 400, allocatedMemMiB: 16384, allocatedCores: 50, podCount: 2 },
+          { name: 'node-2', count: 2, memMiB: 49152, cores: 200, allocatedMemMiB: 0, allocatedCores: 0, podCount: 0 },
+        ],
+        pods: [
+          ...gpu().pods,
+          // 有分配但节点没上报（nodeName 为 null）
+          { namespace: 'batch', name: 'orphan', nodeName: null, devices: [], totalMemMiB: 1024, totalCores: 5, phase: 'Running' },
+        ],
+      }),
+    );
+    expect(groups.map((group) => group.node)).toEqual(['node-1', 'node-2', MISSING]);
+    expect(groups[0].pods.map((pod) => pod.name)).toEqual(['vllm-qwen27b-0', 'sglang-router']);
+    expect(groups[1].pods).toEqual([]);
+    expect(groups[2].pods.map((pod) => pod.name)).toEqual(['orphan']);
+    expect(gpuPodsByNode(null)).toEqual([]);
+  });
+
+  it('withPodVgpu：服务端只给 gpu.pods 时也能补齐 Pod 的 vgpu', () => {
+    const pods = [pod({ namespace: 'inference', name: 'vllm-qwen27b-0' }), pod({ namespace: 'x', name: 'y' })];
+    const merged = withPodVgpu(pods, gpu());
+    expect(merged[0].vgpu).toMatchObject({ hasVgpu: true, totalMemMiB: 12288, totalCores: 40 });
+    // 没有分配的 Pod 保持原样（表格显示「—」）
+    expect(merged[1].vgpu).toBeUndefined();
+    // 没有 HAMi 时原数组原样返回（引用相等，避免无意义的重渲染）
+    expect(withPodVgpu(pods, gpu({ hasHami: false }))).toBe(pods);
+  });
+
+  it('ensureOverview：保留 gpu 段；缺字段时给 null，不编造数据', () => {
+    expect(ensureOverview({ nodes: [], pods: [], gpu: gpu() })?.gpu?.hasHami).toBe(true);
+    expect(ensureOverview({ nodes: [], pods: [] })?.gpu).toBeNull();
+    expect(ensureOverview({ nodes: [], pods: [], gpu: 'nonsense' as never })?.gpu).toBeNull();
   });
 });

@@ -1066,7 +1066,37 @@ const K8S_CONTEXT = {
   context: 'demo-k3s',
 };
 
-/** 1 节点（形状同 `k8sResources.normalizeNodes()`） */
+/**
+ * HAMi 演示用的 4 张卡（UUID 与 `hami.io/vgpu-devices-allocated` 注解里的 id 一一对应）。
+ * 单卡 24 GiB / 100 算力点，节点合计 96 GiB / 400 点 —— 见下面 K8S_NODES 的 nvidia.com/* 资源。
+ */
+const DEMO_GPU_IDS = [
+  'GPU-3f2a7c1e-9b4d-4a11-8f60-1c2d3e4f5a01',
+  'GPU-3f2a7c1e-9b4d-4a11-8f60-1c2d3e4f5a02',
+  'GPU-3f2a7c1e-9b4d-4a11-8f60-1c2d3e4f5a03',
+  'GPU-3f2a7c1e-9b4d-4a11-8f60-1c2d3e4f5a04',
+];
+
+/**
+ * Pod 上的一组 HAMi 注解（就是 `kubectl get pod -o yaml` 里能看到的原文）。
+ *
+ * @param {number} cardIndex 第几张卡（0..3）
+ * @param {number} memMiB    该 Pod 在卡上占的显存
+ * @param {number} cores     该 Pod 占的算力点（100 = 整卡）
+ */
+function hamiAnnotations(cardIndex, memMiB, cores) {
+  return {
+    'hami.io/vgpu-devices-allocated': `${DEMO_GPU_IDS[cardIndex]},${memMiB},${cores}:;`,
+    'hami.io/vgpu-node-allocated': `k3s-infer-node-1,${cardIndex},NVIDIA-GeForce-RTX-4090`,
+  };
+}
+
+/**
+ * 1 节点（形状同 `k8sResources.normalizeNodes()`，另外带上 HAMi 的 GPU 资源）。
+ *
+ * `capacity` / `allocatable` 是 kube-apiserver 的原始映射（值都是字符串），
+ * `readNodeGpu` 就是从这里读 `nvidia.com/gpu|gpumem|gpucores` 的。
+ */
 const K8S_NODES = [
   {
     name: 'k3s-infer-node-1',
@@ -1079,6 +1109,23 @@ const K8S_NODES = [
     cpu: '32',
     memory: '131842000Ki',
     pods: '110',
+    // HAMi：4×24 GiB = 96 GiB 显存、4×100 = 400 算力点（gpucores 是百分比点）
+    capacity: {
+      cpu: '32',
+      memory: '131842000Ki',
+      pods: '110',
+      'nvidia.com/gpu': '4',
+      'nvidia.com/gpumem': '98304',
+      'nvidia.com/gpucores': '400',
+    },
+    allocatable: {
+      cpu: '32',
+      memory: '131842000Ki',
+      pods: '110',
+      'nvidia.com/gpu': '4',
+      'nvidia.com/gpumem': '98304',
+      'nvidia.com/gpucores': '400',
+    },
     created: '2026-03-02T04:12:31Z',
     conditions: [
       { type: 'Ready', status: 'True' },
@@ -1089,7 +1136,14 @@ const K8S_NODES = [
   },
 ];
 
-/** 8 个 Pod：1 个 CrashLoopBackOff、1 个 Pending，其余 Running */
+/**
+ * 8 个 Pod：1 个 CrashLoopBackOff、1 个 Pending，其余 Running。
+ *
+ * 其中 5 个带 HAMi vGPU 注解，分配加起来 56 GiB / 160 算力点（< 节点 96 GiB / 400 点），
+ * 且单卡都没占满 —— 这正是 Pending 那个 Pod「显存凑不出来」的原因：
+ * 四张卡空余分别是 8 / 4 / 16 / 12 GiB，它要的是 20 GiB 单卡。
+ * 数字要和 fixtures-assistant.js 的演示回复对得上（那边讲的就是这几行）。
+ */
 const K8S_PODS = [
   {
     namespace: 'inference',
@@ -1103,6 +1157,8 @@ const K8S_PODS = [
     oom: false,
     crashLoop: false,
     containers: [{ name: 'vllm', ready: true, restarts: 0, state: 'running' }],
+    // 卡 0：12 GiB / 40% 算力
+    annotations: hamiAnnotations(0, 12288, 40),
   },
   {
     namespace: 'inference',
@@ -1116,6 +1172,8 @@ const K8S_PODS = [
     oom: false,
     crashLoop: false,
     containers: [{ name: 'vllm', ready: true, restarts: 1, state: 'running' }],
+    // 卡 1：20 GiB / 60% 算力（凑不出整卡给 Pending 的 Pod，是助手里那条建议的来源）
+    annotations: hamiAnnotations(1, 20480, 60),
   },
   {
     namespace: 'inference',
@@ -1129,6 +1187,8 @@ const K8S_PODS = [
     oom: false,
     crashLoop: false,
     containers: [{ name: 'router', ready: true, restarts: 0, state: 'running' }],
+    // 与 vllm-qwen27b-0 共享卡 0：4 GiB / 10% 算力（vGPU 共享的关键证据）
+    annotations: hamiAnnotations(0, 4096, 10),
   },
   {
     namespace: 'inference',
@@ -1142,6 +1202,8 @@ const K8S_PODS = [
     oom: false,
     crashLoop: false,
     containers: [{ name: 'infinity', ready: true, restarts: 0, state: 'running' }],
+    // 卡 2：8 GiB / 20% 算力
+    annotations: hamiAnnotations(2, 8192, 20),
   },
   {
     // 演示用故障 ①：CrashLoopBackOff（新版本 canary 起不来）
@@ -1158,9 +1220,12 @@ const K8S_PODS = [
     containers: [
       { name: 'vllm', ready: false, restarts: 17, state: 'waiting', reason: 'CrashLoopBackOff' },
     ],
+    // 卡 3：12 GiB / 30% 算力
+    annotations: hamiAnnotations(3, 12288, 30),
   },
   {
-    // 演示用故障 ②：Pending（节点 GPU 资源不足，调度不上去）
+    // 演示用故障 ②：Pending（节点 vGPU 显存凑不出整卡，调度不上去）
+    // 它没有 hami.io/vgpu-* 注解 —— 没被调度的 Pod 本来就没有分配，这本身就是线索。
     namespace: 'inference',
     name: 'vllm-llama70b-0',
     phase: 'Pending',
@@ -1283,7 +1348,7 @@ const K8S_EVENTS = [
     type: 'Warning',
     reason: 'FailedScheduling',
     object: 'Pod/inference/vllm-llama70b-0',
-    message: '0/1 nodes are available: 1 Insufficient nvidia.com/gpu. preemption: 0/1 nodes are available: 1 No preemption victims found for incoming pod.',
+    message: '0/1 nodes are available: 1 Insufficient nvidia.com/gpu, 1 Insufficient nvidia.com/gpumem. preemption: 0/1 nodes are available: 1 No preemption victims found for incoming pod.',
     count: 12,
     lastSeen: iso(18 * MINUTE),
   },

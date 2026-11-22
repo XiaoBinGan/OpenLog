@@ -10,9 +10,13 @@
 
 import type {
   K8sEvent,
+  K8sGpuNode,
+  K8sGpuOverview,
+  K8sGpuPod,
   K8sNode,
   K8sOverview,
   K8sPod,
+  K8sPodVgpu,
   K8sSummary,
   K8sWorkload,
   K8sLogTarget,
@@ -20,6 +24,9 @@ import type {
 
 /** 命名空间过滤的「全部」哨兵值（<select> 的空 option）。 */
 export const ALL_NAMESPACES = '';
+
+/** 缺字段统一显示这个，绝不把 NaN / undefined 渲染到界面上。 */
+export const MISSING = '—';
 
 /** 日志抽屉默认拉取的行数（契约：?tail=200）。 */
 export const LOG_TAIL = 200;
@@ -181,16 +188,240 @@ export function deriveSummary(parts: {
   };
 }
 
+// ─── HAMi vGPU ────────────────────────────────────────────────────────────
+//
+// 契约见 /tmp/hami-contract.md。这一层的全部意义是「显示得对」：
+//   · 字段缺失 / NaN / 负值 → 「—」或 0，绝不把 NaN / undefined 渲染出来；
+//   · 单位换算只做一次（服务端给 MiB 与算力点，这里换成 GiB 与 %）；
+//   · 渲染判据只有一个：gpu.hasHami。没有 HAMi 的集群不出现卡片，也不出现 vGPU 列。
+
+/** 数字兜底：NaN/Infinity/非数字 → 0。 */
+export function toFiniteNumber(value: unknown): number {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : 0;
+}
+
+/**
+ * MiB → 「96 GiB」/「512 MiB」。
+ * 整 GiB 不带小数（96 GiB），非整带一位（1.5 GiB）；缺失或负数 → 「—」。
+ */
+export function formatMib(memMiB: number | null | undefined): string {
+  if (memMiB === null || memMiB === undefined) return MISSING;
+  const mib = Number(memMiB);
+  if (!Number.isFinite(mib) || mib < 0) return MISSING;
+  if (mib === 0) return '0 MiB';
+  if (mib >= 1024) {
+    const gib = mib / 1024;
+    return `${Number.isInteger(gib) ? gib : Math.round(gib * 10) / 10} GiB`;
+  }
+  return `${Math.round(mib)} MiB`;
+}
+
+/** 算力点 → 「40%」（100 = 整卡）；缺失/负数 → 「—」。 */
+export function formatCores(cores: number | null | undefined): string {
+  if (cores === null || cores === undefined) return MISSING;
+  const n = Number(cores);
+  if (!Number.isFinite(n) || n < 0) return MISSING;
+  return `${Math.round(n)}%`;
+}
+
+/**
+ * Pod 的分配量文案：0 / 缺失都给「—」。
+ * 与 formatMib 的区别：节点上的「0 MiB 已分配」是有意义的信息，
+ * 而一个 Pod 分到 0 MiB 显存只可能是字段缺失（真实分配不会是 0），
+ * 显示成「0 MiB」会让人以为它真的占了 0。
+ */
+export function formatAllocMib(memMiB: number | null | undefined): string {
+  return toFiniteNumber(memMiB) > 0 ? formatMib(memMiB) : MISSING;
+}
+
+/** 同 formatAllocMib，算力点版本。 */
+export function formatAllocCores(cores: number | null | undefined): string {
+  return toFiniteNumber(cores) > 0 ? formatCores(cores) : MISSING;
+}
+
+/**
+ * 已分配 / 总量 的百分比（0..100 取整）。
+ * 总量缺失或为 0 时返回 null（进度条不画、文案显示「—」），而不是 NaN / Infinity。
+ */
+export function usagePercent(
+  allocated: number | null | undefined,
+  total: number | null | undefined,
+): number | null {
+  const used = Number(allocated);
+  const all = Number(total);
+  if (!Number.isFinite(used) || !Number.isFinite(all) || all <= 0) return null;
+  return Math.min(100, Math.max(0, Math.round((used / all) * 100)));
+}
+
+/** 服务端给的 vgpu 字段 → 固定形状；缺失/非对象 → null。 */
+export function normalizeVgpu(raw: unknown): K8sPodVgpu | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const bag = raw as Partial<K8sPodVgpu>;
+  const devices = (Array.isArray(bag.devices) ? bag.devices : [])
+    .filter((device) => device && typeof device === 'object')
+    .map((device) => ({
+      id: typeof device.id === 'string' ? device.id : '',
+      memMiB: toFiniteNumber(device.memMiB),
+      cores: toFiniteNumber(device.cores),
+    }));
+  const sumMem = devices.reduce((sum, device) => sum + device.memMiB, 0);
+  const sumCores = devices.reduce((sum, device) => sum + device.cores, 0);
+  return {
+    hasVgpu: bag.hasVgpu === true || devices.length > 0,
+    devices,
+    // 服务端没给合计时就按卡加起来（缺字段不该显示成 0）
+    totalMemMiB: toFiniteNumber(bag.totalMemMiB) || sumMem,
+    totalCores: toFiniteNumber(bag.totalCores) || sumCores,
+    nodeName: typeof bag.nodeName === 'string' && bag.nodeName !== '' ? bag.nodeName : null,
+  };
+}
+
+/** Pod 表格的 vGPU 列：「12 GiB · 40%」；没有分配 → 「—」。 */
+export function vgpuLabel(vgpu: K8sPodVgpu | null | undefined): string {
+  const normalized = normalizeVgpu(vgpu);
+  if (!normalized || !normalized.hasVgpu) return MISSING;
+  const parts = [
+    formatAllocMib(normalized.totalMemMiB),
+    formatAllocCores(normalized.totalCores),
+  ].filter((part) => part !== MISSING);
+  return parts.length > 0 ? parts.join(' · ') : MISSING;
+}
+
+/** `overview.gpu` → 固定形状；缺失/非对象 → null。 */
+export function normalizeGpu(raw: unknown): K8sGpuOverview | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const bag = raw as Partial<K8sGpuOverview>;
+
+  const nodes: K8sGpuNode[] = (Array.isArray(bag.nodes) ? bag.nodes : [])
+    .filter((node) => node && typeof node === 'object')
+    .map((node) => ({
+      name: typeof node.name === 'string' ? node.name : '',
+      count: toFiniteNumber(node.count),
+      memMiB: toFiniteNumber(node.memMiB),
+      cores: toFiniteNumber(node.cores),
+      allocatedMemMiB: toFiniteNumber(node.allocatedMemMiB),
+      allocatedCores: toFiniteNumber(node.allocatedCores),
+      podCount: toFiniteNumber(node.podCount),
+    }));
+
+  const pods: K8sGpuPod[] = (Array.isArray(bag.pods) ? bag.pods : [])
+    .filter((pod) => pod && typeof pod === 'object')
+    .map((pod) => {
+      const vgpu = normalizeVgpu({ ...pod, hasVgpu: true }) ?? {
+        hasVgpu: true,
+        devices: [],
+        totalMemMiB: 0,
+        totalCores: 0,
+        nodeName: null,
+      };
+      return {
+        namespace: typeof pod.namespace === 'string' ? pod.namespace : '',
+        name: typeof pod.name === 'string' ? pod.name : '',
+        nodeName: typeof pod.nodeName === 'string' && pod.nodeName !== '' ? pod.nodeName : null,
+        devices: vgpu.devices,
+        totalMemMiB: vgpu.totalMemMiB,
+        totalCores: vgpu.totalCores,
+        phase: typeof pod.phase === 'string' ? pod.phase : '',
+      };
+    });
+
+  // 服务端 totals 缺席时按节点/ Pod 重算（口径与后端 summarizeVgpu 一致）
+  const totals = bag.totals && typeof bag.totals === 'object' ? bag.totals : null;
+  const sum = (list: number[]) => list.reduce((acc, n) => acc + toFiniteNumber(n), 0);
+
+  return {
+    hasHami: bag.hasHami === true,
+    nodes,
+    pods,
+    totals: {
+      gpuCount: toFiniteNumber(totals?.gpuCount) || sum(nodes.map((node) => node.count)),
+      memMiB: toFiniteNumber(totals?.memMiB) || sum(nodes.map((node) => node.memMiB)),
+      cores: toFiniteNumber(totals?.cores) || sum(nodes.map((node) => node.cores)),
+      allocatedMemMiB:
+        toFiniteNumber(totals?.allocatedMemMiB) || sum(nodes.map((node) => node.allocatedMemMiB)),
+      allocatedCores:
+        toFiniteNumber(totals?.allocatedCores) || sum(nodes.map((node) => node.allocatedCores)),
+      podCount: toFiniteNumber(totals?.podCount) || pods.length,
+    },
+    warnings: (Array.isArray(bag.warnings) ? bag.warnings : [])
+      .filter((warning): warning is string => typeof warning === 'string' && warning !== '')
+      .slice(0, 5),
+  };
+}
+
+/** 是否有 HAMi 数据 —— 卡片与 vGPU 列的唯一渲染判据（没有 HAMi 时行为完全不变）。 */
+export function hasHamiData(gpu: K8sGpuOverview | null | undefined): boolean {
+  return Boolean(gpu && gpu.hasHami === true);
+}
+
+/**
+ * 服务端只在 Pod 上挂了 `vgpu`（overview/pods 都有）时才直接用；
+ * 只给 `gpu.pods` 的响应（旧版服务端 / 演示）在这里按 namespace+name 补齐。
+ */
+export function withPodVgpu(pods: K8sPod[], gpu: K8sGpuOverview | null | undefined): K8sPod[] {
+  if (!hasHamiData(gpu) || !gpu) return pods;
+  const byKey = new Map<string, K8sGpuPod>();
+  for (const pod of gpu.pods) byKey.set(`${pod.namespace}/${pod.name}`, pod);
+  if (byKey.size === 0) return pods;
+  return pods.map((pod) => {
+    if (pod.vgpu) return pod;
+    const hit = byKey.get(`${pod.namespace}/${pod.name}`);
+    if (!hit) return pod;
+    return {
+      ...pod,
+      vgpu: {
+        hasVgpu: hit.devices.length > 0 || hit.totalMemMiB > 0 || hit.totalCores > 0,
+        devices: hit.devices,
+        totalMemMiB: hit.totalMemMiB,
+        totalCores: hit.totalCores,
+        nodeName: hit.nodeName,
+      },
+    };
+  });
+}
+
+/**
+ * 按节点分组「占着卡的 Pod」，节点顺序跟 gpu.nodes 一致，
+ * 多出来的节点（Pod 有分配但节点没上报 GPU 数）追加在后面；没 nodeName 的归到「—」。
+ */
+export function gpuPodsByNode(
+  gpu: K8sGpuOverview | null | undefined,
+): Array<{ node: string; pods: K8sGpuPod[] }> {
+  if (!gpu) return [];
+  const order: string[] = [];
+  const buckets = new Map<string, K8sGpuPod[]>();
+  const bucketOf = (name: string): K8sGpuPod[] => {
+    const key = name || MISSING;
+    let bucket = buckets.get(key);
+    if (!bucket) {
+      bucket = [];
+      buckets.set(key, bucket);
+      order.push(key);
+    }
+    return bucket;
+  };
+
+  for (const node of gpu.nodes) bucketOf(node.name);
+  for (const pod of gpu.pods) bucketOf(pod.nodeName ?? '');
+  for (const pod of gpu.pods) bucketOf(pod.nodeName ?? '').push(pod);
+
+  return order.map((node) => ({ node, pods: buckets.get(node) ?? [] }));
+}
+
 /**
  * 把 overview 响应补齐成完整形状。
- * 服务端缺字段时页面不该整页白屏，所以数组一律兜成 []，summary 缺了就地重算。
+ * 服务端缺字段时页面不该整页白屏，所以数组一律兜成 []，summary 缺了就地重算；
+ * `gpu` 段缺席（旧版服务端/演示）时是 null，页面据此不渲染 GPU 卡片。
  */
 export function ensureOverview(raw: Partial<K8sOverview> | null | undefined): K8sOverview | null {
   if (!raw || typeof raw !== 'object') return null;
   const nodes = Array.isArray(raw.nodes) ? raw.nodes : [];
-  const pods = Array.isArray(raw.pods) ? raw.pods : [];
   const workloads = Array.isArray(raw.workloads) ? raw.workloads : [];
   const events = Array.isArray(raw.events) ? raw.events : [];
+  const gpu = normalizeGpu(raw.gpu);
+  // 服务端没在 Pod 上挂 vgpu（只给了 gpu.pods）时就地补齐，Pod 表的 vGPU 列才不会空着
+  const pods = withPodVgpu(Array.isArray(raw.pods) ? raw.pods : [], gpu);
   const summary =
     raw.summary && typeof raw.summary === 'object'
       ? raw.summary
@@ -206,6 +437,7 @@ export function ensureOverview(raw: Partial<K8sOverview> | null | undefined): K8
     workloads,
     events,
     summary,
+    gpu,
   };
 }
 

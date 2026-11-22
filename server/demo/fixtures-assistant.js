@@ -186,7 +186,7 @@ const MEMORY_FILES = [
 
 ## 待办
 1. vllm-qwen27b 的 --gpu-memory-utilization 从 0.95 降到 0.90
-2. hami-scheduler 节点锁超时 5m → 10m（大模型加载动辄 6~8 分钟）
+2. vllm-qwen27b-1 的 nvidia.com/gpumem 20 GiB → 16 GiB（卡 1 只剩 4 GiB，整卡腾不出来）
 3. 双卡T4 若确认下架，从告警面板摘掉对应规则
 `,
     updatedAt: epochMs(14 * HOUR + 12 * MINUTE),
@@ -218,7 +218,7 @@ const MEMORY_FILES = [
     content: `# 值班交接（06-08 09:00）
 
 - 夜班没收到 P1；4090×4 有两轮 FailedScheduling 告警，自行恢复
-- reranker-perf/msrk-5 早上 09:41 又 Pending 一次，节点锁（hami-scheduler）问题
+- reranker-perf/msrk-5 早上 09:41 又 Pending 一次：vGPU 显存凑不出来（四张卡空余 8/4/16/12 GiB），不是调度器问题
 - 白天计划：调整 vllm-qwen27b 显存参数 → 灰度到 4卡T4 → 观察 2 小时
 - 提示：双卡T4 不要直接 ssh，先 ping，那台机器上还有旧版驱动
 `,
@@ -251,10 +251,11 @@ export const DEMO_CHAT_NOTICE = '演示模式：当前实例未连接真实集�
  */
 export const DEMO_CHAT_REPLY = `演示模式：当前实例未连接真实集群（OPENLOG_DEMO=1），以下为示例结论 —— 没有一条来自真实查询，请勿据此操作生产环境。
 
-**1) \`reranker-perf/msrk-5\` 调度失败**
-- 事件：\`Warning FailedScheduling\`（节点 \`gpu-node-01\`，已持续 6m12s）
-- 直接原因：\`hami-scheduler\` 的节点锁被 \`vllm-qwen27b\` 的滚动更新占用，Pending 的 Pod 拿不到 GPU 分配
-- 次要原因：节点显存碎片化，4 张卡各剩 1.8~2.2 GiB，单卡都放不下 reranker
+**1) \`inference/vllm-llama70b-0\` 调度失败（vGPU 显存不足）**
+- 事件：\`Warning FailedScheduling\`，原文 \`0/1 nodes are available: 1 Insufficient nvidia.com/gpu\`，已持续 18m
+- 直接原因：节点 \`k3s-infer-node-1\` 走 HAMi vGPU 共享（4 张 24 GiB 卡），四张卡的空余显存分别是 8 / 4 / 16 / 12 GiB，而它要的是 20 GiB 单卡 —— 哪一张都放不下
+- 卡上已经有谁（与 K8s 页「GPU 分配（HAMi）」卡片同口径）：\`vllm-qwen27b-0\` 占 \`GPU-3f2a…5a01\` 12 GiB / 40% 算力，\`sglang-router\` 占同一张卡 4 GiB / 10%；\`vllm-qwen27b-1\` 20 GiB / 60%（卡 2）、\`embedding-bge-m3\` 8 GiB / 20%（卡 3）、\`vllm-canary-0\` 12 GiB / 30%（卡 4）
+- 节点合计：已分配 56 / 96 GiB 显存、160 / 400 算力点，5 个 Pod 在占卡
 
 **2) \`vllm-qwen27b\` 容器退出**
 - 上次退出码 \`137\`（OOMKilled），重启 3 次，最近一次 09:41:07
@@ -262,9 +263,10 @@ export const DEMO_CHAT_REPLY = `演示模式：当前实例未连接真实集群
 - 日志特征：\`CUDA out of memory. Tried to allocate 1.25 GiB\` 之后紧接 \`Killed\`
 
 **3) 建议（按性价比排序）**
-1. \`--gpu-memory-utilization\` 从 \`0.95\` 降到 \`0.90\`，或把 \`--max-model-len\` 从 32768 降到 24576 压缩 KV cache
-2. 检查 \`hami-scheduler\` 的节点锁超时（默认 5m）是否短于大模型加载耗时，必要时调到 10m
-3. \`双卡T4\`（10.20.30.31）SSH 已 2 天未连通、重试 7 次，先确认机器是否下架再谈参数
+1. 把 \`vllm-qwen27b-1\` 的 \`nvidia.com/gpumem\` 从 20 GiB 调到 16 GiB，给 \`vllm-llama70b-0\` 腾出一张整卡；或直接把它调度到另一台有空余显存的节点
+2. \`--gpu-memory-utilization\` 从 \`0.95\` 降到 \`0.90\`，或把 \`--max-model-len\` 从 32768 降到 24576 压缩 KV cache
+3. \`reranker-perf/msrk-5\` 这类只吃 4~6 GiB 的小模型别再按整卡申请 \`nvidia.com/gpumem\`，调低后就能和其它 Pod 共享同一张卡
+4. \`双卡T4\`（10.20.30.31）SSH 已 2 天未连通、重试 7 次，先确认机器是否下架再谈参数
 
 > 以上全部为演示数据 · 未连接任何真实服务器 · 未执行任何命令 [demo]`;
 

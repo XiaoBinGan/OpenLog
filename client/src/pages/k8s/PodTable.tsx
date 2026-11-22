@@ -1,15 +1,28 @@
 /**
- * Pod 表：状态 / 就绪 / 重启数 / OOM / CrashLoop 标记，可按命名空间 + 关键字过滤。
+ * Pod 表：状态 / 就绪 / 重启数 / 节点 / vGPU / OOM / CrashLoop 标记，可按命名空间 + 关键字过滤。
  *
  * 行点击 = 打开该 Pod 的最近日志抽屉（父页面负责请求 logs?tail=200）。
  * 行本身用 tr + tabIndex 承担可点区域（回车/空格等效于点击），
  * 因此键盘用户也能打开日志。
+ *
+ * vGPU 列只在集群里有 HAMi 时出现（父页面按 overview.gpu.hasHami 传 showVgpu）——
+ * 没有 HAMi 的集群表头与改动前一模一样，不会多出一列全是「—」的噪音。
  */
 
 import { useMemo, useState } from 'react';
 import { Boxes, ScrollText } from 'lucide-react';
 import type { K8sPod } from './types';
-import { ALL_NAMESPACES, filterPods, formatAge, isPodReady, podKey, podMarkers, podSeverity, sortPods } from './utils';
+import {
+  ALL_NAMESPACES,
+  filterPods,
+  formatAge,
+  isPodReady,
+  podKey,
+  podMarkers,
+  podSeverity,
+  sortPods,
+  vgpuLabel,
+} from './utils';
 
 interface PodTableProps {
   pods: K8sPod[];
@@ -19,6 +32,8 @@ interface PodTableProps {
   /** 当前打开日志的 Pod（podKey 形式），用于高亮。 */
   selectedKey?: string | null;
   onSelect: (pod: K8sPod) => void;
+  /** 是否展示 vGPU 列（集群有 HAMi 时才为 true；默认 false = 与改动前完全一致） */
+  showVgpu?: boolean;
 }
 
 const severityDot: Record<ReturnType<typeof podSeverity>, string> = {
@@ -47,6 +62,7 @@ function PodTable({
   onNamespaceChange,
   selectedKey = null,
   onSelect,
+  showVgpu = false,
 }: PodTableProps) {
   const [keyword, setKeyword] = useState('');
   const rows = useMemo(() => sortPods(filterPods(pods, namespace, keyword)), [pods, namespace, keyword]);
@@ -105,6 +121,7 @@ function PodTable({
                 <th className="text-left font-medium px-3 py-2">Ready</th>
                 <th className="text-left font-medium px-3 py-2">重启</th>
                 <th className="text-left font-medium px-3 py-2">节点</th>
+                {showVgpu && <th className="text-left font-medium px-3 py-2">vGPU</th>}
                 <th className="text-left font-medium px-3 py-2">IP</th>
                 <th className="text-left font-medium px-3 py-2">年龄</th>
                 <th className="text-left font-medium px-3 py-2">标记</th>
@@ -158,6 +175,20 @@ function PodTable({
                     <td className="px-3 py-2 text-dark-400 text-xs whitespace-nowrap" title={pod.node}>
                       {pod.node || '—'}
                     </td>
+                    {showVgpu && (
+                      <td
+                        className={`px-3 py-2 font-mono text-xs whitespace-nowrap ${
+                          pod.vgpu?.hasVgpu ? 'text-accent-300' : 'text-dark-600'
+                        }`}
+                        title={
+                          pod.vgpu?.devices?.length
+                            ? pod.vgpu.devices.map((device) => device.id).join('\n')
+                            : '没有 vGPU 分配'
+                        }
+                      >
+                        {vgpuLabel(pod.vgpu)}
+                      </td>
+                    )}
                     <td className="px-3 py-2 text-dark-400 font-mono text-xs whitespace-nowrap">
                       {pod.ip || '—'}
                     </td>

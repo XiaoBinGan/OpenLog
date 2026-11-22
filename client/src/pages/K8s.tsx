@@ -9,7 +9,8 @@
  *   k8s/ClusterForm.tsx  新增（编辑）集群弹窗：粘贴 kubeconfig + 测试连接
  *   k8s/StatCards.tsx    顶部四张统计卡
  *   k8s/NodeTable.tsx    节点表
- *   k8s/PodTable.tsx     Pod 表（namespace 过滤 + OOM/CrashLoop 标记 + 点击看日志）
+ *   k8s/GpuAllocation.tsx GPU 分配（HAMi vGPU：每节点的卡数/显存/算力 + 占卡 Pod）
+ *   k8s/PodTable.tsx     Pod 表（namespace 过滤 + OOM/CrashLoop 标记 + 点击看日志 + vGPU 列）
  *   k8s/EventList.tsx    Warning 事件列表
  *   k8s/LogDrawer.tsx    最近日志抽屉（tail=200）
  *   k8s/Feedback.tsx     错误条 / 加载块 / 空状态
@@ -42,12 +43,14 @@ import {
   clusterApiPath,
   ensureOverview,
   errorText,
+  hasHamiData,
   listNamespaces,
 } from './k8s/utils';
 import ClusterList from './k8s/ClusterList';
 import ClusterForm from './k8s/ClusterForm';
 import StatCards from './k8s/StatCards';
 import NodeTable from './k8s/NodeTable';
+import GpuAllocation from './k8s/GpuAllocation';
 import PodTable from './k8s/PodTable';
 import EventList from './k8s/EventList';
 import LogDrawer from './k8s/LogDrawer';
@@ -342,6 +345,8 @@ export default function K8s() {
 
                   <StatCards summary={overview.summary} />
                   <NodeTable nodes={overview.nodes} />
+                  {/* 没有 HAMi 的集群：GpuAllocation 自己返回 null，页面与改动前一致 */}
+                  <GpuAllocation gpu={overview.gpu} />
                   <PodTable
                     pods={overview.pods}
                     namespaces={namespaces}
@@ -349,6 +354,7 @@ export default function K8s() {
                     onNamespaceChange={setNamespace}
                     selectedKey={selectedPodKey}
                     onSelect={handleSelectPod}
+                    showVgpu={hasHamiData(overview.gpu)}
                   />
                   <EventList events={overview.events} />
                 </>

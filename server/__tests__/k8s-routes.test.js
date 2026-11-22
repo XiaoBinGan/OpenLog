@@ -22,6 +22,7 @@ const h = vi.hoisted(() => ({
   failVersion: false,
     versionObject: false,
   summarizeThrows: false,
+  hamiThrows: false,
   logRequests: [],
   parseCalls: [],
   upsertInputs: [],
@@ -179,7 +180,124 @@ vi.mock('../k8s/resources.js', () => ({
   }),
 }));
 
+/**
+ * HAMi vGPU 解析层（H1 并行实现，现在还是「调用即抛 not implemented」的占位）。
+ *
+ * 这里按 /tmp/hami-contract.md 的签名写一份最小实现：路由层只依赖
+ * 「readPodVgpu 读 pod.annotations、readNodeGpu 读 node.capacity/allocatable」这件事，
+ * 用它验证路由把**补齐后的对象**交给了解析层，以及 gpu 段 / Pod 的 vgpu 字段形状。
+ * 真实解析（异常注解、单位、边界）由 H1 的 k8s-hami.test.js 覆盖。
+ */
+vi.mock('../k8s/hami.js', () => {
+  const parseDevices = (raw) => String(raw || '')
+    .split(':;')
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .map((part) => {
+      const [id, memMiB, cores] = part.split(',');
+      return { id: String(id || ''), memMiB: Number(memMiB) || 0, cores: Number(cores) || 0 };
+    });
+
+  const readNodeGpu = vi.fn((node) => {
+    if (h.hamiThrows) throw new Error('not implemented');
+    const fromCapacity = node?.capacity?.['nvidia.com/gpu'];
+    const fromAllocatable = node?.allocatable?.['nvidia.com/gpu'];
+    const bag = node?.capacity || node?.allocatable || {};
+    const count = Number(bag['nvidia.com/gpu']);
+    if (!Number.isFinite(count) || count <= 0) {
+      return { hasGpu: false, count: 0, memMiB: 0, cores: 0, source: 'none' };
+    }
+    return {
+      hasGpu: true,
+      count,
+      memMiB: Number(bag['nvidia.com/gpumem']) || 0,
+      cores: Number(bag['nvidia.com/gpucores']) || 0,
+      source: fromCapacity ? 'capacity' : (fromAllocatable ? 'allocatable' : 'none'),
+    };
+  });
+
+  const readPodVgpu = vi.fn((pod) => {
+    if (h.hamiThrows) throw new Error('not implemented');
+    const bag = pod?.annotations && typeof pod.annotations === 'object' ? pod.annotations : {};
+    const raw = bag['hami.io/vgpu-devices-allocated'] || bag['hami.io/vgpu-devices-assigned'] || '';
+    const devices = parseDevices(raw);
+    const nodeAllocated = String(bag['hami.io/vgpu-node-allocated'] || '');
+    return {
+      hasVgpu: devices.length > 0,
+      devices,
+      totalMemMiB: devices.reduce((sum, device) => sum + device.memMiB, 0),
+      totalCores: devices.reduce((sum, device) => sum + device.cores, 0),
+      nodeName: nodeAllocated ? (String(nodeAllocated.split(',')[0] || '') || null) : null,
+      raw: raw || null,
+    };
+  });
+
+  return {
+    readNodeGpu,
+    readPodVgpu,
+    summarizeVgpu: vi.fn(({ nodes = [], pods = [] } = {}) => {
+      if (h.hamiThrows) throw new Error('not implemented');
+      const nodeRows = nodes.map((node) => {
+        const gpu = readNodeGpu(node);
+        const mine = pods.filter((pod) => readPodVgpu(pod).nodeName === (node?.name || ''));
+        const allocated = mine.reduce(
+          (sum, pod) => {
+            const vgpu = readPodVgpu(pod);
+            return { memMiB: sum.memMiB + vgpu.totalMemMiB, cores: sum.cores + vgpu.totalCores };
+          },
+          { memMiB: 0, cores: 0 },
+        );
+        return {
+          name: node?.name || '',
+          count: gpu.count,
+          memMiB: gpu.memMiB,
+          cores: gpu.cores,
+          allocatedMemMiB: allocated.memMiB,
+          allocatedCores: allocated.cores,
+          podCount: mine.length,
+        };
+      });
+      const podRows = pods
+        .map((pod) => {
+          const vgpu = readPodVgpu(pod);
+          return {
+            namespace: pod?.namespace || '',
+            name: pod?.name || '',
+            nodeName: vgpu.nodeName,
+            devices: vgpu.devices,
+            totalMemMiB: vgpu.totalMemMiB,
+            totalCores: vgpu.totalCores,
+            phase: pod?.phase || '',
+          };
+        })
+        .filter((pod) => pod.devices.length > 0);
+      const totals = podRows.reduce(
+        (sum, pod) => ({
+          allocatedMemMiB: sum.allocatedMemMiB + pod.totalMemMiB,
+          allocatedCores: sum.allocatedCores + pod.totalCores,
+        }),
+        { allocatedMemMiB: 0, allocatedCores: 0 },
+      );
+      return {
+        hasHami: nodeRows.some((row) => row.count > 0) || podRows.length > 0,
+        nodes: nodeRows.filter((row) => row.count > 0 || row.podCount > 0),
+        pods: podRows,
+        totals: {
+          gpuCount: nodeRows.reduce((sum, row) => sum + row.count, 0),
+          memMiB: nodeRows.reduce((sum, row) => sum + row.memMiB, 0),
+          cores: nodeRows.reduce((sum, row) => sum + row.cores, 0),
+          allocatedMemMiB: totals.allocatedMemMiB,
+          allocatedCores: totals.allocatedCores,
+          podCount: podRows.length,
+        },
+        warnings: [],
+      };
+    }),
+  };
+});
+
 import createK8sRouter from '../routes/k8s.js';
+import * as k8sHami from '../k8s/hami.js';
 
 // ── 假集群数据 ────────────────────────────────────────────────────
 
@@ -247,6 +365,7 @@ function resetState() {
   h.failVersion = false;
   h.versionObject = false;
   h.summarizeThrows = false;
+  h.hamiThrows = false;
   h.logRequests = [];
   h.parseCalls = [];
   h.upsertInputs = [];
@@ -717,5 +836,237 @@ describe('GET /api/k8s/clusters/:id/pods/:namespace/:pod/logs', () => {
   it('集群 id 不存在 → 404', async () => {
     const res = await request('GET', '/api/k8s/clusters/nope/pods/default/web-0/logs');
     expect(res.status).toBe(404);
+  });
+});
+// ═══ HAMi vGPU ═════════════════════════════════════════════════════
+//
+// 契约见 /tmp/hami-contract.md。这里只钉路由层的三件事：
+//   1. 没有 HAMi 时 `gpu` 段照样返回但为空，且 Pod 里**不出现** vgpu 字段（行为不变）；
+//   2. 有 HAMi 时 overview.gpu / pods[].vgpu 的形状正确，且解析层拿到的是
+//      「补齐了 capacity / annotations 的对象」（归一化层没保留这两个字段也能工作）；
+//   3. 解析层抛错（H1 的占位实现）时降级成空段 + 一条 warning，绝不把 overview 打成 500。
+
+/** 给假响应挂上 HAMi 数据：节点 2 卡 / 48 GiB / 200 算力点，web-0 占 12 GiB / 40% */
+function seedHami() {
+  const nodes = h.responses['/api/v1/nodes'].items;
+  const gpuResources = {
+    'nvidia.com/gpu': '2',
+    'nvidia.com/gpumem': '49152',
+    'nvidia.com/gpucores': '200',
+  };
+  nodes[0].status = {
+    ...nodes[0].status,
+    capacity: { cpu: '8', memory: '16Gi', pods: '110', ...gpuResources },
+    allocatable: { cpu: '8', memory: '16Gi', pods: '110', ...gpuResources },
+  };
+
+  const pods = h.responses['/api/v1/pods'].items;
+  pods[0].metadata = {
+    ...pods[0].metadata,
+    annotations: {
+      'hami.io/vgpu-devices-allocated': 'GPU-aaaa-1111,12288,40:;',
+      'hami.io/vgpu-node-allocated': 'k3s-1,0,NVIDIA-GeForce-RTX-4090',
+    },
+  };
+}
+
+describe('HAMi vGPU', () => {
+  it('没有 HAMi：gpu 段照常返回但为空，Pod 不带 vgpu 字段', async () => {
+    seedCluster();
+    const res = await request('GET', '/api/k8s/clusters/c-1/overview');
+    expect(res.status).toBe(200);
+
+    expect(res.body.gpu).toEqual({
+      hasHami: false,
+      nodes: [],
+      pods: [],
+      totals: { gpuCount: 0, memMiB: 0, cores: 0, allocatedMemMiB: 0, allocatedCores: 0, podCount: 0 },
+      warnings: [],
+    });
+    // 关键：没有 HAMi 时 Pod 形状与改动前一致（前端因此不会出现 vGPU 列）
+    for (const pod of res.body.pods) {
+      expect('vgpu' in pod).toBe(false);
+    }
+    // 解析用的原始映射不随响应透出
+    expect(res.body.nodes[0].capacity).toBeUndefined();
+    expect(res.body.nodes[0].allocatable).toBeUndefined();
+  });
+
+  it('节点有 GPU 资源、Pod 有注解：gpu 段汇总正确，Pod 带 vgpu', async () => {
+    seedCluster();
+    seedHami();
+
+    const res = await request('GET', '/api/k8s/clusters/c-1/overview');
+    expect(res.status).toBe(200);
+
+    const gpu = res.body.gpu;
+    expect(gpu.hasHami).toBe(true);
+    expect(gpu.warnings).toEqual([]);
+    expect(gpu.nodes).toEqual([
+      {
+        name: 'k3s-1',
+        count: 2,
+        memMiB: 49152,
+        cores: 200,
+        allocatedMemMiB: 12288,
+        allocatedCores: 40,
+        podCount: 1,
+      },
+    ]);
+    expect(gpu.pods).toEqual([
+      {
+        namespace: 'default',
+        name: 'web-0',
+        nodeName: 'k3s-1',
+        devices: [{ id: 'GPU-aaaa-1111', memMiB: 12288, cores: 40 }],
+        totalMemMiB: 12288,
+        totalCores: 40,
+        phase: 'Running',
+      },
+    ]);
+    expect(gpu.totals).toEqual({
+      gpuCount: 2,
+      memMiB: 49152,
+      cores: 200,
+      allocatedMemMiB: 12288,
+      allocatedCores: 40,
+      podCount: 1,
+    });
+
+    // 有 HAMi 时每个 Pod 都有 vgpu（没分配到的是 hasVgpu:false，前端显示「—」）
+    const [web0, api1] = res.body.pods;
+    expect(web0.vgpu).toEqual({
+      hasVgpu: true,
+      devices: [{ id: 'GPU-aaaa-1111', memMiB: 12288, cores: 40 }],
+      totalMemMiB: 12288,
+      totalCores: 40,
+      nodeName: 'k3s-1',
+    });
+    expect(api1.vgpu).toEqual({
+      hasVgpu: false,
+      devices: [],
+      totalMemMiB: 0,
+      totalCores: 0,
+      nodeName: null,
+    });
+  });
+
+  it('解析层拿到的是补齐了 capacity / annotations 的对象（归一化没保留也能工作）', async () => {
+    seedCluster();
+    seedHami();
+    await request('GET', '/api/k8s/clusters/c-1/overview');
+
+    const call = k8sHami.summarizeVgpu.mock.calls.at(-1)[0];
+    const node = call.nodes.find((item) => item.name === 'k3s-1');
+    expect(node.capacity['nvidia.com/gpu']).toBe('2');
+    expect(node.allocatable['nvidia.com/gpumem']).toBe('49152');
+    const pod = call.pods.find((item) => item.name === 'web-0');
+    expect(pod.annotations['hami.io/vgpu-devices-allocated']).toContain('GPU-aaaa-1111');
+    // conditions 等归一化字段不能丢（补字段是浅合并）
+    expect(Array.isArray(node.conditions)).toBe(true);
+  });
+
+  it('解析层抛错（占位实现）：空 gpu 段 + warning，overview 仍然 200', async () => {
+    seedCluster();
+    seedHami();
+    h.hamiThrows = true;
+
+    const res = await request('GET', '/api/k8s/clusters/c-1/overview');
+    expect(res.status).toBe(200);
+    expect(res.body.gpu.hasHami).toBe(false);
+    expect(res.body.gpu.nodes).toEqual([]);
+    expect(res.body.gpu.warnings).toHaveLength(1);
+    expect(res.body.gpu.warnings[0]).toContain('not implemented');
+    // 其余资源照常
+    expect(res.body.nodes).toHaveLength(2);
+    expect(res.body.pods).toHaveLength(3);
+    expect(res.body.pods[0].vgpu).toBeUndefined();
+  });
+
+  it('GET /pods：有注解时每个 Pod 带 vgpu，无注解时没有该字段', async () => {
+    seedCluster();
+    const plain = await request('GET', '/api/k8s/clusters/c-1/pods');
+    expect(plain.status).toBe(200);
+    expect('vgpu' in plain.body.pods[0]).toBe(false);
+
+    seedHami();
+    const withGpu = await request('GET', '/api/k8s/clusters/c-1/pods');
+    expect(withGpu.status).toBe(200);
+    expect(withGpu.body.pods[0].vgpu).toMatchObject({ hasVgpu: true, totalMemMiB: 12288, totalCores: 40 });
+    expect(withGpu.body.pods[1].vgpu).toMatchObject({ hasVgpu: false });
+    // 注解本身不透出（只透 vgpu 摘要）
+    expect(withGpu.body.pods[0].annotations).toBeUndefined();
+  });
+});
+
+// ═══ 演示模式下的 HAMi 数据 ═════════════════════════════════════════
+//
+// 演示集群的数据必须自洽：节点 4 卡 / 96 GiB / 400 算力点，几个 Pod 的分配加起来小于总量，
+// 且正好 1 个 Pod 因为「单卡显存凑不出来」Pending（助手回复讲的就是这件事）。
+// 这里读的是**真实 fixtures.js**（这个文件没有 mock 它），解析用本文件顶部的 hami 替身。
+describe('演示模式 · HAMi vGPU fixture', () => {
+  beforeEach(() => vi.stubEnv('OPENLOG_DEMO', '1'));
+  afterEach(() => vi.unstubAllEnvs());
+
+  it('overview 带 GPU 段：4 卡 / 96 GiB / 400 点，分配量小于总量', async () => {
+    const clusters = await request('GET', '/api/k8s/clusters');
+    const id = clusters.body.clusters[0].id;
+    const res = await request('GET', `/api/k8s/clusters/${encodeURIComponent(id)}/overview`);
+    expect(res.status).toBe(200);
+    expect(res.body.demo).toBe(true);
+
+    const { gpu } = res.body;
+    expect(gpu.hasHami).toBe(true);
+    expect(gpu.totals.gpuCount).toBe(4);
+    expect(gpu.totals.memMiB).toBe(96 * 1024);
+    expect(gpu.totals.cores).toBe(400);
+    // 自洽：已分配严格小于总量（否则「还剩多少」永远没得看）
+    expect(gpu.totals.allocatedMemMiB).toBeGreaterThan(0);
+    expect(gpu.totals.allocatedMemMiB).toBeLessThan(gpu.totals.memMiB);
+    expect(gpu.totals.allocatedCores).toBeGreaterThan(0);
+    expect(gpu.totals.allocatedCores).toBeLessThan(gpu.totals.cores);
+    expect(gpu.nodes[0]).toMatchObject({ name: 'k3s-infer-node-1', count: 4, podCount: 5 });
+
+    // 同卡共享：两个 Pod 落在同一张卡上（vGPU 的核心证据）
+    const byDevice = new Map();
+    for (const pod of gpu.pods) {
+      for (const device of pod.devices) {
+        byDevice.set(device.id, [...(byDevice.get(device.id) ?? []), pod.name]);
+      }
+    }
+    expect([...byDevice.values()].some((names) => names.length > 1)).toBe(true);
+
+    // 演示 fixture 的解析输入不随响应透出
+    expect(res.body.nodes[0].capacity).toBeUndefined();
+    expect(res.body.nodes[0].allocatable).toBeUndefined();
+    expect(res.body.pods[0].annotations).toBeUndefined();
+    // 有 HAMi 时 Pod 带 vgpu
+    expect(res.body.pods[0].vgpu.hasVgpu).toBe(true);
+  });
+
+  it('正好 1 个 Pending Pod 拿不到 vGPU 分配（显存不足的呼应）', async () => {
+    const clusters = await request('GET', '/api/k8s/clusters');
+    const id = clusters.body.clusters[0].id;
+    const res = await request('GET', `/api/k8s/clusters/${encodeURIComponent(id)}/overview`);
+
+    const pending = res.body.pods.filter((pod) => pod.phase === 'Pending');
+    expect(pending).toHaveLength(1);
+    // 没被调度的 Pod 没有分配 —— 这正是「排不上」的证据
+    expect(pending[0].vgpu).toMatchObject({ hasVgpu: false, totalMemMiB: 0, totalCores: 0 });
+    expect(res.body.gpu.pods.some((pod) => pod.name === pending[0].name)).toBe(false);
+
+    // 事件里能看到 Insufficient nvidia.com/*，与助手文案「显存不足」同源
+    const scheduling = res.body.events.find((event) => event.reason === 'FailedScheduling');
+    expect(scheduling).toBeTruthy();
+    expect(scheduling.message).toContain('nvidia.com/gpumem');
+  });
+
+  it('GET /pods（演示）也带 vgpu 字段', async () => {
+    const clusters = await request('GET', '/api/k8s/clusters');
+    const id = clusters.body.clusters[0].id;
+    const res = await request('GET', `/api/k8s/clusters/${encodeURIComponent(id)}/pods`);
+    expect(res.status).toBe(200);
+    expect(res.body.pods.some((pod) => pod.vgpu?.hasVgpu === true)).toBe(true);
+    expect(res.body.pods[0].annotations).toBeUndefined();
   });
 });

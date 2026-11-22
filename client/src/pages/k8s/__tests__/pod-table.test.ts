@@ -206,3 +206,83 @@ describe('PodTable', () => {
     expect(container.textContent).toContain('当前过滤条件下没有 Pod');
   });
 });
+// ─── vGPU 列（HAMi）─────────────────────────────────────────────────────
+// 集群有 HAMi 时才多这一列；形态是「12 GiB · 40%」，没有分配显示「—」。
+// 没有 HAMi 时表头必须与改动前完全一致（不多一列全是「—」的噪音）。
+describe('PodTable · vGPU 列', () => {
+  const withVgpu = pod({
+    name: 'vllm-qwen27b-0',
+    vgpu: {
+      hasVgpu: true,
+      devices: [{ id: 'GPU-3f2a', memMiB: 12288, cores: 40 }],
+      totalMemMiB: 12288,
+      totalCores: 40,
+      nodeName: 'k3s-infer-node-1',
+    },
+  });
+  const withoutVgpu = pod({
+    name: 'grafana-1',
+    vgpu: { hasVgpu: false, devices: [], totalMemMiB: 0, totalCores: 0, nodeName: null },
+  });
+
+  const heads = () => [...(container?.querySelectorAll('th') ?? [])].map((th) => th.textContent ?? '');
+
+  it('showVgpu 默认 false：不出现 vGPU 列（无 HAMi 行为不变）', () => {
+    renderTable(
+      createElement(PodTable, {
+        pods: [withVgpu],
+        namespaces: ['default'],
+        namespace: '',
+        onNamespaceChange: () => {},
+        onSelect: () => {},
+      }),
+    );
+    expect(heads()).not.toContain('vGPU');
+    expect(container.textContent).not.toContain('12 GiB · 40%');
+  });
+
+  it('showVgpu 为 true：分配显示「显存 · 算力」，无分配显示「—」', () => {
+    renderTable(
+      createElement(PodTable, {
+        pods: [withVgpu, withoutVgpu],
+        namespaces: ['default'],
+        namespace: '',
+        onNamespaceChange: () => {},
+        onSelect: () => {},
+        showVgpu: true,
+      }),
+    );
+    expect(heads()).toContain('vGPU');
+
+    const rows = [...container.querySelectorAll('tbody tr')];
+    const vgpuCell = (name: string) => {
+      const row = rows.find((r) => (r.textContent ?? '').includes(name));
+      expect(row, `没找到 ${name} 这一行`).toBeDefined();
+      // 最后一列是「标记」，vGPU 在 IP 前 → 取第 5 个单元格之前的定位不可靠，
+      // 这里按标题（title 是设备 id 列表）找，语义更稳
+      const cells = [...(row?.querySelectorAll('td') ?? [])];
+      return cells.find((cell) => /GPU-|没有 vGPU 分配/.test(cell.getAttribute('title') ?? ''));
+    };
+
+    expect(vgpuCell('vllm-qwen27b-0')?.textContent).toBe('12 GiB · 40%');
+    expect(vgpuCell('grafana-1')?.textContent).toBe('—');
+    expect(container.textContent).not.toContain('NaN');
+    expect(container.textContent).not.toContain('undefined');
+  });
+
+  it('vGPU 字段缺失（服务端只给汇总）也不报错，显示「—」', () => {
+    renderTable(
+      createElement(PodTable, {
+        pods: [pod({ name: 'no-vgpu-field' })],
+        namespaces: ['default'],
+        namespace: '',
+        onNamespaceChange: () => {},
+        onSelect: () => {},
+        showVgpu: true,
+      }),
+    );
+    expect(container.textContent).toContain('no-vgpu-field');
+    expect(container.textContent).toContain('—');
+    expect(container.textContent).not.toContain('NaN');
+  });
+});

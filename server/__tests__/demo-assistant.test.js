@@ -337,7 +337,12 @@ describe('演示模式 · POST /api/chat 返回固定演示回复', () => {
     expect(text).toContain('FailedScheduling');
     expect(text).toContain('137');
     expect(text).toContain('23.4 / 24 GiB');
-    expect(text).toContain('hami-scheduler');
+    // 只说我们真的看得到的东西：vGPU 显存分配（不再承诺解析 hami-scheduler 的节点锁）
+    expect(text).toContain('vGPU');
+    expect(text).toContain('nvidia.com/gpumem');
+    expect(text).toContain('12 GiB / 40% 算力');
+    expect(text).not.toContain('hami-scheduler');
+    expect(text).not.toContain('节点锁');
 
     // 首帧是既有事件类型 provider_notice（前端不改造就能看到提示条）
     const events = parseSSE(r.text);

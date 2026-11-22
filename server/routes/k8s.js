@@ -9,6 +9,7 @@
  *   client.js      createK8sClient(resolved)  —— 直连 kube-apiserver（不依赖 kubectl）
  *   resources.js   normalize* / summarize()   —— CRD 原始 items → 契约里的视图结构
  *   store.js       list/get/upsert/delete/toView —— settings.k8sClusters 的增删改查
+ *   hami.js        readNodeGpu/readPodVgpu/summarizeVgpu —— HAMi vGPU 解析（契约见 /tmp/hami-contract.md）
  *
  * 之所以用 `import * as`（而非具名导入）：四个模块正在被并行实现，具名导入一旦某个导出缺失
  * 会在 **ESM 链接阶段**直接抛 SyntaxError，整条 /api/k8s 全挂；命名空间导入则只有真正调用到
@@ -29,6 +30,10 @@ import * as k8sStore from '../k8s/store.js';
 import * as k8sKubeconfig from '../k8s/kubeconfig.js';
 import * as k8sClientModule from '../k8s/client.js';
 import * as k8sResources from '../k8s/resources.js';
+// HAMi vGPU 解析（H1 并行实现，契约见 /tmp/hami-contract.md）。
+// 同样用命名空间导入：它的导出还在被并行实现，调用可能抛 not implemented，
+// 具名导入一旦某个函数缺失会直接把整条 /api/k8s 带崩。
+import * as k8sHami from '../k8s/hami.js';
 import { isDemoMode, DEMO_DISABLED } from '../demo/mode.js';
 import * as demoFixtures from '../demo/fixtures.js';
 
@@ -215,6 +220,227 @@ function computeSummary(parts) {
     if (summary && typeof summary === 'object') return summary;
   } catch { /* 回退到本地汇总 */ }
   return localSummary(parts);
+}
+
+// ─── HAMi vGPU（契约见 /tmp/hami-contract.md）────────────────────────────
+//
+// 数据来源有两块，都在 k8s/hami.js 里解析：
+//   节点  status.capacity|allocatable 的 nvidia.com/{gpu,gpumem,gpucores}
+//   Pod   metadata.annotations 的 hami.io/vgpu-*
+//
+// 这里的三个约定（前端的「无 HAMi 行为不变」全靠它们）：
+//   1. **永远返回 gpu 段**：没有 HAMi 时是 hasHami:false + 空数组，前端据此不渲染卡片；
+//   2. **解析层抛错只降级、不冒泡**：hami.js 与它并行开发（接入前调用即抛 not implemented），
+//      真实集群也可能有坏注解 —— 这些都必须是「多一个空 gpu 段」，而不是 500；
+//   3. **Pod 的 vgpu 字段按需挂**：只有真的读到分配时才给每个 Pod 加 `vgpu`，
+//      否则响应与改动前逐字节一致（前端表格也就不出现那一列）。
+
+/** 数字兜底：NaN/Infinity/非法值 → 0（前端拿到的永远是数字，不会出现 null 运算） */
+function asCount(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : 0;
+}
+
+/** 字符串兜底：null/undefined → '' */
+function asLabel(value) {
+  if (value === null || value === undefined) return '';
+  return typeof value === 'string' ? value : String(value);
+}
+
+/** 空 gpu 段（没有 HAMi / 解析层不可用）。字段与契约里的 summarizeVgpu 返回完全一致。 */
+function emptyGpuSegment(warnings = []) {
+  return {
+    hasHami: false,
+    nodes: [],
+    pods: [],
+    totals: { gpuCount: 0, memMiB: 0, cores: 0, allocatedMemMiB: 0, allocatedCores: 0, podCount: 0 },
+    warnings,
+  };
+}
+
+/** 没有 vGPU 分配的 Pod 用它占位（hasVgpu:false），前端据此显示「—」 */
+function emptyVgpu() {
+  return { hasVgpu: false, devices: [], totalMemMiB: 0, totalCores: 0, nodeName: null };
+}
+
+/**
+ * 把 summarizeVgpu 的结果收敛成固定形状。
+ *
+ * 为什么在这里再补一遍默认值：解析层是并行开发的，字段哪天少一个（或返回 NaN），
+ * 前端就会渲染出 `NaN GiB`；这一层把「数字一定有限、数组一定是数组」钉死，
+ * 前端只负责排版。
+ */
+function normalizeGpuSegment(summary) {
+  const nodes = Array.isArray(summary?.nodes) ? summary.nodes : [];
+  const pods = Array.isArray(summary?.pods) ? summary.pods : [];
+  const totals = summary?.totals && typeof summary.totals === 'object' ? summary.totals : {};
+  const warnings = Array.isArray(summary?.warnings) ? summary.warnings : [];
+
+  return {
+    hasHami: summary?.hasHami === true,
+    nodes: nodes
+      .filter((node) => node && typeof node === 'object')
+      .map((node) => ({
+        name: asLabel(node.name),
+        count: asCount(node.count),
+        memMiB: asCount(node.memMiB),
+        cores: asCount(node.cores),
+        allocatedMemMiB: asCount(node.allocatedMemMiB),
+        allocatedCores: asCount(node.allocatedCores),
+        podCount: asCount(node.podCount),
+      })),
+    pods: pods
+      .filter((pod) => pod && typeof pod === 'object')
+      .map((pod) => ({
+        namespace: asLabel(pod.namespace),
+        name: asLabel(pod.name),
+        nodeName: pod.nodeName === null || pod.nodeName === undefined ? null : asLabel(pod.nodeName),
+        devices: (Array.isArray(pod.devices) ? pod.devices : [])
+          .filter((device) => device && typeof device === 'object')
+          .map((device) => ({
+            id: asLabel(device.id),
+            memMiB: asCount(device.memMiB),
+            cores: asCount(device.cores),
+          })),
+        totalMemMiB: asCount(pod.totalMemMiB),
+        totalCores: asCount(pod.totalCores),
+        phase: asLabel(pod.phase),
+      })),
+    totals: {
+      gpuCount: asCount(totals.gpuCount),
+      memMiB: asCount(totals.memMiB),
+      cores: asCount(totals.cores),
+      allocatedMemMiB: asCount(totals.allocatedMemMiB),
+      allocatedCores: asCount(totals.allocatedCores),
+      podCount: asCount(totals.podCount),
+    },
+    // 契约：最多 5 条（异常注解可能几百条，全带上会把响应撑爆）
+    warnings: warnings.slice(0, 5).map((item) => asLabel(item)),
+  };
+}
+
+/**
+ * 汇总 GPU 段。summarizeVgpu 缺失/抛错（占位实现）→ 空段 + 一条 warning，
+ * 让「解析层没接上」在页面上可见，但绝不拖垮整条 overview。
+ */
+function summarizeVgpuSafe(parts) {
+  try {
+    const summary = k8sHami.summarizeVgpu(parts);
+    if (summary && typeof summary === 'object') return normalizeGpuSegment(summary);
+    return emptyGpuSegment();
+  } catch (err) {
+    return emptyGpuSegment([`vGPU 数据解析失败：${errorMessage(err)}`]);
+  }
+}
+
+/** 单个 Pod 的 vGPU 分配；没有分配 / 解析层不可用 → null。 */
+function readPodVgpuSafe(pod) {
+  try {
+    const vgpu = k8sHami.readPodVgpu(pod);
+    if (!vgpu || typeof vgpu !== 'object' || vgpu.hasVgpu !== true) return null;
+    return {
+      hasVgpu: true,
+      devices: (Array.isArray(vgpu.devices) ? vgpu.devices : [])
+        .filter((device) => device && typeof device === 'object')
+        .map((device) => ({
+          id: asLabel(device.id),
+          memMiB: asCount(device.memMiB),
+          cores: asCount(device.cores),
+        })),
+      totalMemMiB: asCount(vgpu.totalMemMiB),
+      totalCores: asCount(vgpu.totalCores),
+      nodeName: vgpu.nodeName === null || vgpu.nodeName === undefined ? null : asLabel(vgpu.nodeName),
+    };
+  } catch {
+    // 解析层尚未接入时抛 not implemented，真实集群的异常注解也可能让它抛错。
+    // 单个 Pod 解析不了就当它没有 vGPU —— 空警告已经由 summarizeVgpuSafe 那条兜住了。
+    return null;
+  }
+}
+
+/**
+ * 给 Pod 列表挂 `vgpu` 字段。
+ *
+ * @param {object[]} pods     要返回给前端的 Pod（归一化形状，不含注解）
+ * @param {object[]} parsePods 解析用的副本（可以带 annotations），与 pods 同序
+ *
+ * 只有至少一个 Pod 真的读到分配时才挂字段：否则返回原数组，
+ * 「没有 HAMi 的集群」响应与改动前完全一致（前端也就不会出现空的 vGPU 列）。
+ */
+function withVgpuField(pods, parsePods = pods) {
+  const parsed = pods.map((pod, index) => readPodVgpuSafe(parsePods[index] ?? pod));
+  if (!parsed.some((vgpu) => vgpu !== null)) return pods;
+  return pods.map((pod, index) => ({ ...pod, vgpu: parsed[index] ?? emptyVgpu() }));
+}
+
+/**
+ * 从原始 items 补节点上的 GPU 资源映射。
+ *
+ * readNodeGpu 读的是 `node.capacity` / `node.allocatable`。归一化层（resources.js，H1 负责）
+ * 目前只保留了 cpu/memory/pods 三个字符串字段，所以这里从原始 `/api/v1/nodes` 响应里
+ * 按名字兜一层；已经带了的（H1 补上之后）不覆盖。返回的是**副本**，
+ * 原始映射只用于解析，不随 overview 回给前端。
+ */
+function gpuNodesOf(nodes, rawItems) {
+  const byName = new Map();
+  for (const item of Array.isArray(rawItems) ? rawItems : []) {
+    const name = asLabel(item?.metadata?.name);
+    if (!name) continue;
+    const status = item?.status;
+    if (!status || (!status.capacity && !status.allocatable)) continue;
+    byName.set(name, { capacity: status.capacity ?? null, allocatable: status.allocatable ?? null });
+  }
+  if (byName.size === 0) return nodes;
+  return nodes.map((node) => {
+    const extra = byName.get(asLabel(node?.name));
+    if (!extra) return node;
+    return {
+      ...node,
+      capacity: node?.capacity ?? extra.capacity ?? undefined,
+      allocatable: node?.allocatable ?? extra.allocatable ?? undefined,
+    };
+  });
+}
+
+/**
+ * 从原始 items 补 Pod 的 annotations（readPodVgpu 的输入）。
+ * 与 gpuNodesOf 同理：归一化层没保留 annotations 时按 `namespace/name` 兜一层。
+ */
+function gpuPodsOf(pods, rawItems) {
+  const byKey = new Map();
+  for (const item of Array.isArray(rawItems) ? rawItems : []) {
+    const metadata = item?.metadata;
+    const name = asLabel(metadata?.name);
+    if (!name) continue;
+    if (!metadata?.annotations || typeof metadata.annotations !== 'object') continue;
+    byKey.set(`${asLabel(metadata.namespace)}/${name}`, metadata.annotations);
+  }
+  if (byKey.size === 0) return pods;
+  return pods.map((pod) => {
+    const annotations = byKey.get(`${asLabel(pod?.namespace)}/${asLabel(pod?.name)}`);
+    if (!annotations || pod?.annotations) return pod;
+    return { ...pod, annotations };
+  });
+}
+
+/**
+ * 演示 fixture 里带着解析用的 HAMi 字段（`node.capacity/allocatable`、`pod.annotations`），
+ * 真实响应里没有这两块（归一化形状），所以回给前端前去掉 —— 演示与真实同形，
+ * 前端不可能在演示模式下走另一条分支。
+ */
+function stripHamiInputs(nodes) {  return nodes.map((node) => {
+    if (!node || typeof node !== 'object') return node;
+    const { capacity: _capacity, allocatable: _allocatable, ...rest } = node;
+    return rest;
+  });
+}
+
+function stripPodAnnotations(pods) {
+  return pods.map((pod) => {
+    if (!pod || typeof pod !== 'object') return pod;
+    const { annotations: _annotations, ...rest } = pod;
+    return rest;
+  });
 }
 
 /** tail 参数：非法/缺省 → 200，越界夹到 1..2000（前端传 0 或 99999 都不该报错） */
@@ -423,8 +649,20 @@ export default function createK8sRouter({ ensureSettings, saveSettings } = {}) {
   // ── 概览 ──────────────────────────────────────────────────────────
 
   router.get(`${PREFIX}/clusters/:id/overview`, async (req, res) => {
-    // 演示模式：概览直接给 fixture（形状与真实响应一致：nodes/pods/workloads/events/summary）
-    if (isDemoMode()) return res.json(demoJson(demoValue('demoK8sOverview', req.params.id) || {}));
+    // 演示模式：概览直接给 fixture（形状与真实响应一致：nodes/pods/workloads/events/summary），
+    // GPU 段与 Pod 的 vgpu 字段按 fixture 里的 HAMi 注解/资源现算 —— 与真实路径同一套代码
+    if (isDemoMode()) {
+      const overview = demoValue('demoK8sOverview', req.params.id) || {};
+      const demoNodes = Array.isArray(overview.nodes) ? overview.nodes : [];
+      const demoPods = Array.isArray(overview.pods) ? overview.pods : [];
+      const gpu = summarizeVgpuSafe({ nodes: demoNodes, pods: demoPods });
+      return res.json(demoJson({
+        ...overview,
+        nodes: stripHamiInputs(demoNodes),
+        pods: withVgpuField(stripPodAnnotations(demoPods), demoPods),
+        gpu,
+      }));
+    }
     try {
       const { client, resolved } = connectCluster(req.k8sCluster);
       const warnings = [];
@@ -480,6 +718,9 @@ export default function createK8sRouter({ ensureSettings, saveSettings } = {}) {
 
       const nodes = normalizeSafe('节点', () => k8sResources.normalizeNodes(itemsOf(raw.nodes)), warnings);
       const pods = normalizeSafe('Pod', () => k8sResources.normalizePods(itemsOf(raw.pods)), warnings);
+      const gpuNodes = gpuNodesOf(nodes, itemsOf(raw.nodes));
+      const gpuPods = gpuPodsOf(pods, itemsOf(raw.pods));
+      const gpu = summarizeVgpuSafe({ nodes: gpuNodes, pods: gpuPods });
       const workloads = [
         ...normalizeSafe('Deployment', () => k8sResources.normalizeWorkloads('Deployment', itemsOf(raw.deployments)), warnings),
         ...normalizeSafe('StatefulSet', () => k8sResources.normalizeWorkloads('StatefulSet', itemsOf(raw.statefulsets)), warnings),
@@ -499,10 +740,14 @@ export default function createK8sRouter({ ensureSettings, saveSettings } = {}) {
           context: String(resolved?.contextName || req.k8sCluster.context || ''),
         },
         nodes,
-        pods,
+        // 没有 HAMi 的集群这里与改动前逐字节一致（withVgpuField 读不到分配就返回原数组），
+        // 有 HAMi 时每个 Pod 多一个 `vgpu` 字段（前端 Pod 表的 vGPU 列用它）
+        pods: withVgpuField(pods, gpuPods),
         workloads,
         events,
         summary: computeSummary(parts),
+        // HAMi vGPU 汇总：没有 HAMi 时是 hasHami:false + 空数据（前端不渲染该卡片）
+        gpu,
         // 契约外的附加字段：某类资源拉取/解析失败的原因，前端可忽略
         warnings,
       });
@@ -518,9 +763,11 @@ export default function createK8sRouter({ ensureSettings, saveSettings } = {}) {
     if (isDemoMode()) {
       const overview = demoValue('demoK8sOverview', req.params.id) || {};
       const namespace = queryString(req.query.namespace);
-      const pods = (Array.isArray(overview.pods) ? overview.pods : [])
-        .filter((p) => !namespace || String(p?.namespace ?? '') === namespace);
-      return res.json(demoJson({ pods }));
+      const all = Array.isArray(overview.pods) ? overview.pods : [];
+      const pods = all.filter((p) => !namespace || String(p?.namespace ?? '') === namespace);
+      // 解析用全量副本（注解在 fixture 里），返回给前端的只有归一化形状 + vgpu
+      const podsWithVgpu = withVgpuField(stripPodAnnotations(pods), pods);
+      return res.json(demoJson({ pods: podsWithVgpu }));
     }
     try {
       const { client } = connectCluster(req.k8sCluster);
@@ -531,8 +778,12 @@ export default function createK8sRouter({ ensureSettings, saveSettings } = {}) {
         : '/api/v1/pods';
 
       const data = await Promise.resolve(client.getJson(path));
-      const pods = normalizeSafe('Pod', () => k8sResources.normalizePods(itemsOf(data)), []);
-      res.json({ pods });
+      const rawItems = itemsOf(data);
+      const pods = normalizeSafe('Pod', () => k8sResources.normalizePods(rawItems), []);
+      // 每个 Pod 带 vgpu（HAMi 注解可能只在原始对象里，gpuPodsOf 兜一层）；
+      // 没有 HAMi 时读不到任何分配，响应与改动前逐字节一致
+      const gpuPods = gpuPodsOf(pods, rawItems);
+      res.json({ pods: withVgpuField(pods, gpuPods) });
     } catch (err) {
       sendError(res, err, 502);
     }

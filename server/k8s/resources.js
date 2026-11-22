@@ -34,6 +34,33 @@ function optionalString(value) {
   return value;
 }
 
+/** 是否是「普通对象」（排除 null / 数组 / 原始值）。 */
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+/**
+ * 原始映射透传（`status.allocatable`、`metadata.annotations` 这类）。
+ * 值统一转字符串、键顺序保持输入顺序；非对象输入 → 空映射（不抛异常）。
+ * HAMi 的扩展资源（`nvidia.com/gpu` / `gpumem` / `gpucores`）与
+ * `hami.io/vgpu-*` 注解都靠它带出去，解析在 server/k8s/hami.js。
+ */
+function asStringMap(value, skipKey) {
+  const bag = isPlainObject(value) ? value : {};
+  const out = {};
+  for (const key of Object.keys(bag)) {
+    if (skipKey !== undefined && key === skipKey) continue;
+    out[key] = asString(bag[key]);
+  }
+  return out;
+}
+
+/**
+ * `kubectl apply` 会把整份清单压进这个注解（实测常见几十 KB），
+ * 概览与 Pod 列表都不用它，透传时直接丢掉，避免 payload 无谓膨胀。
+ */
+const BULKY_ANNOTATION = 'kubectl.kubernetes.io/last-applied-configuration';
+
 /** 从 labels 推导节点角色。master 与 control-plane 都保留（k3s 两个标签都打）。 */
 function deriveRoles(labels) {
   const out = new Set();
@@ -83,6 +110,7 @@ function pickAddress(addresses, type) {
  * @param {unknown} items kube-apiserver `items` 数组
  * @returns {{name:string,ready:boolean,roles:string[],version:string,os:string,arch:string,
  *   internalIP:string,cpu:string,memory:string,pods:string,created:string,
+ *   allocatable:Record<string,string>,
  *   conditions:{type:string,status:string,reason?:string,message?:string}[]}[]}
  */
 export function normalizeNodes(items) {
@@ -107,6 +135,9 @@ export function normalizeNodes(items) {
       memory: asString(capacity.memory),
       pods: asString(capacity.pods),
       created: asString(metadata.creationTimestamp),
+      // 扩展资源（含 HAMi 的 nvidia.com/*）原样透传：上面四个是固定列，
+      // 而 GPU 这类资源名由设备插件决定，不能写死字段，只能整块带出去
+      allocatable: asStringMap(status.allocatable),
       conditions,
     };
   });
@@ -144,7 +175,7 @@ function resolveContainerState(state) {
  * Pod 归一化。
  * @param {unknown} items
  * @returns {{namespace:string,name:string,phase:string,ready:string,restarts:number,node:string,
- *   ip:string,created:string,oom:boolean,crashLoop:boolean,
+ *   ip:string,created:string,annotations:Record<string,string>,oom:boolean,crashLoop:boolean,
  *   containers:{name:string,ready:boolean,restarts:number,state:string,reason?:string}[]}[]}
  */
 export function normalizePods(items) {
@@ -190,6 +221,9 @@ export function normalizePods(items) {
       node: asString(spec.nodeName),
       ip: asString(status.podIP),
       created: asString(metadata.creationTimestamp),
+      // HAMi 的 vGPU 分配全在注解里（hami.io/vgpu-*），不透传就解析不到；
+      // 只丢体积巨大的 last-applied-configuration，其余原样带出去
+      annotations: asStringMap(metadata.annotations, BULKY_ANNOTATION),
       oom,
       crashLoop,
       containers,
