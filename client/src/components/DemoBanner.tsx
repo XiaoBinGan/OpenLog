@@ -25,10 +25,10 @@ export default function DemoBanner() {
     <div
       role="status"
       aria-live="polite"
-      className="sticky top-14 z-20 flex items-center gap-2 border-b border-amber-500/30 bg-amber-500/15 px-4 py-2 text-xs text-amber-200 backdrop-blur"
+      className="sticky top-0 z-[60] flex h-8 flex-shrink-0 items-center gap-2 border-b border-amber-500/30 bg-amber-500/15 px-4 text-xs text-amber-200 backdrop-blur"
     >
       <AlertTriangle className="h-4 w-4 flex-shrink-0 text-amber-400" aria-hidden="true" />
-      <span className="min-w-0 flex-1 leading-snug">{DEMO_BANNER_TEXT}</span>
+      <span className="min-w-0 flex-1 truncate leading-snug">{DEMO_BANNER_TEXT}</span>
       <button
         type="button"
         onClick={() => setDismissed(true)}

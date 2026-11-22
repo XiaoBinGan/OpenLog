@@ -1,3 +1,4 @@
+import clsx from 'clsx';
 import { Monitor, Server, Activity, HardDrive, Cpu, ChevronDown } from 'lucide-react';
 import { useDevice } from '../contexts/DeviceContext';
 import { apiFetch } from '../api/client';
@@ -32,7 +33,7 @@ interface RemoteStatsResponse {
   disk?: number | string | { used?: number; total?: number }[];
 }
 
-export default function GlobalStatusBar() {
+export default function GlobalStatusBar({ demo = false }: { demo?: boolean }) {
   const { selectedDevice, setSelectedDevice, devices, isRemote, getDeviceStatusColor } = useDevice();
   const [stats, setStats] = useState<QuickStats>({ cpu: 0, memory: 0, disk: 0 });
   const [showDropdown, setShowDropdown] = useState(false);
@@ -99,7 +100,13 @@ export default function GlobalStatusBar() {
   // 之前 GlobalStatusBar 与 DeviceContext 各拉一次 /api/remote/servers，等于双倍请求。
 
   return (
-    <div className="fixed top-0 left-0 right-0 h-14 bg-dark-900/95 backdrop-blur border-b border-dark-800 z-30 hidden md:flex items-center px-6 gap-8">
+    <div
+      className={clsx(
+        'fixed left-0 right-0 h-14 bg-dark-900/95 backdrop-blur border-b border-dark-800 z-30 hidden md:flex items-center px-6 gap-8',
+        // 演示横幅占了视口顶部 32px（h-8），状态栏整体下移，避免互相遮挡
+        demo ? 'top-8' : 'top-0',
+      )}
+    >
       {/* Logo / Title - 左侧 */}
       <div className="flex items-center gap-2 text-sm font-bold text-accent-400">
         <span>📊</span>

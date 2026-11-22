@@ -24,6 +24,7 @@ import {
 import clsx from 'clsx';
 import GlobalStatusBar from './GlobalStatusBar';
 import DemoBanner from './DemoBanner';
+import { useDemoMode } from '../hooks/useDemoMode';
 import AIAnalysisToast from './AIAnalysisToast';
 import CapacityAlertModal from './CapacityAlertModal';
 import { withWsToken, wsProtocols } from '../api/auth';
@@ -45,6 +46,8 @@ const navItems = [
 ];
 
 function LayoutContent() {
+  // 演示横幅通栏置顶、不属于任何模块：下面的 fixed 元素要整体下移 32px（h-8）
+  const { demo } = useDemoMode();
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [ws, setWs] = useState<WebSocket | null>(null);
@@ -260,11 +263,15 @@ function LayoutContent() {
   }, []);
 
   return (
-    <div className="flex min-h-screen bg-dark-950">
+    <div className="flex min-h-screen flex-col bg-dark-950">
+      {/* 演示横幅：通栏置顶，独立于侧边栏与内容区（不属于任何模块） */}
+      <DemoBanner />
+      <div className="flex min-h-0 flex-1">
       {/* Desktop Sidebar */}
       <aside 
         className={clsx(
-          'fixed left-0 top-0 z-40 h-screen transition-transform duration-300',
+          'fixed left-0 z-40 transition-transform duration-300 h-screen top-0',
+          demo ? '!top-8 !h-[calc(100vh-2rem)]' : '',
           'bg-dark-900 border-r border-dark-800',
           sidebarOpen ? 'w-64' : 'w-16',
           'hidden md:block'
@@ -313,7 +320,7 @@ function LayoutContent() {
       {/* Mobile Overlay */}
       {mobileOpen && (
         <div 
-          className="fixed inset-0 z-40 bg-black/50 md:hidden"
+          className={clsx("fixed inset-0 z-40 bg-black/50 md:hidden", demo ? "top-8" : "top-0")}
           onClick={() => setMobileOpen(false)}
         />
       )}
@@ -321,7 +328,9 @@ function LayoutContent() {
       {/* Mobile Sidebar */}
       <aside 
         className={clsx(
-          'fixed left-0 top-0 z-50 h-screen w-64 bg-dark-900 border-r border-dark-800 transition-transform duration-300 md:hidden',
+            'fixed left-0 z-50 w-64 bg-dark-900 border-r border-dark-800 transition-transform duration-300 md:hidden',
+            // 横幅占顶部 32px 时抽屉整体下移，避免盖住「演示数据」提示
+            demo ? 'top-8 h-[calc(100vh-2rem)]' : 'top-0 h-screen',
           mobileOpen ? 'translate-x-0' : '-translate-x-full'
         )}
       >
@@ -365,18 +374,15 @@ function LayoutContent() {
       <main className={clsx(
         'flex-1 min-w-0 max-w-full overflow-x-hidden transition-all duration-300',
         // 顶栏是 fixed h-14：偏移放在 main 上，演示横幅才能排在它下面（不被盖住）
-        'md:pt-14',
+        demo ? 'md:pt-[5.5rem]' : 'md:pt-14',
         sidebarOpen ? 'md:ml-64' : 'md:ml-16'
       )}>
-        {/* 演示模式横幅：只在 GET /api/demo 返回 demo === true 时出现，
-            未加载完/请求失败时渲染 null，对现有布局零影响 */}
-        <DemoBanner />
 
         {/* Global Status Bar (desktop only) */}
-        <GlobalStatusBar />
+        <GlobalStatusBar demo={demo} />
         
         {/* Mobile Header */}
-        <header className="sticky top-0 z-30 flex items-center h-14 px-4 bg-dark-950/80 backdrop-blur border-b border-dark-800 md:hidden">
+        <header className={clsx("sticky z-30 flex items-center h-14 px-4 bg-dark-950/80 backdrop-blur border-b border-dark-800 md:hidden", demo ? "top-8" : "top-0")}>
           <button 
             onClick={() => setMobileOpen(true)}
             className="p-2 -ml-2 text-dark-400 hover:text-dark-200"
@@ -404,6 +410,7 @@ function LayoutContent() {
           内部用 z-[100] 压在所有页面之上；只在超标时渲染，
           正常状态下对 DOM 没有任何贡献。 */}
       <CapacityAlertModal />
+      </div>
     </div>
   );
 }
