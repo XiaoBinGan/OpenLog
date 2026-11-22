@@ -28,6 +28,20 @@
 
 ---
 
+## Unreleased — 双平台打包（Mac 为主）
+
+策略调整：开发与验证都在 Apple Silicon Mac 上做，出包时一条命令导出两个架构。
+
+- 新增 `deploy/scripts/make-packages.sh`：`--ref` 指定提交、`--only amd64|arm64` 只出一个、
+  `--skip-build` 复用镜像、`--dry-run` 零副作用
+- 每个架构独立跑三重校验（镜像元数据 / 容器内 Node / better-sqlite3 ELF `e_machine`），
+  任一不过即中止，绝不产出架构标错的包
+- 处理了两个 Mac 专属坑：`--platform` 拉下来的 postgres 是多平台 index（`docker save` 会失败，
+  已用同平台重建收敛）；BuildKit 的 attestation manifest（构建统一带 `--provenance=false`）
+- 实测：amd64 包 307M、arm64 包 295M，解包后 `sha256sum -c` 与镜像架构全部核对通过
+
+---
+
 ## Unreleased — 演示模式（OPENLOG_DEMO=1）
 
 没有真实机器/数据时页面不再全空：服务端从内置假数据回答，客户端明确告诉用户「这是演示」。

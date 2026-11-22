@@ -6,7 +6,9 @@
 
 > 本文是中文版。英文版（[README.md](README.md)）为主版本，内容不一致时以英文版为准。
 
-> **离线包与打包脚本：请用 [v1.1.0](https://github.com/XiaoBinGan/OpenLog/releases/tag/v1.1.0)。**
+> **离线包与打包脚本**：在 Apple Silicon Mac 上一条命令同时出两个架构 ——
+> `bash deploy/scripts/make-packages.sh`（amd64 + arm64，各自三重架构校验）；
+> 详见 [deploy/MANUAL.md](deploy/MANUAL.md)。预构建包见 [releases](https://github.com/XiaoBinGan/OpenLog/releases)。
 > `v1.0.0` 的 tag 是首个开源快照，不包含之后修的三处交付链路问题
 > （`.gitattributes` 钉死 LF、`install.sh` 架构自检、`make-package.sh` 打包脚本）。运行时代码无变化。
 

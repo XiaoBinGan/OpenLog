@@ -528,6 +528,50 @@ docker run -d --name openlog --network host --restart unless-stopped \
 
 ---
 
+### 一次出双平台包（Mac 为主）
+
+策略：**开发与验证都在 Mac（Apple Silicon）上做，出包时一条命令同时导出两个架构**。
+不需要在 Intel 机器上装环境，也不依赖 CI。
+
+```bash
+# 默认：当前 HEAD，amd64 + arm64 各一个包
+bash deploy/scripts/make-packages.sh
+
+# 指定发布提交 / 只出一个架构 / 复用已构建镜像
+bash deploy/scripts/make-packages.sh --ref v1.2.0
+bash deploy/scripts/make-packages.sh --only arm64
+bash deploy/scripts/make-packages.sh --skip-build
+
+# 只看会做什么（零副作用）
+bash deploy/scripts/make-packages.sh --dry-run
+```
+
+每个架构都会跑**三重校验**，任一不过立即中止（不会产出"标着 arm64 实际是 x86"的包）：
+
+| 检查 | amd64 期望 | arm64 期望 |
+|---|---|---|
+| 镜像元数据 `docker inspect` | `linux/amd64` | `linux/arm64` |
+| 容器内 `process.platform/arch` | `linux/x64` | `linux/arm64` |
+| better-sqlite3 的 ELF `e_machine` | `0x3e` | `0xb7` |
+
+产物（默认落在仓库上一级目录）：
+
+```
+openlog-deploy-<sha>.tar         # linux/amd64
+openlog-deploy-<sha>-arm64.tar   # linux/arm64
+```
+
+**跨架构说明**：目标架构 ≠ 宿主架构时走 QEMU 模拟（amd64 在 Mac 上约 10~15 分钟，原生模块要编译）。
+两条已知的 Mac 专属坑，脚本里已经处理：
+
+- `docker save` 在 Mac 上保存 `--platform` 拉下来的 postgres 会失败（多平台 index 缺其它平台 blob）
+  → 脚本用同平台 `FROM` 重建一次，把 index 收敛成单平台镜像再归档；
+- BuildKit 默认给镜像加 attestation manifest，`docker save` 同样会失败
+  → 构建时统一带 `--provenance=false`。
+
+> CI 里的 `.github/workflows/release-package.yml` 保留作**备用通道**（手动触发，x86 runner 上构建；
+> arm64 需 QEMU，较慢且偶发失败），日常以 Mac 本地脚本为准。
+
 ## 7. 数据备份与恢复
 
 ### 自动备份
