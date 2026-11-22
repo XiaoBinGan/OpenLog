@@ -364,6 +364,8 @@ function LayoutContent() {
       {/* Main Content */}
       <main className={clsx(
         'flex-1 min-w-0 max-w-full overflow-x-hidden transition-all duration-300',
+        // 顶栏是 fixed h-14：偏移放在 main 上，演示横幅才能排在它下面（不被盖住）
+        'md:pt-14',
         sidebarOpen ? 'md:ml-64' : 'md:ml-16'
       )}>
         {/* 演示模式横幅：只在 GET /api/demo 返回 demo === true 时出现，
@@ -385,7 +387,7 @@ function LayoutContent() {
         </header>
 
         {/* Page Content */}
-        <div className="p-4 md:p-6 md:mt-14 min-w-0 max-w-full overflow-x-hidden">
+        <div className="p-4 md:p-6 min-w-0 max-w-full overflow-x-hidden">
           {/* 路由懒加载占位：只替换内容区，顶栏/侧边栏/通知中心不闪 */}
           <Suspense fallback={
             <div className="flex items-center justify-center min-h-[240px] text-dark-600 text-sm">加载中…</div>
