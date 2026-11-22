@@ -8,12 +8,16 @@
  */
 import express from 'express';
 import { v4 as uuidv4 } from 'uuid';
+import { isDemoMode, DEMO_DISABLED, demoJson } from '../demo/mode.js';
+import { demoAnalysisHistory, demoAnalysisBrief, demoAnalysisStatus } from '../demo/fixtures-runtime.js';
 
 export default function createAnalysisRouter({ analysisQueues, analysisHistory, enqueueAnalysis }) {
   const router = express.Router();
 
 // 查询所有服务分析队列状态
 router.get('/api/analysis/status', (req, res) => {
+  // 演示模式：三个演示源的队列状态（空对象会让「分析队列」面板看起来像坏了）
+  if (isDemoMode()) return res.json(demoJson(demoAnalysisStatus()));
   const result = {};
   analysisQueues.forEach((q, sourceId) => {
     result[sourceId] = {
@@ -26,6 +30,9 @@ router.get('/api/analysis/status', (req, res) => {
 
 // 主动触发某服务的分析（POST body: { message, sourceId }）
 router.post('/api/analysis/trigger', async (req, res) => {
+  // 演示模式：写操作一律 409 —— 排队会真的去调模型、往 analysisHistory 里写记录。
+  // 放在 body 校验之前：演示下无论正文是什么，这个操作都不会生效。
+  if (isDemoMode()) return res.status(409).json(DEMO_DISABLED);
   const { message, sourceId = 'manual', sourceName = '手动触发' } = req.body;
   if (!message) return res.status(400).json({ error: 'message required' });
 
@@ -48,6 +55,8 @@ router.post('/api/analysis/trigger', async (req, res) => {
 // 获取分析历史记录
 router.get('/api/analysis/history', (req, res) => {
   const { sourceId, status, limit = 50, offset = 0 } = req.query;
+  // 演示模式：固定 6 条记录，过滤/分页语义与下面完全一致（同样先过滤再算 total）
+  if (isDemoMode()) return res.json(demoJson(demoAnalysisHistory({ sourceId, status, limit, offset })));
   let result = [...analysisHistory];
   if (sourceId) result = result.filter(r => r.sourceId === sourceId);
   if (status) result = result.filter(r => r.status === status);
@@ -58,6 +67,9 @@ router.get('/api/analysis/history', (req, res) => {
 
 // 分析历史摘要（供 @ 提及选择）
 router.get('/api/analysis/history/brief', (_req, res) => {
+  // 演示模式：同一条记录在 history 与 brief 里的字段必须自洽，所以 fixture 里
+  // 用同一份记录重算一遍 map（type 回落 'log'、summary 回落 log.message 并截 120 字）
+  if (isDemoMode()) return res.json(demoJson(demoAnalysisBrief()));
   const brief = analysisHistory.slice(0, 30).map(r => ({
     id: r.id,
     timestamp: r.timestamp,
@@ -72,6 +84,8 @@ router.get('/api/analysis/history/brief', (_req, res) => {
 
 // 删除单条分析历史
 router.delete('/api/analysis/history/:id', (req, res) => {
+  // 演示模式：删除会改真实内存历史，一律 409（前端据此禁用删除按钮）
+  if (isDemoMode()) return res.status(409).json(DEMO_DISABLED);
   const idx = analysisHistory.findIndex(r => r.id === req.params.id);
   if (idx !== -1) { analysisHistory.splice(idx, 1); res.json({ success: true }); }
   else { res.status(404).json({ error: '记录不存在' }); }
@@ -79,6 +93,8 @@ router.delete('/api/analysis/history/:id', (req, res) => {
 
 // 清空分析历史
 router.delete('/api/analysis/history', (req, res) => {
+  // 演示模式：清空会抹掉真实内存历史，一律 409
+  if (isDemoMode()) return res.status(409).json(DEMO_DISABLED);
   analysisHistory.length = 0;
   res.json({ success: true });
 });

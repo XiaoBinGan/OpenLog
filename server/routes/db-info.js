@@ -12,6 +12,10 @@
  */
 import express from 'express';
 import { getDbInfo, getDb, pingDb, getDbType } from '../db/index.js';
+// 演示模式：本机那个库在演示机上要么是空 sqlite、要么根本没起，回常量表里的
+// 「PG 16 / 池 10 上线 4 活跃」假实例（server/demo/fixtures-infra.js）。
+import { isDemoMode, demoJson } from '../demo/mode.js';
+import { demoDbInfo } from '../demo/fixtures-infra.js';
 
 /** 这些表行数便宜（很小），直接 COUNT */
 const SMALL_TABLES = ['kv_store', 'skills', 'remote_servers', 'machines', 'alert_configs'];
@@ -23,6 +27,10 @@ export function createDbRouter() {
 
   router.get('/api/db/info', async (req, res) => {
     const wantCounts = req.query.counts === '1';
+    // 演示模式：一次都不碰本机库（getDbInfo/pingDb/getDb 全部不调用），
+    // 回一份 type=postgres / ready=true / 6 张表 / 5.16 GB 的自洽假数据。
+    // timestamp 也走固定锚点，所以同一请求两次调用 deepEqual。
+    if (isDemoMode()) return res.json(demoJson(demoDbInfo({ counts: wantCounts })));
     const info = getDbInfo();
     const ping = await pingDb();
     const payload = {

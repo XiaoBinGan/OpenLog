@@ -13,6 +13,9 @@ import express from 'express';
 import { discoverDbCandidate, discoverServiceCandidate, candidateHint, envMap, parseDbUrl } from '../datasource/discover.js';
 import { probeExternalDb } from '../datasource/db-probe.js';
 import { probeApiDocs, SPEC_PATHS } from '../datasource/api-probe.js';
+// 演示模式闸门：登记表/自动发现/试连全部不碰真实 Docker / SSH / 外部数据库。
+import { isDemoMode, demoJson, DEMO_DISABLED } from '../demo/mode.js';
+import { demoDatasources, demoDatasourceDiscover } from '../demo/fixtures-infra.js';
 
 const errText = (e) => String(e?.message || e);
 
@@ -33,6 +36,35 @@ export function createDatasourceRouter(deps = {}) {
   const store = deps.store;
   const isOn = () => { try { return deps.enabled ? Boolean(deps.enabled()) : true; } catch { return false; } };
   const cfg = () => { try { return deps.getDockerConfig ? deps.getDockerConfig() : {}; } catch { return {}; } };
+
+  /**
+   * 演示模式闸门（必须挂在**所有** handler 之前，包括下面 `!store` 的降级中间件）。
+   *
+   * 为什么用中间件而不是在每个 handler 里加 if：这条路由的写操作有 6 个
+   * （adopt / :id/probe / test / probe-docs / PUT / DELETE），逐个加判断漏一个就意味着
+   * 演示模式会去真连一次外部库、或者往登记表里写一行 —— 而「绝不连真实 SSH/DB」
+   * 「绝不写库」是契约里最硬的两条。这里一次判完，新增 handler 自动被覆盖。
+   *
+   * 判定按**请求时**读环境变量（不是建 router 时），与其它路由同口径：
+   * 同一进程里开关热切换时行为立刻跟着变，测试也不必重建 app。
+   */
+  router.use((req, res, next) => {
+    if (!isDemoMode()) return next();
+    // 只认本条路由自己的路径前缀。这条 router 挂在根上，如果不判前缀，
+    // 演示模式会把**所有**非 GET 请求（POST /api/chat、POST /api/tsdb/query 这些
+    // 正常功能）都当成写操作 409 掉 —— 那是别人的路由，不该由这里拦。
+    const path = String(req.path || '').replace(/\/+$/, '');
+    if (!path.startsWith('/api/monitor/datasources')) return next();
+    // 读：列表回常量表；自动发现不扫容器（扫描要连 docker daemon / SSH 隧道），
+    // 候选给空数组 + note，让页面显示「没有候选」而不是报错。
+    if (req.method === 'GET' || req.method === 'HEAD') {
+      if (path === '/api/monitor/datasources') return res.json(demoJson(demoDatasources()));
+      if (path === '/api/monitor/datasources/discover') return res.json(demoJson(demoDatasourceDiscover()));
+      return next(); // 其它 GET 保持原样（真实路由里没有对应实现 → 语义不变）
+    }
+    // 写：登记/采纳/试连/探测/删除一律 409，绝不落库、绝不发起外部连接。
+    return res.status(409).json(DEMO_DISABLED);
+  });
 
   if (!store) {
     // 依赖缺失时全部端点返回可用性标记，而不是 500（面板要能显示「未接入」）

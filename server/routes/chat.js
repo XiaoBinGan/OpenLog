@@ -26,6 +26,9 @@ import { resolveContextConfig, CONTEXT_DEFAULTS, CONTEXT_BOUNDS, pickPersistable
 import { planBudget } from '../context-budget.js';
 import { normalizeMessages } from '../vision-content.js';
 import { isImageUnsupportedError, setCachedVisionSupport } from '../vision-probe.js';
+import { pipeChatStreamToSSE } from '../llm-stream.js';
+import { isDemoMode } from '../demo/mode.js';
+import { demoChatStream, DEMO_CHAT_NOTICE } from '../demo/fixtures-assistant.js';
 
 // ─── 运维助手 Tool Calling ──────────────────────────────────────────
 
@@ -199,6 +202,40 @@ class ThinkingStreamFilter {
 /** 测试用：暴露过滤器（chat.js 是工厂函数，类本身不对外） */
 export { ThinkingStreamFilter };
 
+/**
+ * 演示模式（OPENLOG_DEMO=1）下 `/api/chat` 的完整响应。
+ *
+ * 为什么要这个分支：演示实例没有 API Key、没有 Base URL、没有集群，
+ * 原代码在 `if (!model) return 400 未配置模型` 就直接把对话打死了 ——
+ * 页面点发送只会弹一条红字，看起来像坏了。
+ *
+ * 这里**不 import openai、不建客户端、不发工具调用、不写任何历史/记忆**，
+ * 只把 `fixtures-assistant.js` 里那段固定文本按既有帧格式推出去：
+ *   1. `{type:'provider_notice'}` —— 复用 chat-runner 已有的降级提示事件
+ *      （前端 `Assistant.tsx` 已经在渲染它），这样「这是演示数据」不依赖前端改版；
+ *   2. `{content}` 增量帧 + `data: [DONE]` —— 交给 `llm-stream.js#pipeChatStreamToSSE`，
+ *      帧格式与真实链路同一处代码，不新造协议。
+ *
+ * 正文本身以「演示模式：…」开头、以 `[demo]` 收尾，前端只看文本也能识别。
+ *
+ * @param {import('node:http').ServerResponse} res
+ */
+export async function streamDemoChatReply(res) {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+
+  res.write(`data: ${JSON.stringify({ type: 'provider_notice', demo: true, message: DEMO_CHAT_NOTICE })}\n\n`);
+  try {
+    await pipeChatStreamToSSE({ res, stream: demoChatStream() });
+  } catch (err) {
+    // 演示里唯一可能失败的就是连接被掐断（用户关页面/刷新）。
+    // 头已经发出去了，只能尽量补一个错误帧再 end()，别把异常留给上层（那里会再写一次头）。
+    try { res.write(`data: ${JSON.stringify({ error: errorMessage(err) })}\n\n`); } catch { /* 连接已断 */ }
+    try { res.end(); } catch { /* 已经结束 */ }
+  }
+}
+
 export default function createChatRouter({
   ensureSettings, buildAssistantContext, executeAssistantTool,
 }) {
@@ -273,6 +310,10 @@ export default function createChatRouter({
     if (!messages || !Array.isArray(messages) || messages.length === 0) {
       return res.status(400).json({ error: 'messages required' });
     }
+    // 演示模式：固定回复，不连模型。放在这里（校验入参之后、所有模型/配置逻辑之前）
+    // 是因为下面每一条分支都依赖真实推理服务：没配 Key 会 400、探测窗口会发请求、
+    // 工具调用会去连 SSH。演示实例一个都不该碰。
+    if (isDemoMode()) return streamDemoChatReply(res);
     // 多模态归一：校验图片（只收 data URL、白名单 MIME、数量/体积上限），
     // 并把历史里除最后一条 user 之外的图片剥成文字 —— 否则每轮重发 6 张图，
     // 6600 token 只是图片，几轮就把窗口吃光。

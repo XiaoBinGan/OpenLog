@@ -14,10 +14,13 @@ import { memo, useEffect, useState } from 'react';
 import { Bell, Check, RefreshCw, Save } from 'lucide-react';
 import { apiFetch, apiJson } from '../../api/client';
 import { useToast } from '../../contexts/ToastContext';
+import { useDemoMode, DEMO_DISABLED_HINT } from '../../hooks/useDemoMode';
 import Toggle from '../../components/Toggle';
 
 function AlertsSection() {
   const toast = useToast();
+  // 演示模式：PUT /api/alerts 后端会 409，这里提前拦住，避免只看到「N 条规则保存失败」
+  const { demo } = useDemoMode();
   const [machines, setMachines] = useState<any[]>([]);
   const [alertConfigs, setAlertConfigs] = useState<any[]>([]);
   const [alertSaving, setAlertSaving] = useState(false);
@@ -217,7 +220,8 @@ function AlertsSection() {
           )}
           <button
             onClick={handleSaveAlerts}
-            disabled={alertSaving}
+            disabled={alertSaving || demo}
+            title={demo ? DEMO_DISABLED_HINT : undefined}
             className="px-4 py-2 rounded-lg bg-red-500/20 text-red-400 text-sm font-medium hover:bg-red-500/30 transition-colors flex items-center gap-2 disabled:opacity-50"
           >
             {alertSaving ? (

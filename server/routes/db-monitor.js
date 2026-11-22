@@ -22,6 +22,10 @@
  */
 import express from 'express';
 import { normalizeDbType, placeholder } from '../metrics/sql-dialect.js';
+// 演示模式：读端点回常量表（server/demo/fixtures-infra.js），写端点回 409。
+// 所有这些判断都只在 OPENLOG_DEMO=1 时生效，关闭时下面每一行都与改动前完全一致。
+import { isDemoMode, demoJson, DEMO_DISABLED } from '../demo/mode.js';
+import { demoDbMonitor, demoDbHistory, demoSlowQueries, demoDbTables } from '../demo/fixtures-infra.js';
 
 /** 契约 §5：history 默认 120 点（30s 一采样 ≈ 1 小时），上限 500 挡住手滑的 ?limit=1e9 */
 const DEFAULT_HISTORY_LIMIT = 120;
@@ -110,6 +114,9 @@ export function createDbMonitorRouter(deps = {}) {
 
   /** 1. 总览：池水位 / 最近两次采样 / 存储计数 / 不可用清单 */
   router.get('/api/monitor/db', async (req, res) => {
+    // 演示模式：不读本机库的 pg_stat_activity / 采样表，直接回一台「PG 16、池 10 上限 4 活跃」的假实例。
+    // 放在 isEnabled() 之前：演示模式下即使 OPENLOG_METRICS=off，面板也该有数据可看。
+    if (isDemoMode()) return res.json(demoJson(demoDbMonitor()));
     if (!isEnabled()) return res.json({ enabled: false });
     const { snap, unavailable } = readSnapshot();
     const info = readDbInfo();
@@ -136,9 +143,12 @@ export function createDbMonitorRouter(deps = {}) {
    * 没注入 db → 明确的 `unavailable` 文案 + 空样本，而不是 500 或「空历史」。
    */
   router.get('/api/monitor/db/history', async (req, res) => {
-    if (!isEnabled()) return res.json({ enabled: false });
     const kind = req.query.kind === 'heavy' ? 'heavy' : 'light';
     const limit = boundedInt(req.query.limit, DEFAULT_HISTORY_LIMIT, MAX_HISTORY_LIMIT);
+    // 演示模式：db_metric_sample 表在演示库里是空的（进程刚起），这里回 60 点确定性采样。
+    // 采样时间从固定锚点往回排，最新一点与 /api/monitor/db 的 lastLight/lastHeavy 对得上。
+    if (isDemoMode()) return res.json(demoJson(demoDbHistory({ kind, limit })));
+    if (!isEnabled()) return res.json({ enabled: false });
     const db = d.db;
     if (!db || typeof db.all !== 'function') return res.json({ kind, samples: [], unavailable: HISTORY_UNAVAILABLE });
     // LIMIT 已夹成整数，其余全部走占位符；表名/列名都是本文件里的常量
@@ -157,8 +167,11 @@ export function createDbMonitorRouter(deps = {}) {
 
   /** 3. 慢查询（内存环形缓冲，list 已按时间倒序；阈值实例没暴露时读 deps 或给 null） */
   router.get('/api/monitor/db/slow-queries', async (req, res) => {
-    if (!isEnabled()) return res.json({ enabled: false });
     const limit = boundedInt(req.query.limit, DEFAULT_SLOW_LIMIT, MAX_SLOW_LIMIT);
+    // 演示模式：环形缓冲在演示进程里是空的，slow_query_log 表也是 0 行 —— 回 5 条常量慢查询，
+    // source 仍是 'memory'（与 fixtures 里「监控表 0 行、数据还在内存缓冲」的说法一致）。
+    if (isDemoMode()) return res.json(demoJson(demoSlowQueries({ limit })));
+    if (!isEnabled()) return res.json({ enabled: false });
     const log = d.slowQueryLog;
     const threshold = d.slowQueryThresholdMs ?? log?.thresholdMs ?? null;
     if (!log || typeof log.list !== 'function') return res.json({ threshold, items: [], unavailable: 'slowQueryLog 未接入' });
@@ -200,6 +213,9 @@ export function createDbMonitorRouter(deps = {}) {
 
   /** 4. 清空慢查询：`cleared:false` 只有一种含义 —— 没清掉，前端别把「清空成功」的提示打出来 */
   router.delete('/api/monitor/db/slow-queries', (req, res) => {
+    // 演示模式：这是写操作（清空缓冲）。让它「成功」会让页面上那 5 条慢查询消失，
+    // 与演示数据自相矛盾，所以一律 409 —— 契约要求所有写操作在演示下一律 409。
+    if (isDemoMode()) return res.status(409).json(DEMO_DISABLED);
     if (!isEnabled()) return res.json({ enabled: false });
     const log = d.slowQueryLog;
     if (!log || typeof log.reset !== 'function') return res.json({ cleared: false, unavailable: 'slowQueryLog 未接入' });
@@ -213,6 +229,8 @@ export function createDbMonitorRouter(deps = {}) {
 
   /** 5. 立刻刷新：手动跑一次 light 采样（不动 running 锁，sampler 自己防重叠 → busy:true 原样回） */
   router.post('/api/monitor/db/sample', async (req, res) => {
+    // 演示模式：手动刷新 = 去本机库真采一次（会打库）。409，前端按 demo 标记隐藏重试。
+    if (isDemoMode()) return res.status(409).json(DEMO_DISABLED);
     if (!isEnabled()) return res.json({ enabled: false });
     const sampler = d.sampler;
     if (!sampler || typeof sampler.sample !== 'function') return res.json({ ok: false, error: 'sampler 未接入' });
@@ -225,8 +243,11 @@ export function createDbMonitorRouter(deps = {}) {
 
   /** 6. 表体积/行数 top N：只翻 lastHeavy（heavy 采样 5min 一次，够用且不额外打库） */
   router.get('/api/monitor/db/tables', (req, res) => {
-    if (!isEnabled()) return res.json({ enabled: false });
     const limit = boundedInt(req.query.limit, DEFAULT_TABLES_TOP, MAX_TABLES_TOP);
+    // 演示模式：不翻 lastHeavy（演示进程里 heavy 还没跑过），回演示库那 6 张表。
+    // tsMs 固定为 heavy 采样时间，与 /api/monitor/db 的 lastHeavy.tsMs 一致。
+    if (isDemoMode()) return res.json(demoJson(demoDbTables({ limit })));
+    if (!isEnabled()) return res.json({ enabled: false });
     const { snap, unavailable } = readSnapshot();
     const all = Array.isArray(snap?.lastHeavy?.tables) ? snap.lastHeavy.tables : null;
     if (!all || all.length === 0) {

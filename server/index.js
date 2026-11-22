@@ -397,11 +397,23 @@ async function initDatabase() {
     }
 
     // ── 监控体系启动（失败只 warn，绝不影响主服务）──────────────────
-    await startMonitoringSafe();
+    // 演示模式：不做任何本机采集（DB 指标采样 / 自拨测），否则演示实例会写自己的 sqlite，
+    // 与「面板全是演示数据」的语义不一致。
+    if (isDemoMode()) {
+      console.log('  [Demo] 演示模式：跳过本机监控采集与自拨测');
+    } else {
+      await startMonitoringSafe();
+    }
 
     // ── 时序库启动（同样只 warn）──────────────────────────────────
     try {
-      await tsdb.start();
+      // 演示模式：不起时序库采集（自身指标 15s 一次会往本地库写真实指标，与演示数据矛盾）。
+      // 面板数据由 demo fixture 提供，不依赖 store 里有没有真实点。
+      if (isDemoMode()) {
+        console.log('  [Demo] 演示模式：跳过时序库采集（面板数据来自 fixture）');
+      } else {
+        await tsdb.start();
+      }
       if (tsdb.enabled) {
         const st = await tsdb.store.stats();
         if (st.ready) {
@@ -1117,7 +1129,30 @@ async function runAnalysis(errorLog, source) {
 let monitorInterval = null;
 const monitorHistory = [];
 
+/**
+ * 演示模式下只打一行日志（`startMonitor()` 被 settings 的 refreshInterval 改动反复调用，
+ * 不该每改一次设置就再打一遍）。
+ */
+let demoSkipLogged = false;
+function logDemoSkipOnce() {
+  if (demoSkipLogged) return;
+  demoSkipLogged = true;
+  console.log('演示模式：跳过本机指标采集与远程采集');
+}
+
 function startMonitor() {
+  // 演示模式：这台机器没有真机指标可采 —— 页面上的数字来自 server/demo/fixtures-runtime.js。
+  // 这里**整体不注册定时器**（而不是注册了再在回调里返回）：一旦注册，
+  //   ① 每 5 秒跑一遍 systeminformation（扫盘 + 枚举进程，首次调用在 Mac 上要几百毫秒到数秒），
+  //   ② WS 客户端会收到 {type:'monitor', data: 真机指标}，与页面上那台「64 核 / 128 GiB /
+  //      4×4090」的演示机互相矛盾 —— 用户会先怀疑演示数据，再怀疑监控坏了。
+  // 只跳过采集与广播：monitorHistory 的读者（routes/monitor.js）逻辑不变，
+  // 关闭演示模式时本函数与改动前逐行一致。
+  if (isDemoMode()) {
+    logDemoSkipOnce();
+    return;
+  }
+
   const interval = parseInt(ensureSettings().refreshInterval || '5000');
   
   if (monitorInterval) {
@@ -2444,7 +2479,11 @@ server.listen(PORT, HOST, async () => {
   // 后台自动重连：连不上的机器按 5s→5min 退避持续重试，
   // 恢复后自动回到 connected（以前只有进程重启才会再连一次）
   remote.startAutoReconnect();
-  statsScheduler.start();
+  // 演示模式：集中采集器（statsScheduler）会按 30s/60s 去连**每一台真实远程主机**拉
+  // stats 与 MFU（走 SSH + nvidia-smi）。演示机上既没有那些主机，也不必装这些依赖，
+  // 所以不注册它 —— 远程面板的数字来自 server/demo/fixtures.js。
+  // 日志那一行由 startMonitor() 的 guard 打（它就在上面几行，顺序保证只打一次）。
+  if (!isDemoMode()) statsScheduler.start();
 });
 
 

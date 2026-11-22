@@ -10,6 +10,8 @@ import {
   listSkills, createSkill, getSkill, updateSkill, deleteSkill,
   listMachines, listAlertConfigs, getAlertConfig, upsertAlertConfig,
 } from '../db/index.js';
+import { isDemoMode, DEMO_DISABLED, demoJson } from '../demo/mode.js';
+import { demoMachines, demoAlertConfigs } from '../demo/fixtures-assistant.js';
 
 const router = express.Router();
 
@@ -70,6 +72,9 @@ router.delete('/api/skills/:id', async (req, res) => {
 
 // 获取所有机器列表
 router.get('/api/machines', async (req, res) => {
+  // 演示模式：machines 表在演示实例里是空的（没连过任何真机），读它就是空面板。
+  // 演示机器 id 与 /api/remote/servers 一致，告警面板才能按 machine_id 对上号。
+  if (isDemoMode()) return res.json(demoJson({ machines: demoMachines() }));
   try {
     const machines = await listMachines();
     res.json({ machines });
@@ -80,6 +85,8 @@ router.get('/api/machines', async (req, res) => {
 
 // 获取所有告警配置
 router.get('/api/alerts', async (req, res) => {
+  // 演示模式：三台机器各一条规则（含一条停用、一条带 webhook）。
+  if (isDemoMode()) return res.json(demoJson({ configs: demoAlertConfigs() }));
   try {
     const configs = await listAlertConfigs();
     res.json({ configs });
@@ -90,6 +97,8 @@ router.get('/api/alerts', async (req, res) => {
 
 // 保存/更新告警配置
 router.put('/api/alerts', async (req, res) => {
+  // 演示模式：写库一律禁用（改了也不会生效，反而让用户以为规则已保存）
+  if (isDemoMode()) return res.status(409).json(DEMO_DISABLED);
   const { machine_id, enabled, patterns, severity_filter, cooldown_minutes, webhook_url } = req.body;
   if (!machine_id) return res.status(400).json({ error: 'machine_id is required' });
 

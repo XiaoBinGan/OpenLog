@@ -16,19 +16,26 @@ import os from 'os';
 import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
 import { getDb, listLogRecords } from '../db/index.js';
-import { isDemoMode, DEMO_DISABLED } from '../demo/mode.js';
+import { isDemoMode, DEMO_DISABLED, demoJson } from '../demo/mode.js';
 import * as demoFixtures from '../demo/fixtures.js';
+import * as demoObservability from '../demo/fixtures-observability.js';
 
 export default function createLogsRouter({ logs, ensureSettings, saveLog, broadcast }) {
   const router = express.Router();
 
   // ─── 演示模式（OPENLOG_DEMO=1）───────────────────────────────────────
-  // 数据只来自 server/demo/fixtures.js（命名空间导入，导出缺失不会在链接阶段崩整条路由）。
+  // 数据只来自 server/demo/fixtures-observability.js 与 server/demo/fixtures.js
+  // （都是命名空间导入，导出缺失不会在链接阶段崩整条路由）。
   // 关闭演示模式时下面的分支都不会进，原有逻辑保持原样。
 
-  /** 取一份演示数据；fixture 缺失/抛错时返回 undefined，让端点降级而非 500 */
+  /**
+   * 取一份演示数据。
+   * 先在 fixtures-observability.js 里找，再回落到 fixtures.js —— 两个文件由不同的
+   * 人并行维护，日志页/TSDB 面板的数据在 observability 里，其余在 fixtures.js。
+   * 任何一边缺失或抛错都只是把这个端点降级为空，不会让整条路由 500。
+   */
   function demoValue(name, ...args) {
-    const fn = demoFixtures[name];
+    const fn = demoObservability[name] || demoFixtures[name];
     if (typeof fn !== 'function') return undefined;
     try {
       return fn(...args);
@@ -38,36 +45,66 @@ export default function createLogsRouter({ logs, ensureSettings, saveLog, broadc
     }
   }
 
+  /**
+   * 把演示 fixture 的返回值收敛成 `{ logs, total, ... }`。
+   * fixture 形状写错（或缺失）时前端应该看到空列表 + 0，而不是 500 或 undefined.logs。
+   */
+  function demoLogPage(data, empty) {
+    if (data && Array.isArray(data.logs)) return demoJson(data);
+    return demoJson(empty);
+  }
+
 // Get logs
 router.get('/api/logs', (req, res) => {
   const { level, source, search, limit = 100, offset = 0 } = req.query;
-  
+
+  // 演示模式：内存环形缓冲里通常只有启动那两行，读它等于演示空白。
+  // 过滤/分页语义由 fixture 内部按真实实现的顺序与规则复刻（level → source →
+  // search → total → slice），所以这里不做任何二次处理。
+  if (isDemoMode()) {
+    return res.json(demoLogPage(
+      demoValue('demoLogEntries', { level, source, search, limit, offset }),
+      { logs: [], total: 0 },
+    ));
+  }
+
   let result = [...logs];
-  
+
   if (level) {
     result = result.filter(log => log.level === level);
   }
-  
+
   if (source) {
     result = result.filter(log => log.source === source);
   }
-  
+
   if (search) {
     const searchLower = search.toLowerCase();
     result = result.filter(log => log.message.toLowerCase().includes(searchLower));
   }
-  
+
   const total = result.length;
   result = result.slice(parseInt(offset), parseInt(offset) + parseInt(limit));
-  
+
   res.json({ logs: result, total });
 });
 
 // 获取持久化历史日志（从数据库）
 router.get('/api/logs/history', async (req, res) => {
+  const { machine_id, severity, startDate, endDate } = req.query;
+  const limit = req.query.limit ?? 200;
+  const offset = req.query.offset ?? 0;
+
+  // 演示模式：不读库（演示机多半没开日志持久化，表是空的）。
+  // 返回形状与真实分支完全一致：{ logs, total, source: 'database' } + demo 标记。
+  if (isDemoMode()) {
+    return res.json(demoLogPage(
+      demoValue('demoLogHistory', { machine_id, severity, limit, offset, startDate, endDate }),
+      { logs: [], total: 0, source: 'database' },
+    ));
+  }
+
   try {
-    const { machine_id, severity, limit = 200, offset = 0, startDate, endDate } = req.query;
-    
     const records = await listLogRecords({ machine_id, severity, limit: parseInt(limit), offset: parseInt(offset) });
     
     // 可选：按时间范围过滤

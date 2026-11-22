@@ -17,6 +17,8 @@ import * as si from 'systeminformation';
 import { queryHostGpu } from '../gpu-host-ssh.js';
 import { dedupeDisks } from '../disk-utils.js';
 import { evaluateCapacityAlerts, normalizeThresholds } from '../capacity-alerts.js';
+import { isDemoMode, demoJson } from '../demo/mode.js';
+import { demoLocalStats, demoMonitorHistory } from '../demo/fixtures-runtime.js';
 
 const NO_CACHE_HEADERS = (res) => {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
@@ -127,6 +129,10 @@ export default function createMonitorRouter({ monitorHistory, ensureSettings }) 
 
   router.get('/api/monitor/stats', async (req, res) => {
     NO_CACHE_HEADERS(res);
+    // 演示模式：不碰 systeminformation / nvidia-smi / 宿主机 SSH，
+    // 直接返回常量表里这台「64 核 / 128 GiB / 2 块盘 / 4×RTX 4090」的假机器。
+    // 形状与下面 collectSystemStats() 的 return 逐字段一致（fixtures-runtime.js 有对照）。
+    if (isDemoMode()) return res.json(demoJson(demoLocalStats()));
     try {
       const settings = typeof ensureSettings === 'function' ? (ensureSettings() || {}) : {};
       const stats = await collectSystemStats({ settings });
@@ -145,6 +151,12 @@ export default function createMonitorRouter({ monitorHistory, ensureSettings }) 
     // 非法值退回默认 100，而不是返回空列表；上限 5000 防一次性拉爆。
     const raw = parseInt(req.query.limit, 10);
     const limit = Number.isFinite(raw) && raw > 0 ? Math.min(raw, 5000) : 100;
+    // 演示模式：不再读 monitorHistory（它由 index.js#startMonitor 的真机采集写入，
+    // 演示里可能为空、也可能是宿主机的真指标），改返回固定 60 点的确定性曲线。
+    // 注意这**不是** stats 的形状，是 index.js#startMonitor 写进 monitorHistory 的
+    // 简化版（cpu/memory/disk/network 都是数字），前端 dataKey="cpu" 按数字画。
+    // 数组响应体挂不了 demo 标记，所以逐条带 demo:true（同 /api/logs/files）。
+    if (isDemoMode()) return res.json(demoMonitorHistory(limit));
     const result = monitorHistory.slice(0, limit);
     res.json(result);
   });

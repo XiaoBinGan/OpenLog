@@ -9,6 +9,8 @@ import { errorMessage } from '../errors.js';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { isDemoMode, DEMO_DISABLED, demoJson } from '../demo/mode.js';
+import { demoMemoryFiles } from '../demo/fixtures-assistant.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -40,6 +42,10 @@ export function sanitizeMemoryName(name) {
 
 // 获取知识库文件列表
 router.get('/api/assistant/memory', (req, res) => {
+  // 演示模式：不读磁盘。演示实例的 assistant_memory/ 目录里通常什么都没有，
+  // readdirSync 的结果是一片空白；这里给三份固定记忆（字段名照真实返回：
+  // name / path / content / updatedAt）。
+  if (isDemoMode()) return res.json(demoJson({ files: demoMemoryFiles() }));
   try {
     const files = fs.readdirSync(ASSISTANT_MEMORY_DIR)
       .filter(f => f.endsWith('.md'))
@@ -62,6 +68,9 @@ router.get('/api/assistant/memory', (req, res) => {
 
 // 写入知识库文件
 router.post('/api/assistant/memory', (req, res) => {
+  // 演示模式：不落盘。演示里写进去的记忆在刷新/重启后会「自己消失」，
+  // 那比直说不让写更让人困惑 —— 直接 409。
+  if (isDemoMode()) return res.status(409).json(DEMO_DISABLED);
   const { name, content } = req.body;
   if (!name || content === undefined) return res.status(400).json({ error: 'name and content required' });
   const safeName = sanitizeMemoryName(name);
@@ -78,6 +87,8 @@ router.post('/api/assistant/memory', (req, res) => {
 
 // 删除知识库文件
 router.delete('/api/assistant/memory/:name', (req, res) => {
+  // 演示模式：不删盘。删的若是演示 fixture 里那份，刷新后还会回来，等于骗人。
+  if (isDemoMode()) return res.status(409).json(DEMO_DISABLED);
   const safeName = sanitizeMemoryName(req.params.name);
   if (!safeName) return res.status(400).json({ error: 'invalid name' });
   const filePath = path.join(ASSISTANT_MEMORY_DIR, safeName + '.md');

@@ -11,6 +11,11 @@
  */
 import express from 'express';
 import { buildCoverage } from '../metrics/route-coverage.js';
+// 演示模式：/api/monitor/api 回常量表（server/demo/fixtures-infra.js）而不是内存滑窗注册表 ——
+// 演示进程刚启动，窗口里一条流量都没有，直接回注册表会得到 qps=0、routes=[]，
+// 页面看上去像「服务没人访问」。关闭演示模式时下面这条分支不参与任何真实链路。
+import { isDemoMode, demoJson } from '../demo/mode.js';
+import { demoApiMonitor } from '../demo/fixtures-infra.js';
 const MINUTE_MS = 60_000, HOUR_MS = 3_600_000, DAY_MS = 86_400_000;
 const ALERT_WINDOW_MS = 5 * MINUTE_MS; // 规则写的就是「5 分钟内」
 const SEEN_ROUTES_CAP = 1000; // seenRoutes 上限：未归一化的随机路径不该把表撑成泄漏
@@ -185,6 +190,12 @@ export function createApiMonitorRouter(deps = {}) {
   }
   // ① 概览：qps / errorRate / 路由表 / 慢路由 / 错误榜 / 存储
   get('/api/monitor/api', async (req, res) => {
+    // 演示模式：不读 registry（刚启动，滑窗里没流量），回一份「8 条路由 / 61.45 QPS /
+    // 0.12% 错误率」的确定性画像；qps 与每条路由的 calls 由同一组数据算出，永远自洽。
+    // 响应形状与下面真实分支逐字段一致（含 sinceMs / source / unavailable）。
+    if (isDemoMode()) {
+      return res.status(200).json(demoJson(demoApiMonitor({ window: req.query && req.query.window })));
+    }
     if (!isOn()) return res.status(200).json({ enabled: false });
     const window = parseWindow(req.query && req.query.window);
     const askedMs = WINDOW_MS[window];
