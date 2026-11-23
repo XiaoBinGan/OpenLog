@@ -57,6 +57,7 @@ import NodeTable from './k8s/NodeTable';
 import GpuAllocation from './k8s/GpuAllocation';
 import GpuUsagePanel from './k8s/GpuUsagePanel';
 import PolicyPanel from './k8s/PolicyPanel';
+import WarningDigestPanel from './k8s/WarningDigestPanel';
 import PodTable from './k8s/PodTable';
 import PodOpsBar from './k8s/PodOpsBar';
 import EventList from './k8s/EventList';
@@ -369,6 +370,7 @@ export default function K8s() {
                   {activeClusterId && <GpuUsagePanel clusterId={activeClusterId} />}
                   {/* 调度策略与超卖：读不到就是「未知」，不把默认值当实测值 */}
                   {activeClusterId && <PolicyPanel clusterId={activeClusterId} />}
+                  {activeClusterId && <WarningDigestPanel clusterId={activeClusterId} />}
                   <PodTable
                     pods={overview.pods}
                     namespaces={namespaces}
