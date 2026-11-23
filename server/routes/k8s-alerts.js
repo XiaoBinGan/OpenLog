@@ -398,7 +398,8 @@ export function summarizeWarnings(events, options = {}) {
 /** 演示集群列表（形状同 GET /api/k8s/clusters 的 clusters[]） */
 /** 演示用的 Warning 事件（形状同 k8s 原始 Event，走同一套 summarizeWarnings） */
 function DEMO_WARNINGS() {
-  const at = (min) => new Date(Date.parse('2026-06-08T09:48:37.000Z') - min * 60_000).toISOString();
+  // 相对当前时间：演示事件必须落在「最近 N 分钟」窗口内，否则会被 window 过滤成空
+  const at = (min) => new Date(Date.now() - min * 60_000).toISOString();
   return [
     { type: 'Warning', reason: 'FailedScheduling', count: 12, lastTimestamp: at(7), involvedObject: { kind: 'Pod', namespace: 'inference', name: 'vllm-llama70b-0' }, message: '0/2 nodes are available: 1 Insufficient nvidia.com/gpumem.' },
     { type: 'Warning', reason: 'BackOff', count: 7, lastTimestamp: at(4), involvedObject: { kind: 'Pod', namespace: 'inference', name: 'vllm-canary-0' }, message: 'Back-off restarting failed container main' },
