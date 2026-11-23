@@ -1,0 +1,308 @@
+# 生成文件：6 个 reranker Pod（hostPort 18100..18105 保持上游访问方式不变）
+# 由 StatefulSet 改成裸 Pod：StatefulSet 无法给每个副本分配不同的 hostPort。
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: msrk-0
+  namespace: inference
+  labels:
+    app: ms-reranker
+    idx: "0"
+spec:
+  schedulerName: hami-scheduler
+  nodeSelector:
+    kubernetes.io/hostname: node1
+  restartPolicy: Always
+  securityContext:
+    seccompProfile:
+      type: Unconfined
+  containers:
+  - name: reranker
+    image: ms_reranker:latest
+    imagePullPolicy: IfNotPresent
+    workingDir: /app
+    command: ["python", "train_server.py"]
+    env:
+    - { name: PYTHONUNBUFFERED, value: "1" }
+    - { name: NVIDIA_DRIVER_CAPABILITIES, value: "compute,utility" }
+    ports:
+    - { name: http, containerPort: 8004, hostPort: 18100, protocol: TCP }
+    resources:
+      limits:
+        nvidia.com/gpu: "1"
+        nvidia.com/gpumem: "5888"
+        nvidia.com/gpucores: "30"
+      requests:
+        nvidia.com/gpu: "1"
+        nvidia.com/gpumem: "5888"
+        nvidia.com/gpucores: "30"
+    volumeMounts:
+    - { name: models, mountPath: /app/models }
+    - { name: output, mountPath: /app/output }
+    - { name: logs,   mountPath: /app/logs }
+    - { name: shm,    mountPath: /dev/shm }
+  volumes:
+  - name: models
+    hostPath: { path: /workspace/coder/models, type: Directory }
+  - name: output
+    hostPath: { path: /workspace/coder/output, type: DirectoryOrCreate }
+  - name: logs
+    hostPath: { path: /workspace/coder/logs, type: DirectoryOrCreate }
+  - name: shm
+    emptyDir: { medium: Memory, sizeLimit: 64Mi }
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: msrk-1
+  namespace: inference
+  labels:
+    app: ms-reranker
+    idx: "1"
+spec:
+  schedulerName: hami-scheduler
+  nodeSelector:
+    kubernetes.io/hostname: node1
+  restartPolicy: Always
+  securityContext:
+    seccompProfile:
+      type: Unconfined
+  containers:
+  - name: reranker
+    image: ms_reranker:latest
+    imagePullPolicy: IfNotPresent
+    workingDir: /app
+    command: ["python", "train_server.py"]
+    env:
+    - { name: PYTHONUNBUFFERED, value: "1" }
+    - { name: NVIDIA_DRIVER_CAPABILITIES, value: "compute,utility" }
+    ports:
+    - { name: http, containerPort: 8004, hostPort: 18101, protocol: TCP }
+    resources:
+      limits:
+        nvidia.com/gpu: "1"
+        nvidia.com/gpumem: "5888"
+        nvidia.com/gpucores: "30"
+      requests:
+        nvidia.com/gpu: "1"
+        nvidia.com/gpumem: "5888"
+        nvidia.com/gpucores: "30"
+    volumeMounts:
+    - { name: models, mountPath: /app/models }
+    - { name: output, mountPath: /app/output }
+    - { name: logs,   mountPath: /app/logs }
+    - { name: shm,    mountPath: /dev/shm }
+  volumes:
+  - name: models
+    hostPath: { path: /workspace/coder/models, type: Directory }
+  - name: output
+    hostPath: { path: /workspace/coder/output, type: DirectoryOrCreate }
+  - name: logs
+    hostPath: { path: /workspace/coder/logs, type: DirectoryOrCreate }
+  - name: shm
+    emptyDir: { medium: Memory, sizeLimit: 64Mi }
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: msrk-2
+  namespace: inference
+  labels:
+    app: ms-reranker
+    idx: "2"
+spec:
+  schedulerName: hami-scheduler
+  nodeSelector:
+    kubernetes.io/hostname: node1
+  restartPolicy: Always
+  securityContext:
+    seccompProfile:
+      type: Unconfined
+  containers:
+  - name: reranker
+    image: ms_reranker:latest
+    imagePullPolicy: IfNotPresent
+    workingDir: /app
+    command: ["python", "train_server.py"]
+    env:
+    - { name: PYTHONUNBUFFERED, value: "1" }
+    - { name: NVIDIA_DRIVER_CAPABILITIES, value: "compute,utility" }
+    ports:
+    - { name: http, containerPort: 8004, hostPort: 18102, protocol: TCP }
+    resources:
+      limits:
+        nvidia.com/gpu: "1"
+        nvidia.com/gpumem: "5888"
+        nvidia.com/gpucores: "30"
+      requests:
+        nvidia.com/gpu: "1"
+        nvidia.com/gpumem: "5888"
+        nvidia.com/gpucores: "30"
+    volumeMounts:
+    - { name: models, mountPath: /app/models }
+    - { name: output, mountPath: /app/output }
+    - { name: logs,   mountPath: /app/logs }
+    - { name: shm,    mountPath: /dev/shm }
+  volumes:
+  - name: models
+    hostPath: { path: /workspace/coder/models, type: Directory }
+  - name: output
+    hostPath: { path: /workspace/coder/output, type: DirectoryOrCreate }
+  - name: logs
+    hostPath: { path: /workspace/coder/logs, type: DirectoryOrCreate }
+  - name: shm
+    emptyDir: { medium: Memory, sizeLimit: 64Mi }
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: msrk-3
+  namespace: inference
+  labels:
+    app: ms-reranker
+    idx: "3"
+spec:
+  schedulerName: hami-scheduler
+  nodeSelector:
+    kubernetes.io/hostname: node1
+  restartPolicy: Always
+  securityContext:
+    seccompProfile:
+      type: Unconfined
+  containers:
+  - name: reranker
+    image: ms_reranker:latest
+    imagePullPolicy: IfNotPresent
+    workingDir: /app
+    command: ["python", "train_server.py"]
+    env:
+    - { name: PYTHONUNBUFFERED, value: "1" }
+    - { name: NVIDIA_DRIVER_CAPABILITIES, value: "compute,utility" }
+    ports:
+    - { name: http, containerPort: 8004, hostPort: 18103, protocol: TCP }
+    resources:
+      limits:
+        nvidia.com/gpu: "1"
+        nvidia.com/gpumem: "5888"
+        nvidia.com/gpucores: "30"
+      requests:
+        nvidia.com/gpu: "1"
+        nvidia.com/gpumem: "5888"
+        nvidia.com/gpucores: "30"
+    volumeMounts:
+    - { name: models, mountPath: /app/models }
+    - { name: output, mountPath: /app/output }
+    - { name: logs,   mountPath: /app/logs }
+    - { name: shm,    mountPath: /dev/shm }
+  volumes:
+  - name: models
+    hostPath: { path: /workspace/coder/models, type: Directory }
+  - name: output
+    hostPath: { path: /workspace/coder/output, type: DirectoryOrCreate }
+  - name: logs
+    hostPath: { path: /workspace/coder/logs, type: DirectoryOrCreate }
+  - name: shm
+    emptyDir: { medium: Memory, sizeLimit: 64Mi }
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: msrk-4
+  namespace: inference
+  labels:
+    app: ms-reranker
+    idx: "4"
+spec:
+  schedulerName: hami-scheduler
+  nodeSelector:
+    kubernetes.io/hostname: node1
+  restartPolicy: Always
+  securityContext:
+    seccompProfile:
+      type: Unconfined
+  containers:
+  - name: reranker
+    image: ms_reranker:latest
+    imagePullPolicy: IfNotPresent
+    workingDir: /app
+    command: ["python", "train_server.py"]
+    env:
+    - { name: PYTHONUNBUFFERED, value: "1" }
+    - { name: NVIDIA_DRIVER_CAPABILITIES, value: "compute,utility" }
+    ports:
+    - { name: http, containerPort: 8004, hostPort: 18104, protocol: TCP }
+    resources:
+      limits:
+        nvidia.com/gpu: "1"
+        nvidia.com/gpumem: "5888"
+        nvidia.com/gpucores: "30"
+      requests:
+        nvidia.com/gpu: "1"
+        nvidia.com/gpumem: "5888"
+        nvidia.com/gpucores: "30"
+    volumeMounts:
+    - { name: models, mountPath: /app/models }
+    - { name: output, mountPath: /app/output }
+    - { name: logs,   mountPath: /app/logs }
+    - { name: shm,    mountPath: /dev/shm }
+  volumes:
+  - name: models
+    hostPath: { path: /workspace/coder/models, type: Directory }
+  - name: output
+    hostPath: { path: /workspace/coder/output, type: DirectoryOrCreate }
+  - name: logs
+    hostPath: { path: /workspace/coder/logs, type: DirectoryOrCreate }
+  - name: shm
+    emptyDir: { medium: Memory, sizeLimit: 64Mi }
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: msrk-5
+  namespace: inference
+  labels:
+    app: ms-reranker
+    idx: "5"
+spec:
+  schedulerName: hami-scheduler
+  nodeSelector:
+    kubernetes.io/hostname: node1
+  restartPolicy: Always
+  securityContext:
+    seccompProfile:
+      type: Unconfined
+  containers:
+  - name: reranker
+    image: ms_reranker:latest
+    imagePullPolicy: IfNotPresent
+    workingDir: /app
+    command: ["python", "train_server.py"]
+    env:
+    - { name: PYTHONUNBUFFERED, value: "1" }
+    - { name: NVIDIA_DRIVER_CAPABILITIES, value: "compute,utility" }
+    ports:
+    - { name: http, containerPort: 8004, hostPort: 18105, protocol: TCP }
+    resources:
+      limits:
+        nvidia.com/gpu: "1"
+        nvidia.com/gpumem: "5888"
+        nvidia.com/gpucores: "30"
+      requests:
+        nvidia.com/gpu: "1"
+        nvidia.com/gpumem: "5888"
+        nvidia.com/gpucores: "30"
+    volumeMounts:
+    - { name: models, mountPath: /app/models }
+    - { name: output, mountPath: /app/output }
+    - { name: logs,   mountPath: /app/logs }
+    - { name: shm,    mountPath: /dev/shm }
+  volumes:
+  - name: models
+    hostPath: { path: /workspace/coder/models, type: Directory }
+  - name: output
+    hostPath: { path: /workspace/coder/output, type: DirectoryOrCreate }
+  - name: logs
+    hostPath: { path: /workspace/coder/logs, type: DirectoryOrCreate }
+  - name: shm
+    emptyDir: { medium: Memory, sizeLimit: 64Mi }

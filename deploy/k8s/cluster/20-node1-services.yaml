@@ -1,0 +1,154 @@
+# 243(node1) 上 5 个真实服务迁入 k8s（docker 保留镜像，可回滚）
+# 端口统一由 node1-gateway（hostNetwork + nginx stream）发布，绕开这台机器上不稳的 CNI hostPort
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: adapter-ops, namespace: inference }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector: { matchLabels: { app: adapter-ops } }
+  template:
+    metadata: { labels: { app: adapter-ops } }
+    spec:
+      nodeSelector: { kubernetes.io/hostname: node1 }
+      containers:
+      - name: app
+        image: adapter-ops-service:latest
+        imagePullPolicy: IfNotPresent
+        command: ["gunicorn", "app.main:app", "-k", "uvicorn.workers.UvicornWorker", "-w", "4", "-b", "0.0.0.0:8000", "--timeout", "600", "--max-requests", "500", "--max-requests-jitter", "50"]
+        ports: [{ name: http, containerPort: 8000 }]
+        volumeMounts:
+        - { name: adapters, mountPath: /data/adapters }
+        - { name: adapters2, mountPath: /workspace/coder/output7/Qwen3-Embedding-2B }
+      volumes:
+      - { name: adapters,  hostPath: { path: /workspace/coder/outputs/Qwen3-Embedding-2B, type: Directory } }
+      - { name: adapters2, hostPath: { path: /workspace/coder/outputs/Qwen3-Embedding-2B, type: Directory } }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: adapter-ops, namespace: inference }
+spec:
+  selector: { app: adapter-ops }
+  ports: [{ name: http, port: 8000, targetPort: 8000 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: yolo-curtain, namespace: inference }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector: { matchLabels: { app: yolo-curtain } }
+  template:
+    metadata: { labels: { app: yolo-curtain } }
+    spec:
+      nodeSelector: { kubernetes.io/hostname: node1 }
+      containers:
+      - name: app
+        image: yolo-curtain-detect:1.2.0
+        imagePullPolicy: IfNotPresent
+        command: ["python3", "server.py", "--package", "/app", "--config", "/app/config.yaml"]
+        ports: [{ name: http, containerPort: 8000 }]
+        volumeMounts: [{ name: conf, mountPath: /app/config.yaml, subPath: config.yaml }]
+      volumes:
+      - { name: conf, hostPath: { path: /home/smai/yolo-curtain-detect/config, type: Directory } }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: yolo-curtain, namespace: inference }
+spec:
+  selector: { app: yolo-curtain }
+  ports: [{ name: http, port: 8000, targetPort: 8000 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: curtain-detect, namespace: inference }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector: { matchLabels: { app: curtain-detect } }
+  template:
+    metadata: { labels: { app: curtain-detect } }
+    spec:
+      nodeSelector: { kubernetes.io/hostname: node1 }
+      containers:
+      - name: app
+        image: curtain-detect-api:1.2.0
+        imagePullPolicy: IfNotPresent
+        command: ["uvicorn"]
+        args: ["app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+        ports: [{ name: http, containerPort: 8000 }]
+        volumeMounts: [{ name: conf, mountPath: /config/config.yaml, subPath: config.yaml }]
+      volumes:
+      - { name: conf, hostPath: { path: /tmp/inst12, type: Directory } }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: curtain-detect, namespace: inference }
+spec:
+  selector: { app: curtain-detect }
+  ports: [{ name: http, port: 8000, targetPort: 8000 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: openlog-site, namespace: inference }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector: { matchLabels: { app: openlog-site } }
+  template:
+    metadata: { labels: { app: openlog-site } }
+    spec:
+      nodeSelector: { kubernetes.io/hostname: node1 }
+      containers:
+      - name: nginx
+        image: nginx:alpine
+        imagePullPolicy: IfNotPresent
+        ports: [{ name: http, containerPort: 80 }]
+        volumeMounts: [{ name: html, mountPath: /usr/share/nginx/html }]
+      volumes:
+      - { name: html, hostPath: { path: /workspace/Openlog-new/site, type: Directory } }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: openlog-site, namespace: inference }
+spec:
+  selector: { app: openlog-site }
+  ports: [{ name: http, port: 80, targetPort: 80 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: ms-reranker7, namespace: inference }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector: { matchLabels: { app: ms-reranker7 } }
+  template:
+    metadata: { labels: { app: ms-reranker7 } }
+    spec:
+      schedulerName: hami-scheduler
+      nodeSelector: { kubernetes.io/hostname: node1 }
+      containers:
+      - name: reranker
+        image: ms_reranker:latest
+        imagePullPolicy: IfNotPresent
+        workingDir: /app
+        command: ["/opt/nvidia/nvidia_entrypoint.sh", "python", "train_server.py"]
+        ports: [{ name: http, containerPort: 8004 }]
+        resources:
+          limits:   { nvidia.com/gpu: "1", nvidia.com/gpumem: "8192", nvidia.com/gpucores: "30" }
+          requests: { nvidia.com/gpu: "1", nvidia.com/gpumem: "8192", nvidia.com/gpucores: "30" }
+        volumeMounts:
+        - { name: models, mountPath: /app/models }
+        - { name: output, mountPath: /app/output }
+        - { name: logs,   mountPath: /app/logs }
+      volumes:
+      - { name: models, hostPath: { path: /workspace/coder/models, type: Directory } }
+      - { name: output, hostPath: { path: /workspace/coder/outputs, type: DirectoryOrCreate } }
+      - { name: logs,   hostPath: { path: /workspace/coder/logs7, type: DirectoryOrCreate } }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: ms-reranker7, namespace: inference }
+spec:
+  selector: { app: ms-reranker7 }
+  ports: [{ name: http, port: 8004, targetPort: 8004 }]

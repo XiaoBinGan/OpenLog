@@ -1,0 +1,208 @@
+# ============================================================================
+# 全部 GPU 服务用 HAMi 编排（两节点集群：node1=243 · node2=154.225）
+#
+# 结构：
+#   namespace inference
+#   ├── StatefulSet ms-reranker   × 6  → node1（hostPath 数据在 243 上）
+#   │     nvidia.com/gpumem 5888 MiB / pod，hostPort 18100..18105
+#   ├── Deployment  strata               → node2（模型/数据在 154.225 上）
+#   │     nvidia.com/gpumem 14336 MiB
+#   └── Deployment  llama-cpp            → node2
+#         nvidia.com/gpumem 14336 MiB
+#
+# 说明：
+#   · 全部 pod 指定 schedulerName: hami-scheduler，由 HAMi 决定落到哪张卡的哪个槽
+#   · 用 nodeSelector + hostPath 把服务钉在数据所在的节点（跨节点挂 hostPath 会读不到模型）
+#   · 显存合计：node1 6×5888=35328 MiB（4090 49140 够）／node2 2×14336=28672 MiB（2×15360=30720 够）
+# ============================================================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: inference
+---
+# ── node1：6 个 reranker（原先的裸 Pod，改成 StatefulSet，名字仍是 msrk-0..5）──
+apiVersion: v1
+kind: Service
+metadata:
+  name: ms-reranker-headless
+  namespace: inference
+spec:
+  clusterIP: None
+  selector:
+    app: ms-reranker
+  ports:
+  - name: http
+    port: 8004
+    targetPort: 8004
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: msrk
+  namespace: inference
+spec:
+  serviceName: ms-reranker-headless
+  replicas: 6
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      app: ms-reranker
+  template:
+    metadata:
+      labels:
+        app: ms-reranker
+    spec:
+      schedulerName: hami-scheduler
+      nodeSelector:
+        kubernetes.io/hostname: node1
+      securityContext:
+        seccompProfile:
+          type: Unconfined
+      containers:
+      - name: reranker
+        image: ms_reranker:latest
+        imagePullPolicy: IfNotPresent
+        workingDir: /app
+        command: ["python", "train_server.py"]
+        env:
+        - name: PYTHONUNBUFFERED
+          value: "1"
+        - name: NVIDIA_DRIVER_CAPABILITIES
+          value: compute,utility
+        ports:
+        - name: http
+          containerPort: 8004
+        resources:
+          limits:
+            nvidia.com/gpu: "1"
+            nvidia.com/gpumem: "5888"
+            nvidia.com/gpucores: "20"
+          requests:
+            nvidia.com/gpu: "1"
+            nvidia.com/gpumem: "5888"
+            nvidia.com/gpucores: "20"
+        volumeMounts:
+        - { name: models, mountPath: /app/models }
+        - { name: output, mountPath: /app/output }
+        - { name: logs,   mountPath: /app/logs }
+        - { name: shm,    mountPath: /dev/shm }
+      volumes:
+      - name: models
+        hostPath: { path: /workspace/coder/models, type: Directory }
+      - name: output
+        hostPath: { path: /workspace/coder/output, type: DirectoryOrCreate }
+      - name: logs
+        hostPath: { path: /workspace/coder/logs, type: DirectoryOrCreate }
+      - name: shm
+        emptyDir: { medium: Memory, sizeLimit: 64Mi }
+---
+# ── node2：strata（模型下载/推理引擎）──
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: strata
+  namespace: inference
+  labels: { app: strata }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app: strata }
+  template:
+    metadata:
+      labels: { app: strata }
+    spec:
+      schedulerName: hami-scheduler
+      nodeSelector:
+        kubernetes.io/hostname: node2
+      containers:
+      - name: strata
+        image: ghcr.io/niko1221/strata:0.2.11-cuda12
+        imagePullPolicy: IfNotPresent
+        # docker: Entrypoint=[tini -- entrypoint.sh], Cmd=["run"]
+        # k8s:    command 对应 Entrypoint，args 对应 Cmd —— 写错就会 exec "run" 找不到可执行文件
+        command: ["/usr/bin/tini", "--", "/opt/strata/entrypoint.sh"]
+        args: ["run"]
+        ports:
+        - { name: http, containerPort: 8080, hostPort: 8899 }
+        env:
+        - { name: MODEL, value: "Q2_0" }
+        - { name: CONTEXT, value: "32k" }
+        - { name: STRATA_SOURCE, value: "modelscope" }
+        - { name: PARALLEL, value: "1" }
+        - { name: TUNE, value: "skip" }
+        - { name: FAMILY, value: "qwen" }
+        - { name: VISION, value: "cpu" }
+        - { name: DEBIAN_FRONTEND, value: "noninteractive" }
+        - { name: STRATA_COMPONENTS_DIR, value: "/opt/strata/components" }
+        - { name: STRATA_INSTALL_DIR, value: "/data/install" }
+        - { name: XDG_STATE_HOME, value: "/data/state" }
+        - name: API_KEY
+          valueFrom:
+            secretKeyRef: { name: strata-secret, key: api-key, optional: true }
+        resources:
+          limits:
+            nvidia.com/gpu: "1"
+            nvidia.com/gpumem: "14336"
+            nvidia.com/gpucores: "80"
+          requests:
+            nvidia.com/gpu: "1"
+            nvidia.com/gpumem: "14336"
+            nvidia.com/gpucores: "80"
+        volumeMounts:
+        - { name: data,   mountPath: /data }
+        - { name: models, mountPath: /data/Strata-data/models }
+      volumes:
+      - name: data
+        hostPath: { path: /workspace/agent/data, type: Directory }
+      - name: models
+        hostPath: { path: /workspace/agent/models, type: Directory }
+---
+# ── node2：llama.cpp server（Qwythos 9B）──
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: llama-cpp
+  namespace: inference
+  labels: { app: llama-cpp }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app: llama-cpp }
+  template:
+    metadata:
+      labels: { app: llama-cpp }
+    spec:
+      schedulerName: hami-scheduler
+      nodeSelector:
+        kubernetes.io/hostname: node2
+      # 回退到 bridge + hostPort：实测 Pod 重建后 CNI portmap 会重新下发 DNAT 规则
+      # （hostNetwork 反而要过主机防火墙，8888 被拦）
+      containers:
+      - name: llama-server
+        image: ghcr.io/ggml-org/llama.cpp:server-cuda12
+        imagePullPolicy: IfNotPresent
+        args:
+        - "-ngl"
+        - "9999999"
+        - "-m"
+        - "/models/ai402608045/Qwythos-9B-Claude-Mythos-5-1M-GGUF/Qwythos-9B-Claude-Mythos-5-1M-Q8_0.gguf"
+        - "--flash-attn"
+        - "on"
+        ports:
+        - { name: http, containerPort: 8080, hostPort: 8888 }
+        resources:
+          limits:
+            nvidia.com/gpu: "1"
+            nvidia.com/gpumem: "14336"
+            nvidia.com/gpucores: "80"
+          requests:
+            nvidia.com/gpu: "1"
+            nvidia.com/gpumem: "14336"
+            nvidia.com/gpucores: "80"
+        volumeMounts:
+        - { name: models, mountPath: /models }
+      volumes:
+      - name: models
+        hostPath: { path: /workspace/agent/models, type: Directory }
