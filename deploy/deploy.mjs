@@ -431,6 +431,14 @@ docker logs --tail 40 openlog 2>&1 | tail -40
     }
 
     // 同样不套 `| tail`：reset 真失败（如 FETCH_HEAD 不可用）时必须能被捕获
+    // dry-run 必须在 reset 之前收手：上面只做了 fetch（只写 FETCH_HEAD，不动工作树），
+    // reset 会真的改服务端代码 —— 之前漏了这个早退，dry-run 把 243 的工作树改了。
+    if (has('--dry-run')) {
+      console.log('  ⚠️  dry-run：不执行 git reset --hard，服务端代码保持不变');
+      console.log('     真实部署会在此把代码同步到 FETCH_HEAD，然后构建并重建容器');
+      return;
+    }
+    
     const reset = await remote(`cd ${appDir} && git reset --hard FETCH_HEAD 2>&1`);
     if (reset.code !== 0) fail(`远端 reset 失败:\n${reset.stdout}${reset.stderr}`);
     const resetLine = (reset.stdout || '').trim().split('\n').filter(Boolean).pop();

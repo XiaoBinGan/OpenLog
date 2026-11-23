@@ -224,9 +224,10 @@ function computeSummary(parts) {
 
 // ─── HAMi vGPU（契约见 /tmp/hami-contract.md）────────────────────────────
 //
-// 数据来源有两块，都在 k8s/hami.js 里解析：
-//   节点  status.capacity|allocatable 的 nvidia.com/{gpu,gpumem,gpucores}
-//   Pod   metadata.annotations 的 hami.io/vgpu-*
+// 数据来源有三块，都在 k8s/hami.js 里解析：
+//   节点  metadata.annotations 的 hami.io/node-nvidia-register（真机 243：物理卡清单 + 容量/型号）
+//   节点  status.capacity|allocatable 的 nvidia.com/{gpu,gpumem,gpucores}（老集群 / register 坏掉时）
+//   Pod   metadata.annotations 的 hami.io/vgpu-*（四段 / 三段 / 两段自适应）
 //
 // 这里的三个约定（前端的「无 HAMi 行为不变」全靠它们）：
 //   1. **永远返回 gpu 段**：没有 HAMi 时是 hasHami:false + 空数组，前端据此不渲染卡片；
@@ -234,6 +235,9 @@ function computeSummary(parts) {
 //      真实集群也可能有坏注解 —— 这些都必须是「多一个空 gpu 段」，而不是 500；
 //   3. **Pod 的 vgpu 字段按需挂**：只有真的读到分配时才给每个 Pod 加 `vgpu`，
 //      否则响应与改动前逐字节一致（前端表格也就不出现那一列）。
+
+/** 节点上写物理卡清单的注解（真机 243 的容量来源）；只有解析用，不回给前端。 */
+const HAMI_REGISTER_ANNOTATION = 'hami.io/node-nvidia-register';
 
 /** 数字兜底：NaN/Infinity/非法值 → 0（前端拿到的永远是数字，不会出现 null 运算） */
 function asCount(value) {
@@ -264,11 +268,68 @@ function emptyVgpu() {
 }
 
 /**
+ * Pod 侧设备行收敛。`type`（真机四段注解里的型号）**只在解析层真的给了才写** ——
+ * 旧格式没有型号，写个空串上去会让前端以为「型号读到了但是空的」。
+ */
+function normalizePodDevices(devices) {
+  return (Array.isArray(devices) ? devices : [])
+    .filter((device) => device && typeof device === 'object')
+    .map((device) => {
+      const row = {
+        id: asLabel(device.id),
+        memMiB: asCount(device.memMiB),
+        cores: asCount(device.cores),
+      };
+      if (typeof device.type === 'string' && device.type !== '') row.type = device.type;
+      return row;
+    });
+}
+
+/**
+ * 节点物理卡明细收敛（真机 `hami.io/node-nvidia-register`）。
+ * 解析层没给 devices（老集群只有 nvidia.com/gpu）→ 返回 null，调用方就不写这个键，
+ * 前端据此退回「按节点聚合」的旧展示。
+ */
+function normalizeNodeDevices(devices) {
+  if (!Array.isArray(devices)) return null;
+  return devices
+    .filter((device) => device && typeof device === 'object')
+    .map((device) => ({
+      id: asLabel(device.id),
+      type: asLabel(device.type),
+      memMiB: asCount(device.memMiB),
+      cores: asCount(device.cores),
+      slots: asCount(device.slots),
+      health: device.health !== false,
+      allocatedMemMiB: asCount(device.allocatedMemMiB),
+      allocatedCores: asCount(device.allocatedCores),
+      podCount: asCount(device.podCount),
+    }));
+}
+
+/** totals 收敛：`physicalCount` / `slots` 是真机才有的字段，没有就不写（前端退回「N 张卡」）。 */
+function normalizeTotals(totals) {
+  const bag = totals && typeof totals === 'object' ? totals : {};
+  const row = {
+    gpuCount: asCount(bag.gpuCount),
+    memMiB: asCount(bag.memMiB),
+    cores: asCount(bag.cores),
+    allocatedMemMiB: asCount(bag.allocatedMemMiB),
+    allocatedCores: asCount(bag.allocatedCores),
+    podCount: asCount(bag.podCount),
+  };
+  if (Number.isFinite(bag.physicalCount)) row.physicalCount = asCount(bag.physicalCount);
+  if (Number.isFinite(bag.slots)) row.slots = asCount(bag.slots);
+  return row;
+}
+
+/**
  * 把 summarizeVgpu 的结果收敛成固定形状。
  *
  * 为什么在这里再补一遍默认值：解析层是并行开发的，字段哪天少一个（或返回 NaN），
  * 前端就会渲染出 `NaN GiB`；这一层把「数字一定有限、数组一定是数组」钉死，
- * 前端只负责排版。
+ * 前端只负责排版。真机才有的字段（`slots` / `devices` / `physicalCount`）**有才写**，
+ * 所以老集群的响应与改动前逐字节一致。
  */
 function normalizeGpuSegment(summary) {
   const nodes = Array.isArray(summary?.nodes) ? summary.nodes : [];
@@ -280,40 +341,34 @@ function normalizeGpuSegment(summary) {
     hasHami: summary?.hasHami === true,
     nodes: nodes
       .filter((node) => node && typeof node === 'object')
-      .map((node) => ({
-        name: asLabel(node.name),
-        count: asCount(node.count),
-        memMiB: asCount(node.memMiB),
-        cores: asCount(node.cores),
-        allocatedMemMiB: asCount(node.allocatedMemMiB),
-        allocatedCores: asCount(node.allocatedCores),
-        podCount: asCount(node.podCount),
-      })),
+      .map((node) => {
+        const row = {
+          name: asLabel(node.name),
+          count: asCount(node.count),
+          memMiB: asCount(node.memMiB),
+          cores: asCount(node.cores),
+          allocatedMemMiB: asCount(node.allocatedMemMiB),
+          allocatedCores: asCount(node.allocatedCores),
+          podCount: asCount(node.podCount),
+        };
+        // 真机字段：解析层给了才写（旧版本一个都不写，响应的键集合与改动前一致）
+        if (Number.isFinite(node.slots)) row.slots = asCount(node.slots);
+        const devices = normalizeNodeDevices(node.devices);
+        if (devices !== null) row.devices = devices;
+        return row;
+      }),
     pods: pods
       .filter((pod) => pod && typeof pod === 'object')
       .map((pod) => ({
         namespace: asLabel(pod.namespace),
         name: asLabel(pod.name),
         nodeName: pod.nodeName === null || pod.nodeName === undefined ? null : asLabel(pod.nodeName),
-        devices: (Array.isArray(pod.devices) ? pod.devices : [])
-          .filter((device) => device && typeof device === 'object')
-          .map((device) => ({
-            id: asLabel(device.id),
-            memMiB: asCount(device.memMiB),
-            cores: asCount(device.cores),
-          })),
+        devices: normalizePodDevices(pod.devices),
         totalMemMiB: asCount(pod.totalMemMiB),
         totalCores: asCount(pod.totalCores),
         phase: asLabel(pod.phase),
       })),
-    totals: {
-      gpuCount: asCount(totals.gpuCount),
-      memMiB: asCount(totals.memMiB),
-      cores: asCount(totals.cores),
-      allocatedMemMiB: asCount(totals.allocatedMemMiB),
-      allocatedCores: asCount(totals.allocatedCores),
-      podCount: asCount(totals.podCount),
-    },
+    totals: normalizeTotals(totals),
     // 契约：最多 5 条（异常注解可能几百条，全带上会把响应撑爆）
     warnings: warnings.slice(0, 5).map((item) => asLabel(item)),
   };
@@ -340,13 +395,7 @@ function readPodVgpuSafe(pod) {
     if (!vgpu || typeof vgpu !== 'object' || vgpu.hasVgpu !== true) return null;
     return {
       hasVgpu: true,
-      devices: (Array.isArray(vgpu.devices) ? vgpu.devices : [])
-        .filter((device) => device && typeof device === 'object')
-        .map((device) => ({
-          id: asLabel(device.id),
-          memMiB: asCount(device.memMiB),
-          cores: asCount(device.cores),
-        })),
+      devices: normalizePodDevices(vgpu.devices),
       totalMemMiB: asCount(vgpu.totalMemMiB),
       totalCores: asCount(vgpu.totalCores),
       nodeName: vgpu.nodeName === null || vgpu.nodeName === undefined ? null : asLabel(vgpu.nodeName),
@@ -387,8 +436,18 @@ function gpuNodesOf(nodes, rawItems) {
     const name = asLabel(item?.metadata?.name);
     if (!name) continue;
     const status = item?.status;
-    if (!status || (!status.capacity && !status.allocatable)) continue;
-    byName.set(name, { capacity: status.capacity ?? null, allocatable: status.allocatable ?? null });
+    const annotations = item?.metadata?.annotations;
+    // 真机（243）的容量与物理卡清单只在注解 `hami.io/node-nvidia-register` 里，
+    // 节点上没有 nvidia.com/gpumem|gpucores —— 不给注释就没法解析，所以两者有其一就收
+    const hasRegister = Boolean(
+      annotations && typeof annotations === 'object' && annotations[HAMI_REGISTER_ANNOTATION],
+    );
+    if (!hasRegister && (!status || (!status.capacity && !status.allocatable))) continue;
+    byName.set(name, {
+      capacity: status?.capacity ?? null,
+      allocatable: status?.allocatable ?? null,
+      annotations: annotations ?? null,
+    });
   }
   if (byName.size === 0) return nodes;
   return nodes.map((node) => {
@@ -398,6 +457,8 @@ function gpuNodesOf(nodes, rawItems) {
       ...node,
       capacity: node?.capacity ?? extra.capacity ?? undefined,
       allocatable: node?.allocatable ?? extra.allocatable ?? undefined,
+      // 只补解析用的注解（归一化层目前不保留 metadata.annotations）
+      annotations: node?.annotations ?? extra.annotations ?? undefined,
     };
   });
 }
@@ -430,7 +491,7 @@ function gpuPodsOf(pods, rawItems) {
  */
 function stripHamiInputs(nodes) {  return nodes.map((node) => {
     if (!node || typeof node !== 'object') return node;
-    const { capacity: _capacity, allocatable: _allocatable, ...rest } = node;
+    const { capacity: _capacity, allocatable: _allocatable, annotations: _annotations, ...rest } = node;
     return rest;
   });
 }

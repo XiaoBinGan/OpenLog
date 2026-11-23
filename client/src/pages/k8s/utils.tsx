@@ -10,9 +10,12 @@
 
 import type {
   K8sEvent,
+  K8sGpuDevice,
   K8sGpuNode,
+  K8sGpuNodeDevice,
   K8sGpuOverview,
   K8sGpuPod,
+  K8sGpuTotals,
   K8sNode,
   K8sOverview,
   K8sPod,
@@ -241,6 +244,208 @@ export function formatAllocCores(cores: number | null | undefined): string {
 }
 
 /**
+ * 整数文案（卡数 / 槽位数 / Pod 数 / 算力点）。
+ * 缺字段时给「—」——直接把 undefined 插进 JSX 会渲染成 "undefined 张卡"。
+ */
+export function formatCount(value: number | null | undefined): string {
+  const n = Number(value);
+  return Number.isFinite(n) ? String(Math.round(n)) : MISSING;
+}
+
+/**
+ * MiB 原文 → 「49140 MiB」。
+ *
+ * 为什么不用 formatMib（→ GiB）：物理卡这一行要跟 243 上的 register 原文对齐
+ * （`devmem: 49140`），工程师拿界面数字直接和 `kubectl get node -o yaml` 的注解对得上；
+ * 换成「48 GiB」会丢精度也变得没法对照。Pod 行仍然用 GiB（那里在意的是体量）。
+ */
+export function formatMibRaw(memMiB: number | null | undefined): string {
+  const mib = Number(memMiB);
+  if (!Number.isFinite(mib) || mib < 0) return MISSING;
+  return `${Math.round(mib)} MiB`;
+}
+
+/**
+ * GPU UUID 短 id：「GPU-86d14e75-1e54-…」→「GPU-86d1…」。
+ *
+ * 用途有两个：物理卡没有型号时当标识（真机 register 的 `type` 可能为空），
+ * 以及 title 里给人眼在长列表里比对。不截断非 GPU- 前缀的 id（可能不是 UUID）。
+ */
+export function shortGpuId(id: string | null | undefined): string {
+  const text = (id ?? '').trim();
+  if (text === '') return MISSING;
+  if (text.startsWith('GPU-') && text.length > 12) return `GPU-${text.slice(4, 8)}…`;
+  if (text.length > 16) return `${text.slice(0, 12)}…`;
+  return text;
+}
+
+/** 槽位文案：「10 槽位」；缺失/0 → 「—」（槽位 0 只可能是没上报）。 */
+export function formatSlots(slots: number | null | undefined): string {
+  const n = Number(slots);
+  if (!Number.isFinite(n) || n <= 0) return MISSING;
+  return `${Math.round(n)} 槽位`;
+}
+
+/**
+ * 一张物理卡的一行摘要（真机形态）：
+ *   `NVIDIA GeForce RTX 4090 · 49140 MiB · 10 槽位 · 已分配 23552 MiB（48%）`
+ *
+ * 段与段之间「有才写」：
+ *   · 有 `type` 写型号，没有就写短 id（`GPU-86d1…`）；
+ *   · 显存 / 槽位为 0 或缺失 → 整段省略（不是「0 MiB 0 槽位」这种噪音）；
+ *   · 「已分配」只在知道容量时带百分比，容量未知就只报绝对值；
+ *   · 全部字段都缺 → 单个「—」，绝不出现 NaN / undefined。
+ */
+export function deviceLabel(device: K8sGpuNodeDevice): string {
+  const parts: string[] = [];
+  const type = (device.type ?? '').trim();
+  parts.push(type !== '' ? type : shortGpuId(device.id));
+
+  const totalMem = toFiniteNumber(device.memMiB);
+  if (totalMem > 0) parts.push(formatMibRaw(totalMem));
+
+  if (toFiniteNumber(device.slots) > 0) parts.push(formatSlots(device.slots));
+
+  const usedMem = toFiniteNumber(device.allocatedMemMiB);
+  if (totalMem > 0) {
+    const percent = usagePercent(usedMem, totalMem);
+    parts.push(`已分配 ${formatMibRaw(usedMem)}${percent === null ? '' : `（${percent}%）`}`);
+  } else if (usedMem > 0) {
+    parts.push(`已分配 ${formatMibRaw(usedMem)}`);
+  }
+
+  return parts.filter((part) => part !== '' && part !== MISSING).join(' · ') || MISSING;
+}
+
+/**
+ * 卡片表头的卡量文案。
+ *
+ * 真机（服务端给了 physicalCount / slots）：`2 张物理卡 · 20 个 vGPU 槽位`；
+ * 旧服务端没有这两个字段：退回 `N 张卡`（nvidia.com/gpu 的语义，可能等于槽位数）。
+ */
+export function gpuCardsLabel(totals: K8sGpuTotals | null | undefined): string {
+  if (!totals) return MISSING;
+  const physical = Number(totals.physicalCount);
+  const slots = Number(totals.slots);
+  const hasPhysical = Number.isFinite(physical) && physical > 0;
+  const hasSlots = Number.isFinite(slots) && slots > 0;
+  if (hasPhysical && hasSlots) {
+    return `${Math.round(physical)} 张物理卡 · ${Math.round(slots)} 个 vGPU 槽位`;
+  }
+  if (hasPhysical) return `${Math.round(physical)} 张物理卡`;
+  const count = Number(totals.gpuCount);
+  return Number.isFinite(count) ? `${Math.round(count)} 张卡` : MISSING;
+}
+
+/**
+ * 节点行的卡量文案：有物理卡明细就报明细，否则退回 `N 张卡`。
+ * （真机上 `count` 是物理卡数、`nvidia.com/gpu` 是槽位数，混用会自相矛盾。）
+ */
+export function nodeCardsLabel(node: K8sGpuNode | null | undefined): string {
+  if (!node) return '卡数未知';
+  const devices = Array.isArray(node.devices) ? node.devices : [];
+  if (devices.length > 0) {
+    const slots = devices.reduce((sum, device) => sum + toFiniteNumber(device.slots), 0);
+    return slots > 0 ? `${devices.length} 张物理卡 · ${slots} 个槽位` : `${devices.length} 张物理卡`;
+  }
+  const count = Number(node.count);
+  return Number.isFinite(count) ? `${Math.round(count)} 张卡` : '卡数未知';
+}
+
+/**
+ * 两个 GPU id 是否**严格**相同（忽略大小写；空串不算命中）。
+ *
+ * 前缀匹配不在这一层：真机注解里是完整 UUID，两边一致；
+ * 演示 / 手写注解可能只写前缀（`GPU-3f2a`），那一步必须额外要求「唯一命中」，
+ * 否则一个短 id 会同时命中同前缀的多张卡（见 matchNodeDevice）。
+ */
+export function sameGpuId(a: string | null | undefined, b: string | null | undefined): boolean {
+  const left = (a ?? '').trim().toLowerCase();
+  const right = (b ?? '').trim().toLowerCase();
+  return left !== '' && left === right;
+}
+
+/**
+ * 把 Pod 的某段设备分配挂到节点物理卡上；匹配不上返回 null。
+ * 先精确匹配（真机路径）；再退一步按前缀匹配，且**只有唯一候选**时才认。
+ */
+function matchNodeDevice(
+  podDevice: K8sGpuDevice,
+  devices: K8sGpuNodeDevice[],
+): K8sGpuNodeDevice | null {
+  const id = (podDevice.id ?? '').trim();
+  if (id === '') return null;
+  const exact = devices.find((device) => sameGpuId(device.id, id));
+  if (exact) return exact;
+  const lowered = id.toLowerCase();
+  const prefixed = devices.filter((device) => {
+    const candidate = (device.id ?? '').trim().toLowerCase();
+    return candidate !== '' && (candidate.startsWith(lowered) || lowered.startsWith(candidate));
+  });
+  return prefixed.length === 1 ? prefixed[0] : null;
+}
+
+/** 某张物理卡上的一段分配（Pod 视角，只算这张卡）。 */
+export interface GpuDeviceAllocation {
+  pod: K8sGpuPod;
+  memMiB: number;
+  cores: number;
+}
+
+/** 物理卡分组结果：每张卡上挂了哪些 Pod，以及没匹配到任何卡的 Pod。 */
+export interface GpuNodeDeviceGroup {
+  device: K8sGpuNodeDevice;
+  allocations: GpuDeviceAllocation[];
+}
+
+/**
+ * 按**物理卡**给一个节点上的占卡 Pod 分组（真机展示的核心一步）。
+ *
+ * 没有 `devices` 的旧服务端返回空数组，调用方据此退回「节点聚合 + 平铺 Pod 表」。
+ * 一个 Pod 占多张卡时会在每张卡下各出现一次，显存/算力只算这张卡那一段
+ * （否则一张卡的「已分配」会被另一张卡的份额撑爆）。
+ */
+export function gpuDeviceGroups(
+  node: K8sGpuNode | null | undefined,
+  pods: K8sGpuPod[] | null | undefined,
+): { groups: GpuNodeDeviceGroup[]; unassigned: GpuDeviceAllocation[] } {
+  const devices = Array.isArray(node?.devices) ? node?.devices ?? [] : [];
+  const podList = Array.isArray(pods) ? pods : [];
+  if (devices.length === 0) return { groups: [], unassigned: [] };
+
+  const groups: GpuNodeDeviceGroup[] = devices.map((device) => ({ device, allocations: [] }));
+  const unassigned: GpuDeviceAllocation[] = [];
+
+  for (const pod of podList) {
+    const podDevices = Array.isArray(pod.devices) ? pod.devices : [];
+    const hits = new Set<GpuNodeDeviceGroup>();
+    for (const podDevice of podDevices) {
+      const nodeDevice = matchNodeDevice(podDevice, devices);
+      if (!nodeDevice) continue;
+      const group = groups.find((item) => item.device === nodeDevice);
+      if (!group) continue;
+      hits.add(group);
+      group.allocations.push({
+        pod,
+        memMiB: toFiniteNumber(podDevice.memMiB),
+        cores: toFiniteNumber(podDevice.cores),
+      });
+    }
+    // 有设备列表但一个都对不上（注解里的 UUID 与 register 不一致）：
+    // 挂到「未归属」，宁可多显示一行也不要静默吞掉 podCount
+    if (hits.size === 0) {
+      unassigned.push({
+        pod,
+        memMiB: toFiniteNumber(pod.totalMemMiB),
+        cores: toFiniteNumber(pod.totalCores),
+      });
+    }
+  }
+
+  return { groups, unassigned };
+}
+
+/**
  * 已分配 / 总量 的百分比（0..100 取整）。
  * 总量缺失或为 0 时返回 null（进度条不画、文案显示「—」），而不是 NaN / Infinity。
  */
@@ -254,17 +459,27 @@ export function usagePercent(
   return Math.min(100, Math.max(0, Math.round((used / all) * 100)));
 }
 
+/** 设备类型字段：非空字符串才算有（空串/缺失都是「没写型号」）。 */
+function optionalText(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined;
+}
+
 /** 服务端给的 vgpu 字段 → 固定形状；缺失/非对象 → null。 */
 export function normalizeVgpu(raw: unknown): K8sPodVgpu | null {
   if (!raw || typeof raw !== 'object') return null;
   const bag = raw as Partial<K8sPodVgpu>;
   const devices = (Array.isArray(bag.devices) ? bag.devices : [])
     .filter((device) => device && typeof device === 'object')
-    .map((device) => ({
-      id: typeof device.id === 'string' ? device.id : '',
-      memMiB: toFiniteNumber(device.memMiB),
-      cores: toFiniteNumber(device.cores),
-    }));
+    .map((device) => {
+      const type = optionalText(device.type);
+      return {
+        id: typeof device.id === 'string' ? device.id : '',
+        memMiB: toFiniteNumber(device.memMiB),
+        cores: toFiniteNumber(device.cores),
+        // 两段格式（`<uuid>,<type>`）没有显存/算力，但有型号；保留它供展示
+        ...(type ? { type } : {}),
+      };
+    });
   const sumMem = devices.reduce((sum, device) => sum + device.memMiB, 0);
   const sumCores = devices.reduce((sum, device) => sum + device.cores, 0);
   return {
@@ -288,6 +503,34 @@ export function vgpuLabel(vgpu: K8sPodVgpu | null | undefined): string {
   return parts.length > 0 ? parts.join(' · ') : MISSING;
 }
 
+/**
+ * 节点的物理卡明细 → 固定形状。
+ * 旧服务端没有这个字段（或给的不是数组）→ `undefined`（不是空数组）：
+ * 「没有物理卡信息」和「有信息但一张卡都没上报」在前端是两种展现。
+ */
+function normalizeNodeDevices(raw: unknown): K8sGpuNodeDevice[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const devices = raw
+    .filter((device) => device && typeof device === 'object')
+    .map((device) => {
+      const type = optionalText(device.type);
+      const slots = toFiniteNumber(device.slots);
+      return {
+        id: typeof device.id === 'string' ? device.id : '',
+        ...(type ? { type } : {}),
+        memMiB: toFiniteNumber(device.memMiB),
+        cores: toFiniteNumber(device.cores),
+        // slots 缺失时留 undefined（渲染时整段省略），不要兜成 0 变成「0 槽位」
+        ...(Number.isFinite(Number(device.slots)) && slots > 0 ? { slots } : {}),
+        allocatedMemMiB: toFiniteNumber(device.allocatedMemMiB),
+        allocatedCores: toFiniteNumber(device.allocatedCores),
+        podCount: toFiniteNumber(device.podCount),
+        ...(typeof device.health === 'boolean' ? { health: device.health } : {}),
+      };
+    });
+  return devices;
+}
+
 /** `overview.gpu` → 固定形状；缺失/非对象 → null。 */
 export function normalizeGpu(raw: unknown): K8sGpuOverview | null {
   if (!raw || typeof raw !== 'object') return null;
@@ -295,15 +538,19 @@ export function normalizeGpu(raw: unknown): K8sGpuOverview | null {
 
   const nodes: K8sGpuNode[] = (Array.isArray(bag.nodes) ? bag.nodes : [])
     .filter((node) => node && typeof node === 'object')
-    .map((node) => ({
-      name: typeof node.name === 'string' ? node.name : '',
-      count: toFiniteNumber(node.count),
-      memMiB: toFiniteNumber(node.memMiB),
-      cores: toFiniteNumber(node.cores),
-      allocatedMemMiB: toFiniteNumber(node.allocatedMemMiB),
-      allocatedCores: toFiniteNumber(node.allocatedCores),
-      podCount: toFiniteNumber(node.podCount),
-    }));
+    .map((node) => {
+      const devices = normalizeNodeDevices(node.devices);
+      return {
+        name: typeof node.name === 'string' ? node.name : '',
+        count: toFiniteNumber(node.count),
+        memMiB: toFiniteNumber(node.memMiB),
+        cores: toFiniteNumber(node.cores),
+        allocatedMemMiB: toFiniteNumber(node.allocatedMemMiB),
+        allocatedCores: toFiniteNumber(node.allocatedCores),
+        podCount: toFiniteNumber(node.podCount),
+        ...(devices ? { devices } : {}),
+      };
+    });
 
   const pods: K8sGpuPod[] = (Array.isArray(bag.pods) ? bag.pods : [])
     .filter((pod) => pod && typeof pod === 'object')
@@ -329,6 +576,13 @@ export function normalizeGpu(raw: unknown): K8sGpuOverview | null {
   // 服务端 totals 缺席时按节点/ Pod 重算（口径与后端 summarizeVgpu 一致）
   const totals = bag.totals && typeof bag.totals === 'object' ? bag.totals : null;
   const sum = (list: number[]) => list.reduce((acc, n) => acc + toFiniteNumber(n), 0);
+  const hasDevices = nodes.some((node) => (node.devices?.length ?? 0) > 0);
+  const derivedPhysical = hasDevices
+    ? sum(nodes.map((node) => toFiniteNumber(node.devices?.length)))
+    : 0;
+  const derivedSlots = hasDevices
+    ? sum(nodes.map((node) => sum((node.devices ?? []).map((device) => toFiniteNumber(device.slots)))))
+    : 0;
 
   return {
     hasHami: bag.hasHami === true,
@@ -343,6 +597,17 @@ export function normalizeGpu(raw: unknown): K8sGpuOverview | null {
       allocatedCores:
         toFiniteNumber(totals?.allocatedCores) || sum(nodes.map((node) => node.allocatedCores)),
       podCount: toFiniteNumber(totals?.podCount) || pods.length,
+      // 旧服务端没有这两个字段：缺席就**不写**，表头退回「N 张卡」
+      ...(toFiniteNumber(totals?.physicalCount) > 0
+        ? { physicalCount: toFiniteNumber(totals?.physicalCount) }
+        : derivedPhysical > 0
+          ? { physicalCount: derivedPhysical }
+          : {}),
+      ...(toFiniteNumber(totals?.slots) > 0
+        ? { slots: toFiniteNumber(totals?.slots) }
+        : derivedSlots > 0
+          ? { slots: derivedSlots }
+          : {}),
     },
     warnings: (Array.isArray(bag.warnings) ? bag.warnings : [])
       .filter((warning): warning is string => typeof warning === 'string' && warning !== '')

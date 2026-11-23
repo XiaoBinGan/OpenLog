@@ -66,11 +66,40 @@ export interface K8sContainer {
 /**
  * HAMi vGPU：单张卡上的分配（`hami.io/vgpu-devices-allocated` 里的一段）。
  * memMiB 是 MiB，cores 是算力点（100 = 整卡）。
+ *
+ * `type` 只有四段注解（真机格式 `<uuid>,<deviceType>,<memMiB>,<cores>`）才有；
+ * 旧的三段/两段格式没有型号，此时**不要**渲染型号段（不是「未知」，是「没写」）。
  */
 export interface K8sGpuDevice {
   id: string;
   memMiB: number;
   cores: number;
+  /** 设备类型（真机里常是 `NVIDIA`；没有就是没有） */
+  type?: string;
+}
+
+/**
+ * 节点的**物理卡**（真机来自 `hami.io/node-nvidia-register` 的 JSON 数组）。
+ *
+ * 为什么需要它：HAMi 把一张卡切成多份，"4 张卡"其实可能是「2 张物理卡 × 10 槽位」，
+ * 容量与型号只能从这个注解读到（节点上没有 `nvidia.com/gpumem|gpucores`）。
+ * 服务端旧版本没有这个字段 → `devices` 缺席，前端退回按节点聚合的老展示。
+ */
+export interface K8sGpuNodeDevice {
+  id: string;
+  /** 型号名（如 `NVIDIA GeForce RTX 4090`）；缺失时只显示短 id */
+  type?: string;
+  /** 该卡显存（MiB） */
+  memMiB: number;
+  /** 该卡算力点（100 = 整卡） */
+  cores: number;
+  /** 该卡被切成多少个 vGPU 槽位（register 里的 count）；旧服务端没有 */
+  slots?: number;
+  allocatedMemMiB: number;
+  allocatedCores: number;
+  podCount: number;
+  /** register 里的健康标记；缺失当作健康 */
+  health?: boolean;
 }
 
 /**
@@ -88,15 +117,23 @@ export interface K8sPodVgpu {
 /** 单个节点的 GPU 容量与已分配（契约里的 summarizeVgpu().nodes[]）。 */
 export interface K8sGpuNode {
   name: string;
-  /** 该节点 GPU 数（nvidia.com/gpu） */
+  /**
+   * 该节点 GPU 数。真机格式下是**物理卡数**（register 的条数）；
+   * 只有 `nvidia.com/gpu` 的老集群里它等于 vGPU 槽位数。
+   */
   count: number;
-  /** 显存总量（MiB，nvidia.com/gpumem） */
+  /** 显存总量（MiB，真机 = Σdevmem） */
   memMiB: number;
-  /** 算力总量（算力点，nvidia.com/gpucores；400 = 4 卡 × 100） */
+  /** 算力总量（算力点，真机 = Σdevcore） */
   cores: number;
   allocatedMemMiB: number;
   allocatedCores: number;
   podCount: number;
+  /**
+   * 物理卡明细。**旧服务端没有这个字段**（只有 nvidia.com/gpu 时服务端给空数组/不写），
+   * 前端据此决定「按物理卡分行」还是「按节点聚合」——字段存在才渲染。
+   */
+  devices?: K8sGpuNodeDevice[];
 }
 
 /** 有 vGPU 分配的 Pod（契约里的 summarizeVgpu().pods[]）。 */
@@ -119,6 +156,13 @@ export interface K8sGpuTotals {
   allocatedMemMiB: number;
   allocatedCores: number;
   podCount: number;
+  /**
+   * 物理卡数（真机 = Σ 节点 register 的条数）。**旧服务端没有**：
+   * 缺失时表头退回「N 张卡」，不会显示成「NaN 张物理卡」。
+   */
+  physicalCount?: number;
+  /** vGPU 槽位数（真机 = Σ 每卡 count）。旧服务端没有。 */
+  slots?: number;
 }
 
 /**

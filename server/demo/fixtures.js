@@ -1085,9 +1085,12 @@ const DEMO_GPU_IDS = [
  * @param {number} cores     该 Pod 占的算力点（100 = 整卡）
  */
 function hamiAnnotations(cardIndex, memMiB, cores) {
+  // 真机格式（243 实测）：<uuid>,<type>,<memMiB>,<cores>:;
+  // 别写成三段 —— 三段会让 type 被当成显存，是我们的历史上踩过的坑。
   return {
-    'hami.io/vgpu-devices-allocated': `${DEMO_GPU_IDS[cardIndex]},${memMiB},${cores}:;`,
-    'hami.io/vgpu-node-allocated': `k3s-infer-node-1,${cardIndex},NVIDIA-GeForce-RTX-4090`,
+    'hami.io/vgpu-devices-allocated': `${DEMO_GPU_IDS[cardIndex]},NVIDIA,${memMiB},${cores}:;`,
+    'hami.io/vgpu-node': 'k3s-infer-node-1',
+    'hami.io/bind-phase': 'success',
   };
 }
 
@@ -1109,22 +1112,32 @@ const K8S_NODES = [
     cpu: '32',
     memory: '131842000Ki',
     pods: '110',
-    // HAMi：4×24 GiB = 96 GiB 显存、4×100 = 400 算力点（gpucores 是百分比点）
+    // 真机形态（243 实测）：节点上**只有** nvidia.com/gpu（= vGPU 槽位总数），
+    // 没有 gpumem/gpucores；每张卡的型号/显存/槽位数在 hami.io/node-nvidia-register 里。
+    // 4 张 4090 × 10 槽位 = 40；单卡 24576 MiB / 100 点 → 合计 96 GiB / 400 点。
     capacity: {
       cpu: '32',
       memory: '131842000Ki',
       pods: '110',
-      'nvidia.com/gpu': '4',
-      'nvidia.com/gpumem': '98304',
-      'nvidia.com/gpucores': '400',
+      'nvidia.com/gpu': '40',
     },
     allocatable: {
       cpu: '32',
       memory: '131842000Ki',
       pods: '110',
-      'nvidia.com/gpu': '4',
-      'nvidia.com/gpumem': '98304',
-      'nvidia.com/gpucores': '400',
+      'nvidia.com/gpu': '40',
+    },
+    annotations: {
+      'hami.io/node-nvidia-register': JSON.stringify(DEMO_GPU_IDS.map((id, i) => ({
+        id,
+        index: i,
+        count: 10,
+        devmem: 24576,
+        devcore: 100,
+        type: 'NVIDIA GeForce RTX 4090',
+        mode: 'hami-core',
+        health: true,
+      }))),
     },
     created: '2026-03-02T04:12:31Z',
     conditions: [

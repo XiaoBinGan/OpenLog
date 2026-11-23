@@ -74,7 +74,11 @@ done
 
 run() {
   if [ "$DRY_RUN" = "1" ]; then
-    echo "[dry-run] $*"
+    # 脱敏后再打印：dry-run 输出会进终端/日志，数据库密码与令牌不能明文出现
+    local shown="$*"
+    shown="$(printf '%s' "$shown" | sed -E 's#(postgres(ql)?|mysql|mariadb)://([^:/@]+):[^@]*@#\1://\3:***@#g')"
+    shown="$(printf '%s' "$shown" | sed -E 's#(OPENLOG_TOKEN|OPENLOG_SECRET_KEY|OPENLOG_GPU_SSH_PASSWORD)=[^ ]*#\1=***#g')"
+    echo "[dry-run] $shown"
   else
     eval "$@"
   fi

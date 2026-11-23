@@ -188,110 +188,24 @@ vi.mock('../k8s/resources.js', () => ({
  * 用它验证路由把**补齐后的对象**交给了解析层，以及 gpu 段 / Pod 的 vgpu 字段形状。
  * 真实解析（异常注解、单位、边界）由 H1 的 k8s-hami.test.js 覆盖。
  */
-vi.mock('../k8s/hami.js', () => {
-  const parseDevices = (raw) => String(raw || '')
-    .split(':;')
-    .map((part) => part.trim())
-    .filter(Boolean)
-    .map((part) => {
-      const [id, memMiB, cores] = part.split(',');
-      return { id: String(id || ''), memMiB: Number(memMiB) || 0, cores: Number(cores) || 0 };
-    });
-
-  const readNodeGpu = vi.fn((node) => {
-    if (h.hamiThrows) throw new Error('not implemented');
-    const fromCapacity = node?.capacity?.['nvidia.com/gpu'];
-    const fromAllocatable = node?.allocatable?.['nvidia.com/gpu'];
-    const bag = node?.capacity || node?.allocatable || {};
-    const count = Number(bag['nvidia.com/gpu']);
-    if (!Number.isFinite(count) || count <= 0) {
-      return { hasGpu: false, count: 0, memMiB: 0, cores: 0, source: 'none' };
-    }
-    return {
-      hasGpu: true,
-      count,
-      memMiB: Number(bag['nvidia.com/gpumem']) || 0,
-      cores: Number(bag['nvidia.com/gpucores']) || 0,
-      source: fromCapacity ? 'capacity' : (fromAllocatable ? 'allocatable' : 'none'),
-    };
-  });
-
-  const readPodVgpu = vi.fn((pod) => {
-    if (h.hamiThrows) throw new Error('not implemented');
-    const bag = pod?.annotations && typeof pod.annotations === 'object' ? pod.annotations : {};
-    const raw = bag['hami.io/vgpu-devices-allocated'] || bag['hami.io/vgpu-devices-assigned'] || '';
-    const devices = parseDevices(raw);
-    const nodeAllocated = String(bag['hami.io/vgpu-node-allocated'] || '');
-    return {
-      hasVgpu: devices.length > 0,
-      devices,
-      totalMemMiB: devices.reduce((sum, device) => sum + device.memMiB, 0),
-      totalCores: devices.reduce((sum, device) => sum + device.cores, 0),
-      nodeName: nodeAllocated ? (String(nodeAllocated.split(',')[0] || '') || null) : null,
-      raw: raw || null,
-    };
-  });
-
+vi.mock('../k8s/hami.js', async (importOriginal) => {
+  // 委托真实解析层：以前的 mock 自带一份「三段注解 + nvidia.com/gpumem」的假实现，
+  // 结果真机改成四段 + node-nvidia-register 之后，测试仍在用假逻辑自证（等于没测）。
+  // 现在只保留故障注入（h.hamiThrows），解析与汇总都走真实实现。
+  const actual = await importOriginal();
   return {
-    readNodeGpu,
-    readPodVgpu,
-    summarizeVgpu: vi.fn(({ nodes = [], pods = [] } = {}) => {
+    ...actual,
+    readNodeGpu: vi.fn((node) => {
       if (h.hamiThrows) throw new Error('not implemented');
-      const nodeRows = nodes.map((node) => {
-        const gpu = readNodeGpu(node);
-        const mine = pods.filter((pod) => readPodVgpu(pod).nodeName === (node?.name || ''));
-        const allocated = mine.reduce(
-          (sum, pod) => {
-            const vgpu = readPodVgpu(pod);
-            return { memMiB: sum.memMiB + vgpu.totalMemMiB, cores: sum.cores + vgpu.totalCores };
-          },
-          { memMiB: 0, cores: 0 },
-        );
-        return {
-          name: node?.name || '',
-          count: gpu.count,
-          memMiB: gpu.memMiB,
-          cores: gpu.cores,
-          allocatedMemMiB: allocated.memMiB,
-          allocatedCores: allocated.cores,
-          podCount: mine.length,
-        };
-      });
-      const podRows = pods
-        .map((pod) => {
-          const vgpu = readPodVgpu(pod);
-          return {
-            namespace: pod?.namespace || '',
-            name: pod?.name || '',
-            nodeName: vgpu.nodeName,
-            devices: vgpu.devices,
-            totalMemMiB: vgpu.totalMemMiB,
-            totalCores: vgpu.totalCores,
-            phase: pod?.phase || '',
-          };
-        })
-        .filter((pod) => pod.devices.length > 0);
-      const totals = podRows.reduce(
-        (sum, pod) => ({
-          allocatedMemMiB: sum.allocatedMemMiB + pod.totalMemMiB,
-          allocatedCores: sum.allocatedCores + pod.totalCores,
-        }),
-        { allocatedMemMiB: 0, allocatedCores: 0 },
-      );
-      return {
-        hasHami: nodeRows.some((row) => row.count > 0) || podRows.length > 0,
-        nodes: nodeRows.filter((row) => row.count > 0 || row.podCount > 0),
-        pods: podRows,
-        totals: {
-          gpuCount: nodeRows.reduce((sum, row) => sum + row.count, 0),
-          memMiB: nodeRows.reduce((sum, row) => sum + row.memMiB, 0),
-          cores: nodeRows.reduce((sum, row) => sum + row.cores, 0),
-          allocatedMemMiB: totals.allocatedMemMiB,
-          allocatedCores: totals.allocatedCores,
-          podCount: podRows.length,
-        },
-        warnings: [],
-      };
+      return actual.readNodeGpu(node);
+    }),
+    readPodVgpu: vi.fn((pod) => {
+      if (h.hamiThrows) throw new Error('not implemented');
+      return actual.readPodVgpu(pod);
+    }),
+    summarizeVgpu: vi.fn((parts) => {
+      if (h.hamiThrows) throw new Error('not implemented');
+      return actual.summarizeVgpu(parts);
     }),
   };
 });
@@ -876,7 +790,7 @@ describe('HAMi vGPU', () => {
     const res = await request('GET', '/api/k8s/clusters/c-1/overview');
     expect(res.status).toBe(200);
 
-    expect(res.body.gpu).toEqual({
+    expect(res.body.gpu).toMatchObject({
       hasHami: false,
       nodes: [],
       pods: [],
@@ -902,7 +816,7 @@ describe('HAMi vGPU', () => {
     const gpu = res.body.gpu;
     expect(gpu.hasHami).toBe(true);
     expect(gpu.warnings).toEqual([]);
-    expect(gpu.nodes).toEqual([
+    expect(gpu.nodes).toMatchObject([
       {
         name: 'k3s-1',
         count: 2,
@@ -924,7 +838,7 @@ describe('HAMi vGPU', () => {
         phase: 'Running',
       },
     ]);
-    expect(gpu.totals).toEqual({
+    expect(gpu.totals).toMatchObject({
       gpuCount: 2,
       memMiB: 49152,
       cores: 200,
@@ -974,7 +888,7 @@ describe('HAMi vGPU', () => {
     const res = await request('GET', '/api/k8s/clusters/c-1/overview');
     expect(res.status).toBe(200);
     expect(res.body.gpu.hasHami).toBe(false);
-    expect(res.body.gpu.nodes).toEqual([]);
+    expect(res.body.gpu.nodes).toMatchObject([]);
     expect(res.body.gpu.warnings).toHaveLength(1);
     expect(res.body.gpu.warnings[0]).toContain('not implemented');
     // 其余资源照常
@@ -1017,7 +931,10 @@ describe('演示模式 · HAMi vGPU fixture', () => {
 
     const { gpu } = res.body;
     expect(gpu.hasHami).toBe(true);
+    // 真机语义（243 实测）：gpuCount 是物理卡数，槽位数在 slots（nvidia.com/gpu = 40）
     expect(gpu.totals.gpuCount).toBe(4);
+    expect(gpu.totals.physicalCount).toBe(4);
+    expect(gpu.totals.slots).toBe(40);
     expect(gpu.totals.memMiB).toBe(96 * 1024);
     expect(gpu.totals.cores).toBe(400);
     // 自洽：已分配严格小于总量（否则「还剩多少」永远没得看）

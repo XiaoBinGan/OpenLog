@@ -68,7 +68,10 @@ describe('readNodeGpu', () => {
       count: 4,
       memMiB: 98304,
       cores: 400,
+      // 没有 hami.io/node-nvidia-register 注解 → 没有物理卡明细、没有槽位（未上报）
+      slots: 0,
       source: 'capacity',
+      devices: [],
     });
   });
 
@@ -86,15 +89,18 @@ describe('readNodeGpu', () => {
   });
 
   it('完全没有 GPU 字段 → hasGpu=false、source=none，不抛异常', () => {
-    expect(readNodeGpu(plainNode())).toEqual({
+    const empty = {
       hasGpu: false,
       count: 0,
       memMiB: 0,
       cores: 0,
+      slots: 0,
       source: 'none',
-    });
-    expect(readNodeGpu({})).toEqual({ hasGpu: false, count: 0, memMiB: 0, cores: 0, source: 'none' });
-    expect(readNodeGpu(null)).toEqual({ hasGpu: false, count: 0, memMiB: 0, cores: 0, source: 'none' });
+      devices: [],
+    };
+    expect(readNodeGpu(plainNode())).toEqual(empty);
+    expect(readNodeGpu({})).toEqual(empty);
+    expect(readNodeGpu(null)).toEqual(empty);
     expect(readNodeGpu(undefined).hasGpu).toBe(false);
   });
 
@@ -309,9 +315,35 @@ describe('summarizeVgpu', () => {
         count: 4,
         memMiB: 98304,
         cores: 400,
+        slots: 0, // 没有 register 注解 → 槽位未上报
         allocatedMemMiB: 36864, // 12288+4096 + 12288 + 8192
         allocatedCores: 115, // 40+10 + 40 + 25
         podCount: 3,
+        // 没有物理卡清单，但 Pod 确实占了 3 个 UUID → 按 UUID 补出三行（容量 0）
+        devices: [
+          {
+            id: 'GPU-3f2a',
+            type: '',
+            memMiB: 0,
+            cores: 0,
+            slots: 0,
+            health: true,
+            allocatedMemMiB: 24576, // 12288 + 12288
+            allocatedCores: 80, // 40 + 40
+            podCount: 2,
+          },
+          {
+            id: 'GPU-9b1c',
+            type: '',
+            memMiB: 0,
+            cores: 0,
+            slots: 0,
+            health: true,
+            allocatedMemMiB: 12288, // 4096 + 8192
+            allocatedCores: 35, // 10 + 25
+            podCount: 2,
+          },
+        ],
       },
     ]);
     expect(gpu.pods.map((p) => p.name)).toEqual(['vllm-qwen27b', 'sglang-router', 'bge-embed']);
@@ -329,6 +361,8 @@ describe('summarizeVgpu', () => {
     });
     expect(gpu.totals).toEqual({
       gpuCount: 4,
+      physicalCount: 0, // 没有 register 注解算不出物理卡数
+      slots: 0,
       memMiB: 98304,
       cores: 400,
       allocatedMemMiB: 36864,
@@ -349,6 +383,8 @@ describe('summarizeVgpu', () => {
     expect(gpu.pods).toEqual([]);
     expect(gpu.totals).toEqual({
       gpuCount: 0,
+      physicalCount: 0,
+      slots: 0,
       memMiB: 0,
       cores: 0,
       allocatedMemMiB: 0,
@@ -466,6 +502,8 @@ describe('summarizeVgpu', () => {
   it('空输入 / 缺参 / 非数组都不抛异常', () => {
     const zero = {
       gpuCount: 0,
+      physicalCount: 0,
+      slots: 0,
       memMiB: 0,
       cores: 0,
       allocatedMemMiB: 0,
@@ -560,6 +598,8 @@ describe('归一化层透传（resources.js）', () => {
     });
     expect(gpu.totals).toEqual({
       gpuCount: 4,
+      physicalCount: 0,
+      slots: 0,
       memMiB: 98304,
       cores: 400,
       allocatedMemMiB: 28672,
@@ -577,5 +617,425 @@ describe('归一化层透传（resources.js）', () => {
     expect(gpu.hasHami).toBe(false);
     expect(gpu.nodes).toEqual([]);
     expect(gpu.pods).toEqual([]);
+  });
+});
+
+/**
+ * 真机格式（243：k3s v1.33.13 + HAMi）—— 全部断言内联真实 payload。
+ *
+ * 这一段存在的意义：解析层以前按「三段 `<uuid>,<mem>,<cores>`」假设写的，
+ * 真机上是四段 `<uuid>,<type>,<mem>,<cores>`，于是 `NVIDIA` 被当成显存：
+ * 显存显示 0、算力错位成 5888、还冒一条「显存不是数字」的误报警告。
+ * 节点容量更是不在 `nvidia.com/gpumem|gpucores` 上（真机没有这两个字段），
+ * 而在 `hami.io/node-nvidia-register` 的 JSON 里。契约见 /tmp/hami-real-format.md。
+ */
+describe('真机格式（243 实测 payload）', () => {
+  const REGISTER = 'hami.io/node-nvidia-register';
+  const NODE_NAME = 'hami.io/vgpu-node';
+
+  /** 243 上真实的 4090 卡 UUID */
+  const UUID_4090 = 'GPU-86d14e75-1e54-3aed-e483-6652a4c30653';
+  /** 243 上真实的 5090 卡 UUID */
+  const UUID_5090 = 'GPU-6b12533d-bcfb-25b6-bafe-5a8d5bd85d07';
+
+  /** Pod 注解原文（243，逐字节） */
+  const REAL_POD_ANNOTATION = 'GPU-86d14e75-1e54-3aed-e483-6652a4c30653,NVIDIA,5888,0:;';
+
+  /** 节点 register 注解原文（243，逐字节；两个空格/换行都没有，方便比对） */
+  const REAL_NODE_REGISTER = '[{"id":"GPU-6b12533d-bcfb-25b6-bafe-5a8d5bd85d07","index":1,"count":10,"devmem":32607,"devcore":100,"type":"NVIDIA GeForce RTX 5090","numa":1,"mode":"hami-core","health":true},{"id":"GPU-86d14e75-1e54-3aed-e483-6652a4c30653","count":10,"devmem":49140,"devcore":100,"type":"NVIDIA GeForce RTX 4090","mode":"hami-core","health":true}]';
+
+  /** 243 的 GPU 节点：capacity 里只有 nvidia.com/gpu（= 槽位数 20），容量/型号全在 register 注解里。 */
+  function realNode(overrides = {}) {
+    const resources = { [GPU]: '20' };
+    return {
+      metadata: { name: 'k3s-gpu-1', annotations: { [REGISTER]: REAL_NODE_REGISTER } },
+      status: {
+        capacity: { cpu: '64', memory: '263000000Ki', pods: '110', ...resources },
+        allocatable: { cpu: '64', memory: '263000000Ki', pods: '110', ...resources },
+      },
+      ...overrides,
+    };
+  }
+
+  /** 243 的 Pod：注解是四段，节点名在 `hami.io/vgpu-node`。 */
+  function realPod(name, annotation) {
+    return {
+      namespace: 'inference',
+      name,
+      phase: 'Running',
+      node: 'k3s-gpu-1',
+      annotations: { [DEVICES_ALLOCATED]: annotation, [NODE_NAME]: 'k3s-gpu-1' },
+    };
+  }
+
+  describe('Pod 注解自适应（四段 / 三段 / 两段）', () => {
+    it('四段原文：`GPU-86d1…,NVIDIA,5888,0` → type=NVIDIA、显存 5888、算力 0，且没有 warning', () => {
+      const vgpu = readPodVgpu(realPod('qwen-vllm', REAL_POD_ANNOTATION));
+
+      expect(vgpu.hasVgpu).toBe(true);
+      expect(vgpu.devices).toEqual([{ id: UUID_4090, type: 'NVIDIA', memMiB: 5888, cores: 0 }]);
+      expect(vgpu.totalMemMiB).toBe(5888);
+      expect(vgpu.totalCores).toBe(0);
+      expect(vgpu.nodeName).toBe('k3s-gpu-1');
+      expect(vgpu.raw).toBe(REAL_POD_ANNOTATION);
+
+      // 关键回归：以前这里会冒出「显存不是数字（"NVIDIA"）」+「算力 5888」
+      expect(summarizeVgpu({ nodes: [], pods: [realPod('qwen-vllm', REAL_POD_ANNOTATION)] }).warnings)
+        .toEqual([]);
+    });
+
+    it('四段多卡 + `:;` 分隔：每张卡各带自己的型号，不错位', () => {
+      const vgpu = readPodVgpu(
+        realPod('multi', `${UUID_5090},NVIDIA,1024,10:;${UUID_4090},NVIDIA,2048,20:;`),
+      );
+
+      expect(vgpu.devices).toEqual([
+        { id: UUID_5090, type: 'NVIDIA', memMiB: 1024, cores: 10 },
+        { id: UUID_4090, type: 'NVIDIA', memMiB: 2048, cores: 20 },
+      ]);
+      expect(vgpu.totalMemMiB).toBe(3072);
+      expect(vgpu.totalCores).toBe(30);
+    });
+
+    it('四段但数字写坏：型号照旧识别，只有真正坏的数字按 0 + warning', () => {
+      const vgpu = readPodVgpu(realPod('half', `${UUID_4090},NVIDIA,abc,10`));
+
+      expect(vgpu.devices).toEqual([{ id: UUID_4090, type: 'NVIDIA', memMiB: 0, cores: 10 }]);
+      expect(summarizeVgpu({ nodes: [], pods: [realPod('half', `${UUID_4090},NVIDIA,abc,10`)] }).warnings[0])
+        .toContain('显存');
+    });
+
+    it('三段（老格式，第二段是数字）仍然正确：没有 type，不产生型号 field', () => {
+      const vgpu = readPodVgpu(realPod('legacy', `${UUID_4090},12288,40:;`));
+
+      expect(vgpu.devices).toEqual([{ id: UUID_4090, type: undefined, memMiB: 12288, cores: 40 }]);
+      expect(vgpu.totalMemMiB).toBe(12288);
+      expect(vgpu.totalCores).toBe(40);
+      expect(summarizeVgpu({ nodes: [], pods: [realPod('legacy', `${UUID_4090},12288,40:;`)] }).warnings)
+        .toEqual([]);
+    });
+
+    it('两段 `<uuid>,<type>`：只认型号，显存/算力 0，不报错', () => {
+      const vgpu = readPodVgpu(realPod('type-only', `${UUID_4090},NVIDIA`));
+
+      expect(vgpu.devices).toEqual([{ id: UUID_4090, type: 'NVIDIA', memMiB: 0, cores: 0 }]);
+      expect(vgpu.totalMemMiB).toBe(0);
+      expect(vgpu.totalCores).toBe(0);
+      expect(summarizeVgpu({ nodes: [], pods: [realPod('type-only', `${UUID_4090},NVIDIA`)] }).warnings)
+        .toEqual([]);
+    });
+
+    it('两段 `<uuid>,<mem>`（残缺记录）：显存仍按数字读，缺算力给一条 warning', () => {
+      const vgpu = readPodVgpu(realPod('mem-only', `${UUID_4090},5888`));
+
+      expect(vgpu.devices).toEqual([{ id: UUID_4090, type: undefined, memMiB: 5888, cores: 0 }]);
+      expect(summarizeVgpu({ nodes: [], pods: [realPod('mem-only', `${UUID_4090},5888`)] }).warnings.join('\n'))
+        .toContain('缺少算力字段');
+    });
+
+    it('三段 + 第二段是型号名：整体右移一位（`uuid,NVIDIA,5888`）', () => {
+      const vgpu = readPodVgpu(realPod('shifted', `${UUID_4090},NVIDIA,5888`));
+
+      expect(vgpu.devices).toEqual([{ id: UUID_4090, type: 'NVIDIA', memMiB: 5888, cores: 0 }]);
+    });
+
+    it('nodeName 优先 `hami.io/vgpu-node`（243 上只有这个，且比 vgpu-node-allocated 可信）', () => {
+      const vgpu = readPodVgpu({
+        namespace: 'inference',
+        name: 'pending',
+        phase: 'Pending',
+        node: '',
+        annotations: {
+          [DEVICES_ALLOCATED]: REAL_POD_ANNOTATION,
+          [NODE_NAME]: 'k3s-gpu-1',
+          [NODE_ALLOCATED]: 'k3s-gpu-9,0,NVIDIA',
+        },
+      });
+
+      expect(vgpu.nodeName).toBe('k3s-gpu-1');
+    });
+  });
+
+  describe('节点 register 注解（物理卡清单 + 容量）', () => {
+    it('register 原文：count=2 张物理卡 / 81747 MiB / 200 算力 / 20 槽位', () => {
+      const gpu = readNodeGpu(realNode());
+
+      expect(gpu).toMatchObject({
+        hasGpu: true,
+        count: 2,
+        memMiB: 81747, // 32607 + 49140
+        cores: 200, // 100 + 100
+        slots: 20, // 10 + 10
+        source: 'register',
+      });
+      // capacity 里的 nvidia.com/gpu 是 20（槽位数），不能被当成卡数
+      expect(gpu.count).not.toBe(20);
+
+      expect(gpu.devices).toEqual([
+        {
+          id: UUID_5090,
+          type: 'NVIDIA GeForce RTX 5090',
+          memMiB: 32607,
+          cores: 100,
+          slots: 10,
+          health: true,
+          index: 1,
+        },
+        {
+          id: UUID_4090,
+          type: 'NVIDIA GeForce RTX 4090',
+          memMiB: 49140,
+          cores: 100,
+          slots: 10,
+          health: true,
+          index: null, // 真机上第二张卡没有 index 字段
+        },
+      ]);
+    });
+
+    it('归一化节点只带 annotations 也能读 register（不必是原始 k8s 对象）', () => {
+      const node = {
+        name: 'k3s-gpu-1',
+        allocatable: { [GPU]: '20' },
+        annotations: { [REGISTER]: REAL_NODE_REGISTER },
+      };
+
+      expect(readNodeGpu(node)).toMatchObject({
+        count: 2,
+        memMiB: 81747,
+        cores: 200,
+        slots: 20,
+        source: 'register',
+      });
+    });
+
+    it('没有 register、只有 nvidia.com/gpu:20 → devices 空、count=20、显存算力 0，不报错', () => {
+      const node = {
+        metadata: { name: 'plain-hami' },
+        status: {
+          capacity: { [GPU]: '20' },
+          allocatable: { [GPU]: '20' },
+        },
+      };
+
+      const gpu = readNodeGpu(node);
+      expect(gpu).toMatchObject({
+        hasGpu: true,
+        count: 20,
+        memMiB: 0,
+        cores: 0,
+        slots: 0,
+        source: 'capacity',
+      });
+      expect(gpu.devices).toEqual([]);
+      expect(summarizeVgpu({ nodes: [node], pods: [] }).warnings).toEqual([]);
+    });
+
+    it('坏 JSON：降级到 nvidia.com/*，只记一条 warning，不抛异常', () => {
+      const node = {
+        metadata: { name: 'broken-register', annotations: { [REGISTER]: '[{"id":' } },
+        status: { capacity: { [GPU]: '4', [GPUMEM]: '98304' }, allocatable: {} },
+      };
+
+      expect(() => readNodeGpu(node)).not.toThrow();
+      expect(readNodeGpu(node)).toMatchObject({
+        hasGpu: true,
+        count: 4,
+        memMiB: 98304,
+        cores: 0,
+        slots: 0,
+        source: 'capacity',
+        devices: [],
+      });
+
+      const summary = summarizeVgpu({ nodes: [node], pods: [] });
+      expect(summary.warnings).toHaveLength(1);
+      expect(summary.warnings[0]).toContain(REGISTER);
+      expect(summary.warnings[0]).toContain('不是合法 JSON');
+    });
+
+    it('register 不是 JSON 数组（对象/字符串）：同样降级 + 一条 warning', () => {
+      for (const raw of ['{"id":"GPU-x"}', '"just-a-string"', '42']) {
+        const node = {
+          name: 'not-array',
+          annotations: { [REGISTER]: raw },
+          allocatable: { [GPU]: '1' },
+        };
+
+        expect(readNodeGpu(node)).toMatchObject({
+          count: 1,
+          source: 'allocatable',
+          devices: [],
+        });
+        expect(summarizeVgpu({ nodes: [node], pods: [] }).warnings[0]).toContain('不是 JSON 数组');
+      }
+    });
+
+    it('register 里有坏数字 / health:false：坏数字按 0 + warning，健康标记原样保留', () => {
+      const register = '[{"id":"GPU-h1","count":10,"devmem":"abc","devcore":100,"type":"NVIDIA","health":false}]';
+      const node = {
+        metadata: { name: 'sick-gpu', annotations: { [REGISTER]: register } },
+        status: { capacity: {}, allocatable: {} },
+      };
+
+      expect(readNodeGpu(node).devices[0]).toMatchObject({
+        id: 'GPU-h1',
+        type: 'NVIDIA',
+        memMiB: 0,
+        cores: 100,
+        slots: 10,
+        health: false,
+      });
+      expect(summarizeVgpu({ nodes: [node], pods: [] }).warnings.join('\n')).toContain('devmem');
+    });
+
+    it('register 同一张卡登记两遍：只认第一条（容量不许翻倍），并记一条 warning', () => {
+      const card = `{"id":"${UUID_4090}","count":10,"devmem":49140,"devcore":100,"type":"NVIDIA GeForce RTX 4090","health":true}`;
+      const node = {
+        metadata: { name: 'dup-gpu', annotations: { [REGISTER]: `[${card},${card}]` } },
+        status: { capacity: {}, allocatable: {} },
+      };
+
+      expect(readNodeGpu(node)).toMatchObject({
+        count: 1,
+        memMiB: 49140,
+        cores: 100,
+        slots: 10,
+      });
+      expect(summarizeVgpu({ nodes: [node], pods: [] }).warnings.join('\n')).toContain('重复登记');
+    });
+  });
+
+  describe('真机集群汇总（按物理卡聚合）', () => {
+    it('节点 + 两个 Pod：物理卡明细给出已分配与占卡 Pod 数，totals 带 physicalCount/slots', () => {
+      const nodes = [realNode()];
+      const pods = [
+        realPod('qwen-vllm', REAL_POD_ANNOTATION), // 4090 上 5888 / 0
+        realPod('bge-m3', `${UUID_4090},NVIDIA,23552,50:;`), // 4090 上 23552 / 50
+      ];
+
+      const gpu = summarizeVgpu({ nodes, pods });
+
+      expect(gpu.hasHami).toBe(true);
+      expect(gpu.nodes).toEqual([
+        {
+          name: 'k3s-gpu-1',
+          count: 2,
+          memMiB: 81747,
+          cores: 200,
+          slots: 20,
+          allocatedMemMiB: 29440, // 5888 + 23552
+          allocatedCores: 50, // 0 + 50
+          podCount: 2,
+          devices: [
+            {
+              id: UUID_5090,
+              type: 'NVIDIA GeForce RTX 5090',
+              memMiB: 32607,
+              cores: 100,
+              slots: 10,
+              health: true,
+              allocatedMemMiB: 0,
+              allocatedCores: 0,
+              podCount: 0,
+            },
+            {
+              id: UUID_4090,
+              type: 'NVIDIA GeForce RTX 4090',
+              memMiB: 49140,
+              cores: 100,
+              slots: 10,
+              health: true,
+              allocatedMemMiB: 29440,
+              allocatedCores: 50,
+              podCount: 2,
+            },
+          ],
+        },
+      ]);
+
+      expect(gpu.totals).toEqual({
+        gpuCount: 2,
+        physicalCount: 2,
+        slots: 20,
+        memMiB: 81747,
+        cores: 200,
+        allocatedMemMiB: 29440,
+        allocatedCores: 50,
+        podCount: 2,
+      });
+      expect(gpu.warnings).toEqual([]);
+    });
+
+    it('Pod 占了 register 里没有的 UUID：追加一行（容量 0、型号用 Pod 的），占用不丢', () => {
+      const stray = 'GPU-ffffffff-0000-0000-0000-000000000000';
+      const gpu = summarizeVgpu({
+        nodes: [realNode()],
+        pods: [realPod('stray', `${stray},NVIDIA,4096,10:;`)],
+      });
+
+      const devices = gpu.nodes[0].devices;
+      expect(devices).toHaveLength(3);
+      expect(devices[2]).toMatchObject({
+        id: stray,
+        type: 'NVIDIA',
+        memMiB: 0,
+        cores: 0,
+        slots: 0,
+        health: true,
+        allocatedMemMiB: 4096,
+        allocatedCores: 10,
+        podCount: 1,
+      });
+      // 节点级累计与物理卡明细对得上
+      expect(gpu.nodes[0].allocatedMemMiB).toBe(4096);
+      expect(gpu.totals).toMatchObject({ allocatedMemMiB: 4096, allocatedCores: 10, podCount: 1 });
+    });
+
+    it('register 的型号优先于 Pod 注解里的厂商名（4090 不会被写成 NVIDIA）', () => {
+      const gpu = summarizeVgpu({
+        nodes: [realNode()],
+        pods: [realPod('qwen-vllm', REAL_POD_ANNOTATION)],
+      });
+
+      expect(gpu.nodes[0].devices[1].type).toBe('NVIDIA GeForce RTX 4090');
+    });
+
+    it('归一化链路：normalizePods 透传真机四段注解，解析结果与原始对象一致', () => {
+      const [pod] = normalizePods([
+        {
+          metadata: {
+            name: 'qwen-vllm',
+            namespace: 'inference',
+            annotations: { [DEVICES_ALLOCATED]: REAL_POD_ANNOTATION, [NODE_NAME]: 'k3s-gpu-1' },
+          },
+          spec: { nodeName: 'k3s-gpu-1' },
+          status: { phase: 'Running' },
+        },
+      ]);
+
+      expect(readPodVgpu(pod)).toEqual({
+        hasVgpu: true,
+        devices: [{ id: UUID_4090, type: 'NVIDIA', memMiB: 5888, cores: 0 }],
+        totalMemMiB: 5888,
+        totalCores: 0,
+        nodeName: 'k3s-gpu-1',
+        raw: REAL_POD_ANNOTATION,
+      });
+    });
+
+    it('归一化节点默认不带 annotations：register 读不到，于是退回 nvidia.com/gpu（路由层需补注解）', () => {
+      const [node] = normalizeNodes([realNode()]);
+
+      expect(node.annotations).toBeUndefined();
+      expect(readNodeGpu(node)).toMatchObject({
+        count: 20,
+        memMiB: 0,
+        cores: 0,
+        slots: 0,
+        devices: [],
+        source: 'allocatable',
+      });
+    });
   });
 });

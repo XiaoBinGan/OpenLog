@@ -5,12 +5,20 @@
  * 为什么需要它：
  *   真要看 HAMi 数据得有一台装了 HAMi device-plugin 的 GPU 节点。没有机器的时候，
  *   无论是开发 UI、给客户演示、还是回归测试，都会因为「没有 GPU 集群」卡住。
- *   这个脚本用纯 node 起一个 HTTP 服务，按 K8s API 的形状返回：
- *     · 节点 capacity/allocatable 里的 nvidia.com/gpu | gpumem | gpucores
- *     · Pod 注解 hami.io/vgpu-devices-allocated / hami.io/vgpu-node-allocated
- *     · 若干 Warning 事件（显存不足导致 Pending、OOM CrashLoop）
+ *   这个脚本用纯 node 起一个 HTTP 服务，按 K8s API 的形状返回数据。
  *   OpenLog 用普通 kubeconfig 连上来，走的是真 HTTP、真 JSON、真归一化链路，
  *   和连真集群没有区别（唯一区别是数据是这里写死的）。
+ *
+ * 数据形状严格照 **243 真机**（见 /tmp/hami-real-format.md），不是凭记忆编的：
+ *   · 节点注解 `hami.io/node-nvidia-register` = JSON 数组，每项一张**物理卡**：
+ *     `{id,index,count,devmem,devcore,type,numa,mode,health}`，
+ *     `count` = 这张卡切成的 vGPU 槽位数，`devmem` = 该卡显存 MiB，`type` = 型号；
+ *   · 节点 capacity `nvidia.com/gpu` = Σcount（本例 20），
+ *     **没有** `nvidia.com/gpumem` / `nvidia.com/gpucores`（真机就是没有，容量只能靠 register）；
+ *   · Pod 注解 `hami.io/vgpu-devices-allocated` 是**四段**：
+ *     `GPU-<uuid>,NVIDIA,<memMiB>,<cores>:;`，多卡用 `:;` 拼接；
+ *   · Pod 注解 `hami.io/vgpu-node` = 节点名（243 上只有这个，没有 vgpu-node-allocated）。
+ *   分配量与容量自洽：每张卡上所有 Pod 的显存之和 ≤ 该卡 devmem。
  *
  * 用法：
  *   node scripts/mock-hami-cluster.mjs                # 监听 18445，打印可直接粘贴的 kubeconfig
@@ -39,17 +47,45 @@ const AUTH = !flag('--no-auth');
 const NOW = new Date('2026-06-08T09:48:37.000Z');
 const ago = (minutes) => new Date(NOW.getTime() - minutes * 60_000).toISOString();
 
-/** 设备 UUID（固定值，保证多次请求一致） */
+/**
+ * 设备 UUID（固定值，保证多次请求一致）。
+ * 前两个直接取自 243 的实测 payload，方便和真机日志对照。
+ */
 const GPU = {
-  a0: 'GPU-3f2a9c1e-77b4-4d21-9a8e-1b2c3d4e5f60',
-  a1: 'GPU-9b1c8d2f-11aa-4c33-8b44-5d6e7f8a9b01',
-  a2: 'GPU-4d7e8f90-22bb-4c55-9d66-7e8f90a1b2c3',
-  a3: 'GPU-5e8f90a1-33cc-4d66-8e77-9fab01c2d3e4',
-  b0: 'GPU-6fab01c2-44dd-4e77-9f88-0abc12d3e4f5',
-  b1: 'GPU-70bc12d3-55ee-4f88-a099-1bcd23e4f506',
+  a5090: 'GPU-6b12533d-bcfb-25b6-bafe-5a8d5bd85d07',
+  a4090: 'GPU-86d14e75-1e54-3aed-e483-6652a4c30653',
+  t4: 'GPU-1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d',
 };
 
-function node(name, { cards, memMiB, cores, ip, products, ready = true, reason, message }) {
+/**
+ * 物理卡清单（= 节点 `hami.io/node-nvidia-register` 的内容）。
+ * 字段名与真机一字不差：`count` 是槽位数、`devmem` 是显存 MiB、`devcore` 是算力点。
+ */
+const CARDS = {
+  // 243：RTX 5090 32607 MiB + RTX 4090 49140 MiB，两张卡各切 10 份
+  gpu4090a: [
+    {
+      id: GPU.a5090, index: 1, count: 10, devmem: 32607, devcore: 100,
+      type: 'NVIDIA GeForce RTX 5090', numa: 1, mode: 'hami-core', health: true,
+    },
+    {
+      id: GPU.a4090, count: 10, devmem: 49140, devcore: 100,
+      type: 'NVIDIA GeForce RTX 4090', mode: 'hami-core', health: true,
+    },
+  ],
+  // 第二台（NotReady）：单张 T4，4 槽位 —— 用来验证「Pod 卡在坏节点上」的展示
+  gput4b: [
+    {
+      id: GPU.t4, index: 0, count: 4, devmem: 15360, devcore: 100,
+      type: 'Tesla T4', numa: 0, mode: 'hami-core', health: true,
+    },
+  ],
+};
+
+/** 槽位合计 = capacity 里的 `nvidia.com/gpu`（真机的算法）。 */
+const slotsOf = (cards) => cards.reduce((sum, card) => sum + card.count, 0);
+
+function node(name, { cards, ip, products, ready = true, reason, message }) {
   return {
     metadata: {
       name,
@@ -60,6 +96,10 @@ function node(name, { cards, memMiB, cores, ip, products, ready = true, reason, 
         'node-role.kubernetes.io/control-plane': '',
         'gpu': 'on',
         'hami.io/node-handshake': 'Requesting',
+      },
+      annotations: {
+        // 真机形态：JSON 字符串数组，一张物理卡一项（容量/型号/槽位的唯一来源）
+        'hami.io/node-nvidia-register': JSON.stringify(cards),
       },
     },
     spec: { taints: [] },
@@ -78,21 +118,17 @@ function node(name, { cards, memMiB, cores, ip, products, ready = true, reason, 
         { type: 'InternalIP', address: ip },
         { type: 'Hostname', address: name },
       ],
-      // HAMi device-plugin 汇报的扩展资源：gpumem 单位 MiB，gpucores 是「百分比点」总和
+      // 真机只报 nvidia.com/gpu（= Σcount 槽位）；gpumem / gpucores **不存在**
       capacity: {
         cpu: '64', memory: '131981756Ki', pods: '110', 'ephemeral-storage': '1952861234Ki',
-        'nvidia.com/gpu': String(cards),
-        'nvidia.com/gpumem': String(memMiB),
-        'nvidia.com/gpucores': String(cores),
+        'nvidia.com/gpu': String(slotsOf(cards)),
       },
       allocatable: {
         cpu: '64', memory: '131981756Ki', pods: '110', 'ephemeral-storage': '1952861234Ki',
-        'nvidia.com/gpu': String(cards),
-        'nvidia.com/gpumem': String(memMiB),
-        'nvidia.com/gpucores': String(cores),
+        'nvidia.com/gpu': String(slotsOf(cards)),
       },
       nodeInfo: {
-        kubeletVersion: 'v1.31.4+k3s1',
+        kubeletVersion: 'v1.33.13+k3s1',
         osImage: 'Ubuntu 22.04.4 LTS',
         kernelVersion: '5.15.0-113-generic',
         containerRuntimeVersion: 'containerd://1.7.20-k3s1',
@@ -108,16 +144,24 @@ function node(name, { cards, memMiB, cores, ip, products, ready = true, reason, 
 const nodes = {
   apiVersion: 'v1', kind: 'NodeList', metadata: {},
   items: [
-    node('gpu-4090-a', { cards: 4, memMiB: 98304, cores: 400, ip: '10.20.30.11', products: ['vllm/vllm-openai:latest'] }),
+    node('gpu-4090-a', { cards: CARDS.gpu4090a, ip: '10.20.30.11', products: ['vllm/vllm-openai:latest'] }),
     node('gpu-t4-b', {
-      cards: 2, memMiB: 32768, cores: 200, ip: '10.20.30.12', products: ['python:3.11'],
+      cards: CARDS.gput4b, ip: '10.20.30.12', products: ['python:3.11'],
       ready: false, reason: 'KubeletNotReady', message: 'PLEG is not healthy: pleg was last seen active 6m ago',
     }),
   ],
 };
 
-/** 组装一个 Pod；vgpu 为空表示没有 vGPU 分配（未调度或纯 CPU 负载） */
-function pod({ ns, name, nodeName, phase = 'Running', vgpu, cores = {}, restarts = 0, oom = false, crash = false, image }) {
+/**
+ * 真机四段注解：`GPU-<uuid>,NVIDIA,<memMiB>,<cores>`，多卡用 `:;` 拼接、末尾带 `:;`。
+ * @param {Array<{id:string, memMiB:number, cores:number}>} allocs 该 Pod 占的每段分配
+ */
+function devicesAnnotation(allocs) {
+  return `${allocs.map((a) => `${a.id},NVIDIA,${a.memMiB},${a.cores}`).join(':;')}:;`;
+}
+
+/** 组装一个 Pod；vhgpu（alloc 数组）为空表示没有 vGPU 分配（未调度或纯 CPU 负载） */
+function pod({ ns, name, nodeName, phase = 'Running', alloc, cores = {}, restarts = 0, oom = false, crash = false, image }) {
   const containers = [{ name: 'main', image: image || 'vllm/vllm-openai:latest' }];
   const containerStatuses = containers.map((c) => ({
     name: c.name,
@@ -132,9 +176,11 @@ function pod({ ns, name, nodeName, phase = 'Running', vgpu, cores = {}, restarts
         : { state: { waiting: { reason: 'ContainerCreating' } } }),
   }));
   const annotations = {};
-  if (vgpu) {
-    annotations['hami.io/vgpu-devices-allocated'] = vgpu;
-    annotations['hami.io/vgpu-node-allocated'] = `${nodeName},0,NVIDIA`;
+  if (alloc && alloc.length > 0) {
+    annotations['hami.io/vgpu-devices-allocated'] = devicesAnnotation(alloc);
+    // 真机（243）只有这个注解；vgpu-node-allocated 是新版 HAMi 才写的，mock 不伪造它
+    annotations['hami.io/vgpu-node'] = nodeName;
+    annotations['hami.io/bind-phase'] = 'success';
   }
   return {
     metadata: {
@@ -162,18 +208,30 @@ function pod({ ns, name, nodeName, phase = 'Running', vgpu, cores = {}, restarts
   };
 }
 
+/**
+ * 分配自洽表（sum ≤ 各卡 devmem）：
+ *   5090（32607）：24576 + 4096 = 28672
+ *   4090（49140）：8192 + 8192 + 12288 = 28672
+ *   T4  （15360）：4096
+ */
 const pods = {
   apiVersion: 'v1', kind: 'PodList', metadata: {},
   items: [
-    pod({ ns: 'inference', name: 'vllm-qwen27b-0', nodeName: 'gpu-4090-a', vgpu: `${GPU.a0},12288,40` }),
-    pod({ ns: 'inference', name: 'sglang-router-6c8f7d9b-2xk4p', nodeName: 'gpu-4090-a', vgpu: `${GPU.a0},4096,10:;${GPU.a1},8192,20` }),
-    pod({ ns: 'inference', name: 'embedding-bge-m3-0', nodeName: 'gpu-4090-a', vgpu: `${GPU.a2},8192,20` }),
+    pod({ ns: 'inference', name: 'vllm-qwen27b-0', nodeName: 'gpu-4090-a',
+      alloc: [{ id: GPU.a5090, memMiB: 24576, cores: 50 }] }),
+    // 跨两张卡：验证 `:;` 多段拼接（旧的三段格式这里会解析错）
+    pod({ ns: 'inference', name: 'sglang-router-6c8f7d9b-2xk4p', nodeName: 'gpu-4090-a',
+      alloc: [{ id: GPU.a5090, memMiB: 4096, cores: 10 }, { id: GPU.a4090, memMiB: 8192, cores: 20 }] }),
+    pod({ ns: 'inference', name: 'embedding-bge-m3-0', nodeName: 'gpu-4090-a',
+      alloc: [{ id: GPU.a4090, memMiB: 8192, cores: 20 }] }),
     // 跨节点：卡在另一台（节点已 NotReady，正好演示「卡在坏节点上」）
-    pod({ ns: 'batch', name: 'rerank-t4-0', nodeName: 'gpu-t4-b', vgpu: `${GPU.b0},4096,10`, image: 'python:3.11' }),
+    pod({ ns: 'batch', name: 'rerank-t4-0', nodeName: 'gpu-t4-b',
+      alloc: [{ id: GPU.t4, memMiB: 4096, cores: 25 }], image: 'python:3.11' }),
     // 没分配到 vGPU：显存不足，Pending
     pod({ ns: 'inference', name: 'vllm-llama70b-0', nodeName: undefined, phase: 'Pending', cores: { memory: '200Gi' } }),
-    // CrashLoop + OOM，占用显存但没有注解（模拟「崩了但分配还在」）
-    pod({ ns: 'inference', name: 'vllm-canary-0', nodeName: 'gpu-4090-a', vgpu: `${GPU.a3},12288,30`, restarts: 7, crash: true, oom: true }),
+    // CrashLoop + OOM，占用显存（分配还在，注解也还在 —— 这是排查时最想看到的那一行）
+    pod({ ns: 'inference', name: 'vllm-canary-0', nodeName: 'gpu-4090-a',
+      alloc: [{ id: GPU.a4090, memMiB: 12288, cores: 30 }], restarts: 7, crash: true, oom: true }),
     // 纯 CPU 负载（没有 GPU）
     pod({ ns: 'infra', name: 'redis-cache-7d9f-abc12', nodeName: 'gpu-4090-a', image: 'redis:7-alpine' }),
   ],
@@ -185,7 +243,7 @@ const events = {
     {
       metadata: { name: 'vllm-llama70b-0.17f1', namespace: 'inference' },
       type: 'Warning', reason: 'FailedScheduling', count: 23,
-      message: '0/2 nodes are available: 1 node(s) had untolerated taint {node.kubernetes.io/unreachable: }, 1 Insufficient nvidia.com/gpumem.',
+      message: '0/2 nodes are available: 1 node(s) had untolerated taint {node.kubernetes.io/unreachable: }, 1 Insufficient nvidia.com/gpu.',
       involvedObject: { kind: 'Pod', namespace: 'inference', name: 'vllm-llama70b-0' },
       source: { component: 'default-scheduler' },
       firstTimestamp: ago(42), lastTimestamp: ago(2),
@@ -245,7 +303,7 @@ const daemonsets = workloads('DaemonSet', [
 ]);
 
 const routes = {
-  '/version': { major: '1', minor: '31', gitVersion: 'v1.31.4+k3s1', platform: 'linux/amd64' },
+  '/version': { major: '1', minor: '33', gitVersion: 'v1.33.13+k3s1', platform: 'linux/amd64' },
   '/api/v1/nodes': nodes,
   '/api/v1/pods': pods,
   '/api/v1/events': events,
@@ -318,15 +376,30 @@ const server = http.createServer((req, res) => {
   res.end(JSON.stringify({ kind: 'Status', apiVersion: 'v1', status: 'Failure', reason: 'NotFound', code: 404, message: `not found: ${url}` }));
 });
 
+/** 四段注解 → 每段分配（`uuid,NVIDIA,mem,cores`），给启动摘要用。 */
+function parseAlloc(annotation) {
+  return annotation
+    .split(/[;:]/)
+    .filter(Boolean)
+    .map((segment) => segment.split(','))
+    // 四段才是真机格式；三段/两段是旧版本，这里只为摘要统计，按位取即可
+    .map((parts) => ({ id: parts[0], memMiB: Number(parts[2]) || 0, cores: Number(parts[3]) || 0 }));
+}
+
 server.listen(PORT, HOST, () => {
-  const ready = pods.items.filter((p) => p.metadata.annotations['hami.io/vgpu-devices-allocated']);
-  const allocatedMiB = ready.reduce((sum, p) => {
-    const spec = p.metadata.annotations['hami.io/vgpu-devices-allocated'];
-    return sum + spec.split(/[;:]/).filter(Boolean).reduce((s, d) => s + (Number(d.split(',')[1]) || 0), 0);
+  const cards = nodes.items.flatMap((n) => JSON.parse(n.metadata.annotations['hami.io/node-nvidia-register']));
+  const physical = cards.length;
+  const slots = cards.reduce((sum, card) => sum + card.count, 0);
+  const vram = cards.reduce((sum, card) => sum + card.devmem, 0);
+  const gpuPods = pods.items.filter((p) => p.metadata.annotations['hami.io/vgpu-devices-allocated']);
+  const allocatedMiB = gpuPods.reduce((sum, p) => {
+    const allocs = parseAlloc(p.metadata.annotations['hami.io/vgpu-devices-allocated']);
+    return sum + allocs.reduce((s, a) => s + a.memMiB, 0);
   }, 0);
   process.stdout.write(`模拟 HAMi 集群已启动：http://${HOST}:${PORT}${AUTH ? '（Bearer ' + TOKEN + '）' : '（未开启鉴权）'}\n`);
-  process.stdout.write(`  ${nodes.items.length} 个节点 · 6 张卡 · 131072 MiB 显存 · 600 点算力\n`);
-  process.stdout.write(`  ${pods.items.length} 个 Pod（${ready.length} 个带 vGPU 分配，已分配 ${allocatedMiB} MiB）\n`);
+  process.stdout.write(`  ${nodes.items.length} 个节点 · ${physical} 张物理卡 · ${slots} 个 vGPU 槽位 · ${vram} MiB 显存\n`);
+  process.stdout.write(`  卡型：${[...new Set(cards.map((card) => card.type))].join(' / ')}\n`);
+  process.stdout.write(`  ${pods.items.length} 个 Pod（${gpuPods.length} 个带 vGPU 分配，已分配 ${allocatedMiB} MiB）\n`);
   process.stdout.write(`  ${events.items.filter((e) => e.type === 'Warning').length} 条 Warning 事件\n\n`);
   process.stdout.write('把这段 kubeconfig 粘贴到「K8s 集群」页面即可：\n\n');
   process.stdout.write(kubeconfig());
