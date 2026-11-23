@@ -8,8 +8,12 @@
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const APP = path.join(process.cwd(), 'client', 'src', 'App.tsx');
+// 用文件自身位置定位，而不是 process.cwd()：
+// 从仓库根跑 cwd=仓库根，从 client/ 跑 cwd=client —— 依赖 cwd 会让同一个测试在两种跑法下表现不同。
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const APP = path.resolve(HERE, '..', 'App.tsx');
 const src = fs.readFileSync(APP, 'utf8');
 
 /** 从 App.tsx 抽出已注册的子路由路径 */

@@ -138,7 +138,11 @@ describe('「机器」列改成 IP（用户要求）', () => {
 describe('导出失败必须有可见反馈（接线）', () => {
   it('NotificationCenter 捕获异常后弹 toast，不再只 console.error', async () => {
     const fs = await import('node:fs');
-    const src = fs.readFileSync('client/src/components/NotificationCenter.tsx', 'utf8');
+    // 按测试文件自身位置定位，别依赖 cwd（从 client/ 跑时 cwd 就是 client）
+    const { fileURLToPath } = await import('node:url');
+    const path = await import('node:path');
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    const src = fs.readFileSync(path.resolve(here, '..', 'components', 'NotificationCenter.tsx'), 'utf8');
     expect(src).toContain('toastError(`导出失败');
     expect(src).toContain('toastWarning(\'没有可导出的通知\')');
   });
