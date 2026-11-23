@@ -70,8 +70,10 @@ esac
 cd "$REPO_DIR"
 [ -z "$(git status --porcelain 2>/dev/null)" ] || warn "工作区有未提交改动 —— 镜像会包含它们（出正式包前建议先提交）"
 
-SHORT="$(git rev-parse --short=8 "$REF" 2>/dev/null)" || die "解析不到 git 引用: $REF"
-COMMIT_FULL="$(git rev-parse "$REF")"
+# 注意用 ^{commit}：annotated tag 的 rev-parse 返回的是 tag 对象 sha，
+# 拿它当包名会和提交号对不上（v1.2.0 就出现了：包名 c6ae1a2d、提交 92f53fa）。
+SHORT="$(git rev-parse --short=8 "$REF^{commit}" 2>/dev/null)" || die "解析不到 git 引用: $REF"
+COMMIT_FULL="$(git rev-parse "$REF^{commit}")"
 log "出包源：$REF → $SHORT"
 
 TARGETS="amd64 arm64"
