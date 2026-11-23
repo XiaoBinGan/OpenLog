@@ -49,6 +49,15 @@ import * as k8sKubeconfig from '../k8s/kubeconfig.js';
 import * as k8sClientModule from '../k8s/client.js';
 import * as k8sResources from '../k8s/resources.js';
 import * as k8sHami from '../k8s/hami.js';
+
+// GPU 实测数据（nvidia-smi）：HAMi v2 的 metrics 只有「分配」，没有容器级 util，
+// 所以「实测」这一半必须从 nvidia-smi 拿（详见 server/k8s/gpu-usage.js 文件头）。
+let gpuUsageModule = null;
+try {
+  gpuUsageModule = await import('../k8s/gpu-usage.js');
+} catch (err) {
+  console.warn(`[K8s] GPU 实测模块未加载（/usage 将只返回分配数据）：${errorMessage(err)}`);
+}
 import { isDemoMode } from '../demo/mode.js';
 
 /** 路由前缀：index.js 直接 `app.use(createK8sUsageRouter(...))` 挂在根上，所以每条路径写全 */
@@ -423,7 +432,7 @@ function podSortKey(pod) {
  *   metrics: object}} input
  * @returns {{available:boolean, scrapedAt:string, nodes:object[], reason?:string}}
  */
-export function buildUsage({ nodes, pods, rawNodes, rawPods, metrics } = {}) {
+export function buildUsage({ nodes, pods, rawNodes, rawPods, metrics, gpuUsage } = {}) {
   const scrapedAt = asLabel(metrics?.scrapedAt).trim() || new Date().toISOString();
   const available = metrics?.available === true;
   const reason = asLabel(metrics?.reason).trim() || UNAVAILABLE_REASON;
@@ -440,17 +449,30 @@ export function buildUsage({ nodes, pods, rawNodes, rawPods, metrics } = {}) {
   const measured = indexMetrics(metrics);
 
   // 节点 × 物理卡：分配数据来自 summarizeVgpu（register 清单 + Pod 注解累计）
+  // 实测数据（nvidia-smi）由调用方采集后传入：buildUsage 保持同步纯函数，便于单测
+  const nodeUsageMap = gpuUsage instanceof Map ? gpuUsage : new Map();
+  
   const nodeRows = (Array.isArray(summary.nodes) ? summary.nodes : [])
     .filter(isPlainObject)
     .map((node) => {
       const nodeName = asLabel(node.name);
+      const nodeUsage = nodeUsageMap.get(nodeName) || null;
       return {
         name: nodeName,
         devices: (Array.isArray(node.devices) ? node.devices : [])
           .filter(isPlainObject)
           .map((device) => {
             const uuid = asLabel(device.id).trim();
-            const hit = lookupMeasured(measured, nodeName, uuid);
+            // 优先 nvidia-smi 的实测（真实使用），HAMi metrics 仅作兜底
+            const gpuHit = gpuUsageModule
+              ? gpuUsageModule.lookupGpuUsage(nodeUsage, { uuid, index: device.index })
+              : null;
+            const hit = gpuHit
+              ? {
+                  utilPercent: gpuHit.util === null ? null : gpuHit.util,
+                  memUsedBytes: gpuHit.memUsed === null ? null : gpuHit.memUsed * 1024 * 1024,
+                }
+              : lookupMeasured(measured, nodeName, uuid);
             const hasUtil = Boolean(hit) && hit.utilPercent !== null;
             const hasMem = Boolean(hit) && hit.memUsedBytes !== null;
             return {
@@ -520,6 +542,38 @@ export function buildUsage({ nodes, pods, rawNodes, rawPods, metrics } = {}) {
  *   ensureSettings —— 读取当前生效配置（settings.k8sClusters 存在这里），由 index.js 注入
  * @returns {import('express').Router}
  */
+/**
+ * 采集「节点 → 设备 UUID → 实测(util/memUsed)」。
+ *
+ * 远端节点：按 node.internalIP 匹配 settings 里的远程服务器 id，用 execRemoteCommand 跑 nvidia-smi。
+ * 本机节点：容器内大概率没有 nvidia-smi，直接跳过（该节点的卡会标 measured:false）。
+ * 任何失败都降级为空 Map —— /usage 的分配部分照常返回。
+ */
+async function collectNodeGpuUsageSafe(nodes) {
+  if (!gpuUsageModule) return new Map();
+  try {
+    const remoteModule = await import('../remote.js');
+    const gpuModule = await import('../gpu.js');
+    const servers = typeof remoteModule.getServers === 'function' ? remoteModule.getServers() : [];
+    const getRemoteGPUs = async (server) => {
+      const r = await remoteModule.execRemoteCommand(server.id, REMOTE_GPU_QUERY);
+      if (r?.error) throw new Error(r.error);
+      return gpuModule.buildRemoteGPUPayload(r.stdout || '', '').devices;
+    };
+    return await gpuUsageModule.collectNodeGpuUsage({
+      nodes: Array.isArray(nodes) ? nodes : [],
+      servers,
+      deps: { getRemoteGPUs },
+    });
+  } catch (err) {
+    console.warn(`[K8s] GPU 实测采集失败（/usage 只返回分配数据）：${errorMessage(err)}`);
+    return new Map();
+  }
+}
+
+const REMOTE_GPU_QUERY =
+  'nvidia-smi --query-gpu=index,name,uuid,utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader,nounits';
+
 export function createK8sUsageRouter({ ensureSettings } = {}) {
   if (typeof ensureSettings !== 'function') {
     throw new TypeError('createK8sUsageRouter 需要注入 ensureSettings');
@@ -594,7 +648,9 @@ export function createK8sUsageRouter({ ensureSettings } = {}) {
 
       // 实测数据是实时遥测：中间任何一层代理都不许缓存
       res.set('cache-control', 'no-store');
-      res.json(buildUsage({ nodes, pods, rawNodes, rawPods, metrics }));
+      // 实测数据（nvidia-smi）在这里采集：handler 是 async，buildUsage 保持同步纯函数
+      const gpuUsage = await collectNodeGpuUsageSafe(nodes);
+      res.json(buildUsage({ nodes, pods, rawNodes, rawPods, metrics, gpuUsage }));
     } catch (err) {
       sendError(res, err, 502);
     }

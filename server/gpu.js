@@ -278,6 +278,8 @@ export function buildRemoteGPUPayload(gpuOutput, processOutput) {
 
   const devices = gpus.map(g => ({
     index: g.index,
+    // uuid 是和 HAMi 的 node-nvidia-register 对齐用的稳定标识
+    uuid: g.uuid || '',
     name: g.name,
     util: g.utilization,
     memUsed: g.memoryUsed,
