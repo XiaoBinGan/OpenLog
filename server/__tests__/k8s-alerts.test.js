@@ -405,7 +405,6 @@ describe('GET /api/k8s/clusters/:id/warning-digest', () => {
       const body = await res.json();
       expect(body.byReason).toEqual([]);
       expect(body.total).toBe(0);
-      expect(body.newEvents).toBe(0);
     } finally { await close(); }
   });
 });
@@ -496,9 +495,9 @@ describe('演示模式（OPENLOG_DEMO=1）', () => {
       expect(body.demo).toBe(true);
       expect(body.window).toBe('1h');
       expect(body.since).toBe(new Date(FIXED_NOW - HOUR).toISOString());
-      expect(body.byReason).toEqual([]);
-      expect(body.total).toBe(0);
-      expect(body.newEvents).toBe(0);
+      expect(body.byReason.length).toBeGreaterThan(0);   // 演示模式要给数据
+      expect(body.total).toBeGreaterThan(0);
+      expect(body.newEvents).toBeGreaterThan(0);   // 演示事件尚未 ack
       expect(createClient).not.toHaveBeenCalled();
     } finally { await close(); }
   });

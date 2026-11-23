@@ -396,6 +396,16 @@ export function summarizeWarnings(events, options = {}) {
 // ─── 路由内部：集群 / 客户端 / 事件 ────────────────────────────────────
 
 /** 演示集群列表（形状同 GET /api/k8s/clusters 的 clusters[]） */
+/** 演示用的 Warning 事件（形状同 k8s 原始 Event，走同一套 summarizeWarnings） */
+function DEMO_WARNINGS() {
+  const at = (min) => new Date(Date.parse('2026-06-08T09:48:37.000Z') - min * 60_000).toISOString();
+  return [
+    { type: 'Warning', reason: 'FailedScheduling', count: 12, lastTimestamp: at(7), involvedObject: { kind: 'Pod', namespace: 'inference', name: 'vllm-llama70b-0' }, message: '0/2 nodes are available: 1 Insufficient nvidia.com/gpumem.' },
+    { type: 'Warning', reason: 'BackOff', count: 7, lastTimestamp: at(4), involvedObject: { kind: 'Pod', namespace: 'inference', name: 'vllm-canary-0' }, message: 'Back-off restarting failed container main' },
+    { type: 'Warning', reason: 'Unhealthy', count: 4, lastTimestamp: at(2), involvedObject: { kind: 'Pod', namespace: 'kube-system', name: 'metrics-server-xxx' }, message: 'Readiness probe failed: HTTP probe failed with statuscode: 500' },
+  ];
+}
+
 function demoClusters() {
   const fn = demoFixtures.demoK8sClusters;
   if (typeof fn !== 'function') return [];
@@ -556,7 +566,8 @@ export function createK8sAlertsRouter({ ensureSettings, createClient, now } = {}
     // 演示模式：不建 client、不读 kubeconfig、不发任何请求；给一份「空但有形状」的摘要。
     // 形状与真实响应逐字段一致（byReason 空数组），前端不需要为演示模式写第二条分支。
     if (isDemoMode()) {
-      const summary = summarizeWarnings([], {
+      // 演示模式给一组固定事件，跑同一套聚合（形状与真实响应逐字段一致）
+      const summary = summarizeWarnings(DEMO_WARNINGS(), {
         window: label,
         since: sinceMs,
         acks: acksForCluster(clusterId),
