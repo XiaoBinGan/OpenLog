@@ -1945,6 +1945,82 @@ app.use(createDockerRouter({
 // ============================================================
 app.use(createK8sRouter({ ensureSettings, saveSettings }));
 
+// ============================================================
+// Kubernetes 增量能力路由 —— usage（HAMi 使用率实际值）/ alerts（Warning 聚合）
+// / ops（写操作：scale / restart / delete pod）/ policy（调度策略与超卖）
+//
+// 这四块是**可选**能力，和上面的只读监控分开挂：
+//   · 任何一块模块缺失、导出不对、工厂抛错，都只打一行 warn 然后继续启动，
+//     绝不能让整个服务起不来（只读监控必须照常可用）；
+//   · 用动态 import 而不是顶部静态 import —— 静态 import 遇到缺文件在**模块加载期**
+//     就抛 ERR_MODULE_NOT_FOUND，那时候连 try/catch 都还没进入，服务直接挂掉；
+//   · 顺序必须在这里（注册在所有路由之前、JSON 404 之前），不能让 404 兜底先吃掉。
+// 注入的东西与 createK8sRouter 保持一致：ensureSettings 读当前生效配置。
+// ============================================================
+const K8S_OPTIONAL_ROUTERS = [
+  { name: 'usage', specifier: './routes/k8s-usage.js', factory: 'createK8sUsageRouter' },
+  { name: 'alerts', specifier: './routes/k8s-alerts.js', factory: 'createK8sAlertsRouter' },
+  { name: 'policy', specifier: './routes/k8s-policy.js', factory: 'createK8sPolicyRouter' },
+  // writeOnly：这个 router 内部把「写开关」做成了 router 级中间件（router.use(gate)），
+  // 一旦 `app.use(router)` 无条件挂上去，它就**吃掉了 /api/k8s 之后的所有请求** ——
+  // 写开关默认关闭时，后面挂的 /api/remote/*、/api/chat/* 直到文件末尾的 /api/gpu/*
+  // 全部变成 403，未匹配的 /api/* 也拿不到 JSON 404。所以这里按「方法 + 路径前缀」
+  // 精确转发，只让它看到自己那三条写端点的请求。
+  { name: 'ops', specifier: './routes/k8s-ops.js', factory: 'createK8sOpsRouter', writeOnly: true },
+];
+
+/** 写操作路由独占的路径前缀与方法（与 server/routes/k8s-ops.js 里的三条路由一致）。 */
+const K8S_OPS_PATH_PREFIX = '/api/k8s/clusters/';
+const K8S_OPS_METHODS = new Set(['POST', 'DELETE']);
+
+/**
+ * 把「写操作 router」包一层，只转发它自己的请求，其余一律放行到后续中间件。
+ * 这是挂载侧的兜底：即使 k8s-ops.js 内部的闸门是 router 级的，也不会牵连别的路由。
+ */
+function scopeWriteRouter(router) {
+  return (req, res, next) => {
+    if (!K8S_OPS_METHODS.has(req.method) || !req.path.startsWith(K8S_OPS_PATH_PREFIX)) {
+      next();
+      return;
+    }
+    router(req, res, next);
+  };
+}
+
+/**
+ * 挂载一个可选的 K8s 路由模块：加载失败 / 工厂抛错都只 warn，返回是否挂上。
+ * @param {{name: string, specifier: string, factory: string, writeOnly?: boolean}} entry
+ */
+async function mountOptionalK8sRouter({ name, specifier, factory: factoryName, writeOnly = false }) {
+  try {
+    const mod = await import(specifier);
+    // 优先用具名工厂，兜底 default（测试里可能只 mock 了 default）
+    const factory = mod?.[factoryName] ?? mod?.default;
+    if (typeof factory !== 'function') {
+      console.warn(`[K8s] ${name} 路由未挂载：${specifier} 没有导出可调用的 ${factoryName}`);
+      return false;
+    }
+    const router = factory({ ensureSettings });
+    if (!router) {
+      console.warn(`[K8s] ${name} 路由未挂载：${factoryName}({ ensureSettings }) 没有返回 router`);
+      return false;
+    }
+    app.use(writeOnly ? scopeWriteRouter(router) : router);
+    return true;
+  } catch (e) {
+    console.warn(`[K8s] ${name} 路由未挂载（其它功能不受影响）：${errorMessage(e)}`);
+    return false;
+  }
+}
+
+const mountedK8sRouters = [];
+for (const entry of K8S_OPTIONAL_ROUTERS) {
+  if (await mountOptionalK8sRouter(entry)) mountedK8sRouters.push(entry.name);
+}
+if (mountedK8sRouters.length > 0) {
+  console.log(`[K8s] 增量路由已挂载: ${mountedK8sRouters.join('、')}`);
+}
+
 // ========================================
 // Remote Server API Routes
 // ========================================

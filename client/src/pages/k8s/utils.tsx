@@ -20,6 +20,7 @@ import type {
   K8sOverview,
   K8sPod,
   K8sPodVgpu,
+  K8sPodWorkloadRef,
   K8sSummary,
   K8sWorkload,
   K8sLogTarget,
@@ -127,6 +128,27 @@ export function podMarkers(pod: K8sPod): string[] {
     if (!markers.includes(reason)) markers.push(reason);
   }
   return markers;
+}
+
+/**
+ * 从 Pod 的归属信息推导「可操作的工作负载」——**推导不出来就返回 null，绝不猜**。
+ *
+ * 为什么值得单独一个函数：Pod 的 ownerReferences 一般是 ReplicaSet
+ * （`deploy-<hash>`），从 RS 名反推 Deployment 名会猜错（哈希长度、多级 owner 都可能变），
+ * 一旦猜错，「滚动重启」就会打到另一个工作负载上。所以只认服务端明确下发的
+ * ownerKind/ownerName，且只接受 Deployment / StatefulSet 两种 kind。
+ *
+ * 返回的 kind 与写操作路由的 `:kind` 段一致（小写复数）。
+ */
+export function podWorkloadRef(pod: K8sPod): K8sPodWorkloadRef | null {
+  const rawKind = (pod.ownerKind ?? '').trim();
+  const name = (pod.ownerName ?? '').trim();
+  if (!rawKind || !name) return null;
+  const kind = rawKind.toLowerCase();
+  if (kind === 'deployment' || kind === 'deployments') return { kind: 'deployments', name };
+  if (kind === 'statefulset' || kind === 'statefulsets') return { kind: 'statefulsets', name };
+  // DaemonSet / ReplicaSet / Job / 裸 Pod：没有「重启」「扩缩容」语义，只留删除
+  return null;
 }
 
 /** 概览里出现过的命名空间（去重 + 排序，供过滤下拉使用）。 */

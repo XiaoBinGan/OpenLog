@@ -416,6 +416,43 @@ function readPodVgpuSafe(pod) {
  * 只有至少一个 Pod 真的读到分配时才挂字段：否则返回原数组，
  * 「没有 HAMi 的集群」响应与改动前完全一致（前端也就不会出现空的 vGPU 列）。
  */
+/**
+ * 从原始 Pod 的 ownerReferences 推导「所属工作负载」。
+ *
+ * 为什么需要：前端的「重启工作负载 / 扩缩容」按钮要求知道 pod → deployments|statefulsets 的映射。
+ * 裸 Pod / DaemonSet / Job 一律不给（宁可不显示按钮，也不猜错目标）。
+ *
+ * ReplicaSet 的名字是 `<deployment>-<10位hash>` —— 只有当去掉后缀后能在**已拉到的 deployments
+ * 列表**里命中时才认，避免把 `web-cache-7d9f` 这类名字误判成 deployment。
+ */
+function buildPodOwnerIndex(rawPods, deploymentNames) {
+  const index = new Map();
+  const names = deploymentNames instanceof Set ? deploymentNames : new Set();
+  for (const pod of Array.isArray(rawPods) ? rawPods : []) {
+    const name = pod?.metadata?.name;
+    const ns = pod?.metadata?.namespace;
+    if (!name || !ns) continue;
+    const owner = (pod?.metadata?.ownerReferences || []).find((ref) => ref?.kind && ref?.name);
+    if (!owner) continue;
+    if (owner.kind === 'StatefulSet') {
+      index.set(`${ns}/${name}`, { ownerKind: 'statefulsets', ownerName: String(owner.name) });
+    } else if (owner.kind === 'ReplicaSet') {
+      const base = String(owner.name).replace(/-[a-z0-9]{8,10}$/i, '');
+      if (names.has(base)) index.set(`${ns}/${name}`, { ownerKind: 'deployments', ownerName: base });
+    }
+  }
+  return index;
+}
+
+/** 给 Pod 补 ownerKind/ownerName（没有就保持原样，前端据此决定是否显示操作按钮） */
+function withOwnerField(pods, ownerIndex) {
+  if (!(ownerIndex instanceof Map) || ownerIndex.size === 0) return pods;
+  return (Array.isArray(pods) ? pods : []).map((pod) => {
+    const hit = ownerIndex.get(`${pod?.namespace ?? ''}/${pod?.name ?? ''}`);
+    return hit ? { ...pod, ...hit } : pod;
+  });
+}
+
 function withVgpuField(pods, parsePods = pods) {
   const parsed = pods.map((pod, index) => readPodVgpuSafe(parsePods[index] ?? pod));
   if (!parsed.some((vgpu) => vgpu !== null)) return pods;
@@ -803,7 +840,10 @@ export default function createK8sRouter({ ensureSettings, saveSettings } = {}) {
         nodes,
         // 没有 HAMi 的集群这里与改动前逐字节一致（withVgpuField 读不到分配就返回原数组），
         // 有 HAMi 时每个 Pod 多一个 `vgpu` 字段（前端 Pod 表的 vGPU 列用它）
-        pods: withVgpuField(pods, gpuPods),
+        pods: withOwnerField(withVgpuField(pods, gpuPods), buildPodOwnerIndex(
+          itemsOf(raw.pods),
+          new Set((itemsOf(raw.deployments) || []).map((d) => d?.metadata?.name).filter(Boolean)),
+        )),
         workloads,
         events,
         summary: computeSummary(parts),

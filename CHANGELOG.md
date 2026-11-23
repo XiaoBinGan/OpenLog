@@ -5,6 +5,53 @@
 
 ---
 
+## Unreleased — K8s 写操作 / GPU 使用率 / 调度策略
+
+只读监控的行为与响应形状一律不变，这一批是**增量**：GPU 使用率的实际值、调度策略与超卖、
+以及默认关闭的写操作。
+
+### 新增
+
+- **GPU 使用率**（`GET /api/k8s/clusters/:id/usage`）：节点注解给出「分配了多少」，
+  HAMi 调度器指标（`hami_container_device_utilization_ratio` + 每卡显存）给出「实际用了多少」，
+  两者对照渲染在「GPU 分配」卡片下方。利用率一律是 0..100 的百分比，不是 0..1 的比例。
+  指标抓不到（没部署 vgpu-monitor / `/metrics` 不可达 / RBAC 不足）时返回
+  `{ available: false, reason }`，卡片显示这个原因而不是一排 0，其它卡片照常工作。
+- **调度策略与超卖**（`GET /api/k8s/clusters/:id/policy`）：`nodeSchedulerPolicy` /
+  `deviceSchedulerPolicy`（binpack / spread）与 `overcommit`（1 = 不超卖），
+  每一项都带 `source`（`configmap` / `scheduler-args` / `default` / `none`）——
+  从活的 ConfigMap / 调度器启动参数读到的值，不会被当成 HAMi 默认值。读不到就显示「未知」。
+- **Warning 聚合**（`GET /api/k8s/clusters/:id/warning-digest?window=1h`）：把 `type=Warning`
+  事件按 reason 归并成「次数 + 最后出现时间」，反复出现的 BackOff 是一行而不是四十条。
+  `POST /api/k8s/clusters/:id/warning-digest/ack { reason }` 确认一组；确认状态只存在进程内存里，
+  不写集群、不写库、不动 settings。
+- **写操作（默认关闭）**：
+  - `POST /api/k8s/clusters/:id/workloads/:ns/:kind/:name/scale`，body `{ replicas }`
+  - `POST /api/k8s/clusters/:id/workloads/:ns/:kind/:name/restart`（打 `restartedAt` 注解做滚动重启）
+  - `DELETE /api/k8s/clusters/:id/pods/:ns/:name`（优雅删除，30s 宽限期，不做 force delete）
+
+  `kind` 只接受 `deployments` / `statefulsets`。没有 `OPENLOG_K8S_WRITE=1` 时三条一律
+  `403 { error: '写操作未启用（设置 OPENLOG_K8S_WRITE=1 后生效）', readOnly: true }`；
+  每次成功的写操作返回 `{ ok: true, auditId }` 并落一条审计记录（含改动前的副本数，
+  「2 → 5」比「→ 5」可追溯得多）。
+- **Pod 表操作列**：行内可以直接删 Pod；只有当服务端下发了 owner 且能确定是
+  Deployment / StatefulSet 时才出现「重启」「扩缩容」。owner 推不出来（裸 Pod / static pod，
+  或 Pod 的 owner 是 ReplicaSet 而无法可靠反推 Deployment 名）就只显示删除，**不猜** ——
+  猜错会把重启打到别的工作负载上。操作单元格拦掉 click / keydown 冒泡，
+  点操作不会顺带把该 Pod 的日志抽屉打开。
+- **路由挂载容错**：`server/index.js` 用动态 import + try/catch 挂载 4 个新路由模块
+  （usage / alerts / ops / policy），任何一个模块缺失、导出不对或工厂抛错，
+  都只打一行 `[K8s] … 未挂载` 的 warn 然后继续启动，只读监控不受影响。
+
+### 运维提示
+
+- 演示模式（`OPENLOG_DEMO=1`）：写操作一律 `409`，读接口返回 fixture 或空态，不触达真实集群。
+- 要用写操作，除了 `OPENLOG_K8S_WRITE=1` 还需要集群侧权限：`deploy/k8s/rbac.yaml`
+  的 operator 变体（scale 子资源 patch、pods delete）。只读 ServiceAccount 继续够用于其它能力。
+- 前端顺序：节点表 → GPU 分配 → GPU 使用率 → 调度策略 → Pod 表 → Warning 事件。
+
+---
+
 ## v1.2.1 — 2026-11-23
 
 只修打包脚本的一处命名问题，没有功能改动。

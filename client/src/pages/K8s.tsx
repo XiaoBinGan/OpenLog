@@ -10,7 +10,10 @@
  *   k8s/StatCards.tsx    顶部四张统计卡
  *   k8s/NodeTable.tsx    节点表
  *   k8s/GpuAllocation.tsx GPU 分配（HAMi vGPU：每节点的卡数/显存/算力 + 占卡 Pod）
- *   k8s/PodTable.tsx     Pod 表（namespace 过滤 + OOM/CrashLoop 标记 + 点击看日志 + vGPU 列）
+ *   k8s/GpuUsagePanel.tsx GPU 使用率（HAMi 实际值：调度器指标 + 节点注解对照）
+ *   k8s/PolicyPanel.tsx   调度策略与超卖（HAMi scheduler 的 binpack/spread、显存倍率）
+ *   k8s/PodTable.tsx     Pod 表（namespace 过滤 + OOM/CrashLoop 标记 + 点击看日志 + vGPU 列 + 操作列）
+ *   k8s/PodOpsBar.tsx    Pod 行内操作（删除 Pod / 重启工作负载 / 扩缩容，需 OPENLOG_K8S_WRITE=1）
  *   k8s/EventList.tsx    Warning 事件列表
  *   k8s/LogDrawer.tsx    最近日志抽屉（tail=200）
  *   k8s/Feedback.tsx     错误条 / 加载块 / 空状态
@@ -45,13 +48,17 @@ import {
   errorText,
   hasHamiData,
   listNamespaces,
+  podWorkloadRef,
 } from './k8s/utils';
 import ClusterList from './k8s/ClusterList';
 import ClusterForm from './k8s/ClusterForm';
 import StatCards from './k8s/StatCards';
 import NodeTable from './k8s/NodeTable';
 import GpuAllocation from './k8s/GpuAllocation';
+import GpuUsagePanel from './k8s/GpuUsagePanel';
+import PolicyPanel from './k8s/PolicyPanel';
 import PodTable from './k8s/PodTable';
+import PodOpsBar from './k8s/PodOpsBar';
 import EventList from './k8s/EventList';
 import LogDrawer from './k8s/LogDrawer';
 import { EmptyClusters, ErrorBar, LoadingBlock } from './k8s/Feedback';
@@ -228,6 +235,16 @@ export default function K8s() {
     () => clusters.find((c) => c.id === selectedId) ?? null,
     [clusters, selectedId],
   );
+  /**
+   * 集群 id 的「一定有值」版本。usage / policy 面板与 Pod 操作条都要靠它拼路径，
+   * 渲染前先判断：没有选中的集群就整块不渲染（组件内部按 clusterId: string 收参，
+   * 不能让 undefined 漏进去变成 `/api/k8s/clusters/undefined/usage`）。
+   */
+  const activeClusterId = selectedCluster?.id ?? null;
+  /** 操作成功后的「reload」：重拉这一份 overview（写操作会改变 Pod / 工作负载状态）。 */
+  const reloadOverview = useCallback(() => {
+    if (activeClusterId) void fetchOverview(activeClusterId);
+  }, [activeClusterId, fetchOverview]);
   const namespaces = useMemo(() => listNamespaces(overview?.pods ?? []), [overview]);
   const selectedPodKey = logTarget ? `${logTarget.namespace}/${logTarget.pod}` : null;
 
@@ -344,9 +361,14 @@ export default function K8s() {
                   </div>
 
                   <StatCards summary={overview.summary} />
+                  {/* 顺序：节点表 → GPU 分配 → GPU 使用率 → 调度策略 → Pod 表 → 事件 */}
                   <NodeTable nodes={overview.nodes} />
                   {/* 没有 HAMi 的集群：GpuAllocation 自己返回 null，页面与改动前一致 */}
                   <GpuAllocation gpu={overview.gpu} />
+                  {/* GPU 使用率（HAMi 实际值）：指标抓不到时自己显示原因，不挡其它卡片 */}
+                  {activeClusterId && <GpuUsagePanel clusterId={activeClusterId} />}
+                  {/* 调度策略与超卖：读不到就是「未知」，不把默认值当实测值 */}
+                  {activeClusterId && <PolicyPanel clusterId={activeClusterId} />}
                   <PodTable
                     pods={overview.pods}
                     namespaces={namespaces}
@@ -355,6 +377,24 @@ export default function K8s() {
                     selectedKey={selectedPodKey}
                     onSelect={handleSelectPod}
                     showVgpu={hasHamiData(overview.gpu)}
+                    /*
+                     * 操作列：没有集群 id 就不传（表格与改动前一模一样，不多一列）。
+                     * workload 只认服务端下发的 ownerKind/ownerName —— 推导不出来就传 undefined，
+                     * PodOpsBar 于是只显示「删除 Pod」，绝不猜（猜错会重启别的工作负载）。
+                     */
+                    renderRowActions={
+                      activeClusterId
+                        ? (pod) => (
+                            <PodOpsBar
+                              clusterId={activeClusterId}
+                              namespace={pod.namespace}
+                              podName={pod.name}
+                              workload={podWorkloadRef(pod) ?? undefined}
+                              onDone={reloadOverview}
+                            />
+                          )
+                        : undefined
+                    }
                   />
                   <EventList events={overview.events} />
                 </>

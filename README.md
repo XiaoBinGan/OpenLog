@@ -61,6 +61,7 @@ See [deploy/README-tsdb.md](deploy/README-tsdb.md).
   - Remote server management · Scale & performance (1,000 servers) · Ops assistant · AI Shell
   - Skills · GPU monitoring · How MFU is computed · Integrating a custom inference service
   - Alert rules · Container log alerts · Docker live logs · In-container exec · Kubernetes monitoring
+  - HAMi GPU usage · Scheduler policy & overcommit · Warning digest · Write operations (opt-in)
 - [API Reference](#-api-reference)
 - [License](#-license)
 - [Changelog](CHANGELOG.md) · [Contributing](#-contributing) · [Acknowledgements](#-acknowledgements)
@@ -1188,6 +1189,71 @@ required on the machine running OpenLog.
   pods, pods/log, events, deployments, statefulsets and daemonsets). The manifests and the
   kubeconfig generator live in `deploy/k8s/` — the checklist is in `deploy/k8s/README.md`.
 
+### HAMi GPU usage — allocated vs actually used
+
+`GET /api/k8s/clusters/:id/usage` puts the two sides of a vGPU cluster next to each other:
+
+- **Allocated** is derived from the node annotations OpenLog already parses
+  (`hami.io/node-nvidia-register`, `hami.io/vgpu-devices-allocated`) — what each pod was *given*.
+- **Actually used** is scraped from the HAMi scheduler's metrics endpoint
+  (`hami_container_device_utilization_ratio` plus per-device memory) — what is *really* consumed.
+  Utilization is reported as a percentage (`0-100`), never as a `0-1` ratio.
+- When the metrics endpoint cannot be reached (no `vgpu-monitor`, no `/metrics`, RBAC gaps) the
+  endpoint answers `{ available: false, reason: "..." }` and the **GPU usage** card prints that
+  reason instead of a wall of zeros. Every other card keeps working.
+
+The card renders directly under **GPU allocation**, so a device that is "80% allocated, 4% busy"
+is one glance away — the usual symptom of a workload that grabbed vGPU memory and then idled.
+
+### Scheduler policy & overcommit
+
+`GET /api/k8s/clusters/:id/policy` reports the effective HAMi scheduler settings:
+
+| Field | Meaning |
+|-------|---------|
+| `nodeSchedulerPolicy` | `binpack` (pack nodes tight) or `spread` (spread pods out) |
+| `deviceSchedulerPolicy` | the same choice, applied per GPU inside a node |
+| `overcommit` | memory overcommit ratio (`1` = no overcommit) |
+
+Each field carries its own `source` (`configmap` / `scheduler-args` / `default` / `none`), so a value
+read from the live ConfigMap is never mistaken for a HAMi default. When nothing can be read the card
+says **unknown** instead of guessing.
+
+### Warning digest
+
+`GET /api/k8s/clusters/:id/warning-digest?window=1h` groups `type=Warning` events by `reason`
+(count + last-seen per bucket) so a recurring `BackOff` is one line instead of forty events.
+`POST /api/k8s/clusters/:id/warning-digest/ack` with `{ "reason": "BackOff" }` acknowledges a
+bucket; the acknowledgement is kept in process memory only — nothing is written to the cluster,
+to the database, or to settings.
+
+### Write operations — opt-in, off by default
+
+Read-only remains the default. Write endpoints are mounted, but every one of them answers
+**`403`** with `{ "error": "write operations are disabled (set OPENLOG_K8S_WRITE=1)", "readOnly": true }`
+until you explicitly enable them on the server:
+
+```bash
+OPENLOG_K8S_WRITE=1
+```
+
+| Capability | Endpoint | Notes |
+|---|---|---|
+| Scale | `POST /api/k8s/clusters/:id/workloads/:ns/:kind/:name/scale` | body `{ "replicas": N }`; `kind` is `deployments` or `statefulsets` |
+| Rolling restart | `POST /api/k8s/clusters/:id/workloads/:ns/:kind/:name/restart` | bumps a `restartedAt` annotation; same `kind` restriction |
+| Delete one pod | `DELETE /api/k8s/clusters/:id/pods/:ns/:name` | graceful, 30s grace period — never a force delete |
+
+Every accepted write returns `{ ok: true, auditId }`; the audit record plus the previous replica
+count are persisted server-side, so "who scaled this to 5, and when" is answerable afterwards.
+In the UI these live in the **operation** column of the pod table: delete a pod, and — only when the
+scheduler-visible owner is a Deployment or StatefulSet — restart or scale its workload. When the
+owner cannot be determined (a bare pod, a static pod, or an owner chain that cannot be resolved to a
+Deployment name) the row offers **delete only**; it never guesses.
+
+Demo mode (`OPENLOG_DEMO=1`) answers every write with `409` and never touches a real cluster, and the
+RBAC variant needed for writes (create/patch on the scale subresource, delete on pods) is documented
+in `deploy/k8s/rbac.yaml`.
+
 ---
 
 ## 📝 API Reference
@@ -1217,6 +1283,14 @@ required on the machine running OpenLog.
 | GET | `/api/chat/audit` | Assistant write-operation audit trail |
 | GET | `/api/chat/provider` | Detected inference engine and capability hints |
 | GET | `/api/models` | Model list (vLLM/SGLang/Strata/Ollama; `?baseUrl=&apiKey=` overrides) |
+| GET | `/api/k8s/clusters/:id/overview` | Nodes / pods / workloads / warning events in one shot |
+| GET | `/api/k8s/clusters/:id/usage` | HAMi GPU usage: allocated vs actually used (`available:false` + `reason` when unscrapable) |
+| GET | `/api/k8s/clusters/:id/policy` | Scheduler policy (`binpack`/`spread`) + overcommit, each with its `source` |
+| GET | `/api/k8s/clusters/:id/warning-digest` | Warning events grouped by reason (`?window=1h`) |
+| POST | `/api/k8s/clusters/:id/warning-digest/ack` | Acknowledge one reason bucket (`{reason}`; in-memory only) |
+| POST | `/api/k8s/clusters/:id/workloads/:ns/:kind/:name/scale` | Scale Deployment/StatefulSet (`{replicas}`; needs `OPENLOG_K8S_WRITE=1`) |
+| POST | `/api/k8s/clusters/:id/workloads/:ns/:kind/:name/restart` | Rolling restart (annotation bump; needs `OPENLOG_K8S_WRITE=1`) |
+| DELETE | `/api/k8s/clusters/:id/pods/:ns/:name` | Delete one pod gracefully (30s; needs `OPENLOG_K8S_WRITE=1`) |
 
 ---
 

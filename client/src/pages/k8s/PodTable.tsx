@@ -7,9 +7,13 @@
  *
  * vGPU 列只在集群里有 HAMi 时出现（父页面按 overview.gpu.hasHami 传 showVgpu）——
  * 没有 HAMi 的集群表头与改动前一模一样，不会多出一列全是「—」的噪音。
+ *
+ * 操作列同理：只有父页面传了 renderRowActions 才出现（没开写操作 / 演示模式下不传）。
+ * 单元格必须把 click / keydown 拦住不往 <tr> 冒泡 —— 否则点「删除」的同时
+ * 会把该 Pod 的日志抽屉也打开（行级 onClick 就是干这个的）。
  */
 
-import { useMemo, useState } from 'react';
+import { useMemo, useState, type ReactNode } from 'react';
 import { Boxes, ScrollText } from 'lucide-react';
 import type { K8sPod } from './types';
 import {
@@ -34,6 +38,13 @@ interface PodTableProps {
   onSelect: (pod: K8sPod) => void;
   /** 是否展示 vGPU 列（集群有 HAMi 时才为 true；默认 false = 与改动前完全一致） */
   showVgpu?: boolean;
+  /**
+   * 每行的操作区（例如 PodOpsBar）。不传 = 没有操作列，表格与改动前一致。
+   *
+   * 单元格内部的事件一律 stopPropagation：行本身点一下就开日志抽屉，
+   * 不拦的话「点删除」会顺带把日志抽屉拉起来。
+   */
+  renderRowActions?: (pod: K8sPod) => ReactNode;
 }
 
 const severityDot: Record<ReturnType<typeof podSeverity>, string> = {
@@ -63,6 +74,7 @@ function PodTable({
   selectedKey = null,
   onSelect,
   showVgpu = false,
+  renderRowActions,
 }: PodTableProps) {
   const [keyword, setKeyword] = useState('');
   const rows = useMemo(() => sortPods(filterPods(pods, namespace, keyword)), [pods, namespace, keyword]);
@@ -125,6 +137,7 @@ function PodTable({
                 <th className="text-left font-medium px-3 py-2">IP</th>
                 <th className="text-left font-medium px-3 py-2">年龄</th>
                 <th className="text-left font-medium px-3 py-2">标记</th>
+                {renderRowActions && <th className="text-left font-medium px-3 py-2">操作</th>}
               </tr>
             </thead>
             <tbody>
@@ -211,6 +224,16 @@ function PodTable({
                         </span>
                       )}
                     </td>
+                    {renderRowActions && (
+                      <td
+                        className="px-3 py-2 whitespace-nowrap"
+                        // 拦住 click / keydown：行级 handler 会打开日志抽屉
+                        onClick={(e) => e.stopPropagation()}
+                        onKeyDown={(e) => e.stopPropagation()}
+                      >
+                        {renderRowActions(pod)}
+                      </td>
+                    )}
                   </tr>
                 );
               })}

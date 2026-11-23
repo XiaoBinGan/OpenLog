@@ -493,13 +493,73 @@ kubectl --kubeconfig /tmp/openlog-kubeconfig.yaml get --raw /version
 保存后立刻 `rm -f /tmp/openlog-kubeconfig.yaml`（OpenLog 已把它存进自己的 settings，
 `GET /api/settings` 读取时只回打码占位符，不需要本地副本）。
 
-- **403 / `forbidden`**：报错会带上缺的 verb + resource，对着 `deploy/k8s/README.md` 第三节的表补规则，
-  仍然只加 `get` / `list` / `watch`；注意 `pods/log` 要单独给（`get pods` 不包含日志子资源）。
+- **403 / `forbidden`**：报错会带上缺的 verb + resource，对着 `deploy/k8s/README.md` 第四节的表补规则，
+  读接口仍然只加 `get` / `list` / `watch`；注意 `pods/log` 要单独给（`get pods` 不包含日志子资源）。
 - **连不上 / 401**：`ECONNREFUSED` / `ETIMEDOUT` 是 `--server` 地址或 6443 不可达（跨机部署时别填 `127.0.0.1`）；
   证书不匹配要给 apiserver 加 SAN；`Unauthorized` 是 token 失效，重跑第 2~3 步重新生成。
 - **k3s**：kubectl 用 `sudo kubectl` 或 `sudo k3s kubectl`，集群配置在 `/etc/rancher/k3s/k3s.yaml`。
 - 完整权限模型（明确不给 `secrets`、`pods/exec`、任何写动词）、token 轮换与 403 对照表：
   `deploy/k8s/README.md`。
+
+#### K8s 写操作（可选）：扩缩容 / 重启 / 删 Pod
+
+上面装完是**纯只读**。要让页面出现「扩缩容」「重启」「删 Pod」这三个按钮，需要额外一份**可写**凭据，
+并且在服务端打开开关 —— 两步缺一个都不生效。
+
+```bash
+# 1) 安装可选的 operator 权限（rbac.yaml 后半段：SA openlog-operator + 可写 ClusterRole
+#    + 两条 Binding + token Secret openlog-operator-token；只读部分一个字符都不变）
+kubectl apply -f deploy/k8s/rbac.yaml
+
+#    反向：只想保持只读，把「以下为可选」之后的内容截掉再 apply（不会创建任何可写凭据）
+awk '/^# ===== 以下为可选/{exit} {print}' deploy/k8s/rbac.yaml | kubectl apply -f -
+
+# 2) 等 token 填充，用 operator 的 SA / Secret 生成 kubeconfig
+kubectl -n openlog get secret openlog-operator-token -o jsonpath='{.data.token}' | head -c 24; echo
+bash deploy/k8s/make-kubeconfig.sh --server https://127.0.0.1:6443 \
+  --sa openlog-operator --secret openlog-operator-token > /tmp/openlog-operator-kubeconfig.yaml
+chmod 600 /tmp/openlog-operator-kubeconfig.yaml
+
+# 3) 自检：该有的写权限有，不该有的一条都没有
+K=--kubeconfig=/tmp/openlog-operator-kubeconfig.yaml
+kubectl $K auth can-i patch deployments -A     # yes
+kubectl $K auth can-i delete pods -A           # yes
+kubectl $K auth can-i get secrets -A           # no
+kubectl $K auth can-i create pods/exec -n openlog   # no
+```
+
+```bash
+# 4) OpenLog 里把该集群的 kubeconfig 换成上面这份
+#    「K8s 集群」页 → 编辑该集群 → 粘贴 operator kubeconfig → 测试连接 → 保存
+#    测试通过后删掉本地副本：rm -f /tmp/openlog-operator-kubeconfig.yaml
+
+# 5) 打开服务端开关（deploy/deploy.env）
+#    deploy.sh 只透传白名单变量，OPENLOG_K8S_WRITE 不在白名单里，必须走 EXTRA_ENV：
+#      EXTRA_ENV="OPENLOG_K8S_WRITE=1"
+#    已有别的额外变量就合并到同一行，空格分隔；改完重新部署：
+bash deploy/deploy.sh
+```
+
+```ini
+# deploy/deploy.env 片段
+EXTRA_ENV="OPENLOG_K8S_WRITE=1"
+```
+
+**6) 刷新**「K8s 集群」页：工作负载行出现「扩缩容」「重启」，Pod 列表出现「删除」，操作成功返回 `auditId`。
+
+**没开启时的表现**（也可以用它反查当前状态）：
+
+| 场景 | 表现 |
+|---|---|
+| 未设 `OPENLOG_K8S_WRITE`（默认） | 页面不出现写按钮；手工 `POST .../workloads/:ns/:kind/:name/scale` 返回 `403 {"error":"写操作未启用（OPENLOG_K8S_WRITE=1 后生效）","readOnly":true}`，请求**不会**发到 apiserver |
+| 开关已开，但 kubeconfig 还是只读那份 | 应用层放行，apiserver 回 `forbidden`（如 `deployments.apps "x" is forbidden`），页面显示失败原因 |
+| 用的是 operator kubeconfig，但没设开关 | 同第一行：应用层 403，仍然写不动 |
+| `OPENLOG_DEMO=1` 演示模式 | 写操作返回 `409`，任何情况下都不连真集群 |
+
+- 开关取值在进程启动时读一次，改了必须重新部署（重建容器）才生效。
+- 最小权限做法（把可写权限收窄到单个命名空间）与风险提示见 `deploy/k8s/README.md` 第二节「只读 vs 可写」。
+- **风险**：开启写权限等于把「改副本数 / 滚动重启 / 删 Pod」的集群变更能力交给了所有能登 OpenLog 的人；
+  生产或共享集群上建议按需临时开，排障结束换回只读 kubeconfig 并去掉 `OPENLOG_K8S_WRITE`。
 
 ---
 
