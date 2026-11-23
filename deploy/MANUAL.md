@@ -452,6 +452,23 @@ git reset --hard backup/predeploy-<sha> && bash deploy/deploy.sh
 - 回滚完记得把 `deploy/deploy.env` 也退回与新版本匹配的内容（新版本新增的开关旧版本读不懂，
   一般无害，但不要留下半新半旧的配置）。
 
+#### 没有 GPU 集群时：用模拟 HAMi 集群验证
+
+想验证 vGPU 分配视图（`nvidia.com/gpumem` / `hami.io/vgpu-devices-allocated`）不必先有 GPU 机器：
+
+```bash
+node scripts/mock-hami-cluster.mjs            # 监听 127.0.0.1:18445，启动时打印 kubeconfig
+node scripts/mock-hami-cluster.mjs --port 18080
+node scripts/mock-hami-cluster.mjs --print-kubeconfig   # 只输出 kubeconfig
+```
+
+它是个假的 kube-apiserver（纯 node，无依赖）：2 个节点（4×4090 + 2×T4，共 6 卡）、
+7 个 Pod（5 个带 vGPU 分配、1 个因显存不足 Pending、1 个 CrashLoop+OOM）、3 条 Warning 事件。
+把打印出来的 kubeconfig 粘到「K8s 集群」页即可看到完整链路 —— 走的是真 HTTP / 真 JSON /
+真归一化，与连真集群没有区别，只是数据写死。
+
+> token 写死为 `mock-hami-token`，只监听 127.0.0.1，仅供本地验证，不要暴露到外网。
+
 ### 启用 Kubernetes 监控（v1.2 / 未发布）
 
 只读接入：OpenLog 直连 kube-apiserver，**不在节点装 agent，也不要求 OpenLog 所在机器装 kubectl**
