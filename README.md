@@ -1195,11 +1195,13 @@ required on the machine running OpenLog.
 
 - **Allocated** is derived from the node annotations OpenLog already parses
   (`hami.io/node-nvidia-register`, `hami.io/vgpu-devices-allocated`) — what each pod was *given*.
-- **Actually used** is scraped from the HAMi scheduler's metrics endpoint
-  (`hami_container_device_utilization_ratio` plus per-device memory) — what is *really* consumed.
-  Utilization is reported as a percentage (`0-100`), never as a `0-1` ratio.
-- When the metrics endpoint cannot be reached (no `vgpu-monitor`, no `/metrics`, RBAC gaps) the
-  endpoint answers `{ available: false, reason: "..." }` and the **GPU usage** card prints that
+- **Actually used** comes from **`nvidia-smi`**, not from HAMi. HAMi v2 dropped the per-container
+    utilization series (`hami_container_device_utilization_ratio` existed in v1.x; v2 only exports
+    allocation counters such as `hami_gpu_memory_allocated_bytes`). OpenLog runs `nvidia-smi` on each
+    node over the SSH connection you already configured for GPU monitoring and joins the result to
+    HAMi's per-device allocation by GPU UUID. Utilization is a percentage (`0-100`).
+  - When a node's `nvidia-smi` cannot be reached the device is marked `measured: false`; the card
+    prints `—` for live numbers while the allocation half keeps working.
   reason instead of a wall of zeros. Every other card keeps working.
 
 The card renders directly under **GPU allocation**, so a device that is "80% allocated, 4% busy"

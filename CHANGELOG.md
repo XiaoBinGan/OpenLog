@@ -52,6 +52,33 @@
 
 ---
 
+## v1.3.0 — 2026-11-24
+
+K8s / HAMi 从「只看得到分配」补到「分配 vs 实测 + 调度策略 + 事件摘要 + 可选写操作」。
+
+### 新增
+
+- **GPU 分配 vs 实际使用**：`GET /api/k8s/clusters/:id/usage` 把 HAMi 的分配与 nvidia-smi 的
+  实测并排（按物理卡、按设备 UUID join）。**HAMi v2 已移除容器级 util 指标**，实测必须走
+  nvidia-smi —— 这一点写进了 `server/k8s/gpu-usage.js` 的文件头，避免以后又踩。
+- **调度策略**：`GET .../policy` 从 hami-scheduler 的启动参数 / ConfigMap 读 binpack|spread 与
+  overcommit，读不到时降级为默认值并说明来源。
+- **Warning 事件摘要**：`GET .../warning-digest` 按 reason 聚合 + 已读标记，配前端卡片。
+- **写操作（默认关闭）**：扩缩容 / 滚动重启 / 删 Pod，`OPENLOG_K8S_WRITE=1` 才生效，
+  演示模式 409，每次调用写审计（内存环形 200 条）。`deploy/k8s/rbac.yaml` 新增可选
+  `openlog-operator`（只多三项权限，仍禁 secrets 与 exec）。
+- 前端新增三张卡片：GPU 使用率、调度策略、Warning 摘要；Pod 表增加操作列（stopPropagation，
+  不会误触日志抽屉）。
+- overview 的 Pod 带 `ownerKind/ownerName`（ReplicaSet 名去 hash 后需在 deployments 列表中命中）。
+
+### 修正
+
+- HAMi 指标采集用真机标签与端口：`app.kubernetes.io/component=hami-scheduler` / **9395**
+  （此前按 `app=hami-scheduler` / 31993，243 上一直 `available:false`）。
+- `deploy.sh` 透传 `OPENLOG_K8S_WRITE`；`deploy.mjs --dry-run` 不再执行 `git reset`。
+- 两个依赖 `process.cwd()` 的客户端测试改按文件定位，`cd client` 跑也能通过。
+- 演示模式补齐 `/usage` 与 `/warning-digest` 数据（此前是空卡片）。
+
 ## v1.2.1 — 2026-11-23
 
 只修打包脚本的一处命名问题，没有功能改动。
