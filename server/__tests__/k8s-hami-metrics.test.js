@@ -324,7 +324,7 @@ describe('fetchSchedulerMetrics：成功路径', () => {
     expect(client.getJson).toHaveBeenCalledTimes(1);
     const [path, options] = client.getJson.mock.calls[0];
     expect(path).toBe('/api/v1/namespaces/kube-system/pods');
-    expect(options.query.labelSelector).toBe('app=hami-scheduler');
+    expect(options.query.labelSelector).toBe('app.kubernetes.io/component=hami-scheduler');
   });
 
   it('优先选 Running 且有 podIP 的 Pod，跳过正在删除的与 Pending 的', async () => {

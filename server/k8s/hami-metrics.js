@@ -25,10 +25,11 @@ import http from 'node:http';
 import { errorMessage } from '../errors.js';
 
 /** hami-scheduler 指标默认端口（HAMi chart 的 metrics service 端口）。 */
-export const DEFAULT_METRICS_PORT = 31993;
+export const DEFAULT_METRICS_PORT = 9395;   // 243 实测：HAMi chart 的 metrics 端口是 9395
 
 /** 找 scheduler Pod 的标签选择器（HAMi chart 的 Deployment 标签）。 */
-export const SCHEDULER_LABEL_SELECTOR = 'app=hami-scheduler';
+// 243 实测：官方 chart 打的是 app.kubernetes.io/component=hami-scheduler（不是 app=hami-scheduler）
+export const SCHEDULER_LABEL_SELECTOR = 'app.kubernetes.io/component=hami-scheduler';
 
 /** hami-scheduler 部署所在的命名空间。 */
 export const SCHEDULER_NAMESPACE = 'kube-system';
