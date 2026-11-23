@@ -5,6 +5,15 @@
 
 ---
 
+## v1.2.1 — 2026-11-23
+
+只修打包脚本的一处命名问题，没有功能改动。
+
+- `deploy/scripts/make-packages.sh` 用 `$REF^{commit}` 解析引用：annotated tag 的
+  `git rev-parse v1.2.0` 返回的是 tag 对象的 sha，导致 v1.2.0 的离线包叫
+  `openlog-deploy-c6ae1a2d.tar`，而对应提交其实是 `92f53fa5`。现在包名与提交号一致。
+- 已发布的 v1.2.0 包不受影响（包内镜像 tag 与包名同一串，安装行为一致）。
+
 ## v1.2.0 — 2026-11-23
 
 只读 Kubernetes 监控（含 HAMi vGPU 分配）、演示模式、Mac 为主的双平台打包，
