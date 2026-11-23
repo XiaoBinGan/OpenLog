@@ -72,6 +72,9 @@ const BYTES_PER_MIB = 1024 * 1024;
 /** 演示模式固定文案（契约字面量，不要改写） */
 const DEMO_REASON = '演示模式未接入 HAMi 指标';
 
+/** 演示 fixtures 的惰性引用（避免每次请求都 import） */
+let demoFixtures = null;
+
 /** 实测不可用但上游没给原因时的兜底文案 */
 const UNAVAILABLE_REASON = 'HAMi 指标不可用';
 
@@ -574,6 +577,43 @@ async function collectNodeGpuUsageSafe(nodes) {
 const REMOTE_GPU_QUERY =
   'nvidia-smi --query-gpu=index,name,uuid,utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader,nounits';
 
+/**
+ * 演示模式的 /usage：用 fixtures 的演示集群现算「分配」，再叠一组确定性的「实测」。
+ *
+ * 演示时「GPU 分配 vs 实际使用」是主打能力，返回空卡片等于告诉对方"这功能没做"。
+ * 实测值按卡容量取固定比例（不随机），保证每次演示数据一致。
+ */
+async function buildDemoUsage() {
+  try {
+    // 直接读 fixtures：不要依赖别的路由模块里的私有 helper
+    const fixtures = demoFixtures ?? await import('../demo/fixtures.js');
+    const overview = fixtures.demoK8sOverview?.('demo-k3s-infer') || {};
+    const summary = k8sHami.summarizeVgpu({ nodes: overview.nodes || [], pods: overview.pods || [] });
+    const ratios = [0.62, 0.41, 0.78, 0.33, 0.55];
+    const nodes = (summary?.nodes || []).map((node) => ({
+      name: node.name,
+      devices: (node.devices || []).map((device, i) => {
+        const ratio = ratios[i % ratios.length];
+        const total = asCount(device.memMiB);
+        return {
+          uuid: asLabel(device.id),
+          type: asLabel(device.type),
+          totalMemMiB: total,
+          allocMemMiB: asCount(device.allocatedMemMiB),
+          allocCores: asCount(device.allocatedCores),
+          usedMemMiB: Math.round(total * ratio),
+          utilPercent: Math.round(ratio * 100),
+          measured: true,
+          pods: [],
+        };
+      }),
+    }));
+    return { available: true, scrapedAt: '2026-06-08T09:48:37.000Z', demo: true, nodes };
+  } catch (err) {
+    return { available: false, reason: `${DEMO_REASON}（演示数据构建失败：${errorMessage(err)}）`, nodes: [] };
+  }
+}
+
 export function createK8sUsageRouter({ ensureSettings } = {}) {
   if (typeof ensureSettings !== 'function') {
     throw new TypeError('createK8sUsageRouter 需要注入 ensureSettings');
@@ -616,7 +656,7 @@ export function createK8sUsageRouter({ ensureSettings } = {}) {
     // 响应体刻意只有契约里那三个字段（reason 文本已自证来源），不挂 demo 标记，
     // 免得前端把「指标未接入」误当成「演示数据 → 隐藏告警」。
     if (isDemoMode()) {
-      res.json({ available: false, reason: DEMO_REASON, nodes: [] });
+      res.json(await buildDemoUsage());
       return;
     }
 

@@ -553,17 +553,20 @@ describe('错误语义：404 / 502 / 400', () => {
 });
 
 describe('演示模式（OPENLOG_DEMO=1）', () => {
-  it('返回固定空态且完全不触达集群与 settings', async () => {
+  it('返回演示数据且完全不触达集群与 settings', async () => {
     process.env.OPENLOG_DEMO = '1';
 
     const { status, body } = await get('/api/k8s/clusters/anything/usage');
 
     expect(status).toBe(200);
-    expect(body).toEqual({
-      available: false,
-      reason: '演示模式未接入 HAMi 指标',
-      nodes: [],
-    });
+    // 演示模式要给完整数据（「分配 vs 实际使用」是演示主打能力，空卡片等于没做）
+    expect(body.demo).toBe(true);
+    expect(body.available).toBe(true);
+    expect(body.nodes.length).toBeGreaterThan(0);
+    const firstDevice = body.nodes[0].devices[0];
+    expect(firstDevice.measured).toBe(true);
+    expect(firstDevice.totalMemMiB).toBeGreaterThan(0);
+    expect(firstDevice.usedMemMiB).toBeGreaterThan(0);
     // 不读 settings、不建客户端、不请求 apiserver、不抓指标
     expect(h.storeCalls).toEqual([]);
     expect(h.clientCalls).toBe(0);
