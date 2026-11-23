@@ -5,7 +5,26 @@
 
 ---
 
-## Unreleased — Kubernetes 监控（增量 ①）
+## v1.2.0 — 2026-11-23
+
+只读 Kubernetes 监控（含 HAMi vGPU 分配）、演示模式、Mac 为主的双平台打包，
+以及部署链路的升级安全加固。自 v1.1.1 起的全部改动都在这一个版本里。
+
+### 概要
+
+- **Kubernetes 监控**：kubeconfig → kube-apiserver 直连（mTLS / SA token 都支持），
+  节点 / Pod / 工作负载 / Warning 事件，只读、节点上不装任何东西、不依赖 `kubectl`
+- **HAMi vGPU 分配**：解析 `hami.io/node-nvidia-register` 与 `hami.io/vgpu-devices-allocated`，
+  按物理卡展示「型号 / 容量 / 槽位 / 被哪些 Pod 占用多少显存与算力」
+- **演示模式**：`OPENLOG_DEMO=1` 时全站使用确定性假数据（容器/GPU/日志/TSDB/K8s/助手），
+  不连真实资源、不写库，顶部有通栏提示
+- **双平台打包**：`deploy/scripts/make-packages.sh` 在 Apple Silicon 上一条命令出 amd64 + arm64
+- **升级安全**：`deploy.mjs` 部署前漂移检测（服务端本地提交默认拦下，`--force` 才覆盖并自动建备份分支）、
+  `install.sh --upgrade` 原地升级（备份 → 换镜像 → 健康检查 → 失败回滚）、MANUAL 新增升级章节
+
+### 变更明细
+
+
 
 只读接入 Kubernetes：节点上不装 agent，跑 OpenLog 的机器上也不需要 `kubectl`。
 
@@ -28,7 +47,7 @@
 
 ---
 
-## Unreleased — 双平台打包（Mac 为主）
+### 双平台打包（Mac 为主）
 
 策略调整：开发与验证都在 Apple Silicon Mac 上做，出包时一条命令导出两个架构。
 
@@ -42,7 +61,7 @@
 
 ---
 
-## Unreleased — 演示模式（OPENLOG_DEMO=1）
+### 演示模式（OPENLOG_DEMO=1）
 
 没有真实机器/数据时页面不再全空：服务端从内置假数据回答，客户端明确告诉用户「这是演示」。
 
