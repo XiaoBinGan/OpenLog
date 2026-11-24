@@ -693,11 +693,15 @@ export function createChatRunner({ ensureSettings, executeAssistantTool, pending
               totalTokens: Number(u.total_tokens) || 0,
             };
           }
-      if (!firstChunkAt) { firstChunkAt = Date.now(); clearInterval(waitTicker); }
+      // 注意：不能在这里清计时器 —— OpenAI 兼容流的第一帧通常是 role 空 delta，
+      // 在这里清会导致「等待首字」的提示永远不出现（线上实测 10s 等待、0 条进度帧）。
+      // 真正的首字判定放到 content / reasoning / tool_calls 分支里。
+
           const delta = chunk.choices?.[0]?.delta;
           if (!delta) continue;
           const { content, reasoning } = extractDelta(delta);
           if (content) {
+        if (!firstChunkAt) { firstChunkAt = Date.now(); clearInterval(waitTicker); }
             contentAcc += content;
             if (liveFilter) {
               if (!streamingStarted && shouldStartStreaming()) {
@@ -715,6 +719,7 @@ export function createChatRunner({ ensureSettings, executeAssistantTool, pending
               }
             }
           }
+        if (!firstChunkAt) { firstChunkAt = Date.now(); clearInterval(waitTicker); }
           if (reasoning) reasoningAcc += reasoning;
           if (useNative && delta.tool_calls) {
             for (const tc of delta.tool_calls) {
