@@ -704,6 +704,34 @@ html[lang="en"] .deck-caption span{overflow-wrap:anywhere}
           <a class="link" href="https://github.com/XiaoBinGan/OpenLog" target="_blank" rel="noopener">openlog.example.com:3001 →</a>
         </article>
       </div>
+
+    <!-- 截图墙：每张卡片点开看大图 -->
+    <div class="sec-head reveal" id="screenshots">
+      <p class="kicker">Screenshots</p>
+      <h2 data-i18n="shots_h">界面实拍：每个页面都在这里</h2>
+      <p class="sec-sub" data-i18n="shots_sub">演示模式（OPENLOG_DEMO=1）内置确定性假数据，不需要任何真实服务器或集群 —— 点任意一张看整页。更多说明见仓库 docs/SCREENSHOTS.md。</p>
+    </div>
+    <div class="shots-grid">
+      <a class="shot reveal" href="assets/shots/dashboard.png" target="_blank" rel="noopener"><img src="assets/shots/dashboard.png" alt="仪表盘"><span>仪表盘</span></a>
+      <a class="shot reveal" href="assets/shots/monitor.png" target="_blank" rel="noopener"><img src="assets/shots/monitor.png" alt="系统监控"><span>系统监控</span></a>
+      <a class="shot reveal" href="assets/shots/gpu.png" target="_blank" rel="noopener"><img src="assets/shots/gpu.png" alt="算力监控 / MFU"><span>算力监控 · MFU</span></a>
+      <a class="shot reveal" href="assets/shots/k8s.png" target="_blank" rel="noopener"><img src="assets/shots/k8s.png" alt="K8s 集群列表"><span>K8s 集群（手风琴）</span></a>
+      <a class="shot reveal" href="assets/shots/k8s-expanded.png" target="_blank" rel="noopener"><img src="assets/shots/k8s-expanded.png" alt="HAMi vGPU 分配 vs 实测"><span>HAMi：分配 vs 实测</span></a>
+      <a class="shot reveal" href="assets/shots/docker.png" target="_blank" rel="noopener"><img src="assets/shots/docker.png" alt="Docker 容器"><span>Docker 容器</span></a>
+      <a class="shot reveal" href="assets/shots/logs.png" target="_blank" rel="noopener"><img src="assets/shots/logs.png" alt="日志流"><span>日志流</span></a>
+      <a class="shot reveal" href="assets/shots/remote.png" target="_blank" rel="noopener"><img src="assets/shots/remote.png" alt="远程服务器"><span>远程服务器</span></a>
+      <a class="shot reveal" href="assets/shots/analytics.png" target="_blank" rel="noopener"><img src="assets/shots/analytics.png" alt="AI 分析"><span>AI 分析</span></a>
+      <a class="shot reveal" href="assets/shots/assistant.png" target="_blank" rel="noopener"><img src="assets/shots/assistant.png" alt="运维助手"><span>运维助手</span></a>
+      <a class="shot reveal" href="assets/shots/skills.png" target="_blank" rel="noopener"><img src="assets/shots/skills.png" alt="技能管理"><span>技能管理</span></a>
+      <a class="shot reveal" href="assets/shots/settings.png" target="_blank" rel="noopener"><img src="assets/shots/settings.png" alt="设置"><span>设置</span></a>
+    </div>
+    <style>
+      .shots-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:16px;margin-top:8px}
+      .shot{display:flex;flex-direction:column;gap:8px;border:1px solid rgba(255,255,255,.08);border-radius:12px;overflow:hidden;background:rgba(255,255,255,.02);text-decoration:none;transition:transform .2s,border-color .2s}
+      .shot:hover{transform:translateY(-2px);border-color:rgba(124,140,255,.45)}
+      .shot img{width:100%;height:150px;object-fit:cover;object-position:top;display:block}
+      .shot span{padding:0 12px 12px;font-size:13px;opacity:.85}
+    </style>
     </div>
   </section>
 

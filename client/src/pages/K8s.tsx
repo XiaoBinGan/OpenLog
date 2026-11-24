@@ -26,6 +26,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { Boxes, Plus, RefreshCw } from 'lucide-react';
 import { apiFetch, apiJson } from '../api/client';
 import { useToast } from '../contexts/ToastContext';
@@ -240,6 +241,14 @@ export default function K8s() {
   const handleSelectPod = useCallback((pod: K8sPod) => {
     setLogTarget({ namespace: pod.namespace, pod: pod.name });
   }, []);
+
+  // 深链：/k8s?cluster=<id> 直接展开该集群（截图、分享、排障时都省一次点击）
+  const [searchParams] = useSearchParams();
+  useEffect(() => {
+    const wanted = searchParams.get('cluster');
+    if (wanted && wanted !== selectedId) setSelectedId(wanted);
+    // 只在首次挂载或 URL 参数变化时跟随
+  }, [searchParams]);   // eslint-disable-line react-hooks/exhaustive-deps
 
   const selectedCluster = useMemo(
     () => clusters.find((c) => c.id === selectedId) ?? null,

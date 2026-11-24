@@ -1,6 +1,6 @@
 # OpenLog
 
-🤖 AI-powered log analysis & monitoring platform for GPU fleets and Docker hosts
+🤖 AI-powered log analysis & monitoring platform for GPU fleets, Docker hosts and Kubernetes clusters
 
 [![CI](https://github.com/XiaoBinGan/OpenLog/actions/workflows/ci.yml/badge.svg)](https://github.com/XiaoBinGan/OpenLog/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -43,6 +43,7 @@ See [deploy/README-tsdb.md](deploy/README-tsdb.md).
 ## 📑 Table of Contents
 
 - [Features](#-features)
+- [Screenshots](#screenshots)
 - [Built-in time-series store](#built-in-time-series-store-prometheus-compatible)
 - [Quick Start](#-quick-start)
   - [Prerequisites](#prerequisites) · [Installation](#installation) · [Configuration](#configuration)
@@ -84,12 +85,24 @@ See [deploy/README-tsdb.md](deploy/README-tsdb.md).
 | 🔧 Skills | Markdown skill specs, import/export, usable by assistant & AI Shell |
 | 🔔 Alert rules | Keyword/level rules + webhook notifications with cooldown |
 | 🐳 Docker management | Containers, live logs, upstream/downstream topology, exec |
-| ☸️ Kubernetes monitoring | Read-only nodes / pods / workloads / warning events / pod logs, multi-cluster |
+| ☸️ Kubernetes monitoring | Read-only nodes / pods / workloads / warning events / pod logs across clusters, **HAMi vGPU allocated vs actually used**, scheduler policy + overcommit, warning digest; audited writes (scale / restart / delete pod) are opt-in |
 | 🖥️ Remote servers | SSH pool, file browser, PTY terminal, auto-reconnect |
 | 📜 Analysis history | Browse and revisit past analyses |
 | ⚙️ Flexible configuration | vLLM/SGLang presets, DB backends, scale knobs |
 
 ---
+
+## Screenshots
+
+Every page is shown with the built-in demo data (`OPENLOG_DEMO=1`) — deterministic fixtures, no real
+server or cluster involved. The full gallery with per-feature captions lives in
+**[docs/SCREENSHOTS.md](docs/SCREENSHOTS.md)**.
+
+| | |
+|---|---|
+| **Dashboard** — fleet health at a glance<br>![Dashboard](docs/screenshots/dashboard.png) | **GPU / MFU** — per-card util, memory, tokens/s<br>![GPU](docs/screenshots/gpu.png) |
+| **Kubernetes** — accordion per cluster<br>![K8s](docs/screenshots/k8s.png) | **HAMi vGPU** — allocated vs actually used<br>![HAMi](docs/screenshots/k8s-expanded.png) |
+| **Docker** — containers, logs, terminal<br>![Docker](docs/screenshots/docker.png) | **Assistant** — agent with tool calls<br>![Assistant](docs/screenshots/assistant.png) |
 
 ## 🚀 Quick Start
 
@@ -509,6 +522,7 @@ and path-separator differences only surface on Windows, so CI must cover it).
 | Live logs | `/logs` | Real-time logs, level filters, search |
 | Remote servers | `/remote` | SSH connections, file browser, terminal, AI Shell |
 | Docker | `/docker` | Container management, live logs, upstream/downstream topology |
+| Kubernetes | `/k8s` | Multi-cluster nodes / pods / workloads, HAMi vGPU allocated vs used, scheduler policy, warning digest (writes opt-in) |
 | AI analysis | `/analytics` | Log analysis, container patrol, health diagnosis |
 | Analysis history | `/analysis-history` | Browse past analyses |
 | Ops assistant | `/assistant` | Agent: locate issues, edit code/config, run & verify (writes need confirmation, audited) |
@@ -535,6 +549,7 @@ openlog/
 │   │   │   ├── AnalysisHistory.tsx   # analysis history
 │   │   │   ├── Assistant.tsx         # ops assistant
 │   │   │   ├── Docker.tsx            # Docker management
+│   │   │   ├── K8s.tsx               # Kubernetes clusters (nodes/pods/workloads, HAMi, policy, digest)
 │   │   │   ├── Monitor.tsx           # system monitor
 │   │   │   ├── Remote.tsx            # remote servers
 │   │   │   ├── Settings.tsx          # settings
@@ -561,7 +576,8 @@ openlog/
 │   ├── agent-audit.js            # write-operation audit trail
 │   ├── stats-scheduler.js        # centralized stats collection scheduler
 │   ├── security/                 # command risk & shell policy
-│   ├── routes/                   # routers (chat/chat-runner/docker/remote/gpu/…)
+│   ├── k8s/                      # kubeconfig client, HAMi vGPU, policy, warning digest, audited writes
+│   ├── routes/                   # routers (chat/chat-runner/docker/remote/gpu/k8s/…)
 │   └── db/                       # SQLite / PostgreSQL / MySQL data layer
 │       └── index.js              # schema + CRUD
 ├── deploy/                       # deploy assets (scripts, env templates, image archive)
@@ -577,7 +593,43 @@ openlog/
 
 ## 🕒 Recent Changes
 
-> Only the latest release is summarised here; the authoritative history is [CHANGELOG.md](CHANGELOG.md).
+> Only the latest releases are summarised here; the authoritative history is [CHANGELOG.md](CHANGELOG.md).
+
+### 2026-11-24 · v1.3.0 — HAMi allocated vs actually used, scheduler policy, warning digest, opt-in writes
+
+- **GPU usage, both halves of a vGPU cluster.** `GET /api/k8s/clusters/:id/usage` pairs HAMi's
+  allocation annotations with **`nvidia-smi`** readings taken over the SSH connection you already
+  have, joined by GPU UUID. HAMi v2 dropped the per-container utilization series, so the actual
+  number has to come from the driver — capped at `measured: false` per device instead of zeros.
+- **Scheduler policy & overcommit.** `GET .../policy` reads `binpack` / `spread` and the overcommit
+  ratio from the live ConfigMap or scheduler args, each value tagged with its `source`; unreadable
+  means **unknown**, never a guessed default.
+- **Warning digest.** `GET .../warning-digest?window=1h` groups `type=Warning` events by reason
+  (count + last-seen) so a repeating `BackOff` is one line; `POST .../warning-digest/ack` marks a
+  bucket read, in process memory only.
+- **Writes are opt-in.** Scale / rolling restart / graceful pod delete are mounted but answer `403`
+  until `OPENLOG_K8S_WRITE=1`; every accepted write returns an `auditId` and persists the previous
+  replica count. The RBAC variant needed for writes ships in `deploy/k8s/rbac.yaml`.
+- Three new cards (GPU usage, scheduler policy, warning digest) and an **operation** column in the
+  pod table; demo mode answers every write with `409`.
+- Fixes: HAMi scraping now uses the real label and port (`app.kubernetes.io/component=hami-scheduler`,
+  **9395**); `deploy.sh` passes `OPENLOG_K8S_WRITE` through; demo `/usage` and `/warning-digest` are
+  no longer empty cards.
+
+### 2026-11-23 · v1.2.0 — read-only Kubernetes, demo mode, dual-arch packaging, safer upgrades
+
+- **Kubernetes monitoring (read-only).** kubeconfig → kube-apiserver directly, mTLS or ServiceAccount
+  token, custom CA and `insecure-skip-tls-verify`; nodes, pods, workloads, warning events and pod
+  logs across as many clusters as you paste in. Nothing is installed into the cluster and `kubectl`
+  is not required. HAMi vGPU allocation (model / capacity / slots / which pod took how much) is
+  parsed from the node annotations.
+- **Demo mode** (`OPENLOG_DEMO=1`): deterministic fake data for containers, GPU, logs, TSDB, K8s and
+  the assistant — no real resources touched, nothing written to the database, one full-width banner.
+- **One command, two architectures:** `deploy/scripts/make-packages.sh` builds amd64 + arm64 offline
+  packages on an Apple Silicon Mac, each with its own triple check.
+- **Safer upgrades:** drift detection before deploy (a server carrying local commits is refused unless
+  `--force`, which also creates a backup branch) and `install.sh --upgrade` for in-place upgrades
+  (backup → image swap → health check → rollback on failure).
 
 ### 2026-11-16 · v1.1.0 — built-in time-series store (Prometheus-compatible)
 
@@ -1202,7 +1254,9 @@ required on the machine running OpenLog.
     HAMi's per-device allocation by GPU UUID. Utilization is a percentage (`0-100`).
   - When a node's `nvidia-smi` cannot be reached the device is marked `measured: false`; the card
     prints `—` for live numbers while the allocation half keeps working.
-  reason instead of a wall of zeros. Every other card keeps working.
+- **When the scrape as a whole fails** (`available: false`) the card shows the upstream `reason`
+  instead of a wall of zeros — no `/metrics` on the vgpu-monitor, no route to it, or insufficient
+  RBAC. The other cards on the page keep working.
 
 The card renders directly under **GPU allocation**, so a device that is "80% allocated, 4% busy"
 is one glance away — the usual symptom of a workload that grabbed vGPU memory and then idled.
@@ -1232,8 +1286,9 @@ to the database, or to settings.
 ### Write operations — opt-in, off by default
 
 Read-only remains the default. Write endpoints are mounted, but every one of them answers
-**`403`** with `{ "error": "write operations are disabled (set OPENLOG_K8S_WRITE=1)", "readOnly": true }`
-until you explicitly enable them on the server:
+**`403`** with `{ "error": <WRITE_DISABLED_ERROR>, "readOnly": true }` until you explicitly enable
+them on the server. The message is the server's own constant (`server/routes/k8s-ops.js`) and reads
+"write operations are not enabled; set `OPENLOG_K8S_WRITE=1` to take effect":
 
 ```bash
 OPENLOG_K8S_WRITE=1

@@ -1,6 +1,6 @@
 # OpenLog
 
-🤖 AI 驱动的日志分析与监控平台
+🤖 AI 驱动的日志分析、GPU 与 Kubernetes 监控平台（自托管）
 
 **[[English](README.md)] | [[简体中文](README.zh-CN.md)]**
 
@@ -46,6 +46,7 @@ Grafana 可直接接 `/api/v1/*`（与 Prometheus HTTP API 同形状）。
   - 算力监控 · MFU 计算方式 · 接入自定义推理服务 · 告警规则
   - 容器日志告警 · Docker 实时日志 · 容器内执行命令 · Kubernetes 监控
 - [Kubernetes 监控](#kubernetes-监控)
+  - 只读接入 · 多集群 · 权限模型 · HAMi GPU 使用率（分配 vs 实测） · 调度策略与超卖 · Warning 事件摘要 · 写操作（需开启）
 - [API 速查](#-api-速查)
 - [许可证](#-许可证)
 - [CHANGELOG](CHANGELOG.md) · [参与贡献](#-参与贡献) · [致谢](#-致谢)
@@ -68,7 +69,7 @@ Grafana 可直接接 `/api/v1/*`（与 Prometheus HTTP API 同形状）。
 | 🔧 技能管理 | Skills Management (import/export, Markdown spec) |
 | 🔔 告警规则 + Webhook 通知 | Alert Rules + Webhook Notifications |
 | 🐳 Docker 管理 | Docker Management |
-| ☸️ Kubernetes 监控 | Kubernetes Monitoring (read-only, multi-cluster) |
+| ☸️ Kubernetes 监控 | Kubernetes Monitoring (read-only nodes / pods / workloads / warning events + HAMi vGPU 分配 vs 实测 / 调度策略 / 事件摘要；写操作默认关闭) |
 | 🖥️ 远程服务器管理 | Remote Server Management |
 | 📜 分析历史 | Analysis History |
 | ⚙️ 灵活配置 | Flexible Configuration |
@@ -467,6 +468,7 @@ CI（`.github/workflows/ci.yml`）在 push/PR 到 `node` / `main` 时依次执�
 | 日志流 | `/logs` | 实时日志查看、级别过滤、搜索 |
 | 远程服务器 | `/remote` | SSH 连接、文件浏览、终端、AI Shell |
 | Docker 容器 | `/docker` | 容器管理、实时日志流、上下游链路 |
+| K8s 集群 | `/k8s` | 多集群节点 / Pod / 工作负载、HAMi vGPU 分配 vs 实测、调度策略、事件摘要（写操作默认关闭） |
 | AI 分析 | `/analytics` | 日志分析、容器巡检、健康诊断 |
 | 分析历史 | `/analysis-history` | 历史分析记录查看 |
 | 运维助手 | `/assistant` | Agent：定位问题、改代码/配置、跑命令并验证（写操作需确认，留审计） |
@@ -493,6 +495,7 @@ openlog/
 │   │   │   ├── AnalysisHistory.tsx  # 分析历史
 │   │   │   ├── Assistant.tsx        # 运维助手
 │   │   │   ├── Docker.tsx           # Docker 管理
+│   │   │   ├── K8s.tsx              # K8s 集群（节点/Pod/工作负载、HAMi、调度策略、事件摘要）
 │   │   │   ├── Monitor.tsx          # 系统监控
 │   │   │   ├── Remote.tsx           # 远程服务器
 │   │   │   ├── Settings.tsx         # 设置
@@ -519,7 +522,8 @@ openlog/
 │   ├── remote-store.js        # 服务器按行存储（1000 台量级）
 │   ├── stats-scheduler.js     # 集中采集调度器
 │   ├── security/              # 命令风险与 Shell 策略
-│   ├── routes/                # 路由（chat/chat-runner/docker/remote/gpu/...）
+│   ├── k8s/                   # kubeconfig 客户端、HAMi vGPU、调度策略、事件摘要、带审计的写操作
+│   ├── routes/                # 路由（chat/chat-runner/docker/remote/gpu/k8s/...）
 │   └── db/                    # SQLite / PostgreSQL / MySQL 数据层
 │       └── index.js           # 表结构 + CRUD
 ├── deploy/                  # 部署资产（脚本 / 配置模板 / 镜像归档）
@@ -535,7 +539,37 @@ openlog/
 
 ## 🕒 更新记录
 
-> 这里只保留最近一次发布的摘要；完整历史见 [CHANGELOG.md](CHANGELOG.md)。
+> 这里只保留最近几次发布的摘要；完整历史见 [CHANGELOG.md](CHANGELOG.md)。
+
+### 2026-11-24 · v1.3.0 —— HAMi 分配 vs 实测、调度策略、事件摘要、可选写操作
+
+- **GPU 使用率的另一半。** `GET /api/k8s/clusters/:id/usage` 把 HAMi 的分配注解与
+  **`nvidia-smi`** 的实测并排（按 GPU UUID join，走你已有的那条 SSH）。HAMi v2 去掉了容器级
+  利用率序列，实测只能从驱动侧拿；某张卡拿不到就标 `measured: false`，不给一排 0。
+- **调度策略与超卖。** `GET .../policy` 从活的 ConfigMap / 调度器启动参数读 `binpack` /
+  `spread` 与超卖比例，每个值都带 `source`；读不到显示**未知**，不猜默认值。
+- **Warning 事件摘要。** `GET .../warning-digest?window=1h` 按 reason 归并（次数 + 最后出现时间），
+  反复出现的 `BackOff` 是一行；`POST .../warning-digest/ack` 确认一组，只存进程内存。
+- **写操作要显式开。** 扩缩容 / 滚动重启 / 优雅删 Pod 已挂载，但没 `OPENLOG_K8S_WRITE=1` 时
+  一律 `403`；成功的写操作返回 `auditId`，并把改动前的副本数一起落审计。写操作需要的 RBAC
+  变体在 `deploy/k8s/rbac.yaml`。
+- 前端新增三张卡片（GPU 使用率 / 调度策略 / Warning 摘要）与 Pod 表的**操作**列；
+  演示模式下写操作回 `409`。
+- 修正：HAMi 采集改用真机标签与端口（`app.kubernetes.io/component=hami-scheduler` / **9395**）；
+  `deploy.sh` 透传 `OPENLOG_K8S_WRITE`；演示模式的 `/usage` 与 `/warning-digest` 不再是空卡片。
+
+### 2026-11-23 · v1.2.0 —— 只读 Kubernetes、演示模式、双平台打包、升级安全
+
+- **Kubernetes 监控（只读）。** kubeconfig 直连 kube-apiserver，mTLS 或 ServiceAccount token，
+  支持自定义 CA 与 `insecure-skip-tls-verify`；节点 / Pod / 工作负载 / Warning 事件 / Pod 日志，
+  想接几个集群就接几个。不往集群里装东西，也不需要 `kubectl`。HAMi vGPU 分配
+  （型号 / 容量 / 槽位 / 哪个 Pod 占了多少）从节点注解解析。
+- **演示模式**（`OPENLOG_DEMO=1`）：容器 / GPU / 日志 / 时序库 / K8s / 助手全部用确定性假数据，
+  不连真实资源、不写库，顶部一条通栏提示。
+- **一条命令出双架构包**：`deploy/scripts/make-packages.sh` 在 Apple Silicon Mac 上出
+  amd64 + arm64 离线包，每个架构各自三重校验。
+- **升级更安全**：部署前做漂移检测（服务端有本地提交默认拦下，`--force` 才覆盖并自动建备份分支）；
+  `install.sh --upgrade` 原地升级（备份 → 换镜像 → 健康检查 → 失败回滚）。
 
 ### 2026-11-16 · v1.1.0 —— 内置时序库（Prometheus 兼容）
 
@@ -1058,6 +1092,70 @@ OPENLOG_ENABLE_CONTAINER_EXEC=1   # 或 OPENLOG_ENABLE_REMOTE_EXEC=1 一并开�
   events、deployments、statefulsets、daemonsets 给 `get` / `list` / `watch`）。
   清单与 kubeconfig 生成脚本在 `deploy/k8s/`，具体核对清单见 `deploy/k8s/README.md`。
 
+### HAMi GPU 使用率 —— 分配了多少 vs 实际用了多少
+
+`GET /api/k8s/clusters/:id/usage` 把 vGPU 集群的两半并排放：
+
+- **分配**取自 OpenLog 本来就在解析的节点注解（`hami.io/node-nvidia-register`、
+  `hami.io/vgpu-devices-allocated`）—— 也就是每个 Pod **拿到了多少**。
+- **实测**来自 **`nvidia-smi`**，不是 HAMi。HAMi v2 已经去掉了容器级利用率序列
+  （`hami_container_device_utilization_ratio` 只存在于 v1.x；v2 只导
+  `hami_gpu_memory_allocated_bytes` 这类分配计数）。OpenLog 用你给 GPU 监控配好的那条 SSH
+  连到每个节点跑 `nvidia-smi`，再按 GPU UUID 与 HAMi 的按卡分配 join。利用率一律是
+  **0–100 的百分比**。
+  - 某节点 `nvidia-smi` 拿不到时，那张卡标记 `measured: false`：实时数字显示 `—`，
+    分配那一半照常工作。
+- 整体抓不到（`available: false`）时，卡片直接显示上游给的 `reason` 而不是一排 0 ——
+  常见原因是 vgpu-monitor 没部署、`/metrics` 不可达、或 RBAC 不够。页面其它卡片不受影响。
+
+卡片就渲染在「GPU 分配」下方，所以「分配 80%、实际只跑 4%」一眼就能看见 —— 典型的
+「抢了 vGPU 显存然后空转」。
+
+### 调度策略与超卖
+
+`GET /api/k8s/clusters/:id/policy` 给出 HAMi 调度器的实际生效配置：
+
+| 字段 | 含义 |
+|------|------|
+| `nodeSchedulerPolicy` | `binpack`（压紧节点）或 `spread`（摊开 Pod） |
+| `deviceSchedulerPolicy` | 同样的选择，作用在节点内的每张卡上 |
+| `overcommit` | 显存超卖比例（`1` = 不超卖） |
+
+每个字段都带自己的 `source`（`configmap` / `scheduler-args` / `default` / `none`），
+所以从活的 ConfigMap 读到的值不会被误当成 HAMi 的默认值。什么都读不到时卡片显示 **未知**，
+不猜。
+
+### Warning 事件摘要
+
+`GET /api/k8s/clusters/:id/warning-digest?window=1h` 把 `type=Warning` 事件按 `reason` 归并
+（每组带次数 + 最后出现时间），反复出现的 `BackOff` 是一行而不是四十条事件。
+`POST /api/k8s/clusters/:id/warning-digest/ack` 带 `{ "reason": "BackOff" }` 确认一组；
+确认状态只存在进程内存里 —— 不写集群、不写数据库、不动 settings。
+
+### 写操作 —— 需显式开启，默认关闭
+
+默认仍然是只读。写接口都挂上了，但在服务端显式开启之前，每一条都返回
+**`403`** + `{ "error": "写操作未启用（设置 OPENLOG_K8S_WRITE=1 后生效）", "readOnly": true }`：
+
+```bash
+OPENLOG_K8S_WRITE=1
+```
+
+| 能力 | 端点 | 说明 |
+|---|---|---|
+| 扩缩容 | `POST /api/k8s/clusters/:id/workloads/:ns/:kind/:name/scale` | body `{ "replicas": N }`；`kind` 只接受 `deployments` / `statefulsets` |
+| 滚动重启 | `POST /api/k8s/clusters/:id/workloads/:ns/:kind/:name/restart` | 打 `restartedAt` 注解；`kind` 同样受限 |
+| 删一个 Pod | `DELETE /api/k8s/clusters/:id/pods/:ns/:name` | 优雅删除，30s 宽限期 —— 不做 force delete |
+
+每次成功的写操作返回 `{ ok: true, auditId }`，审计记录连同改动前的副本数一起落服务端，
+所以「谁把它扩到 5 的、什么时候」事后答得出来。UI 上这些就在 Pod 表的 **操作** 列里：
+删 Pod 一直有；只有当调度器可见的 owner 是 Deployment 或 StatefulSet 时才出现重启与扩缩容。
+owner 确定不了（裸 Pod、static pod，或 owner 链推不出 Deployment 名）时只给 **删除**，
+不猜。
+
+演示模式（`OPENLOG_DEMO=1`）对每一种写操作都回 `409`，绝不碰真集群；写操作需要的 RBAC 变体
+（scale 子资源的 create/patch、Pod 的 delete）写在 `deploy/k8s/rbac.yaml` 里。
+
 ---
 
 ## 📝 API 速查
@@ -1087,6 +1185,14 @@ OPENLOG_ENABLE_CONTAINER_EXEC=1   # 或 OPENLOG_ENABLE_REMOTE_EXEC=1 一并开�
 | GET | `/api/chat/audit` | 运维助手写操作审计流水 |
 | GET | `/api/chat/provider` | 当前推理服务引擎类型与能力提示 |
 | GET | `/api/models` | 模型列表（vLLM/SGLang/Strata/Ollama，支持 `?baseUrl=&apiKey=` 覆盖） |
+| GET | `/api/k8s/clusters/:id/overview` | 节点 / Pod / 工作负载 / Warning 事件一次取回 |
+| GET | `/api/k8s/clusters/:id/usage` | HAMi GPU 使用率：分配 vs 实测（抓不到时返回 `available:false` + `reason`） |
+| GET | `/api/k8s/clusters/:id/policy` | 调度策略（`binpack`/`spread`）与超卖比例，每项带 `source` |
+| GET | `/api/k8s/clusters/:id/warning-digest` | Warning 事件按 reason 归并（`?window=1h`） |
+| POST | `/api/k8s/clusters/:id/warning-digest/ack` | 确认一组 reason（`{reason}`，只存进程内存） |
+| POST | `/api/k8s/clusters/:id/workloads/:ns/:kind/:name/scale` | 扩缩容 Deployment/StatefulSet（`{replicas}`，需 `OPENLOG_K8S_WRITE=1`） |
+| POST | `/api/k8s/clusters/:id/workloads/:ns/:kind/:name/restart` | 滚动重启（打注解，需 `OPENLOG_K8S_WRITE=1`） |
+| DELETE | `/api/k8s/clusters/:id/pods/:ns/:name` | 优雅删除单个 Pod（30s，需 `OPENLOG_K8S_WRITE=1`） |
 
 ---
 
