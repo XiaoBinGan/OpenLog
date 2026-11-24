@@ -127,8 +127,8 @@ function PodTable({
           <table className="w-full text-sm min-w-[52rem] table-fixed">
             <thead>
               <tr className="text-xs text-dark-500 border-b border-dark-800/60">
-                <th className="text-left font-medium px-2 py-2 w-16">状态</th>
-                <th className="text-left font-medium px-2 py-2">命名空间</th>
+                <th className="text-left font-medium px-2 py-2 w-28">状态</th>
+                <th className="text-left font-medium px-2 py-2 w-32">命名空间</th>
                 <th className="text-left font-medium px-2 py-2">名称</th>
                 <th className="text-left font-medium px-2 py-2 w-14">Ready</th>
                 <th className="text-left font-medium px-2 py-2 w-12">重启</th>
@@ -161,13 +161,13 @@ function PodTable({
                       open ? 'bg-accent-500/10' : 'hover:bg-dark-800/30'
                     }`}
                   >
-                    <td className="px-4 py-2 whitespace-nowrap">
+                    <td className="px-2 py-2 whitespace-nowrap">
                       <span className="inline-flex items-center gap-1.5">
                         <span className={`w-1.5 h-1.5 rounded-full ${severityDot[severity]}`} />
                         <span className={severityText[severity]}>{pod.phase || 'Unknown'}</span>
                       </span>
                     </td>
-                    <td className="px-3 py-2 text-dark-400 whitespace-nowrap">{pod.namespace || '—'}</td>
+                    <td className="px-2 py-2 text-dark-400 whitespace-nowrap">{pod.namespace || '—'}</td>
                     <td className="px-2 py-2 text-dark-200 max-w-[16rem] truncate" title={pod.name}>
                       {pod.name}
                     </td>
