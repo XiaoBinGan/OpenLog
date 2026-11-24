@@ -1,8 +1,14 @@
 name: Deploy site
 
-# 官网是纯静态（site/index.html + assets/），没有构建步骤 —— 直接发布 site/ 目录。
-# 为什么用 Actions 而不是 gh-pages 分支：site/ 就在 main 里维护，
-# 建个 gh-pages 分支意味着同一份内容存两份、改一次要同步两个地方，必然分叉。
+# 官网是纯静态（site/index.html + assets/），没有构建步骤。
+#
+# 为什么改成「推 gh-pages 分支」而不是 actions/deploy-pages：
+#   2026-11-24 起 deploy-pages@v4 反复报 `Found 0 artifact(s)` —— artifact 明明上传成功
+#   （能查到 id 与大小），但部署 API 查不到它（GitHub 强制 actions 跑在 Node 24 后的已知问题）。
+#   peaceiris/actions-gh-pages 走的是普通 git push，不碰 artifact 部署 API，链路短且可预期。
+#
+# 单一事实来源仍然是 main 里的 site/：gh-pages 由 CI 生成（force_orphan，每次全新一份），
+# 不要手工改 gh-pages 分支。
 
 on:
   push:
@@ -13,11 +19,8 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
-  pages: write
-  id-token: write
+  contents: write
 
-# 同一时刻只允许一次发布；新的推送取消正在进行的旧发布
 concurrency:
   group: pages
   cancel-in-progress: true
@@ -26,21 +29,14 @@ jobs:
   deploy:
     name: Publish site/
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
 
-      # 发布前先自检：站点资源都是相对路径，缺文件只会在浏览器里 404，
-      # 构建期发现不了。这里静态检查一遍，坏链在 CI 阶段就拦住。
+      # 发布前自检：站点资源都是相对路径，缺文件只会在浏览器里 404，构建期发现不了。
       - name: Verify referenced assets exist
         run: |
           set -e
           cd site
-          # 只检查「看起来是相对文件路径」的引用：
-          #   - 排除 http(s)://、//、mailto:、#（锚点）、data:（内联 svg/base64）
-          #   - 排除含空格的（内联 data URI 里的 svg 带空格，不是文件路径）
           refs=$(grep -oE '(src|href)="[^"]+"' index.html \
                  | sed -E 's/^[a-zA-Z]+="//; s/"$//' \
                  | grep -vE '^(https?:|//|mailto:|#|data:)' \
@@ -59,11 +55,13 @@ jobs:
           if [ "$missing" -ne 0 ]; then exit 1; fi
           echo "全部存在"
 
-      - uses: actions/configure-pages@v5
-
-      - uses: actions/upload-pages-artifact@v3
+      - name: Publish to gh-pages
+        uses: peaceiris/actions-gh-pages@v4
         with:
-          path: site
-
-      - id: deployment
-        uses: actions/deploy-pages@v4
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./site
+          publish_branch: gh-pages
+          force_orphan: true
+          user_name: github-actions[bot]
+          user_email: github-actions[bot]@users.noreply.github.com
+          commit_message: 'site: ${{ github.event.head_commit.message || github.sha }}'
