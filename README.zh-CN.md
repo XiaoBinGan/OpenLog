@@ -30,6 +30,7 @@ Grafana 可直接接 `/api/v1/*`（与 Prometheus HTTP API 同形状）。
 ## 📑 目录
 
 - [特性](#-特性)
+- [截图](#截图)
 - [内置时序库（Prometheus 兼容）](#内置时序库prometheus-兼容)
 - [快速开始](#-快速开始)
   - [前置要求](#前置要求) · [安装](#安装) · [配置](#配置) · [支持的推理服务](#支持的推理服务vllm--sglang--strata--ollama)
@@ -75,6 +76,17 @@ Grafana 可直接接 `/api/v1/*`（与 Prometheus HTTP API 同形状）。
 | ⚙️ 灵活配置 | Flexible Configuration |
 
 ---
+
+## 截图
+
+每一页都是内置演示数据（`OPENLOG_DEMO=1`）下的样子 —— 确定性夹具，不连真实服务器或集群。
+带逐功能说明的完整图集见 **[docs/SCREENSHOTS.md](docs/SCREENSHOTS.md)**。
+
+| | |
+|---|---|
+| **仪表盘** —— 一眼看整套集群健康<br>![仪表盘](docs/screenshots/dashboard.png) | **算力监控 / MFU** —— 逐卡利用率、显存、tokens/s<br>![算力监控](docs/screenshots/gpu.png) |
+| **Kubernetes** —— 按集群手风琴展开<br>![K8s](docs/screenshots/k8s.png) | **HAMi vGPU** —— 分配 vs 实际使用<br>![HAMi](docs/screenshots/k8s-expanded.png) |
+| **Docker** —— 容器、日志、终端<br>![Docker](docs/screenshots/docker.png) | **运维助手** —— agent 带工具调用<br>![运维助手](docs/screenshots/assistant.png) |
 
 ## 🚀 快速开始
 
@@ -1069,10 +1081,11 @@ OPENLOG_ENABLE_CONTAINER_EXEC=1   # 或 OPENLOG_ENABLE_REMOTE_EXEC=1 一并开�
 
 ## Kubernetes 监控
 
-在同一个面板里看 Kubernetes，**只读接入** —— 节点上不装 agent，跑 OpenLog 的机器上也不需要 `kubectl`。
+在同一个面板里看 Kubernetes，**默认只读接入** —— 节点上不装 agent，跑 OpenLog 的机器上也不需要 `kubectl`。
 
-- **只读，写不进去。** 粘贴 kubeconfig 后 OpenLog 直接对 kube-apiserver 发 HTTPS 请求：
-  不往集群里装任何东西、不调用 `kubectl`，所有请求都是 GET。
+- **默认只读。** 粘贴 kubeconfig 后 OpenLog 直接对 kube-apiserver 发 HTTPS 请求：
+  不往集群里装任何东西、不调用 `kubectl`，所有请求都是 GET —— 除非你按下面的「写操作」显式开启
+  （`OPENLOG_K8S_WRITE=1`，默认关闭）。
 - **kubeconfig 直连 apiserver。** 支持多集群 kubeconfig —— 可指定任意 `context`，留空则用
   `current-context`。两种认证方式都支持：客户端证书 + 私钥（mTLS，k3s kubeconfig 的默认形态）
   与 bearer token（ServiceAccount token），另外支持自定义 CA 与 `insecure-skip-tls-verify`

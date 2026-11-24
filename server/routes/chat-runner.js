@@ -423,6 +423,7 @@ export function createChatRunner({ ensureSettings, executeAssistantTool, pending
     let contextRetried = false;
     /** 单轮模型超时次数：连续两次就收尾（模型明显顶不住了） */
     let roundTimeouts = 0;
+  let retriedUpstream = false;
     /** 本次任务里是否真正执行过工具（识别「没调工具却声称已执行」用） */
     let anyToolExecuted = false;
     /** 假执行纠正只做一次，避免模型较劲时死循环 */
@@ -670,7 +671,17 @@ export function createChatRunner({ ensureSettings, executeAssistantTool, pending
           || (contentAcc.length >= 16 && !looksLikeFakeExecution(contentAcc.slice(0, 60)));
       };
 
-      try {
+    // 首字可能等十几秒（T4 上加载/排队都慢）。这期间如果一声不吭，用户会以为卡死 ——
+    // 所以每 3 秒推一条 status，界面上的「思考中」会带着已等待秒数动起来。
+    let firstChunkAt = 0;
+    const waitTicker = setInterval(() => {
+      const waited = Math.round((Date.now() - llmStartedAt) / 1000);
+      if (waited >= 3) {
+        try { sse({ status: `模型思考中…（已等待 ${waited}s）` }); } catch { /* 连接已断 */ }
+      }
+    }, 3000);
+    if (waitTicker.unref) waitTicker.unref();
+    try {
         for await (const chunk of stream) {
           // 引擎返回的真实用量（stream_options.include_usage）：这类 chunk 通常没有 choices，
           // 必须在 `continue` 之前捕获，否则永远拿不到。
@@ -682,6 +693,7 @@ export function createChatRunner({ ensureSettings, executeAssistantTool, pending
               totalTokens: Number(u.total_tokens) || 0,
             };
           }
+      if (!firstChunkAt) { firstChunkAt = Date.now(); clearInterval(waitTicker); }
           const delta = chunk.choices?.[0]?.delta;
           if (!delta) continue;
           const { content, reasoning } = extractDelta(delta);
@@ -723,8 +735,22 @@ export function createChatRunner({ ensureSettings, executeAssistantTool, pending
           if (roundTimeouts >= 2) return summarizeAndFinish('time');
           continue;
         }
+        // 上游断连（Connection error / ECONNRESET / 早停）：一次自动重试，别让用户对着半截流发呆。
+        // 已收到正文时不再重试（避免重复输出），只补一句说明。
+        if (isUpstreamConnectionError(err)) {
+          const hint = upstreamConnectionHint(err, baseUrl);
+          if (!contentAcc.trim() && !retriedUpstream) {
+            retriedUpstream = true;
+            sse({ type: 'provider_notice', message: `${hint}，正在自动重试一次`, engine });
+            round--;
+            continue;
+          }
+          sse({ type: 'provider_notice', message: hint, engine });
+          return summarizeAndFinish('error');
+        }
         throw err;
       } finally {
+        clearInterval(waitTicker);
         clearTimeout(roundTimer);
       }
 
@@ -844,3 +870,26 @@ export function createChatRunner({ ensureSettings, executeAssistantTool, pending
 }
 
 export default createChatRunner;
+
+
+/**
+ * 上游「连不上 / 连接被断」这一类错误。
+ *
+ * OpenAI SDK 对 fetch 层的失败统一包成 `Connection error.`，真正原因藏在 cause 里；
+ * strata/vLLM 在 OOM 或模型卸载时也会直接断流。这些都应该重试或给出可操作提示，
+ * 而不是把 `Connection error.; request to http://...` 原样丢给用户（英文、且看不出该做什么）。
+ */
+function isUpstreamConnectionError(err) {
+  const text = `${err?.message || ''} ${err?.cause?.code || ''} ${err?.code || ''}`.toLowerCase();
+  return /connection error|econnrefused|econnreset|etimedout|socket hang up|terminated|fetch failed|network/.test(text);
+}
+
+/** 把连接错误翻成中文可操作提示（带地址，方便判断是模型没起还是地址配错） */
+function upstreamConnectionHint(err, baseUrl) {
+  const code = err?.cause?.code || err?.code || '';
+  const target = String(baseUrl || '').replace(/\/v1\/?$/, '');
+  const detail = code ? `（${code}）` : '';
+  return `模型服务不可达${detail}：${target || '未配置地址'} —— 检查推理服务是否在运行、`
+    + `地址与端口是否正确、以及它所在的机器是否可达`;
+}
+

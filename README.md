@@ -1212,12 +1212,13 @@ instead of a cryptic error.
 
 ## Kubernetes monitoring
 
-Read-only Kubernetes visibility from the same panel — no agent on the nodes, no `kubectl`
-required on the machine running OpenLog.
+Kubernetes visibility from the same panel — read-only unless you turn writes on, no agent on the
+nodes, no `kubectl` required on the machine running OpenLog.
 
-- **Read-only by design.** Paste a kubeconfig and OpenLog talks straight to the
+- **Read-only by default.** Paste a kubeconfig and OpenLog talks straight to the
   kube-apiserver over HTTPS. It never installs anything into the cluster and never shells out to
-  `kubectl`; every request it makes is a plain GET.
+  `kubectl`; every request it makes is a plain GET unless you opt into writes below
+  (`OPENLOG_K8S_WRITE=1`, off by default).
 - **kubeconfig → kube-apiserver, directly.** Multi-cluster kubeconfigs are handled: pick any
   `context`, or fall back to `current-context`. Both auth styles work — client certificate + key
   (mTLS, the default shape of a k3s kubeconfig) and bearer token (a ServiceAccount token) — plus a

@@ -100,6 +100,8 @@ export default function Assistant() {
   const [pendingImages, setPendingImages] = useState<AttachedImage[]>([]);
   const [dragActive, setDragActive] = useState(false);
   const [loading, setLoading] = useState(false);
+  /** 服务端推来的「思考中…（已等待 Ns）」——首字可能要等十几秒，没有它界面像卡死 */
+  const [thinkingStatus, setThinkingStatus] = useState<string | null>(null);
   const [memoryPanelOpen, setMemoryPanelOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [editingFile, setEditingFile] = useState<string | null>(null);
@@ -582,7 +584,11 @@ export default function Assistant() {
             } else if (p.type === 'context_warning') {
               // 后端判定「该换会话 / 该换模型」：显示为横幅提示
               setSseWarning({ level: p.level || 'warn', message: p.message || '' });
-            } else if (p.content) {
+            } else if (typeof p.status === 'string') {
+          // 等待首字期间的进度提示（「模型思考中…（已等待 12s）」）
+          setThinkingStatus(p.status || null);
+        } else if (p.content) {
+          if (p.content) setThinkingStatus(null);
               acc += p.content;
             } else if (p.reasoning_content) {
               setOpsMessages(prev => prev.map((m, i) => i === prev.length - 1 ? { ...m, reasoning_content: p.reasoning_content } : m));
@@ -1093,7 +1099,14 @@ export default function Assistant() {
             )}
           </div>
 
-          {/* 上下文用量条：放在输入框下方作为状态栏（原先是压在输入区上方，视觉太挤） */}
+          {loading && thinkingStatus && (
+        <div data-testid="thinking-status" className="mb-1.5 flex items-center gap-2 text-[11px] text-accent-400">
+          <Loader className="h-3 w-3 animate-spin" />
+          <span>{thinkingStatus}</span>
+        </div>
+      )}
+
+      {/* 上下文用量条：放在输入框下方作为状态栏（原先是压在输入区上方，视觉太挤） */}
           <div className="mt-2 px-0.5">
             <ContextUsageBar
               usage={opsContextUsage}
