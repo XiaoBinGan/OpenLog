@@ -28,7 +28,7 @@ import { compactMessages, isContextOverflowError, isStreamOptionsUnsupported, st
 import { fitMessagesToBudget } from '../context-budget.js';
 import { CONTEXT_DEFAULTS, STREAM_USAGE_ENGINES } from './context-config.js';
 
-const CONFIRM_TIMEOUT_MS = 3 * 60 * 1000;
+const CONFIRM_TIMEOUT_MS = Number(process.env.OPENLOG_ASSISTANT_CONFIRM_TIMEOUT_MS) || 90_000;
 
 /**
  * 长任务预算（可用环境变量调）。
@@ -106,7 +106,19 @@ export function createChatRunner({ ensureSettings, executeAssistantTool, pending
         risk: risk.risk, reason: risk.reason, preview,
       })}\n\n`);
 
-      const approved = await waitForApproval(confirmId);
+      // 等人工确认期间也给反馈：否则用户看到的是「界面静止 1.5 分钟然后弹出拒绝」
+      const deadlineAt = Date.now() + CONFIRM_TIMEOUT_MS;
+      const confirmTicker = setInterval(() => {
+        const left = Math.max(0, Math.round((deadlineAt - Date.now()) / 1000));
+        try { res.write(`data: ${JSON.stringify({ type: 'provider_notice', message: `等待你确认「${tc.name}」（剩余 ${left}s，超时将自动拒绝）` })}\n\n`); } catch { /* 连接已断 */ }
+      }, 10000);
+      if (confirmTicker.unref) confirmTicker.unref();
+      let approved;
+      try {
+        approved = await waitForApproval(confirmId);
+      } finally {
+        clearInterval(confirmTicker);
+      }
       res.write(`data: ${JSON.stringify({ type: 'tool_confirm_result', confirmId, approved })}\n\n`);
 
       if (!approved) {
@@ -144,7 +156,10 @@ export function createChatRunner({ ensureSettings, executeAssistantTool, pending
 
     let result;
     try {
-      result = await executeAssistantTool(tc.name, args, hooks);
+      // 工具必须有独立的超时：之前 list_metrics / remote_exec 卡住时会一直等到**单轮 180s 上限**，
+      // 模型那边再重试一轮，用户体感就是「等了 8 分钟然后突然结束」。
+      // 超时后返回结构化错误，让模型能自己换个办法（换工具 / 缩小范围 / 告诉用户原因）。
+      result = await withToolTimeout(tc.name, () => executeAssistantTool(tc.name, args, hooks));
     } catch (err) {
       result = { error: errorMessage(err) };
     }
@@ -884,6 +899,31 @@ export default createChatRunner;
  * strata/vLLM 在 OOM 或模型卸载时也会直接断流。这些都应该重试或给出可操作提示，
  * 而不是把 `Connection error.; request to http://...` 原样丢给用户（英文、且看不出该做什么）。
  */
+export const DEFAULT_TOOL_TIMEOUT_MS = Number(process.env.OPENLOG_ASSISTANT_TOOL_TIMEOUT_MS) || 45_000;
+
+/**
+ * 给单次工具调用套一个超时。
+ *
+ * 为什么必须有：工具里可能连 SSH、查时序库、跑远程命令，任何一处卡住都会把整轮对话拖到
+ * 180s 的单轮上限；模型再重试一轮，用户看到的就是「长时间等待 + 突然结束」。
+ * 超时返回的是结构化错误（isError），模型可以据此换策略，而不是沉默。
+ */
+async function withToolTimeout(name, fn, timeoutMs = DEFAULT_TOOL_TIMEOUT_MS) {
+  let timer;
+  const timeout = new Promise((resolve) => {
+    timer = setTimeout(() => resolve({
+      error: `工具 ${name} 超过 ${Math.round(timeoutMs / 1000)}s 未返回，已中止（可能是远端不可达或数据量过大）`,
+      timeout: true,
+    }), timeoutMs);
+    if (timer.unref) timer.unref();
+  });
+  try {
+    return await Promise.race([fn(), timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function isUpstreamConnectionError(err) {
   const text = `${err?.message || ''} ${err?.cause?.code || ''} ${err?.code || ''}`.toLowerCase();
   return /connection error|econnrefused|econnreset|etimedout|socket hang up|terminated|fetch failed|network/.test(text);

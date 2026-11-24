@@ -167,6 +167,10 @@ const READ_TOOLS = new Set([
   'docker_list', 'docker_logs', 'docker_inspect', 'docker_health_check',
   'remote_servers', 'remote_system_stats', 'remote_list_files',
   'remote_read_file', 'remote_search_logs',
+  // 时序库查询与本地只读工具：都是纯查询，不该弹确认框
+  // （之前 list_metrics / query_metrics 没分类 → 落到「未知工具按写操作处理」→ 弹框等 3 分钟，
+  //   用户不点就一直挂在 CONFIRM_TIMEOUT 上，看起来像"助手卡死/长时间等待"）
+  'list_metrics', 'query_metrics', 'local_system_stats', 'local_log_files', 'local_read_log',
   'local_system_stats', 'local_log_files', 'local_read_log',
 ]);
 
