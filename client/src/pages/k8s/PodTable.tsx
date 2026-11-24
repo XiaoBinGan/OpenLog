@@ -123,20 +123,20 @@ function PodTable({
           {pods.length === 0 ? '这个集群没有读到 Pod' : '当前过滤条件下没有 Pod'}
         </div>
       ) : (
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
+        <div className="overflow-x-auto -mx-1 px-1">
+          <table className="w-full text-sm min-w-[52rem] table-fixed">
             <thead>
               <tr className="text-xs text-dark-500 border-b border-dark-800/60">
-                <th className="text-left font-medium px-4 py-2">状态</th>
-                <th className="text-left font-medium px-3 py-2">命名空间</th>
-                <th className="text-left font-medium px-3 py-2">名称</th>
-                <th className="text-left font-medium px-3 py-2">Ready</th>
-                <th className="text-left font-medium px-3 py-2">重启</th>
-                <th className="text-left font-medium px-3 py-2">节点</th>
+                <th className="text-left font-medium px-2 py-2 w-16">状态</th>
+                <th className="text-left font-medium px-2 py-2">命名空间</th>
+                <th className="text-left font-medium px-2 py-2">名称</th>
+                <th className="text-left font-medium px-2 py-2 w-14">Ready</th>
+                <th className="text-left font-medium px-2 py-2 w-12">重启</th>
+                <th className="text-left font-medium px-2 py-2">节点</th>
                 {showVgpu && <th className="text-left font-medium px-3 py-2">vGPU</th>}
-                <th className="text-left font-medium px-3 py-2">IP</th>
-                <th className="text-left font-medium px-3 py-2">年龄</th>
-                <th className="text-left font-medium px-3 py-2">标记</th>
+                <th className="text-left font-medium px-2 py-2 w-24">IP</th>
+                <th className="text-left font-medium px-2 py-2 w-16">年龄</th>
+                <th className="text-left font-medium px-2 py-2">标记</th>
                 {renderRowActions && <th className="text-left font-medium px-3 py-2">操作</th>}
               </tr>
             </thead>
@@ -168,7 +168,7 @@ function PodTable({
                       </span>
                     </td>
                     <td className="px-3 py-2 text-dark-400 whitespace-nowrap">{pod.namespace || '—'}</td>
-                    <td className="px-3 py-2 text-dark-200 whitespace-nowrap" title={pod.name}>
+                    <td className="px-2 py-2 text-dark-200 max-w-[16rem] truncate" title={pod.name}>
                       {pod.name}
                     </td>
                     <td

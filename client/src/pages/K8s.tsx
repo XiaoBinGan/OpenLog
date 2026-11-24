@@ -50,7 +50,7 @@ import {
   listNamespaces,
   podWorkloadRef,
 } from './k8s/utils';
-import ClusterList from './k8s/ClusterList';
+import ClusterAccordion from './k8s/ClusterAccordion';
 import ClusterForm from './k8s/ClusterForm';
 import StatCards from './k8s/StatCards';
 import NodeTable from './k8s/NodeTable';
@@ -160,6 +160,15 @@ export default function K8s() {
     void fetchClusters({ silent: true });
     if (selectedId) void fetchOverview(selectedId);
   }, [fetchClusters, fetchOverview, selectedId]);
+
+  const handleEdit = useCallback((cluster: K8sClusterView) => {
+    if (demo) {
+      toast.warning(DEMO_DISABLED_HINT, { description: '演示模式不能修改集群（OPENLOG_DEMO=1）' });
+      return;
+    }
+    setFormCluster(cluster);
+    setFormOpen(true);
+  }, [demo, toast]);
 
   const handleAdd = useCallback(() => {
     if (demo) {
@@ -300,34 +309,28 @@ export default function K8s() {
         </div>
       )}
 
-      <div className="flex flex-col lg:flex-row gap-5 items-start">
-        {/* display:contents 容器：只挂演示模式的「变灰」样式，不参与 flex 布局 */}
-        <div className="contents [&_[title='添加集群']]:opacity-40 [&_[title='删除集群']]:opacity-40 [&_[title='删除集群']]:cursor-not-allowed">
-          <ClusterList
-            clusters={clusters}
-            selectedId={selectedId}
-            loading={clustersLoading}
-            busyId={busyId}
-            testResults={testResults}
-            onSelect={setSelectedId}
-            onAdd={handleAdd}
-            onDelete={(cluster) => void handleDelete(cluster)}
-            onTest={(cluster) => void handleTest(cluster)}
-            onRefresh={() => void fetchClusters()}
-          />
-        </div>
-
-        <div className="flex-1 min-w-0 w-full space-y-4">
-          {clustersLoading && clusters.length === 0 ? (
-            <LoadingBlock label="正在加载集群列表…" />
-          ) : !selectedCluster ? (
-            <EmptyClusters onAdd={handleAdd} />
-          ) : (
+      {/* 手风琴：每个集群一行，点开在下方内联展开全部信息（不再左右分栏） */}
+      {clustersLoading && clusters.length === 0 ? (
+        <LoadingBlock label="正在加载集群列表…" />
+      ) : clusters.length === 0 ? (
+        <EmptyClusters onAdd={handleAdd} />
+      ) : (
+        <ClusterAccordion
+          clusters={clusters}
+          expandedId={selectedId}
+          busyId={busyId}
+          testResults={testResults}
+          onToggle={(id) => setSelectedId((prev) => (prev === id ? null : id))}
+          onTest={(cluster) => void handleTest(cluster as never)}
+          onEdit={(cluster) => handleEdit(cluster as never)}
+          onDelete={(cluster) => void handleDelete(cluster as never)}
+          disabledReason={demo ? DEMO_DISABLED_HINT : null}
+          renderDetail={(cluster) => (
             <>
               {overviewError && (
                 <ErrorBar
                   message={`概览读取失败：${overviewError}`}
-                  onRetry={() => void fetchOverview(selectedCluster.id)}
+                  onRetry={() => void fetchOverview(cluster.id)}
                 />
               )}
 
@@ -337,20 +340,13 @@ export default function K8s() {
                 <>
                   <div className="glass rounded-xl px-4 py-2.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-dark-500">
                     <span>
-                      版本{' '}
-                      <span className="font-mono text-dark-300">{overview.cluster.version || '—'}</span>
+                      版本 <span className="font-mono text-dark-300">{overview.cluster.version || '—'}</span>
                     </span>
-                    <span className="min-w-0 truncate" title={overview.cluster.server || selectedCluster.server}>
-                      server{' '}
-                      <span className="font-mono text-dark-300">
-                        {overview.cluster.server || selectedCluster.server || '—'}
-                      </span>
+                    <span className="min-w-0 truncate" title={overview.cluster.server || cluster.server}>
+                      server <span className="font-mono text-dark-300">{overview.cluster.server || cluster.server || '—'}</span>
                     </span>
-                    <span className="min-w-0 truncate" title={overview.cluster.context || selectedCluster.context}>
-                      context{' '}
-                      <span className="font-mono text-dark-300">
-                        {overview.cluster.context || selectedCluster.context || '—'}
-                      </span>
+                    <span className="min-w-0 truncate" title={overview.cluster.context || cluster.context}>
+                      context <span className="font-mono text-dark-300">{overview.cluster.context || cluster.context || '—'}</span>
                     </span>
                     <span className="inline-flex items-center gap-1">
                       <span className={overview.summary.workloadsUnready > 0 ? 'text-amber-400' : 'text-dark-400'}>
@@ -362,13 +358,10 @@ export default function K8s() {
                   </div>
 
                   <StatCards summary={overview.summary} />
-                  {/* 顺序：节点表 → GPU 分配 → GPU 使用率 → 调度策略 → Pod 表 → 事件 */}
+                  {/* 顺序：节点表 → GPU 分配 → GPU 使用率 → 调度策略 → Warning 摘要 → Pod 表 → 事件 */}
                   <NodeTable nodes={overview.nodes} />
-                  {/* 没有 HAMi 的集群：GpuAllocation 自己返回 null，页面与改动前一致 */}
                   <GpuAllocation gpu={overview.gpu} />
-                  {/* GPU 使用率（HAMi 实际值）：指标抓不到时自己显示原因，不挡其它卡片 */}
                   {activeClusterId && <GpuUsagePanel clusterId={activeClusterId} />}
-                  {/* 调度策略与超卖：读不到就是「未知」，不把默认值当实测值 */}
                   {activeClusterId && <PolicyPanel clusterId={activeClusterId} />}
                   {activeClusterId && <WarningDigestPanel clusterId={activeClusterId} />}
                   <PodTable
@@ -379,11 +372,6 @@ export default function K8s() {
                     selectedKey={selectedPodKey}
                     onSelect={handleSelectPod}
                     showVgpu={hasHamiData(overview.gpu)}
-                    /*
-                     * 操作列：没有集群 id 就不传（表格与改动前一模一样，不多一列）。
-                     * workload 只认服务端下发的 ownerKind/ownerName —— 推导不出来就传 undefined，
-                     * PodOpsBar 于是只显示「删除 Pod」，绝不猜（猜错会重启别的工作负载）。
-                     */
                     renderRowActions={
                       activeClusterId
                         ? (pod) => (
@@ -403,8 +391,8 @@ export default function K8s() {
               ) : null}
             </>
           )}
-        </div>
-      </div>
+        />
+      )}
 
       {formOpen && (
         <ClusterForm
