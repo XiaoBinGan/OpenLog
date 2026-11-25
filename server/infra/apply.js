@@ -1117,7 +1117,9 @@ export async function rollbackService({ snapshot, client, now, opts = {} } = {})
       await step(stepName, async () => {
         if (entry.existed) {
           try {
-            await io.update(entry.path, entry.body, { contentType: 'application/merge-patch+json' });
+            // merge-patch 的 body 里带旧 resourceVersion 会被 apiserver 判 409（版本冲突）。
+        // 恢复的语义是"把 spec 拉回旧值"，不是"乐观锁回滚"，所以先剥掉服务端字段。
+        await io.update(entry.path, stripServerFields(entry.body), { contentType: 'application/merge-patch+json' });
           } catch (err) {
             failures.push(`${label} 无法恢复：${describeK8sError(err)}`);
             throw new StepError(`${label} 无法恢复：${describeK8sError(err)}`, stepName);

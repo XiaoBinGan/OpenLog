@@ -209,6 +209,12 @@ rules:
       - pods
     verbs: ["get", "list", "watch", "delete"]
 
+  # Service：读现状（护栏 diff / 快照 / 恢复都要先读）；写权限在命名空间级 Role 里单独给
+  - apiGroups: [""]
+    resources:
+      - services
+    verbs: ["get", "list"]
+
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
