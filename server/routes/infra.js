@@ -444,6 +444,9 @@ export function createInfraRouter({ ensureSettings, saveSettings } = {}) {
       const merged = {
         ...validation.value,
         id: current.id || validation.value.id || `svc-${Date.now().toString(36)}`,
+        // 把本次变更前的快照存下来 —— 没有它，「回滚到上一版」这个按钮就是空的
+        // （回滚接口读的就是 service.lastSnapshot；A5 已经在 apply 前抓过这份快照）。
+        lastSnapshot: result.snapshot || current.lastSnapshot || null,
         history: appendHistory(current, {
           action: result.action || 'update',
           ok: true,
