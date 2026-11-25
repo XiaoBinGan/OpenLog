@@ -19,6 +19,7 @@
 import express from 'express';
 import { errorMessage } from '../errors.js';
 import * as k8sStore from '../k8s/store.js';
+import { getKv, setKv } from '../db/index.js';
 import * as k8sKubeconfig from '../k8s/kubeconfig.js';
 import * as k8sClientModule from '../k8s/client.js';
 import * as k8sResources from '../k8s/resources.js';
@@ -206,6 +207,45 @@ function nodesForCapacity(nodes, rawNodes) {
       status: { allocatable: raw?.status?.allocatable || {}, capacity: raw?.status?.capacity || {} },
     };
   });
+}
+
+
+/* ────────────────────────── 快照存储 ────────────────────────── */
+
+/**
+ * 快照存 KV 而不是 settings：
+ * settings 是整份配置（会被前端一次性读走、也会被导出/备份），塞进几十 KB 的 k8s 对象不合适。
+ * 这里按 `namespace/name` 索引，每个服务保留最近 5 份，够回滚、又不会无限增长。
+ */
+const SNAPSHOT_KV_KEY = 'infra_snapshots';
+const SNAPSHOT_KEEP = 5;
+
+/** @returns {Record<string, Array<{at:string, snapshot:object}>>} */
+function loadSnapshots() {
+  try {
+    const stored = getKv(SNAPSHOT_KV_KEY);
+    return stored && typeof stored === 'object' ? stored : {};
+  } catch {
+    return {};
+  }
+}
+
+export function saveSnapshot(key, snapshot, now = new Date()) {
+  if (!snapshot || !Array.isArray(snapshot.objects)) return;
+  const all = loadSnapshots();
+  const list = Array.isArray(all[key]) ? all[key] : [];
+  list.unshift({ at: now.toISOString(), snapshot });
+  all[key] = list.slice(0, SNAPSHOT_KEEP);
+  try {
+    setKv(SNAPSHOT_KV_KEY, all);
+  } catch (err) {
+    console.warn(`[Infra] 快照写入失败（回滚将不可用）：${errorMessage(err)}`);
+  }
+}
+
+export function latestSnapshot(key) {
+  const list = loadSnapshots()[key];
+  return Array.isArray(list) && list.length > 0 ? list[0].snapshot : null;
 }
 
 /* ────────────────────────── 路由 ────────────────────────── */
@@ -446,7 +486,7 @@ export function createInfraRouter({ ensureSettings, saveSettings } = {}) {
         id: current.id || validation.value.id || `svc-${Date.now().toString(36)}`,
         // 把本次变更前的快照存下来 —— 没有它，「回滚到上一版」这个按钮就是空的
         // （回滚接口读的就是 service.lastSnapshot；A5 已经在 apply 前抓过这份快照）。
-        lastSnapshot: result.snapshot || current.lastSnapshot || null,
+        lastSnapshot: null, // 真快照存 KV（见 saveSnapshot），settings 里只留标记位
         history: appendHistory(current, {
           action: result.action || 'update',
           ok: true,
@@ -454,6 +494,9 @@ export function createInfraRouter({ ensureSettings, saveSettings } = {}) {
           note: `快照${result.rollbackAvailable ? '可回滚' : '不可回滚'}`,
         }),
       };
+      if (result.snapshot) {
+        saveSnapshot(`${validation.value.namespace}/${validation.value.name}`, result.snapshot);
+      }
       if (typeof saveSettings === 'function') {
         saveSettings(upsertService(ensureSettings(), merged));
       }
@@ -486,7 +529,8 @@ export function createInfraRouter({ ensureSettings, saveSettings } = {}) {
 
     // 前端只让回滚"上一版"：这里按版本号取历史快照（当前实现以定义里的 snapshot 为准）
     const service = findService(ensureSettings(), req.params.id);
-    const snapshot = service?.lastSnapshot || null;
+    const key = service ? `${service.namespace}/${service.name}` : String(req.params.id);
+    const snapshot = latestSnapshot(key) || service?.lastSnapshot || null;
     if (!snapshot) {
       res.status(409).json({ error: '没有可回滚的快照（该服务还没有成功执行过，或快照已过期）' });
       return;
