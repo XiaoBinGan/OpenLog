@@ -740,3 +740,53 @@ describe('summary.recommended —— 配额反推规则', () => {
     expect(out.summary.recommended.notes.join('\n')).toContain('metrics endpoint 503');
   });
 });
+
+/* ───────────────── 不注入时钟（真机调用路径）───────────────── */
+/**
+ * 回归：路由层 POST /api/infra/bench 只传 fetchImpl，**不注入 now**。
+ * 曾经主循环里写成 `now()`（应为 `clockNow()`），于是真机 100% 500
+ * 「基准失败：now is not a function」——而当时所有用例都注入了 now，测不出来。
+ * 下面这组刻意不传 now / sleep，锁住"默认时钟可用"这条契约。
+ */
+describe('不注入时钟也能跑（真机调用路径）', () => {
+  it('只给 fetchImpl：不抛 "now is not a function"，且能产出结果', async () => {
+    const res = await runBenchmark({
+      target: { url: 'http://127.0.0.1:9/v1/chat/completions', model: 'm' },
+      matrix: { concurrencies: [1], inputTokens: [8] },
+      limits: { maxTotalMs: 300, maxRequestsPerCell: 1 },
+      fetchImpl: async () => { throw new Error('no network'); },
+    });
+    expect(res).toBeTypeOf('object');
+    expect(res.ok).toBe(false);          // 全失败，但不是崩溃
+    expect(res.results.length).toBe(1);
+    expect(String(res.reason || '')).not.toContain('now is not a function');
+  });
+
+  it('总时长超限的分支也走默认时钟（曾在此处炸）', async () => {
+    let calls = 0;
+    const res = await runBenchmark({
+      target: { url: 'http://127.0.0.1:9/v1/chat/completions', model: 'm' },
+      matrix: { concurrencies: [1, 2], inputTokens: [8] },
+      // 上限给 0：第一个 cell 之前就该命中 totalTime 分支
+      limits: { maxTotalMs: 1, maxRequestsPerCell: 1 },
+      fetchImpl: async () => { calls += 1; return new Response('{}', { status: 200 }); },
+    });
+    expect(res).toBeTypeOf('object');
+    expect(res.aborted === true || res.results.length <= 2).toBe(true);
+    expect(calls).toBeLessThanOrEqual(2);
+  });
+});
+
+/* ───────────────── 端点拼接 ───────────────── */
+describe('buildEndpoint 不能拼出 /v1/v1', () => {
+  it('四种常见写法都归一成同一个 chat/completions 地址', () => {
+    const want = 'http://h:8000/v1/chat/completions';
+    for (const url of ['http://h:8000', 'http://h:8000/v1', 'http://h:8000/v1/', 'http://h:8000/v1/chat/completions']) {
+      expect(buildEndpoint({ url })).toBe(want);
+    }
+  });
+
+  it('自定义 path 时不重复 v1', () => {
+    expect(buildEndpoint({ url: 'http://h:8000/v1', path: '/v1/completions' })).toBe('http://h:8000/v1/completions');
+  });
+});

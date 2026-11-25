@@ -210,7 +210,13 @@ export function buildEndpoint(target) {
   if (!raw) return path;
   const base = raw.replace(/\/+$/, '');
   if (/\/completions$/i.test(base) || base.endsWith(path)) return base;
-  return base + (path.startsWith('/') ? path : `/${path}`);
+  // 用户填 `http://host:8000/v1`（最常见写法）时，DEFAULT_PATH 里已经带 /v1，
+  // 直接拼会得到 /v1/v1/chat/completions —— 必然 404，而且报错看起来像"服务没起"。
+  // 这里把 base 结尾的 /v1 与 path 开头重复的那一段去掉。
+  const baseHasV1 = /\/v1$/i.test(base);
+  const pathHasV1 = /^\/?v1\//i.test(path);
+  const tail = baseHasV1 && pathHasV1 ? path.replace(/^\/?v1/i, '') : path;
+  return base + (tail.startsWith('/') ? tail : `/${tail}`);
 }
 
 function validateTarget(target) {
@@ -877,10 +883,10 @@ export async function runBenchmark(options = {}) {
   };
 
   for (const cell of mat.cells) {
-    if (now() - startedAt >= limits.maxTotalMs) {
+    if (clockNow() - startedAt >= limits.maxTotalMs) {
       abort = {
         kind: 'totalTime',
-        reason: `总耗时已达 ${Math.round(now() - startedAt)}ms（上限 ${limits.maxTotalMs}ms），已中止以免长时间占用线上推理服务`,
+        reason: `总耗时已达 ${Math.round(clockNow() - startedAt)}ms（上限 ${limits.maxTotalMs}ms），已中止以免长时间占用线上推理服务`,
       };
       break;
     }

@@ -455,6 +455,17 @@ export function createInfraRouter({ ensureSettings, saveSettings, applyOptions =
           service: validation.value,
           autoscale: validation.value.autoscale,
         }));
+        // 交给 HPA 管的服务不能再写死 Deployment.spec.replicas ——
+        // 否则 apply 改回原值、HPA 再改回去，两个控制器互相拉扯 = 副本数抖动。
+        // 删掉该字段后 k8s 保留当前值，replicas 的唯一来源就是 HPA。
+        const depForHpa = rendered.objects.find((o) => o.kind === 'Deployment');
+        if (depForHpa) {
+          delete depForHpa.spec.replicas;
+          depForHpa.metadata.annotations = {
+            ...(depForHpa.metadata.annotations || {}),
+            'openlog.io/replicas-managed-by': 'hpa',
+          };
+        }
       } catch (err) {
         res.status(400).json({ error: `自动伸缩配置无法渲染：${errorMessage(err)}` });
         return;
@@ -676,6 +687,17 @@ export function createInfraRouter({ ensureSettings, saveSettings, applyOptions =
           service: validation.value,
           autoscale: validation.value.autoscale,
         }));
+        // 交给 HPA 管的服务不能再写死 Deployment.spec.replicas ——
+        // 否则 apply 改回原值、HPA 再改回去，两个控制器互相拉扯 = 副本数抖动。
+        // 删掉该字段后 k8s 保留当前值，replicas 的唯一来源就是 HPA。
+        const depForHpa = rendered.objects.find((o) => o.kind === 'Deployment');
+        if (depForHpa) {
+          delete depForHpa.spec.replicas;
+          depForHpa.metadata.annotations = {
+            ...(depForHpa.metadata.annotations || {}),
+            'openlog.io/replicas-managed-by': 'hpa',
+          };
+        }
       } catch (err) {
         res.status(400).json({ error: `自动伸缩配置无法渲染：${errorMessage(err)}` });
         return;
