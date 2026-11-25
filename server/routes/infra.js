@@ -539,6 +539,24 @@ export function createInfraRouter({ ensureSettings, saveSettings, applyOptions =
       reasons: Array.isArray(rawImpact?.reasons) ? rawImpact.reasons : [],
     };
 
+    // 宿主路径预检：hostPath 不存在时 k8s 不会拒绝创建，而是让 Pod 卡在 ContainerCreating/FailedMount，
+    // 最后表现为"rollout 超时"——排查成本高（真机 verify2 就是这么失败的）。
+    // 这里能静态查的是"缓存挂载点与模型路径是否自洽"，真正存在性由下面的 hostPath 探测负责。
+    const pathViolations = [];
+    const plan2 = rendered.cachePlan;
+    if (plan2 && plan2.strategy !== 'none') {
+      const mountPath = String(plan2.mountPath || (plan2.volumeMounts?.[0]?.mountPath) || '');
+      const modelPath = String(validation.value.model?.path || '');
+      if (mountPath && modelPath && !modelPath.startsWith(`${mountPath}/`) && modelPath !== mountPath) {
+        pathViolations.push({
+          code: 'MODEL_PATH_OUTSIDE_CACHE',
+          field: 'model.path',
+          message: `模型路径 ${modelPath} 不在缓存挂载点 ${mountPath} 之下：容器里将看不到权重文件。`
+            + `把 cache.hostPath 设成模型所在目录，或把 model.path 移到 ${mountPath} 内。`,
+        });
+      }
+    }
+
     // 自动伸缩预算：扩副本会吃 vGPU 配额，超了 HPA 会一直重试 Pending（不会自动止损），
     // 所以必须在预览阶段就算清楚，而不是等运行期发现。
     const autoscaleMod2 = await loadModule('autoscale');
@@ -573,10 +591,14 @@ export function createInfraRouter({ ensureSettings, saveSettings, applyOptions =
     }
 
     res.json({
-      allowed: guardResult.allowed && (placement ? placement.fits : true) && autoscaleViolations.length === 0,
+      allowed: guardResult.allowed
+        && (placement ? placement.fits : true)
+        && autoscaleViolations.length === 0
+        && pathViolations.length === 0,
       violations: [
         ...(guardResult.violations || []),
         ...autoscaleViolations,
+        ...pathViolations,
         ...(placement && placement.fits === false
           ? placement.reasons.map((message) => ({ code: 'CAPACITY_INSUFFICIENT', message }))
           : []),
