@@ -52,6 +52,46 @@
 
 ---
 
+## v1.5.0 — 2026-11-26
+
+AI Infra 能力层：从「只看得到 / 只能扩缩容」到「定义服务 → 预检 → 执行 → 校验 → 回滚」的完整闭环，
+并在真机上跑通全流程。
+
+### 新增
+
+- **模型服务定义**（ModelService）：模型路径/量化/上下文、引擎镜像、vGPU 配额、副本、亲和、端口、探针。
+  校验 → 护栏（命名空间白名单、配额上限、归属标签、变更幅度）→ 渲染（Deployment + Service + HPA 可选）。
+- **容量预检**：坚持 HAMi 单卡语义（跨卡拼显存必然调度失败），用真机 register + 当前分配算落点。
+- **变更执行器**：guard → dry-run → snapshot → apply → rollout → **配额实证**（回读
+  `hami.io/vgpu-devices-allocated`）→ endpoint，任一步失败自动回滚。
+- **网关注册**：nginx stream 配置渲染 + 端口冲突预检 + 增量更新（只重写自己的区间）+ ConfigMap/reload。
+- **变更审计**：13 字段、幂等指纹、环形 500 条、snapshot 只存 ref；审计失败不阻断运维。
+- **弹性**：HPA 渲染 + vGPU 预算校验（超预算在保存期就报错）+ 冷却窗口 + 缩容一次只减 1。
+- **模型缓存**：同节点多副本共享只读目录 / PVC-RWX 跨节点；每 Pod 各拷一份会明确告警（67GB×N 曾导致 DiskPressure）。
+- **基准门禁**：TTFT p95 / 错误率 / 吞吐回归 / 推荐显存是否超卖；`docs/INFRA-BENCH.md` + `scripts/infra-bench-verify.mjs`。
+- **加速卡抽象**：NVIDIA（HAMi 切分）/ AMD / Ascend / generic，上层零 `nvidia.com/*` 硬编码。
+
+### 修复（真机验证暴露）
+
+- `bench.js` 主循环用 `now()` 而非 `clockNow()` → `POST /api/infra/bench` 真机必然 500
+  （测试都注入 now 所以测不出来）。
+- `buildEndpoint('http://host:8000/v1')` 拼成 `/v1/v1/chat/completions`（必然 404）。
+- `autoscale` / `cache` 不在校验白名单 → 被静默丢弃，HPA 与 PVC 缓存分支永远进不去。
+- apply 传 `existing: null` 绕过归属校验 → 曾覆盖生产 Deployment（靠 rollout 超时后自动回滚恢复）；
+  现在 apply/preview 都先读现状、fail closed，并有 5 条事故回归测试。
+- 回滚：`ref.namespace` 缺失时静默跳过（表现为"回滚成功但没恢复"）；恢复时旧 resourceVersion 导致 409。
+- 403 文案按路径猜动词，PATCH 被报成「缺少 GET 权限」，照着改 RBAC 会一直改不对。
+- RBAC：补 create/delete（命名空间级 Role）+ services patch/update + operator services 读权限。
+
+### 真机验证（243，infra-test 命名空间，业务零影响）
+
+```
+建服务      7 步全绿 5.9s，HAMi 注解实证 2048,10
+改配额      2048→4096 patch 14.7s，注解变 4096,20
+回滚        restore Deployment+Service，配额精确回到 2048,10
+审计        3 条留痕（含一次失败），actor 与动作归类正确
+```
+
 ## v1.4.0 — 2026-11-25
 
 界面改版（K8s 手风琴、Pod 表不再横向溢出）+ 运维助手的三处真实卡顿修复 + 全站截图集。

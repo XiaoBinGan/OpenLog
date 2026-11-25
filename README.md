@@ -1262,6 +1262,30 @@ nodes, no `kubectl` required on the machine running OpenLog.
 The card renders directly under **GPU allocation**, so a device that is "80% allocated, 4% busy"
 is one glance away — the usual symptom of a workload that grabbed vGPU memory and then idled.
 
+### AI Infra — model-service orchestration (opt-in, off by default)
+
+With `OPENLOG_K8S_INFRA=1` a **ModelService** becomes a running service: model path, engine image,
+per-replica `gpumem`/`gpucores`, replicas, autoscaling and model-cache strategy are rendered into a
+`Deployment` + `Service` (+ `HorizontalPodAutoscaler`) inside `inference` / `infra-test` only.
+
+Every change goes through the same pipeline and none of it can be skipped:
+
+| Step | What it proves |
+|------|----------------|
+| validate → guard | namespace whitelist, quota caps, ownership (`managedBy=openlog-infra`), change-magnitude limit |
+| capacity pre-check | the replica actually fits **one card** (HAMi cannot stitch memory across GPUs) |
+| diff + impact | expected downtime before you click: changing quotas rebuilds pods (single replica ≈ 60 s) |
+| server-side dry-run | the apiserver accepts the manifest |
+| apply → rollout | the workload becomes available |
+| allocation verify | re-reads `hami.io/vgpu-devices-allocated` to prove the quota was really granted |
+| rollback | snapshot restore (or delete) on any failure, plus a manual rollback endpoint |
+
+Gateway routes are registered into nginx, every change (including rejected ones) lands in an audit
+trail, HPA is capped by the vGPU budget, model weights are shared across replicas instead of copied
+per pod, and a rollout is gated on a benchmark report.
+
+Runbook: [`docs/INFRA.md`](docs/INFRA.md) · accelerator matrix: [`docs/INFRA-COMPAT.md`](docs/INFRA-COMPAT.md) · benchmark: [`docs/INFRA-BENCH.md`](docs/INFRA-BENCH.md)
+
 ### Scheduler policy & overcommit
 
 `GET /api/k8s/clusters/:id/policy` reports the effective HAMi scheduler settings:
