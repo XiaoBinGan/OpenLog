@@ -435,7 +435,7 @@ function podSortKey(pod) {
  *   metrics: object}} input
  * @returns {{available:boolean, scrapedAt:string, nodes:object[], reason?:string}}
  */
-export function buildUsage({ nodes, pods, rawNodes, rawPods, metrics, gpuUsage } = {}) {
+export function buildUsage({ nodes, pods, rawNodes, rawPods, metrics, gpuUsage, nodeMfu } = {}) {
   const scrapedAt = asLabel(metrics?.scrapedAt).trim() || new Date().toISOString();
   const available = metrics?.available === true;
   const reason = asLabel(metrics?.reason).trim() || UNAVAILABLE_REASON;
@@ -454,6 +454,7 @@ export function buildUsage({ nodes, pods, rawNodes, rawPods, metrics, gpuUsage }
   // 节点 × 物理卡：分配数据来自 summarizeVgpu（register 清单 + Pod 注解累计）
   // 实测数据（nvidia-smi）由调用方采集后传入：buildUsage 保持同步纯函数，便于单测
   const nodeUsageMap = gpuUsage instanceof Map ? gpuUsage : new Map();
+  const nodeMfuMap = nodeMfu instanceof Map ? nodeMfu : new Map();
   
   const nodeRows = (Array.isArray(summary.nodes) ? summary.nodes : [])
     .filter(isPlainObject)
@@ -462,6 +463,8 @@ export function buildUsage({ nodes, pods, rawNodes, rawPods, metrics, gpuUsage }
       const nodeUsage = nodeUsageMap.get(nodeName) || null;
       return {
         name: nodeName,
+        // MFU 是节点级（同一台机器上的引擎共享这些卡）；拿不到时 available:false
+        mfu: nodeMfuMap.get(nodeName) || { available: false, percent: null, engines: [], perGpu: [], reason: null },
         devices: (Array.isArray(node.devices) ? node.devices : [])
           .filter(isPlainObject)
           .map((device) => {
@@ -614,6 +617,60 @@ async function buildDemoUsage() {
   }
 }
 
+
+/**
+ * 采集「节点 → MFU」。
+ *
+ * MFU 来自推理引擎的 /metrics（token 计数差分 ÷ 峰值算力），跟 HAMi 的分配是两个维度：
+ *   · 分配（HAMi）：这张卡被切了多少给谁
+ *   · MFU（引擎）：这块算力实际跑出了多少有效计算
+ * 放在同一张卡片里，才能回答「分配 60%、MFU 只有 12% —— 是配额给小了还是模型没喂饱」。
+ *
+ * 与 GPU 实测一样按 node.internalIP 匹配远程服务器；拿不到就返回 available:false，
+ * 不影响 /usage 的其它字段。
+ */
+async function collectNodeMfuSafe(nodes) {
+  const list = Array.isArray(nodes) ? nodes : [];
+  const out = new Map();
+  let remoteModule;
+  let mfuModule;
+  try {
+    remoteModule = await import('../remote.js');
+    mfuModule = await import('../gpu-mfu.js');
+  } catch (err) {
+    console.warn(`[K8s] MFU 模块未加载（/usage 不返回 MFU）：${errorMessage(err)}`);
+    return out;
+  }
+  if (typeof mfuModule.getRemoteMfu !== 'function') return out;
+  const servers = typeof remoteModule.getServers === 'function' ? remoteModule.getServers() : [];
+
+  await Promise.all(list.map(async (node) => {
+    const ip = asLabel(node?.internalIP).trim();
+    const name = asLabel(node?.name).trim();
+    if (!ip || !name) return;
+    const server = servers.find((s) => s && s.host === ip);
+    if (!server) return;
+    try {
+      const res = await mfuModule.getRemoteMfu(server.id);
+      if (!res) return;
+      const perGpu = Object.entries(res.gpuMfu || {}).map(([index, item]) => ({
+        index: Number(index),
+        mfu: Number(item?.mfu) || 0,
+      }));
+      const values = perGpu.map((g) => g.mfu).filter((v) => v > 0);
+      out.set(name, {
+        available: res.available === true,
+        percent: values.length ? Math.round((values.reduce((a, b) => a + b, 0) / values.length) * 1000) / 10 : null,
+        engines: (res.engines || []).map((e) => e.name || e.engine || '').filter(Boolean).slice(0, 4),
+        perGpu,
+        reason: res.reason || null,
+      });
+    } catch { /* 单节点失败不影响其它节点 */ }
+  }));
+
+  return out;
+}
+
 export function createK8sUsageRouter({ ensureSettings } = {}) {
   if (typeof ensureSettings !== 'function') {
     throw new TypeError('createK8sUsageRouter 需要注入 ensureSettings');
@@ -690,7 +747,8 @@ export function createK8sUsageRouter({ ensureSettings } = {}) {
       res.set('cache-control', 'no-store');
       // 实测数据（nvidia-smi）在这里采集：handler 是 async，buildUsage 保持同步纯函数
       const gpuUsage = await collectNodeGpuUsageSafe(nodes);
-      res.json(buildUsage({ nodes, pods, rawNodes, rawPods, metrics, gpuUsage }));
+const nodeMfu = await collectNodeMfuSafe(nodes);
+      res.json(buildUsage({ nodes, pods, rawNodes, rawPods, metrics, gpuUsage, nodeMfu }));
     } catch (err) {
       sendError(res, err, 502);
     }

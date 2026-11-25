@@ -75,6 +75,7 @@ interface UsageDevice {
 
 interface UsageNode {
   name: string;
+  mfu?: { available?: boolean; percent?: number | null; engines?: string[]; reason?: string | null };
   devices: UsageDevice[];
 }
 
@@ -199,6 +200,7 @@ function normalizeUsage(raw: RawUsageResponse | null | undefined): UsageView {
     .filter((node): node is RawUsageNode => Boolean(node) && typeof node === 'object')
     .map((node) => ({
       name: typeof node.name === 'string' ? node.name : '',
+      mfu: (node as RawUsageNode & { mfu?: UsageNode['mfu'] }).mfu,
       devices: (Array.isArray(node.devices) ? node.devices : [])
         .map(normalizeDevice)
         .filter((device): device is UsageDevice => device !== null),
@@ -426,6 +428,9 @@ export function GpuUsagePanel({ clusterId }: GpuUsagePanelProps) {
                     </span>
                     <span className="text-[11px] text-dark-500">
                       {node.devices.length} 张卡
+                      {node.mfu?.percent != null && (
+                        <span className="ml-2 text-emerald-400">MFU {node.mfu.percent}%</span>
+                      )}
                     </span>
                   </div>
                   {node.devices.length === 0 ? (
