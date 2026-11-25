@@ -157,6 +157,8 @@ describe('validateModelService：合法输入', () => {
       ports: [{ name: 'http', containerPort: 8000 }],
       health: { path: '/health', initialDelaySeconds: 5 },
       expose: null,
+      autoscale: null,
+      cache: null,
       createdAt: '',
       updatedAt: '',
       version: 0,
@@ -234,8 +236,8 @@ describe('validateModelService：合法输入', () => {
     expect(result.value.objects).toBeUndefined();
     expect(result.value.rules).toBeUndefined();
     expect(Object.keys(result.value).sort()).toEqual([
-      'createdAt', 'engine', 'expose', 'health', 'id', 'model', 'name', 'namespace',
-      'placement', 'ports', 'replicas', 'resources', 'updatedAt', 'version',
+      'autoscale', 'cache', 'createdAt', 'engine', 'expose', 'health', 'id', 'model',
+      'name', 'namespace', 'placement', 'ports', 'replicas', 'resources', 'updatedAt', 'version',
     ]);
   });
 });

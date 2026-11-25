@@ -53,9 +53,30 @@ function jsonResponse(body: unknown, status = 200): Response {
 }
 
 /** 让 fetch 依次返回给定的响应（用完了就复用最后一个）。 */
+/**
+ * 让 fetch 依次返回给定的响应（用完了就复用最后一个）。
+ *
+ * 页面底部现在挂着 AuditList，它挂载时会自己请求 `/api/infra/audit`；
+ * 那条请求不该干扰「列表只请求一次」这类断言，所以按 URL 分派：
+ *   · 审计接口 → 固定空审计（AuditList 的专属测试在 infra-extras.test.tsx）
+ *   · 其它 → 走传入的响应序列
+ */
 function mockFetch(...responses: Response[]) {
-  const spy = vi.fn(async () => responses[Math.min(spy.mock.calls.length - 1, responses.length - 1)]);
-  vi.stubGlobal('fetch', spy);
+  let listCalls = 0;
+  // spy 只记录"页面自己发的请求"。AuditList 挂载时会请求 /api/infra/audit，
+  // 那条在这里被单独截走 —— 否则既污染调用次数，也会把 mock.calls 的下标整体错位。
+  const spy = vi.fn(async () => {
+    const index = Math.min(listCalls, responses.length - 1);
+    listCalls += 1;
+    return responses[index];
+  });
+  vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url.includes('/api/infra/audit')) {
+      return jsonResponse({ total: 0, items: [], stats: { total: 0, byAction: {}, byActor: [], lastAt: null } });
+    }
+    return spy(input, init);
+  });
   return spy;
 }
 

@@ -44,6 +44,10 @@ import { apiFetch, apiJson } from '../../api/client';
 import { ErrorBar } from '../k8s/Feedback';
 import ServiceForm from './ServiceForm';
 import DiffPreview from './DiffPreview';
+import AutoscaleFields, { type AutoscaleFieldState } from './AutoscaleFields';
+import GateReport, { type GateResult } from './GateReport';
+import AuditList from './AuditList';
+import CachePlan from './CachePlan';
 import {
   INFRA_SERVICES_PATH,
   diffServiceFields,
@@ -371,6 +375,7 @@ export default function InfraPanel({ demo: demoProp, initialServiceId }: InfraPa
 
   /** 清掉上一次的预览与执行反馈（换服务 / 重新生成时必须清，否则会拿旧 diff 执行）。 */
   const resetPreview = useCallback(() => {
+    setGate(null);
     setPreview(null);
     setPreviewError(null);
     setApplyError(null);
@@ -433,6 +438,10 @@ export default function InfraPanel({ demo: demoProp, initialServiceId }: InfraPa
   );
 
   // ── 执行：护栏通过 + 非演示模式才允许 ─────────────────────────────────
+  // 门禁结论：null = 没有基准/正在跑 —— 此时不允许 apply（旧结论不能给新配置背书）
+  const [gate, setGate] = useState<GateResult | null>(null);
+  const [autoscale, setAutoscale] = useState<AutoscaleFieldState | null>(null);
+
   const handleApply = useCallback(async () => {
     if (!preview || demo || applying) return;
     if (!preview.result.allowed || preview.result.violations.length > 0) return;
@@ -651,6 +660,48 @@ export default function InfraPanel({ demo: demoProp, initialServiceId }: InfraPa
             </section>
           )}
 
+          {/* 弹性：扩副本吃 vGPU 配额，超预算时这里会红字说明"HPA 会一直重试 Pending" */}
+          {selection.kind === 'edit' && selected && (
+            <AutoscaleFields
+              key={`as:${selected.id}:${selected.version}`}
+              memoryMiB={selected.resources.memoryMiB}
+              coresPercent={selected.resources.coresPercent}
+              replicas={selected.replicas}
+              initial={(selected as unknown as { autoscale?: never }).autoscale ?? null}
+              demo={demo}
+              onChange={setAutoscale}
+            />
+          )}
+
+          {/* 磁盘：跨节点不共享会各占一份，历史上因此出现过 DiskPressure → 整节点 Evicted */}
+          {selection.kind === 'edit' && selected && (
+            <CachePlan
+              key={`cache:${selected.id}:${selected.version}`}
+              modelPath={selected.model.path}
+              quantization={selected.model.quantization}
+              replicas={selected.replicas}
+              nodeCount={2}
+              demo={demo}
+            />
+          )}
+
+          {/* 基准门禁：必须放在 DiffPreview 之前 —— 执行按钮在那里，结论要先出现 */}
+          {selection.kind === 'edit' && selected && (
+            <GateReport
+              key={`gate:${selected.id}:${selected.version}`}
+              serviceKey={`${selected.namespace}/${selected.name}`}
+              serviceName={selected.name}
+              service={selected as unknown as Record<string, unknown>}
+              demo={demo}
+              onGateChange={setGate}
+            />
+          )}
+          {gate && !gate.pass && preview && (
+            <p data-testid="infra-gate-block" className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-1.5 text-[11px] text-red-300">
+              基准门禁未通过，执行已禁用
+            </p>
+          )}
+
           <DiffPreview
             result={preview?.result ?? null}
             loading={previewLoading}
@@ -729,6 +780,9 @@ export default function InfraPanel({ demo: demoProp, initialServiceId }: InfraPa
           )}
         </div>
       )}
+
+      {/* 变更审计：跨服务，放页面底部；谁在什么时候改了什么靠它追溯 */}
+      <AuditList serviceKey={selected ? `${selected.namespace}/${selected.name}` : ''} />
     </div>
   );
 }

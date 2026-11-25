@@ -24,6 +24,10 @@ OpenLog 挂掉，Pod 照跑，只是暂时改不动配置。
 | 观察侧入口 | `/k8s?cluster=<集群 id>`：GPU 分配 / 实测 / MFU、事件、Pod 表 |
 | 鉴权 | `Authorization: Bearer <token>`（`GET /api/auth/token`，仅 localhost） |
 | 数据模型 | `ModelService`，字段见[附录 A](#附录-amodelservice-字段) |
+| 新增模块（B1–B5） | `server/infra/{gateway,audit-store,autoscale,model-cache,gate}.js`：纯函数 + 注入式 client，本层不连集群 |
+| 网关写入目标（常量） | 命名空间 `inference`、ConfigMap `reranker-gateway-conf`、键 `nginx.conf`、Deployment `reranker-gateway` |
+| 审计存储 | KV 键 `infra_audit`，环形保留 500 条；`snapshot` 只存 ref，body 归 `saveSnapshot()` |
+| 新增端点 | `GET /api/infra/audit`、`GET /api/infra/clusters/:clusterId/autoscale-budget`、`POST /api/infra/cache-estimate` |
 
 三个状态回答「现在能不能动」：
 
@@ -32,6 +36,7 @@ OpenLog 挂掉，Pod 照跑，只是暂时改不动配置。
 | 开关没开 | 整层能力关闭 | `/api/infra/*` 返回 `403`（护栏的 `INFRA_DISABLED`），UI 入口灰掉 |
 | 预览不过 | 定义 / 护栏 / diff 有问题 | `preview` 返回 `allowed:false` + `violations[]`，集群一个字节没动 |
 | 执行中 | 正在改集群 | `apply` 返回 `steps[]`；失败停在第一个 `ok:false` 的步骤，快照可用于回滚 |
+| 半成功 | 服务已就绪，但外部访问不到 | `apply` 返回 `ok:true` + `gateway.ok:false`（端口冲突或 reload 没打上），审计里这条仍是 `ok:true`；看 §4.6 |
 
 ---
 
@@ -50,6 +55,11 @@ OpenLog 挂掉，Pod 照跑，只是暂时改不动配置。
 | 9 | 容量预检 | `planPlacement` | `POST /api/infra/capacity` | 暂无 UI 入口（只有接口；`reasons` 直接可读） |
 | 10 | 基准与推荐 | `runBenchmark`、`recommendQuota` | `POST /api/infra/bench` | 暂无 UI 入口（面板暂不触发；结果经接口取） |
 | 11 | 变更历史 | 快照 + 执行记录（落库见 §3.5） | `GET /api/infra/services/:id/history`，列表接口里也带 `history` | `/infra` 每行服务的历史区 + 「回滚到 vN」 |
+| 12 | 网关自动注册 | `renderGatewayConfig` / `planGatewayUpdate` / `applyGatewayConfig` | 随 `apply` 返回 `gateway` 字段（无独立端点） | 无专用组件：`gateway` 字段目前只在 `apply` 响应里（面板未渲染） |
+| 13 | 变更审计 | `buildAuditEntry` / `createAuditStore` / `recordApply` | `GET /api/infra/audit`；`apply` 响应新增 `auditId` | `AuditList` 组件已就绪（未挂进面板）；`/infra` apply 提示里显示「审计 `aud_xxx`」 |
+| 14 | 弹性（HPA + 预算） | `renderHpa` / `validateAutoscale` / `autoscaleBudget` / `evaluateScaleDecision` | `GET /api/infra/clusters/:clusterId/autoscale-budget`；`preview` 的 `AUTOSCALE_BUDGET_EXCEEDED` | `AutoscaleFields` 组件已就绪（未挂进面板） |
+| 15 | 模型权重共享 | `validateModelCache` / `planModelCache` / `estimateDiskUsage` / `renderCacheResources` | `POST /api/infra/cache-estimate` | `CachePlan` 组件已就绪（未挂进面板） |
+| 16 | 基准门禁 | `collectBenchMetrics` / `evaluateGate` / `renderGateReport` / `buildBaseline` | `POST /api/infra/bench` 响应新增 `gate` + `report` | `GateReport` 组件已就绪（未挂进面板；`/infra` 面板本身不触发 bench） |
 
 > `:id` 既可以是服务 uuid，也可以是 `namespace/name`（前端新建草稿没有 uuid 时就这么传，
 > 会做 URL 编码）。下面 runbook 里的 `SERVICE_ID` 两种写法都行。
@@ -290,6 +300,172 @@ OpenLog 挂掉，Pod 照跑，只是暂时改不动配置。
 推荐值只是**建议**：`confidence: measured` 表示读过显存峰值，`estimated` 表示峰值缺失、
 只能按吞吐反推；换卡、换引擎版本、换量化都要重跑。
 
+### 1.11 网关自动注册（`gateway.js`）
+
+一句话原理：把所有带 `expose.gatewayPort` 的服务渲染成一段 nginx **stream** 配置，只重写自己那段
+区间，写进 ConfigMap 之后给网关 Deployment 打一个每变一次的注解，让 nginx 重新加载 —— 别人的路由
+（区间外、或没有 `openlog-service:` 标记的块）一个字都不动。
+
+| 项 | 值 |
+|---|---|
+| 触发 | `apply` 成功后的同一次请求内（`rendered.routes` 非空才做）；不单独暴露端点 |
+| 返回 | `apply` 响应的 `gateway`：`{ok, changed, action, steps[], error?, conflicts?, configMapPath?, deploymentPath?, reloadAnnotation?}` |
+| `action` | `noop` / `patched` / `created` / `rejected` / `configmap-written` |
+| 区间标记 | `# BEGIN openlog-infra:gateway` … `# END openlog-infra:gateway`；区间外的原文整段保留 |
+| 块认领 | 每个 `server` 块上方写 `# openlog-service: <ns>/<name>`，下次渲染靠它认出「这块是我上次写的」并清掉区间外的残留块 |
+| reload 注解 | `openlog.io/nginx-reload=<ISO 时间戳>`；值必须每次不同，否则 k8s 认为 Deployment 没变化，nginx 不会重新读配置 |
+| 后端端口 | `expose.upstreamPort` > `ports[0].containerPort` > `gatewayPort`（对外端口与容器端口不假设相等，`8007 → 8000` 是常态） |
+| 上游写法 | 固定 `<name>.<namespace>.svc.cluster.local:<backendPort>`：OSS 版 stream 模块的 `proxy_pass` 不支持变量 + resolver |
+| 冲突 | `conflicts[] = [{port, owners[]}]`；同端口只保留第一个服务（按输入顺序），其余在配置里留中文注释 |
+
+三个动作各自干什么：
+
+| 函数 | 输入 → 输出 | 关键点 |
+|---|---|---|
+| `renderGatewayConfig({services, baseConfig})` | `→ {nginxConf, routes[], conflicts[]}` | `baseConfig` 来自集群 ConfigMap；端口冲突**先于**渲染判定；服务名/命名空间必须是 DNS-1123（大写或下划线会导致上游域名解析不到） |
+| `planGatewayUpdate({desired, current})` | `→ {changed, diff, conflicts[], steps[]}` | 比较用归一化文本（换行/行尾空白/首尾空行不算差异），所以重复渲染不会反复 reload；`steps[]` 是可直接照做的中文序列 |
+| `applyGatewayConfig({client, namespace, configMapName, nginxConf, opts})` | `→ {ok, changed, action, steps[], error?}` | 写前先 `lintNginxConf`（括号配平、区间标记成对、`listen` 端口区间、上游 DNS 名）；写入走 merge-patch；已存在且归一化后一致 → `action: noop`，零写入零 reload |
+
+半成功的两种形态（都返回 `ok:false` 但 `changed:true`，必须让人看见）：
+
+| 形态 | `action` | 含义 |
+|---|---|---|
+| ConfigMap 写成功、注解没打上 | `configmap-written` | 线上仍跑旧配置；`error` 里带 `kubectl -n <ns> rollout restart deployment/<name>` |
+| 端口冲突 | 不写 | `conflicts` 非空即硬失败（见 §3.7 第 3 条），网关配置一个字节未改 |
+
+### 1.12 变更审计（`audit-store.js`）
+
+一句话原理：`apply`/`rollback` 的返回值是几秒钟的 HTTP 响应，进程一重启就没了；审计把「谁、何时、
+动了哪个服务的哪些对象、每步成没成、能不能回滚、有没有人按了 `force`」压成一条固定 13 字段的
+记录落进 KV，环形保留 500 条。
+
+| # | 字段 | 内容 |
+|---|---|---|
+| 1 | `id` | `aud_<16 位 sha1>`，由条目内容派生 → 同一份结果重放是**覆盖**而不是追加 |
+| 2 | `at` | UTC ISO 时间（列表与环形的排序依据） |
+| 3 | `actor` | `req.body.actor` → `x-openlog-actor` 请求头 → `api` |
+| 4 | `action` | `create` / `update` / `rollback` / `rejected`（`noop` 归到 `update`） |
+| 5 | `serviceKey` | `<namespace>/<name>` |
+| 6 | `namespace` | 命名空间 |
+| 7 | `name` | 服务名 |
+| 8 | `targets[]` | 动到的对象 `Kind/name`，最多 20 条 |
+| 9 | `steps[]` | `{name, ok, detail}`，最多 30 条，`detail` 截到 500 字（审计要能读，不是存日志全文） |
+| 10 | `ok` | 本次是否成功 |
+| 11 | `error` | 失败原因（中文） |
+| 12 | `snapshotRef` | 快照引用：`<ns>/<name>@<ISO>`，或 `snap_<12 位指纹>`；**body 永不进审计** |
+| 13 | `forced[]` | 被 `force` 放行的护栏码（如 `BIG_CHANGE`） |
+
+| 端点 | 参数 | 返回 |
+|---|---|---|
+| `GET /api/infra/audit` | `limit`（1..500，默认 50）、`offset`、`actor`、`action`、`serviceKey` | `{total, items[], limit, offset, stats, demo}`；`stats = {total, byAction, byActor[], lastAt}`，`total` 是**过滤后**总数（分页器靠它算页数） |
+
+三条硬约束：
+
+- **审计失败不阻断运维**：`record()` / `recordApply()` 永不抛错，存储层炸了只 `console.warn` 一条并回 `{ok:false, error}`；`apply` 照常成功返回，`auditId` 为 `null`。变更已经落到集群上了，此时弹红色错误诱导运维重试一次 `apply` 才是真的危险。
+- **绝不把 `snapshot` 存进审计**：一次 apply 的 snapshot 是几十 KB 的对象原文，进 KV 会把配置库变成垃圾场；body 归 `saveSnapshot()`，审计只留能对上的引用。
+- **白名单式归一**：只复制上面 13 个键，其余（含 `snapshot`、`steps[].ms`）一律丢弃 —— 黑名单漏一个键就前功尽弃。
+
+读接口不受 `OPENLOG_K8S_INFRA` 限制：排障时最需要看审计的时刻，往往正是开关被关掉的那一刻。
+
+### 1.13 弹性伸缩（`autoscale.js`）
+
+一句话原理：本层**不做扩缩决策**（那是 HPA 控制器的活），只做两件事 —— 把弹性策略渲染成一份
+`autoscaling/v2` HPA，并在落笔前把「必然 Pending」的配额算术算给人看。
+
+| 项 | 值 |
+|---|---|
+| 渲染 | `autoscaling/v2` HPA，`scaleTargetRef` = `Deployment/<name>`，与服务同命名空间 |
+| 指标 | `Resource`（`cpu` / `memory`，`Utilization` 或 `AverageValue` 两种口径）、`Pods`（自定义指标名，小写字母开头≤63）；其余类型不渲染 |
+| 上限 | `maxReplicas` ≤ 8 —— 与 `guard.js` 的 `DEFAULT_LIMITS.replicas` 同一口径（跨模块断言，避免「HPA 扩到 8、护栏拒绝保存」的死锁） |
+| 冷却 | `cooldownSeconds` 默认 **300**，上限 3600 |
+| 缩容 | 写死在 `spec.behavior.scaleDown`：`policies: [{type: Pods, value: 1, periodSeconds: 60}]`、`stabilizationWindowSeconds` = 冷却值 → 绕过 OpenLog 直接改 HPA，集群侧行为仍然保守 |
+| 扩容 | `selectPolicy: Max`、`stabilizationWindowSeconds: 0`：冷启动代价远大于多开几个副本（多占的显存由预算兜住） |
+| 预算（显存） | `maxReplicasByMemory = floor(perCardMemMiB / max(memoryMiB, 1))`；**整卡（`memoryMiB: 0`）恒为 1** |
+| 预算（算力） | `maxReplicasByCores = floor(perCardCores / coresPercent)`；`coresPercent: 0` 视为「不限算力」，不构成约束 |
+
+| 端点 | 参数 | 返回 |
+|---|---|---|
+| `GET /api/infra/clusters/:clusterId/autoscale-budget` | query：`memoryMiB`、`coresPercent`（查不到服务定义时兜底） | `{budget: {maxReplicasByMemory, maxReplicasByCores, allowed, reason}, capacity: {perCardMemMiB, perCardCores}}` |
+| `POST /api/infra/services/:id/preview` | 定义里带 `autoscale.maxReplicas` | `violations[]` 里多出 `INVALID_AUTOSCALE`（字段级）与 `AUTOSCALE_BUDGET_EXCEEDED`（`field: autoscale.maxReplicas`） |
+
+预算算的是「**单卡**塞得下几个副本」，不是「集群总剩余够不够」：集群总剩余 40 GiB 而每张卡只剩
+10 GiB 时，8 GiB 的副本照样只放得下 1 个 —— 与 §1.9 的单卡语义同源。给不出单卡容量时
+`allowed: true` 但 `reason` 明说「是否放得下尚未验证」，不拿默认值冒充真卡。
+
+`evaluateScaleDecision({current, desired, cooldownUntil, now, policy})` 是同一套规则的纯函数版：
+冷却窗口内 `hold`（`reason` 带剩余秒数与解除时间）、扩容一次到目标、缩容一次最多减 1 个。
+
+> 接线现状（两处，缺一不可）：① `service.autoscale` 不在 `validateModelService` 的白名单里，经 HTTP
+> 提交的定义会被白名单重建掉这个字段，因此 `preview`/`apply` 里渲染 HPA 的分支还进不去，上面两个
+> 违规码也不会出现；② `AutoscaleFields` 表单组件已实现，但还没被 `/infra` 面板引用。模块、端点、
+> 组件与规则都已就绪，缺的是模型层补字段 + 面板挂载 —— 见 §6.4 与本次评审记录。
+
+### 1.14 模型权重共享（`model-cache.js`）
+
+一句话原理：同一节点上的多个副本必须挂**同一个只读目录**，绝不允许每 Pod 各拷一份权重；
+k8s 里能表达「共享」的只有 hostPath（同节点）与 `ReadWriteMany` PVC（跨节点），这一层负责在两者
+之间选一个，并在退化时把「会吃掉多少盘」算出来。
+
+| 项 | 值 |
+|---|---|
+| 输入 | `service.cache` 或 `service.model.cache`：`{mode, hostPath, mountPath, readOnly, pvc: {claimName, accessModes, storageClassName, size, subPath, readOnly}}` |
+| 缺省推导 | `model.source === 'hostPath'` 且没给 cache → 自动按 hostPath 共享 `model.path`（同路径挂同路径，`MODEL_PATH` 天然有效，`derived: true`）；其它来源 → `mode: none` + 告警 |
+| 策略 | `hostPath`（同节点共享，跨节点各一份）/ `pvc-rwx`（跨节点真共享）/ `pvc-rwo`（降级：同节点共享、跨节点各一份）/ `none`（每 Pod 各一份，**最危险**） |
+| 卷 | 名字固定 `model-cache`；PVC 形态挂 `/models`；`volumes` 属于 podSpec、`volumeMounts` 属于 container（写反 k8s 以 `volumeMounts[0].name: Not found` 拒掉） |
+| 只读 | 默认 `readOnly: true`；改成 `false` 会被拒（权重目录不允许 Pod 写回） |
+| 拒绝的路径根 | `/`、`/etc`、`/proc`、`/sys`、`/dev`、`/boot`、`/root`、`/run`、`/var/run`、`/var/lib/kubelet`、`/var/lib/docker` |
+| 盘估算 | `estimateDiskUsage`：`model.sizeMiB` 优先 → 参数量 × 量化位宽 × 1.05（索引/对齐余量）→ 都没有则按 8 GiB 保守假设，并在 `assumption` 里写明用的是哪一种 |
+| 落库后的可读证据 | Deployment 注解 `openlog.io/model-cache-strategy`、`openlog.io/model-cache-shared` |
+
+| 端点 | 参数 | 返回 |
+|---|---|---|
+| `POST /api/infra/cache-estimate` | body：`{model: {path, sizeMiB?, parametersB?, parameters?: "8B", quantization?}, replicas, nodeCount, service?, nodes?}` | `{estimate: {perPodMiB, totalMiB, naiveMiB, savedMiB, assumption, source, replicas, nodeCount}, plan: {strategy, shared, warnings[], volumes[], volumeMounts[]}}` |
+
+为什么不能每 Pod 一份（以 67 GiB 的 `Q2_0` 权重为例）：
+
+| 副本数 | 每 Pod 各一份 | 同节点共享一份 | 共享省下的盘 |
+|---|---|---|---|
+| 1 | 67 GiB | 67 GiB | 0 |
+| 3 | 201 GiB | 67 GiB | 134 GiB |
+| 8 | 536 GiB | 67 GiB | 469 GiB |
+
+一块 200 GiB 的数据盘在第 3 个副本时就满了；kubelet 打完 `node.kubernetes.io/disk-pressure:NoSchedule`
+taint 之后，**整台节点**任何新 Pod 都调不上来，而排查的人大概率先去查显存和调度器。
+
+### 1.15 基准门禁（`gate.js`）
+
+一句话原理：基准给的推荐配额只是建议，门禁把建议变成闸门 —— 一次变更必须带着基准结果来，逐项
+对阈值过一遍，并产出一份能直接贴进变更单的 markdown 报告。
+
+| 阈值 | 默认 | 判据 |
+|---|---|---|
+| `ttftP95Ms` | `3000` | 所有 cell 的 p95 取**最差**那档，`≤` 通过（平均 p95 会把 8 并发那档的排队藏起来） |
+| `errorRate` | `0.01` | `Σerrors / (Σsamples + Σerrors)`，分母用实际完成数而不是计划请求数，`≤` 通过 |
+| `tokensPerSecRatio` | `0.8` | 本次峰值吞吐 ≥ baseline × 0.8 |
+| `tokensPerSec` | `null` | 吞吐绝对下限，默认不设，只看回归比值 |
+| `memMiB` | `null` | 显存上限，默认取 `service.resources.memoryMiB`：**推荐值不得超过实际申请值** |
+| `ttftRegressionRatio` | `0.25` | 比 baseline 差超过 25% 只给 warning（延迟受同卡邻居挤占，不直接判死） |
+| 置信度 | — | `confidence: estimated` 只降级为 **warning**，报告里标注「显存建议为估算值」，要求人工核对 KV cache 余量 |
+
+| 输出 | 内容 |
+|---|---|
+| `pass` | 布尔；边界值算通过（`actual <= threshold` / `actual >= floor`），避免浮点抖动把卡线的配置判死 |
+| `failures[]` | `{metric, actual, threshold, message}`，逐条可操作 |
+| `warnings[]` | 未验证项（无 baseline、无显存读数、阈值被覆盖等） |
+| `score` | 加权分，权重 `ttftP95Ms 30 / errorRate 25 / tokensPerSec 25 / memMiB 20`；缺项从分母里去掉（既不当 0 也不当 1） |
+| `checks[]` / `metrics` / `thresholds` | 逐项判定、聚合后的实测值、本次实际生效的阈值（报告里能看出用的哪套数字） |
+
+| 端点 | 变化 |
+|---|---|
+| `POST /api/infra/bench` | 响应 = 原有 bench 字段 + `gate`（`evaluateGate` 的结果）+ `report`（`renderGateReport` 的 markdown） |
+| 基线 | 只在 `gate.pass === true` 时写入 `settings.infra.baselines[<ns>/<name>]`；失败那次不更新 —— 否则下次回归对比的参照物就是坏数据 |
+
+报告固定五段：结论与评分、逐项指标（实测 vs 阈值）、推荐配额 vs 实际申请、阻断项与处置、未验证项；
+有基线时多一段「与基线对比」。判读口径与压测脚本见 [INFRA-BENCH.md](./INFRA-BENCH.md)。
+
+门禁当前是**取证工具**而不是硬闸门：`apply` 路径不读 `gate`。要让它拦住上线，得在 apply 的
+`guard` 步骤前加一道「本服务最近一次 `pass:true` 的基准」，属于接线层的活。
+
 ---
 
 ## 2. 它不能做什么
@@ -310,6 +486,15 @@ OpenLog 挂掉，Pod 照跑，只是暂时改不动配置。
 | **不猜** | 型号认不出来、峰值算力表里没有、`nvidia-smi` 采不到 → 显式 `null` / `measured: false` / `reason`，不拿 0 冒充 | 看到 `—` 就是没数据，不是「利用率为 0」 |
 | **不做跨集群编排** | 一次 apply 只对一个集群；多集群是多个独立定义 | 多集群各自定义，或用同一份模板分别 apply |
 | **演示模式不写集群** | `OPENLOG_DEMO=1` 时写请求 `409`，永远不会落到真实集群 | 演示实例只用来点界面 |
+
+> **B1–B5 之后的边界修正**（补充，不覆盖上表）：上表有三行写的是引入网关注册 / 审计 / 弹性 /
+> 缓存 / 门禁**之前**的状态，冲突以本段为准。
+>
+> | 上表条目 | 现状 |
+> |---|---|
+> | 「不写网关配置」 | 现在会写：`gateway.js` 把 `routes` 渲染进 `inference/reranker-gateway-conf` 的 `nginx.conf`，并给 `reranker-gateway` 打 reload 注解。仍然不生成 Ingress，也不接管别人写在生成区间之外的路由（§1.11） |
+> | 「只生成 Deployment / Service」 | 渲染产物仍是这两类；声明了 `autoscale` 时会多一个同命名空间的 `HorizontalPodAutoscaler`（`autoscaling/v2`）。仍然不生成 StatefulSet / Ingress / PVC / CRD —— 模型缓存的 PVC 必须由运维事先建好（§1.13、§1.14） |
+> | 「不写审计表」（§3.5） | 现在会写：`audit-store.js` 落 KV 键 `infra_audit`，环形 500 条。`snapshot` body 仍然不进审计，只存 ref（§1.12） |
 
 ---
 
@@ -416,6 +601,26 @@ OpenLog 挂掉，Pod 照跑，只是暂时改不动配置。
 
 换句话说：「回滚绕过护栏」不是漏洞，而是设计前提 —— 护栏在**写入的那一刻**已经过了一遍。
 真正的风险在另一处：回滚不看当前容量（见 §1.7 最后一条），回滚成功 ≠ 服务能起来。
+
+### 3.7 四个真实注入面（代码评审结论）
+
+新增的四个「能影响别人」的动作，各自都有一条只能靠**常量**守住的边界。每一条都对应一次可发生的
+破坏，不是理论风险。
+
+| # | 注入面 | 规则 | 不这么做的后果 |
+|---|---|---|---|
+| 1 | `baseConfig`（现存 nginx 配置） | 只从集群 ConfigMap 读：`GET /api/v1/namespaces/inference/configmaps/reranker-gateway-conf` 的 `data['nginx.conf']`。**绝不从请求体取**；读失败（除 404）直接跳过网关注册 | 请求体里的 `nginxConf` / `baseConfig` 会被原样并入 hostNetwork 网关的配置 —— 改一条 `listen` 或 `proxy_pass` 就能改全节点流量走向，等于「任意 nginx 配置注入」 |
+| 2 | 网关命名空间 / ConfigMap 名 / Deployment 名 | 三个都是**代码常量**（`server/routes/infra.js#GATEWAY`），不接受请求参数；`applyGatewayConfig` 的 `opts.deploymentName` 由调用方写死传入 | 让调用方传 `deploymentName` 就等于开放「给任意 Deployment 打注解」= 任意工作负载强制滚动（可用来 DoS 别人） |
+| 3 | 端口冲突 | **硬失败**：`renderGatewayConfig` 返回的 `conflicts` 非空时，网关配置一个字节不写，`gateway.ok:false` + 逐端口点名被谁占用 | 跳过冲突端口 = 服务已就绪、外部却没这条路由 —— 「以为上线了，其实没路由」，而且没有任何告警会告诉你 |
+| 4 | 网关 Deployment 默认名 | 模块默认值是**占位符** `openlog-gateway`（`DEFAULT_GATEWAY_DEPLOYMENT`）。真实集群必须显式配置；本项目在路由层写死为 `reranker-gateway` | 用默认名去 PATCH 一个不存在的 Deployment → 404 → ConfigMap 已写、注解没打上，线上仍跑旧配置（§5.4） |
+
+四条之间的共同点：**它们都不是校验，而是「不提供参数」**。校验可以被绕过、可以被配置放开，
+不存在的参数没法被利用。所以这一层的做法是：凡是有「改别人东西」能力的入参，一律不开放。
+
+配套的两条实现细节：
+
+- ConfigMap 读取的 `catch` 只放行 `404`（确实不存在 → 按空配置渲染），其余错误（`403` / 超时 / 网络）必须显式失败：把「读不到」当成「不存在」会让人以为网关里没有既有路由，进而整体覆盖掉别人的配置。
+- `lintNginxConf` 写前自检：括号配平、`BEGIN/END` 成对且只有一段、`listen` 端口在 `1..65535`、上游是合法 DNS 名。少了 `END` 会让下一次渲染追加第二段配置 → 重复 `bind` 同一端口。
 
 ---
 
@@ -659,6 +864,152 @@ curl -s -X POST "$API/services/SERVICE_ID/rollback" -H "$AUTH" -H 'content-type:
 - 不重新过护栏、不重新评估容量（§1.7）：回滚成功 ≠ 服务能起来，回完还是要去 `/k8s` 看 Pod
 - 回滚失败不二次破坏：每个对象独立 try，`steps` 里点名哪些没恢复，其余对象继续恢复
 
+### 4.6 网关注册失败怎么查
+
+先分清这是「网关注册失败」还是「服务没起来」：`apply` 的 `ok:true` 而 `gateway.ok:false` 就是前者的
+典型形态 —— 服务本身跑着，只是外部访问不到。
+
+```bash
+curl -s -X POST "$API/services/SERVICE_ID/apply" -H "$AUTH" -H 'content-type: application/json' \
+  -d "$(jq -nc --slurpfile s svc.json '{service:$s[0]}')" \
+  | jq '{ok, auditId, gateway: {ok: .gateway.ok, action: .gateway.action, changed: .gateway.changed,
+                               conflicts: .gateway.conflicts, error: .gateway.error,
+                               steps: [.gateway.steps[]? | {name, ok, detail}]}}'
+```
+
+按 `gateway` 的形状对表：
+
+| `gateway` 的形态 | 根因 | 怎么确认 | 处置 |
+|---|---|---|---|
+| `conflicts` 非空 | 两个服务抢同一个 `expose.gatewayPort`，或与 `baseConfig` 里既有 `server` 块撞端口 | `GET $API/services` 按 `expose.gatewayPort` 排序，看有没有重复；`conflicts[].owners` 里出现 `baseConfig` 说明撞的是别人写的块 | 改端口（`PUT` + `apply`）；撞 `baseConfig` 时先给那个块换端口（§5.2 的兜底步骤） |
+| `action: rejected` + `error` 提「未启用」 | `OPENLOG_K8S_INFRA !== '1'` | 服务进程环境变量 | 开开关重启；服务本身不受影响 |
+| `action: rejected` + `error` 提「自检未通过」 | 渲染出的配置括号不配平 / 区间标记不成对 / 端口越界 | `error` 里点名哪一条 | ConfigMap 里的区间标记被手工改坏过：把 `# BEGIN/END openlog-infra:gateway` 两条都删掉再 `apply` |
+| `action: configmap-written` + `ok:false` | ConfigMap 写了、reload 注解没打上 | 见 §5.4 | 按 `error` 里的命令 `rollout restart` |
+| `error` 提「读取网关配置失败」 | 读 ConfigMap 返回 `403` / 超时（不是 404） | RBAC：`kubectl auth can-i get configmaps -n inference` | 补权限；本次网关注册被跳过，服务仍在跑 |
+| `gateway` 为 `null` | 该服务没有 `expose`（或 `expose.gatewayPort` 缺失）→ `routes` 为空 | 定义里的 `expose` | 需要对外访问就补 `expose.gatewayPort` 再 `apply` |
+
+网关侧的证据（只读）：
+
+```bash
+# 1) 生成区间在不在、里面几条路由（标记数应与 expose 非空的服务数一致）
+kubectl -n inference get cm reranker-gateway-conf -o jsonpath='{.data.nginx\.conf}' \
+  | grep -cE '^# openlog-service:'
+# 2) 网关有没有真的重新加载（注解值应等于最近一次 apply 的时间戳）
+kubectl -n inference get deploy reranker-gateway \
+  -o jsonpath='{.metadata.annotations.openlog\.io/nginx-reload}{"\n"}'
+# 3) 配置错了 nginx 起不来：日志里一定是 [emerg]
+kubectl -n inference logs deploy/reranker-gateway --tail=50 | grep -E '\[emerg\]|\[warn\]'
+```
+
+排查顺序固定：**先看网关，再看业务 Pod**。业务 Pod 全绿而所有端口都不通 = 网关配置错了（§5.2）。
+
+### 4.7 在审计里追溯一次变更
+
+三个入口，按你手上已经有的线索选：
+
+| 线索 | 命令 | 拿到什么 |
+|---|---|---|
+| 刚做完一次 apply，响应里有 `auditId` | `curl -s -H "$AUTH" "$API/audit?limit=1" \| jq '.items[0] \| {id, at, actor, action, ok}'` | 用 `id` 对回那条记录；`at` 就是变更时刻 |
+| 只知道服务和大概时间 | `curl -s -H "$AUTH" "$API/audit?serviceKey=inference/qwen-7b&limit=20" \| jq '.items[] \| {at, actor, action, ok, error}'` | 该服务的变更序列（最新在前） |
+| 只知道是谁干的 / 想找被拒的尝试 | `curl -s -H "$AUTH" "$API/audit?actor=alice&action=rejected"` | 「有人试过改不属于自己的对象」这类证据 |
+
+定位到那条记录之后，按字段往下走：
+
+| 字段 | 下一步 |
+|---|---|
+| `steps[]` | 看停在哪一步、`detail` 里的中文原因；与 `apply` 响应里的 `steps` 逐条对得上 |
+| `targets[]` | 动到的对象清单（`Deployment/<name>`、`Service/<name>`、`HorizontalPodAutoscaler/<name>`） |
+| `snapshotRef` | 拿去对 `saveSnapshot()` 落下的快照（键 `<ns>/<name>`），那份才是回滚依据；审计本身**不含**对象 body |
+| `forced[]` | 非空说明这次是 `force` 放行的大幅变更（如 `BIG_CHANGE`），责任在按下确认的人 |
+| `ok` / `error` | 失败也要留痕：`action: rejected` 的条目是「有人试图改别人的东西」的唯一记录 |
+
+两个已知限制：
+
+- **环形 500 条**：一周的运维动作大约就是这个量级，超出按时间淘汰最旧的。要长期留存，把 KV 里的 `infra_audit` 定期导出。
+- **幂等 id 含时间戳**：`at` 不同则 `id` 不同，所以「响应超时后重试一次 apply」在审计里是两条记录（第二次多半是 `noop`）。判断是否重复看 `steps` 里有没有 `noop`。
+
+### 4.8 HPA 扩不出来：先分清预算还是配额
+
+两种失败长得很像（都是「副本数上去了、Pod 起不来」），根因完全不在同一层：
+
+| 判据 | 预算问题（本层算术） | 配额问题（集群实际） |
+|---|---|---|
+| 什么时候暴露 | `preview` 就报 `AUTOSCALE_BUDGET_EXCEEDED`，`allowed:false` | `apply` 之后 Pod `Pending`，`preview` 是绿的 |
+| 证据 | `GET $API/clusters/CLUSTER_ID/autoscale-budget` 的 `budget.reason`（带「单卡 X MiB 按每副本 Y MiB 只能放 Z 个副本」） | `/api/k8s/clusters/CLUSTER_ID/overview` 的 `pods[].reason` + `warning-digest` |
+| 典型事件 | 无（还没提交） | `CardInsufficientMemory` / `CardInsufficientCore` / `exceeded quota` / `FailedScheduling` |
+| 处置 | 下调 `maxReplicas`，或减小 `memoryMiB` / `coresPercent`，或换更大显存的卡 | 等邻居释放 / 改配额 / 放宽 `ResourceQuota`（`infra-test` 的 `nvidia.com/gpu: 2`） |
+
+```bash
+# 预算侧（纯读，不碰集群写）
+curl -s -H "$AUTH" "$API/clusters/CLUSTER_ID/autoscale-budget?memoryMiB=8192&coresPercent=20" \
+  | jq '{budget, capacity}'
+# 配额侧（纯读）
+curl -s -H "$AUTH" "http://127.0.0.1:3011/api/k8s/clusters/CLUSTER_ID/overview" | jq '
+  {pods: [.pods[] | select(.namespace=="inference") | {name, phase, ready, reason, message}]}'
+curl -s -H "$AUTH" "http://127.0.0.1:3011/api/k8s/clusters/CLUSTER_ID/warning-digest?window=1h" \
+  | jq '.groups[]? // . | {reason, count}'
+```
+
+三条容易误判的情形：
+
+| 现象 | 其实是什么 | 怎么看 |
+|---|---|---|
+| HPA 的 `desiredReplicas` 一直不动 | 冷却窗口（默认 300s）内不评估；或指标缺失（`failed to get cpu utilization`，说明 metrics-server 没装） | `kubectl -n inference describe hpa <name>` 的事件 |
+| 缩容很慢 | 刻意设计：`scaleDown` 一次最多减 1 个，且 `stabilizationWindowSeconds` = 冷却值 | HPA 的 `spec.behavior.scaleDown` |
+| 副本数在自己来回跳 | 定义里同时写了 `replicas` 和 `autoscale` | 交给 HPA 的服务，Deployment 的 `spec.replicas` 会被摘掉并标 `openlog.io/replicas-managed-by: hpa`；看到这个注解就别再手改副本数 |
+
+**HPA 不会因为 Pending 而自动止损**，它只会一直重试。所以「预算」这件事必须在提交之前算，
+`autoscale-budget` 与 `preview` 就是干这个的。
+
+### 4.9 模型缓存为什么不能每 Pod 一份
+
+因为盘是按副本数乘的，而节点只有一块盘。以 `Q2_0` 的 67 GiB 权重为例（§1.14 那张表的来源）：
+
+| 副本数 | 每 Pod 各一份 | 同节点共享一份 |
+|---|---|---|
+| 1 | 67 GiB | 67 GiB |
+| 3 | 201 GiB | 67 GiB |
+| 8 | 536 GiB | 67 GiB |
+
+后果链条（真机发生过，且排查方向被彻底带偏）：
+
+1. 第 3 个副本起来时数据盘写满 → kubelet 判定 `DiskPressure`
+2. 节点被打上 `node.kubernetes.io/disk-pressure:NoSchedule` taint
+3. **整台节点**任何新 Pod 都调不上来（不只是这一个服务）
+4. 大家去查显存、查调度器、查 HAMi —— 全都不在点子上
+
+所以规则是硬的：**同一节点上的多个副本必须挂同一个只读目录**。落笔前先算一遍盘：
+
+```bash
+curl -s -X POST "$API/cache-estimate" -H "$AUTH" -H 'content-type: application/json' -d '{
+  "model": { "path": "/workspace/models/strata-q2", "sizeMiB": 68608 },
+  "replicas": 3, "nodeCount": 1
+}' | jq '{perPod: .estimate.perPodMiB, total: .estimate.totalMiB,
+         naive: .estimate.naiveMiB, saved: .estimate.savedMiB,
+         strategy: .plan.strategy, shared: .plan.shared, warnings: .plan.warnings}'
+```
+
+| 输出 | 怎么读 |
+|---|---|
+| `strategy: hostPath` + `shared: true` | 单节点、多副本共享同一目录 —— 期望形态 |
+| `strategy: hostPath` + `shared: false` | 节点数 > 1：跨节点各有一份，`warnings` 里会给出每节点各占多少 GiB |
+| `strategy: pvc-rwx` | 跨节点真共享（NFS / CephFS / S3-CSI 之类）—— 唯一能跨节点省盘的形态 |
+| `strategy: pvc-rwo` | 降级：同节点共享、跨节点各一份。要么换 RWX，要么把副本钉在同一节点 |
+| `strategy: none` | 每 Pod 各一份，`warnings` 里带算出来的盘量 —— 除了「只有 1 个副本」以外没有合理场景 |
+| `estimate.source: default` | 既没给 `sizeMiB` 也没给参数量与量化，按 8 GiB 假设，可能与真实值差数倍 —— 先 `du -sh` 校准 |
+
+落库之后用注解核对，而不是看 YAML 猜：
+
+```bash
+kubectl -n inference get deploy <name> \
+  -o jsonpath='{.metadata.annotations.openlog\.io/model-cache-strategy}{" "}{.metadata.annotations.openlog\.io/model-cache-shared}{"\n"}'
+kubectl -n inference get deploy <name> \
+  -o jsonpath='{range .spec.template.spec.volumes[*]}{.name}{"\t"}{.hostPath.path}{.persistentVolumeClaim.claimName}{"\n"}{end}'
+```
+
+要点只有一句：`volumes` 里应当**只有一个** `model-cache`；出现两份同名权重目录（一份 hostPath、
+一份 PVC）说明既有配置没清干净。
+
 ---
 
 ## 5. 故障与边界
@@ -753,6 +1104,95 @@ kubectl -n inference get pods -o jsonpath='{range .items[*]}{.metadata.name}{"\t
 确认冲突后：先停 docker 容器（保留镜像，可回滚），再 apply。**不要**用「换个端口绕过」——
 那只是把冲突推迟到下一个服务。
 
+### 5.4 nginx 配置写成功但 reload 没生效
+
+这是 `gateway.js` 里唯一被允许出现的「写了一半」状态，特征是 `apply` 返回
+`gateway: {ok:false, changed:true, action:'configmap-written'}`：ConfigMap 已经是新配置，但网关
+Pod 没被要求重新加载，**线上仍跑旧配置**。
+
+| 层 | 状态 | 怎么确认 |
+|---|---|---|
+| ConfigMap | 新配置已写入 | `kubectl -n inference get cm reranker-gateway-conf -o jsonpath='{.data.nginx\.conf}' \| grep -c '^# openlog-service:'` 与 `expose` 非空的服务数一致 |
+| Deployment 注解 | 没打上 / 值没变 | `kubectl -n inference get deploy reranker-gateway -o jsonpath='{.metadata.annotations.openlog\.io/nginx-reload}'` |
+| 进程内配置 | 仍是旧的 | 端口不通，但 `kubectl get svc` 与 Pod 都正常 |
+
+三个根因，按概率排：
+
+| 根因 | 证据 | 处置 |
+|---|---|---|
+| Deployment 名不对（用了模块默认占位符 `openlog-gateway`） | PATCH 返回 404 | 用真实名字：本项目路由层写死 `reranker-gateway`；自建接线必须显式传 `opts.deploymentName` |
+| 没权限 PATCH Deployment | `error` 里带 `HTTP 403` | `kubectl auth can-i patch deployments -n inference`；补 RBAC |
+| 注解值没变化 | k8s 认为对象未变更，不触发滚动 | 不会发生：`reloadStamp` 是 ISO 时间戳，每次不同；手工重放时别复用旧值 |
+
+立即处置（不用重跑 apply，服务本身是好的）：
+
+```bash
+kubectl -n inference rollout restart deployment/reranker-gateway
+kubectl -n inference rollout status deployment/reranker-gateway --timeout=120s
+```
+
+然后按 §4.6 的第 2、3 条核对注解值与 `[emerg]` 日志。要分清两种「配置没生效」：
+
+| 现象 | 根因 | 去哪 |
+|---|---|---|
+| 注解没打上，网关 Pod `RESTARTS` 不变、端口不通 | 本节的 reload 没触发 | 本节 |
+| 网关 Pod `CrashLoopBackOff`，日志 `[emerg] host not found in upstream` | 配置写进去了但内容错（上游 Service 不存在），nginx 起不来 | §5.2 |
+
+### 5.5 审计存储不可读
+
+审计是**软依赖**：存储坏掉不影响变更，只影响「事后能不能还原」。所以症状永远是「查不到」而不是
+「改不了」。
+
+| 现象 | 含义 | 证据 |
+|---|---|---|
+| `GET /api/infra/audit` 返回 `items: []` 且带 `error` | 读失败，不是「真的没有记录」 | 响应里的 `error` 原文（中文，点明是 JSON 坏、异步 KV、还是缺 `getKv`） |
+| `total: 0` 且 `stats.lastAt: null` | KV 里确实没有数据，或整表被判为脏数据 | `stats` 与 `items` 两个都为空才可信 |
+| `apply` 成功但 `auditId: null` | 写入失败（磁盘满 / 库锁死 / 序列化失败），变更本身已生效 | 服务端日志里的 `[Infra][audit]` 一行 `console.warn` |
+| 只剩最近若干条，更早的没了 | 环形淘汰（默认 500 条） | `stats.total` 卡在上限 |
+
+三个已知不可读形态：
+
+| 形态 | 原因 | 处置 |
+|---|---|---|
+| `审计存储要求同步 getKv：收到 Promise` | 注入的 `getKv` 是异步实现，而 `list()` / `stats()` 是同步 API | 换成同步读的 KV 适配层；此时**不要**写，否则会把历史覆盖成空 |
+| `审计数据不是合法 JSON` | KV 里的 `infra_audit` 被别的东西写坏 | 先手工备份该键再决定是否重置；不要用 `clear()` 直接清（历史一起没） |
+| 条目「少了几条」 | 缺 `id` 或缺可解析 `at` 的条目被跳过（无法排序也无法幂等） | 属于设计上的脏数据容忍，不是丢数据 |
+
+排障顺序：
+
+```bash
+# 1) 接口侧：error 原文就是诊断结论
+curl -s -H "$AUTH" "$API/audit?limit=1" | jq '{total, stats, error, first: .items[0].id}'
+# 2) 存储侧：键名固定 infra_audit，值是 JSON 数组
+sqlite3 <db 文件> "select length(value) from kv_store where key='infra_audit';"
+# 3) 写入侧：apply 之后立刻看日志有没有 [Infra][audit]
+```
+
+**不要**为了让接口变干净去 `clear()`：清掉之后「谁改的」永久消失，而这个能力存在的理由就是那一条记录。
+
+### 5.6 HPA 一直 Pending
+
+前置判断：HPA 本身不出 Pod，出 Pod 的是 Deployment。所以「HPA 一直 Pending」实际是
+「HPA 把 `desiredReplicas` 顶上去了，而新 Pod 永远 `Pending`」。
+
+| 事件 / 字段 | 根因 | 属于哪一层 | 处置 |
+|---|---|---|---|
+| `CardInsufficientMemory` | 单卡余量不足（或超卖比已满） | 集群实际配额 | 降 `memoryMiB` / 降 `maxReplicas` / 等邻居释放 |
+| `CardInsufficientCore` | `gpucores` 配额占满 | 集群实际配额 | 降 `coresPercent` |
+| `exceeded quota` | 命名空间 `ResourceQuota` 上限（`infra-test` 是 `nvidia.com/gpu: 2`） | 命名空间策略 | 改配额，或换命名空间 |
+| `FailedScheduling`，无 GPU 相关事件 | 节点亲和/标签不匹配、节点被 taint（含 `disk-pressure`） | 集群侧配置 | 核对 `placement` 与节点标签；`disk-pressure` 见 §4.9 |
+| HPA 事件 `failed to get cpu utilization` | metrics-server 未安装，HPA 拿不到指标（此时**不扩也不缩**，不是 Pending） | 集群组件 | 装 metrics-server，或改用 `Pods` 自定义指标 |
+
+```bash
+kubectl -n inference describe hpa <name> | sed -n '/Events/,$p'
+kubectl -n inference get pods -l app=<name> -o wide
+kubectl -n inference describe pod <pending-pod> | sed -n '/Events/,$p'
+```
+
+止损只有一条：**HPA 不会因为 Pending 而停下来**。看到 `desiredReplicas` 一直高于
+`currentReplicas` 且新 Pod 永远 `Pending`，先把 `maxReplicas` 降下来（`PUT` + `apply`），
+再去查上面那张表 —— 否则它会在冷却窗口结束后继续重试。
+
 ---
 
 ## 6. 验收方法
@@ -816,6 +1256,59 @@ OPENLOG_K8S_INFRA=1 npm start   # 服务端；界面打开 /infra，命名空间
 - [ ] 网关在整个过程中 `RESTARTS` 不变（本层不写 ConfigMap，所以只要没人手工改，它就该一直不变）
 - [ ] 变更可追溯：能从历史 + 执行记录还原「谁在何时把配额从 2048 改成 4096，然后又回滚」
 - [ ] 三层数据无矛盾：同一张卡上不出现「分配高 / 实测高 / MFU 为 0」这种打架组合
+
+### 6.4 用 mock 验五个新模块（不碰真集群）
+
+五个模块都是纯函数 + 注入式 client / KV / 时钟，离线可以验到底：
+
+| 模块 | 怎么验 | 命令 |
+|---|---|---|
+| 网关注册 | 渲染（上游格式、确定性、空列表）、端口冲突与 `baseConfig` 抢端口、DNS-1123 反例、增量 diff、幂等 `noop`、注解值与写失败文案 | `npx vitest run server/__tests__/infra-gateway.test.js` |
+| 变更审计 | 13 字段形状、三种过滤 + 分页、环形淘汰、同 id 覆盖、`snapshot` body 不落库、KV 抛错时 apply 仍成功 | `npx vitest run server/__tests__/infra-audit.test.js` |
+| 弹性 | 校验反例、HPA 逐字段、冷却期 `hold`、扩容到目标 / 缩容只减 1、预算四种形态、上限与护栏一致 | `npx vitest run server/__tests__/infra-autoscale.test.js` |
+| 模型缓存 | 缺省推导、跨节点告警、RWX / RWO 降级、路径黑名单、三种盘估算假设、卷与挂载层级、畸形 plan 抛错 | `npx vitest run server/__tests__/infra-model-cache.test.js` |
+| 基准门禁 | 全绿 / 四项各自超标 / 中止 / `ok:false` / 无 baseline 与 `estimated` 只记 warning / 阈值回落 / 报告 markdown / 边界值 | `npx vitest run server/__tests__/infra-gate.test.js` |
+| 接线（含新端点） | 请求体里的 `nginxConf`/`baseConfig` 被忽略、读 ConfigMap 403 与 404 的分流、端口冲突硬失败、审计 id 回填 | `npx vitest run server/__tests__/infra-routes.test.js` |
+
+一次跑完：
+
+```bash
+npx vitest run server/__tests__/infra-*.test.js
+```
+
+mock **能**证明：配置文本对不对、冲突判不判、写不写（幂等）、审计字段全不全、预算算得对不对、
+门禁会不会误判、接线的注入面有没有被堵住。
+
+mock **不能**证明：真实 nginx 起不起来、reload 是否真的发生、HPA 控制器的实际行为、盘上到底占了多少、
+集群配额够不够。这些只能靠 §6.5 与 §6.2。
+
+界面侧同理：`AuditList` / `AutoscaleFields` / `CachePlan` / `GateReport` 四个组件是纯展示 + 自取数的，
+组件级用例在 `client/src/pages/__tests__/infra-extras.test.tsx`（`npx vitest run client/src/pages/__tests__/infra-extras.test.tsx`）。
+它们还没被 `/infra` 面板引用，所以「打开界面点一遍」目前点不到这四块。
+
+### 6.5 真机只读验证清单
+
+前置：服务端在跑、`/k8s` 里至少有已注册集群、网关 ConfigMap 与 Deployment 存在。清单里全是
+`curl`（读接口）与 `kubectl get` / `logs`，**不改任何对象**。
+
+| # | 动作 | 通过标准 |
+|---|---|---|
+| 1 | `curl -s -H "$AUTH" "$API/audit?limit=5" \| jq '{total, stats}'` | `stats.byAction` 的键是 `create/update/rollback/rejected`；`lastAt` 与最近一次变更时间吻合 |
+| 2 | `curl -s -H "$AUTH" "$API/clusters/CLUSTER_ID/autoscale-budget?memoryMiB=8192&coresPercent=20" \| jq .budget` | `reason` 是中文且点名单卡容量与每副本配额；`maxReplicasByMemory` 与手算 `floor(单卡显存/8192)` 一致 |
+| 3 | `curl -s -X POST "$API/cache-estimate" ...（真实 sizeMiB、replicas、nodeCount）` | `estimate.savedMiB == naiveMiB - totalMiB`；`plan.warnings` 为空或每条都能读懂 |
+| 4 | `kubectl -n inference get cm reranker-gateway-conf -o jsonpath='{.data.nginx\.conf}' \| grep -c '^# openlog-service:'` | 条数与 `GET $API/services` 里 `expose` 非空的服务数一致 |
+| 5 | `kubectl -n inference get deploy reranker-gateway -o jsonpath='{.metadata.annotations.openlog\.io/nginx-reload}'` | 有值，且等于最近一次成功 apply 的时间戳（不是上次容器启动时间） |
+| 6 | `kubectl -n inference get hpa` | 有 HPA 时 `MINPODS/MAXPODS` 与定义一致、`REPLICAS` 在区间内；`-o jsonpath='{.spec.behavior.scaleDown}'` 里 `policies[0].value` 为 1 |
+| 7 | `kubectl -n inference get deploy <name> -o jsonpath='{.metadata.annotations.openlog\.io/model-cache-strategy}{" "}{.metadata.annotations.openlog\.io/model-cache-shared}'` | 与 `cache-estimate` 给出的 `strategy` / `shared` 一致 |
+| 8 | 同上 Deployment 的 `volumes[*].name` | 只有一个 `model-cache`，没有第二份同名权重目录 |
+| 9 | 拿一条历史 `auditId` 的 `snapshotRef` 去对快照键 | 能对上（`<ns>/<name>` 的历史快照里存在那一份）；对不上说明快照已被轮换掉，回滚不可用 |
+| 10 | `kubectl -n inference logs deploy/reranker-gateway --tail=100 \| grep '\[emerg\]'` | 无输出。有输出即 §5.2 |
+
+走完这份清单后仍然要知道的三件事：
+
+- 只读验证不能替代 §6.2 的写入演练：`gateway.changed` 是不是真的发生、HPA 会不会真的扩，只有写一次才知道。
+- `bench` / `gate` 必须真压测（`POST /api/infra/bench`），不在只读清单里：它会让被压的服务短暂变慢。
+- 数字对不上先怀疑采集与假设（`measured: false`、`estimate.source: default`），不要先怀疑代码。
 
 ---
 

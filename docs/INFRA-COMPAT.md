@@ -225,6 +225,77 @@
 
 ---
 
+## 8. 五个新能力在四种调度后端下的可用性
+
+§3 说的是「渲染与预检」在四种后端下的差异。这一节说的是新增的五个能力（网关注册 / 变更审计 /
+弹性 HPA / 模型缓存 / 基准门禁）**在哪种后端下还有意义** —— 结论不是「都能用」，有两处是
+「能跑但没有意义」，一处是「能跑但算不出数」。
+
+| 能力 | HAMi 切分 | 整卡（device-plugin） | MIG | DRA（1.34+） |
+|---|---|---|---|---|
+| 网关注册 | 可用 | 可用 | 可用 | 可用 |
+| 变更审计 | 可用 | 可用 | 可用 | 可用 |
+| 弹性 HPA | 可用：`maxReplicas ≤ floor(单卡显存 / memoryMiB)` | **`maxReplicas` 恒为 1（无意义）** | 按整卡算 → 给了单卡容量则恒为 1；读不到 profile 显存则走「跳过校验」分支（见 §8.2） | 可渲染 HPA，但**算不出预算**（无单卡容量来源）→ `allowed:true` + 跳过说明 |
+| 模型缓存 | hostPath 同节点共享；跨节点要 RWX | 同 HAMi 切分 | **按 profile 计副本**：同节点多个 profile 实例共享同一目录才省盘 | 只能靠 hostPath / RWX PVC，与 `ResourceClaim` 无关 |
+| 基准门禁 | 可用 | 可用 | 可用，但**基线不可跨 profile 复用** | 可用 |
+
+### 8.1 为什么整卡模式下 HPA 恒为 1
+
+`autoscaleBudget` 的显存预算公式是 `floor(perCardMemMiB / max(memoryMiB, 1))`，而整卡语义
+（`memoryMiB: 0`）直接被判定为 **1**：一个副本独占一张卡。于是任何 `maxReplicas > 1` 都是
+`allowed:false`，`reason` 里明说「HPA 扩出来的第 2 个 Pod 会一直 Pending（HAMi 报
+`CardInsufficientMemory`）」。
+
+这不是保守，是算术：HPA 没有「一张卡放不下就排队」的概念，它只会一直重试。所以：
+
+| 后端 | `maxReplicas` 的实际含义 | 该怎么用 |
+|---|---|---|
+| HAMi 切分 | 单卡能切的副本数上限 | 用 HPA，并把 `memoryMiB` 定成真实峰值 + 余量 |
+| 整卡 | 恒 1 = 「不弹性」 | 关掉 `autoscale`，用手工改 `replicas`（每加一个副本就是加一张卡，本来就要人判断有没有卡） |
+| MIG | 给了单卡容量时恒 1；读不到时「跳过校验」 | 同整卡：手工扩，且扩出来的副本要落到不同的 profile 上 |
+
+### 8.2 MIG：本层只把它当整卡
+
+§3 已经写明 MIG 未实现（没有 profile 概念、没有 profile↔显存换算）。所以在 MIG 集群上的实际姿势是
+「把每个 profile 当一个整卡用」（`accelerators: 1, memoryMiB: 0`），由此带来三条：
+
+| 项 | MIG 下的行为 |
+|---|---|
+| 容量预检 | 按「整卡要求完全空闲」判定：一个 profile 被占就 `fits:false`，不会退而求其次找别的 profile |
+| 弹性预算 | `capacity` 读不到 profile 显存（节点上报的是 profile 键名，不是 `devmem`）→ 走「未提供容量」分支：`allowed:true`，`reason` 写明「是否放得下尚未验证」 |
+| 模型缓存 | 同一张卡上切出的 N 个 profile 实例在**同一节点**，共享一个 hostPath 目录是成立的（这是 MIG 下唯一省盘的形态）；跨节点仍需 RWX，否则每节点各一份 |
+
+MIG 下的服务名建议带 profile 后缀（如 `qwen-7b-1g10gb`）：审计的 `targets[]` 只记 `Kind/name`，
+不记 profile。名字里不带 profile 时，同一模型的不同 profile 实例在审计里只能靠 `at` 与 `actor` 区分。
+
+### 8.3 DRA：能挂载，但算不出预算
+
+本层不渲染 `ResourceClaim` / `DeviceClass`（§3 标为「未实现（接口预留）」）。DRA 集群上的实际形态是：
+
+| 能力 | DRA 下 |
+|---|---|
+| 网关注册 / 审计 | 与后端无关，照常工作 |
+| 弹性 | HPA 对象能渲染（`targetRef` 仍是 `Deployment`），但显存预算没有单卡容量来源 → `allowed:true` + 跳过说明；不要拿这个「通过」当放得下的证据 |
+| 模型缓存 | 权重挂载与显存申请是两条独立链路：显存走 DRA，权重仍走 hostPath / RWX PVC。这也是当前唯一能用的组合 |
+| 门禁 | 与后端无关 |
+
+### 8.4 按后端的推荐组合
+
+| 后端 | 弹性 | 模型缓存 | 备注 |
+|---|---|---|---|
+| HAMi 切分 | 建议开 | hostPath 优先，跨节点才上 RWX | 唯一「HPA 有意义」的形态；预算要按单卡余量算，不是集群总剩余 |
+| 整卡 device-plugin | 关 | hostPath 即可 | 扩副本 = 加卡，必须人判断；关掉 HPA 以免它一直重试 Pending |
+| MIG | 关 | hostPath（同节点多 profile 共享） | 服务名带 profile 后缀；基线换 profile 必须重跑 |
+| DRA | 暂关 | hostPath / RWX | 等 DRA 渲染落地；预算目前算不出 |
+
+三条跨后端的共性（容易漏）：
+
+- **网关与后端无关**：它只关心 `Service` 与 `listen` 端口，端口冲突判定与 `-newsvc` 上游解析在四种后端下完全一样。
+- **审计与后端无关**：唯一受影响的是 `targets[]` 里的对象名；同一服务换后端不换名字，历史记录因此可以连续对比。
+- **门禁的基线不可跨后端复用**：换后端 = 换卡 + 换配额，`baselines` 里的数字立刻失效；沿用旧 baseline 会把「卡变小了」判成吞吐回归。
+
+---
+
 ## 附录：适配器契约
 
 四家实现同一套接口（`server/infra/accelerator/index.js` 的 `ADAPTERS`）：

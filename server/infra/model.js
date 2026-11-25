@@ -149,6 +149,10 @@ export function validateModelService(input, options = {}) {
     ports: [],
     health: { path: DEFAULT_HEALTH_PATH, initialDelaySeconds: DEFAULT_HEALTH_INITIAL_DELAY_SECONDS },
     expose: null,
+    // 弹性与模型缓存：白名单里必须有，否则 validateModelService 会把它们静默丢掉 ——
+    // 后果是路由里 `if (validation.value.autoscale)` 恒 false，HPA 分支永远进不去。
+    autoscale: null,
+    cache: null,
     createdAt: '',
     updatedAt: '',
     version: 0,
@@ -163,6 +167,8 @@ export function validateModelService(input, options = {}) {
   validatePlacement(input.placement, value, fail);
   validatePorts(input.ports, value, limits, fail);
   validateHealth(input.health, value, limits, fail);
+  validateAutoscaleInput(input.autoscale, value, fail);
+  validateCacheInput(input.cache, value, fail);
   validateExpose(input.expose, value, fail);
   validateMeta(input, value, limits, fail);
 
@@ -585,6 +591,38 @@ function validateMeta(input, value, limits, fail) {
  * @returns {string} 例如 `inference/qwen3-8b`
  * @throws {Error} name/namespace 缺失时抛错（中文，指出缺哪个）
  */
+/**
+ * 弹性配置：形状校验交给 infra/autoscale.js（单一事实来源），
+ * 这里只做"要不要带进来"的判断 —— 没给就保持 null，给了就归一后存下。
+ */
+function validateAutoscaleInput(input, value, fail) {
+  if (input === undefined || input === null) return;
+  if (typeof input !== 'object' || Array.isArray(input)) {
+    fail('autoscale', 'autoscale 必须是对象（{ minReplicas, maxReplicas, metrics }），或者省略表示不启用');
+    return;
+  }
+  // 缺 maxReplicas 视为不启用（不是错误：表单里没勾选）
+  if (input.maxReplicas === undefined || input.maxReplicas === null) return;
+  value.autoscale = {
+    minReplicas: input.minReplicas,
+    maxReplicas: input.maxReplicas,
+    cooldownSeconds: input.cooldownSeconds,
+    metrics: Array.isArray(input.metrics) ? input.metrics : undefined,
+  };
+  // 深度校验（区间/指标白名单）在路由层调 autoscale.validateAutoscale 做，
+  // 那里能给出更有针对性的文案；这里不重复实现，避免两处规则漂移。
+}
+
+/** 模型缓存配置：同上，只决定"带不带"，细节由 infra/model-cache.js 校验 */
+function validateCacheInput(input, value, fail) {
+  if (input === undefined || input === null) return;
+  if (typeof input !== 'object' || Array.isArray(input)) {
+    fail('cache', 'cache 必须是对象（{ mode, hostPath?, pvc? }），或者省略表示按 model.source 自动推导');
+    return;
+  }
+  value.cache = input;
+}
+
 export function serviceKey(svc) {
   const namespace = typeof svc?.namespace === 'string' ? svc.namespace.trim() : '';
   const name = typeof svc?.name === 'string' ? svc.name.trim() : '';

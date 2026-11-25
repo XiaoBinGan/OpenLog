@@ -992,16 +992,21 @@ export function createInfraRouter({ ensureSettings, saveSettings, applyOptions =
       res.status(503).json({ error: '弹性模块未就绪' });
       return;
     }
-    const service = findService(ensureSettings(), String(req.params.clusterId) || '') || null;
+    // ?serviceKey=ns/name 指定服务定义；没有就按 query 里的 memoryMiB/coresPercent 临时算。
+    // 之前把 :clusterId 当 serviceKey 用 —— 永远查不到，于是悄悄回落到临时值（结果看似正常）。
+    const serviceKey = String(req.query.serviceKey || '');
+    const service = serviceKey ? findService(ensureSettings(), serviceKey) : null;
     let perCard = { perCardMemMiB: 0, perCardCores: 100 };
     try {
       const { client } = connectCluster(record);
       const state = await readClusterState(client);
+      // 口径必须与 preview 一致：用**单卡剩余余量**，不是"最大单卡容量"。
+      // 用容量会让预算偏乐观（把已经分配给别人的显存也算成可用），HPA 扩出来的 Pod 会 Pending。
       const devices = (state.summary?.nodes || []).flatMap((n) => n.devices || []);
       if (devices.length > 0) {
         perCard = {
-          perCardMemMiB: Math.max(...devices.map((d) => Number(d.memMiB) || 0)),
-          perCardCores: Math.max(...devices.map((d) => Number(d.cores) || 100)),
+          perCardMemMiB: Math.max(...devices.map((d) => Math.max(0, (Number(d.memMiB) || 0) - (Number(d.allocatedMemMiB) || 0)))),
+          perCardCores: Math.max(...devices.map((d) => Math.max(0, 100 - (Number(d.allocatedCores) || 0)))),
         };
       }
     } catch { /* 拿不到就用默认值，前端仍可显示上限 8 */ }
