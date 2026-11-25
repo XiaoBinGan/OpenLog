@@ -28,6 +28,22 @@ import { isDemoMode } from '../demo/mode.js';
 
 const PREFIX = '/api/infra';
 
+/**
+ * 网关注册的目标（写死，不从请求体取）。
+ *
+ * 三个字段都是"能影响别人"的参数：
+ *   · namespace/configMapName —— 往哪写 nginx 配置
+ *   · deploymentName         —— 给谁打 reload 注解（等于重启谁）
+ * 让调用方传就等于开放了"任意 ConfigMap 写入 + 任意 Deployment 强制滚动"，
+ * 所以固定成常量；换网关时改这里并走 code review。
+ */
+const GATEWAY = {
+  namespace: 'inference',
+  configMapName: 'reranker-gateway-conf',
+  configMapKey: 'nginx.conf',
+  deploymentName: 'reranker-gateway',
+};
+
 /** 服务定义存放位置：跟着 settings 走，导出/备份/迁移与其它配置一致。 */
 const SERVICES_KEY = 'infraServices';
 
@@ -295,7 +311,7 @@ async function recordAudit({ service, result, actor, forced, snapshotRef }) {
 /**
  * @param {{ ensureSettings: () => object, saveSettings?: (settings:object)=>void }} deps
  */
-export function createInfraRouter({ ensureSettings, saveSettings } = {}) {
+export function createInfraRouter({ ensureSettings, saveSettings, applyOptions = {} } = {}) {
   if (typeof ensureSettings !== 'function') {
     throw new TypeError('createInfraRouter 需要注入 ensureSettings');
   }
@@ -709,7 +725,7 @@ export function createInfraRouter({ ensureSettings, saveSettings } = {}) {
         objects: rendered.objects,
         client,
         guard: guardResult,
-        opts: { probeUrl: req.body?.probeUrl || null },
+        opts: { ...applyOptions, probeUrl: req.body?.probeUrl || null },
       });
     } catch (err) {
       res.status(500).json({ ok: false, error: `执行失败：${errorMessage(err)}` });
@@ -746,16 +762,36 @@ export function createInfraRouter({ ensureSettings, saveSettings } = {}) {
       const gatewayMod = await loadModule('gateway');
       if (gatewayMod && rendered.routes.length > 0) {
         try {
+          // baseConfig 必须来自集群里的 ConfigMap，**绝不能**取请求体：
+          // 它能原样并入 hostNetwork 网关的 nginx.conf，等于给调用方一个任意配置注入面
+          // （改 listen/proxy_pass 就能改流量走向）。读不到 ≠ 不存在 → fail closed。
+          const cmPath = `/api/v1/namespaces/${GATEWAY.namespace}/configmaps/${GATEWAY.configMapName}`;
+          const cm = await client.getJson(cmPath).catch((err) => {
+            if (err?.status === 404) return null;
+            throw new Error(`读取网关配置失败（已跳过网关注册，服务本身正常）：${errorMessage(err)}`);
+          });
+          const currentConf = cm?.data?.[GATEWAY.configMapKey] || '';
+
           const all = listServices(ensureSettings());
-          const desired = gatewayMod.renderGatewayConfig({ services: all, baseConfig: '' });
+          const desired = gatewayMod.renderGatewayConfig({ services: all, baseConfig: currentConf });
           if (desired.conflicts.length > 0) {
-            gateway = { ok: false, error: `端口冲突：${desired.conflicts.map((c) => `${c.port} 被 ${c.owners.join('/')} 占用`).join('；')}`, changed: false };
+            // 冲突必须当硬失败：跳过冲突端口等于"以为上线了，实际网关没这条路由"
+            gateway = {
+              ok: false,
+              changed: false,
+              conflicts: desired.conflicts,
+              error: `网关端口冲突，已跳过网关注册：${desired.conflicts
+                .map((c) => `${c.port} 被 ${c.owners.join(' / ')} 占用`).join('；')}。同一 listen 端口只能有一个 server 块。`,
+            };
           } else {
             gateway = await gatewayMod.applyGatewayConfig({
               client,
-              namespace: 'inference',
-              configMapName: 'reranker-gateway-conf',
+              namespace: GATEWAY.namespace,
+              configMapName: GATEWAY.configMapName,
               nginxConf: desired.nginxConf,
+              // deploymentName 决定"给谁打 reload 注解" —— 必须写死成真实网关，
+              // 否则它就是个"任意 Deployment 强制滚动"的原语（可用来 DoS 别的工作负载）
+              opts: { deploymentName: GATEWAY.deploymentName, env: process.env },
             });
           }
         } catch (err) {
@@ -789,6 +825,7 @@ export function createInfraRouter({ ensureSettings, saveSettings } = {}) {
       steps: result?.steps || [],
       error: result?.error || null,
       auditId: result?.auditId || null,
+      gateway: result?.gateway || null,
       snapshot: result?.snapshot ? { available: Boolean(result.rollbackAvailable) } : null,
       service: result?.ok ? findService(ensureSettings(), `${validation.value.namespace}/${validation.value.name}`) : null,
     });

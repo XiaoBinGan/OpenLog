@@ -406,6 +406,15 @@ export function buildPlan(opts = {}) {
   }
 
   const endpoint = buildEndpoint({ url, path: undefined });
+  // buildEndpoint 只在「已经以 /completions 结尾」时才不补路径；--url 写成 `.../:port/v1`
+  // 会被补成 `/v1/v1/chat/completions`，那一定是 404。整轮压测白跑，这里直接拒绝。
+  if (/\/v1\/v1\//i.test(endpoint)) {
+    return {
+      ok: false,
+      error: `--url 拼出的端点是 ${endpoint}：路径里 /v1 重复了（bench 的 buildEndpoint 会给不以 /completions 结尾的地址补 /v1/chat/completions）。`
+        + '请两种写法选一个：要么只写到 host:port（http://host:8000），要么写完整端点（http://host:8000/v1/chat/completions）。',
+    };
+  }
   const warningsOut = [...warnings];
   if (endpoint !== url.replace(/\/+$/, '')) {
     warningsOut.push(`请求会打到 ${endpoint}（bench 的 buildEndpoint 会自动补 /v1/chat/completions；如果引擎路径不同，请把完整端点写进 --url）`);
@@ -457,7 +466,7 @@ export const RECLAIM_RATIO = 0.6;
 export function compareQuota({ recommended, appliedMemMiB = null, appliedCoresPercent = null }) {
   const rec = recommended ?? {};
   const build = ({
-    key, label, unit, applied, recValue, zeroNote, growNote, reclaimNote,
+    key, label, unit, applied, recValue, missingNote, zeroNote, growNote, reclaimNote,
   }) => {
     const item = {
       key,
@@ -467,21 +476,22 @@ export function compareQuota({ recommended, appliedMemMiB = null, appliedCoresPe
       recommended: Number.isFinite(recValue) ? recValue : null,
       delta: null,
       deltaText: '—',
-      judgment: { state: 'unknown', text: '' },
+      judgment: { state: 'unknown', label: '无法判定', text: '' },
     };
     if (item.recommended === null) {
-      item.judgment = {
-        state: 'unknown',
-        text: '无法判定：推荐值缺失（没有实测显存或缺成功样本），先 --peak-mem-mib 补实测值或接引擎 /metrics 重跑',
-      };
+      item.judgment = { state: 'unknown', label: '无法判定', text: missingNote };
       return item;
     }
     if (item.applied === null) {
-      item.judgment = { state: 'unknown', text: '无法判定：没给实际申请值（--applied-mem / --applied-cores），这里只列出推荐值' };
+      item.judgment = {
+        state: 'unknown',
+        label: '无法判定',
+        text: '没给实际申请值：加 --applied-mem / --applied-cores 才能对拍（这里只列出推荐值）',
+      };
       return item;
     }
     if (item.applied === 0) {
-      item.judgment = { state: 'note', text: `${zeroNote}：与 vGPU 份额不是同一口径，不做比值判定` };
+      item.judgment = { state: 'note', label: '特殊口径', text: `${zeroNote}：与 vGPU 份额不是同一口径，不做比值判定` };
       return item;
     }
     const delta = item.recommended - item.applied;
@@ -493,11 +503,11 @@ export function compareQuota({ recommended, appliedMemMiB = null, appliedCoresPe
       ? `±0${unit}`
       : `${sign}${Math.abs(delta)}${unit}（${sign}${pctText}%）`;
     if (delta > 0) {
-      item.judgment = { state: 'grow', text: growNote };
+      item.judgment = { state: 'grow', label: '需要扩容', text: growNote };
     } else if (item.recommended < item.applied * RECLAIM_RATIO) {
-      item.judgment = { state: 'reclaim', text: reclaimNote };
+      item.judgment = { state: 'reclaim', label: '可回收', text: reclaimNote };
     } else {
-      item.judgment = { state: 'match', text: '基本匹配，保持现值' };
+      item.judgment = { state: 'match', label: '基本匹配', text: '基本匹配，保持现值（偏差在可接受区间内）' };
     }
     return item;
   };
@@ -509,9 +519,10 @@ export function compareQuota({ recommended, appliedMemMiB = null, appliedCoresPe
       unit: ' MiB',
       applied: appliedMemMiB,
       recValue: rec.memoryMiB,
+      missingNote: '推荐显存推不出来：没有实测显存峰值（缺 --peak-mem-mib，也没有接引擎 /metrics）——推荐值只能是 null，别拿 0 顶上',
       zeroNote: '实际申请 0 = 整卡独占',
-      growNote: '需要扩容，否则高峰期会 OOM/排队（显存：KV cache 随并发线性涨，涨过申请值就是 OOMKilled）',
-      reclaimNote: '可回收，空转占卡（先按峰值再压一轮确认，别用单次基准一键缩）',
+      growNote: '需要扩容，否则高峰期会 OOM/排队（显存侧：KV cache 随并发线性涨，涨过申请值就是 OOMKilled）',
+      reclaimNote: '可回收，空转占卡（先按业务峰值再压一轮确认，别用单次基准一键缩）',
     }),
     build({
       key: 'cores',
@@ -519,9 +530,10 @@ export function compareQuota({ recommended, appliedMemMiB = null, appliedCoresPe
       unit: ' pp',
       applied: appliedCoresPercent,
       recValue: rec.coresPercent,
+      missingNote: '推荐算力推不出来：没有任何 ok 且有样本的组合，无法反推 coresPercent（先让基准至少跑通一个组合）',
       zeroNote: '实际申请 0 = 不限算力',
-      growNote: '需要扩容，否则高峰期会 OOM/排队（算力：排队发生在调度器侧，表现为 TTFT p95 飙升）',
-      reclaimNote: '可回收，空转占卡（算力份额收多了会让 p95 TTFT 反弹，收完必须复测）',
+      growNote: '需要扩容，否则高峰期会 OOM/排队（算力侧：份额不够时请求在调度器侧排队，表现为 TTFT p95 飙升）',
+      reclaimNote: '可回收，空转占卡（算力收多了 p95 TTFT 会反弹，收完必须复测）',
     }),
   ];
 }
@@ -534,15 +546,15 @@ export function compareQuota({ recommended, appliedMemMiB = null, appliedCoresPe
 export function summarizeVerdict(comparisons = []) {
   const grow = comparisons.filter((c) => c.judgment.state === 'grow').map((c) => c.label);
   const reclaim = comparisons.filter((c) => c.judgment.state === 'reclaim').map((c) => c.label);
-  const unknown = comparisons.filter((c) => c.judgment.state === 'unknown' || c.judgment.state === 'note');
+  const unknown = comparisons.filter((c) => c.judgment.state === 'unknown' || c.judgment.state === 'note').map((c) => c.label);
   if (grow.length === 0 && reclaim.length === 0) {
     if (unknown.length === comparisons.length) return '没有可对比的项：推荐值和实际申请值至少要各有一个，才能对拍。';
     return '配额与实际负载基本匹配：没有需要扩容的项，也没有明显空转的项。';
   }
   const parts = [];
-  if (grow.length > 0) parts.push(`${grow.join('、')}需要扩容（改 resources 后必须重建 Pod，按 docs/INFRA.md §4.2 排窗口）`);
-  if (reclaim.length > 0) parts.push(`${reclaim.join('、')}可回收（先确认业务峰值，回收后必须复测 p95 TTFT）`);
-  const tail = unknown.length > 0 ? `；${unknown.map((c) => c.label).join('、')}本次无法判定` : '';
+  if (grow.length > 0) parts.push(`${grow.join('、')} 需要扩容，否则高峰期会 OOM/排队（改 resources 后必须重建 Pod，按 docs/INFRA.md §4.2 排窗口）`);
+  if (reclaim.length > 0) parts.push(`${reclaim.join('、')} 可回收，空转占卡（先确认业务峰值，回收后必须复测 p95 TTFT）`);
+  const tail = unknown.length > 0 ? `；${unknown.join('、')}本次无法判定` : '';
   return `${parts.join('；')}${tail}。`;
 }
 
@@ -586,7 +598,7 @@ export function formatQuotaTable(comparisons = []) {
     c.applied === null ? '未提供' : `${c.applied}${c.unit}`,
     c.recommended === null ? '无法推导' : `${c.recommended}${c.unit}`,
     c.deltaText,
-    c.judgment.text,
+    c.judgment.label,
   ]);
   return renderTable(
     ['项', '实际申请', '推荐值', '偏差（推荐 − 申请）', '判定'],
@@ -691,7 +703,13 @@ export function formatReport({
 
   out.push('[3] 判定');
   out.push('');
-  out.push(summarizeVerdict(comparisons));
+  for (const c of comparisons) {
+    const applied = c.applied === null ? '未提供' : `${c.applied}${c.unit}`;
+    const recText = c.recommended === null ? '推荐值缺失' : `推荐 ${c.recommended}${c.unit}`;
+    out.push(`  · ${c.label}：申请 ${applied} → ${recText}，偏差 ${c.deltaText} ｜ ${c.judgment.text}`);
+  }
+  out.push('');
+  out.push(`汇总：${summarizeVerdict(comparisons)}`);
   if (!consistency.consistent) {
     out.push('');
     out.push(`!! 自检不一致：${consistency.note}`);
@@ -947,6 +965,17 @@ export async function main(argv = [], io = {}) {
     appliedMemMiB: plan.applied.memoryMiB,
     appliedCoresPercent: plan.applied.coresPercent,
   });
+
+  const totals = bench.results.reduce((acc, r) => ({
+    samples: acc.samples + (r.samples ?? 0),
+    errors: acc.errors + (r.errors ?? 0),
+  }), { samples: 0, errors: 0 });
+  if (totals.samples === 0) {
+    error(`✗ 没有任何有效样本（${totals.errors} 个请求全部失败）：${bench.reason ?? '所有组合都未产出 TTFT'}`);
+    error('  按 HTTP 状态自查：401 = --api-key 没给或不对；404 = --model 名不对或 --url 路径不对；'
+      + '400 = 上下文超过 --max-model-len 或请求体不被接受；5xx = 引擎侧崩了（看 Pod 日志）。');
+    error('  下面的报告只用来定位问题，不能拿它定配额。');
+  }
 
   log(formatReport({ plan, bench, comparisons, consistency }));
 

@@ -46,6 +46,22 @@ vi.mock('../k8s/client.js', () => ({
   createK8sClient: () => ({
     getJson: async (path) => {
       h.getJsonCalls.push(path);
+      // Pod 列表（配额校验用）：返回一个就绪且带 vGPU 注解的 Pod，
+      // 注解格式取自真机：GPU-<uuid>,<TYPE>,<memMiB>,<cores>:;
+      if (path.startsWith('/api/v1/namespaces/') && path.includes('/pods') && path.includes('labelSelector')) {
+        const ns = path.split('/')[4];
+        return {
+          items: [{
+            metadata: {
+              name: 'qwen-test-abc12',
+              namespace: ns,
+              labels: { app: 'qwen-test' },
+              annotations: { 'hami.io/vgpu-devices-allocated': 'GPU-test-0001,NVIDIA,4096,30:;' },
+            },
+            status: { phase: 'Running', conditions: [{ type: 'Ready', status: 'True' }] },
+          }],
+        };
+      }
       const hit = h.cluster.get(path);
       if (hit instanceof Error) throw hit;
       if (hit === undefined) {
@@ -55,8 +71,14 @@ vi.mock('../k8s/client.js', () => ({
       }
       return hit;
     },
-    postJson: async (path, body) => { h.writeCalls.push(['POST', path, body]); return body; },
-    patchJson: async (path, body) => { h.writeCalls.push(['PATCH', path, body]); return body; },
+    // 写入后模拟 apiserver：返回带就绪 status 的对象，让 A5 的 rollout 轮询一次通过
+    postJson: async (path, body) => { h.writeCalls.push(['POST', path, body]); return withReadyStatus(body); },
+    patchJson: async (path, body) => {
+      h.writeCalls.push(['PATCH', path, body]);
+      const merged = withReadyStatus({ ...(h.cluster.get(path) || {}), ...body });
+      h.cluster.set(path, merged);   // 后续 getJson 读到的就是就绪态
+      return merged;
+    },
     deleteJson: async (path) => { h.writeCalls.push(['DELETE', path]); return {}; },
   }),
 }));
@@ -108,9 +130,30 @@ function foreignDeployment(name = 'qwen-test', namespace = 'infra-test') {
 /** 我们自己创建的对象：带归属标签 */
 function ownedDeployment(name = 'qwen-test', namespace = 'infra-test') {
   const dep = foreignDeployment(name, namespace);
+  // 就绪状态：让 A5 的 rollout 轮询立刻通过（否则要等真超时）
+  dep.metadata.generation = 1;
+  dep.status = { observedGeneration: 1, replicas: 1, updatedReplicas: 1, readyReplicas: 1, availableReplicas: 1 };
   dep.metadata.labels.managedBy = 'openlog-infra';
   dep.metadata.labels['app.kubernetes.io/managed-by'] = 'openlog-infra';
   return dep;
+}
+
+/** 给对象补上"已就绪"的 metadata/status（模拟写入后 apiserver 的即时状态） */
+function withReadyStatus(obj) {
+  if (!obj || typeof obj !== 'object') return obj;
+  const next = JSON.parse(JSON.stringify(obj));
+  next.metadata = { ...(next.metadata || {}), generation: 1, resourceVersion: '101' };
+  if (next.kind === 'Deployment') {
+    const want = Number(next.spec?.replicas ?? 1);
+    next.status = {
+      observedGeneration: 1,
+      replicas: want,
+      updatedReplicas: want,
+      readyReplicas: want,
+      availableReplicas: want,
+    };
+  }
+  return next;
 }
 
 function depPath(ns, name) { return `/apis/apps/v1/namespaces/${ns}/deployments/${name}`; }
@@ -131,6 +174,8 @@ beforeAll(async () => {
   app.use(createInfraRouter({
     ensureSettings: () => h.settings,
     saveSettings: (next) => { h.savedSettings = next; },
+    // 测试里不要真的等 rollout：注入假 sleep + 极短超时（生产用 A5 的默认 120s/2s）
+    applyOptions: { sleep: async () => {}, rolloutTimeoutMs: 50, pollIntervalMs: 1 },
   }));
   server = http.createServer(app);
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
@@ -385,5 +430,70 @@ describe('回滚取快照', () => {
     const res = await post('/api/infra/services/qwen-test/rollback', {});
     expect(res.status).toBe(200);
     expect(h.writeCalls.some(([method]) => method === 'PATCH')).toBe(true);
+  });
+});
+
+/* ────────────────────────── 网关注册的安全约束 ────────────────────────── */
+
+describe('网关注册不接受请求体里的配置（防任意 nginx 配置注入）', () => {
+  it('apply 时请求体带 nginxConf/baseConfig 会被忽略，ConfigMap 仍是唯一来源', async () => {
+    // 自己的对象（允许继续），集群里已有一份网关配置
+    h.cluster.set(depPath('infra-test', 'qwen-test'), ownedDeployment());
+    h.cluster.set('/api/v1/namespaces/inference/configmaps/reranker-gateway-conf', {
+      metadata: { name: 'reranker-gateway-conf', namespace: 'inference' },
+      data: { 'nginx.conf': 'stream {\n  # 既有路由\n}\n' },
+    });
+
+    const evil = 'stream { server { listen 9999; proxy_pass evil.internal:22; } }';
+    const res = await post('/api/infra/services/qwen-test/apply', {
+      service: service({ expose: { gatewayPort: 8123 } }),
+      // 下面这些字段以前可能被当成配置源；现在必须完全无效
+      nginxConf: evil,
+      baseConfig: evil,
+      configMapName: 'kube-root-ca.crt',
+      deploymentName: 'strata',
+    });
+
+    expect(res.status).toBe(200);
+    // 写请求里绝不出现请求体带来的 evil 内容
+    const written = h.writeCalls.map(([, , body]) => JSON.stringify(body ?? '')).join('\n');
+    expect(written).not.toContain('evil.internal');
+    // 也不允许去写请求体指定的 ConfigMap
+    expect(h.writeCalls.some(([, path]) => String(path).includes('kube-root-ca'))).toBe(false);
+  });
+
+  it('读网关 ConfigMap 返回 403 时 → 跳过网关注册并给出原因（不误判为"不存在"去新建）', async () => {
+    h.cluster.set(depPath('infra-test', 'qwen-test'), ownedDeployment());
+    const err = new Error('权限不足（403）');
+    err.status = 403;
+    h.cluster.set('/api/v1/namespaces/inference/configmaps/reranker-gateway-conf', err);
+
+    const res = await post('/api/infra/services/qwen-test/apply', { service: service({ expose: { gatewayPort: 8124 } }) });
+    expect(res.status).toBe(200);
+    // 服务本身成功（403 只影响网关注册），但 gateway.ok 必须是 false 且带原因
+    expect(res.body.gateway).toBeTruthy();
+    expect(res.body.gateway.ok).toBe(false);
+    expect(String(res.body.gateway.error)).toContain('已跳过网关注册');
+  });
+
+  it('端口冲突时网关侧硬失败，不会静默少一条路由', async () => {
+    // 两个服务抢同一端口
+    h.settings = {
+      k8sClusters: [CLUSTER],
+      infraServices: [
+        { name: 'a', namespace: 'infra-test', expose: { gatewayPort: 8125 } },
+        { name: 'b', namespace: 'infra-test', expose: { gatewayPort: 8125 } },
+      ],
+    };
+    h.cluster.set(depPath('infra-test', 'qwen-test'), ownedDeployment());
+    h.cluster.set('/api/v1/namespaces/inference/configmaps/reranker-gateway-conf', {
+      metadata: { name: 'reranker-gateway-conf', namespace: 'inference' },
+      data: { 'nginx.conf': 'stream {\n}\n' },
+    });
+
+    const res = await post('/api/infra/services/qwen-test/apply', { service: service({ expose: { gatewayPort: 8125 } }) });
+    expect(res.status).toBe(200);
+    expect(res.body.gateway.ok).toBe(false);
+    expect(String(res.body.gateway.error)).toContain('端口冲突');
   });
 });
