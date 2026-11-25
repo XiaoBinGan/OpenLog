@@ -33,7 +33,10 @@ const SERVICES_KEY = 'infraServices';
 
 /* ────────────────────────── 惰性加载能力层模块 ────────────────────────── */
 
-const modules = { model: null, render: null, guard: null, capacity: null, apply: null, bench: null, accelerator: null };
+const modules = {
+  model: null, render: null, guard: null, capacity: null, apply: null, bench: null, accelerator: null,
+  gateway: null, audit: null, autoscale: null, modelCache: null, gate: null,
+};
 
 /**
  * 惰性 + 容错加载：某个模块缺失时只有依赖它的端点降级（返回 503 + 说明），
@@ -49,6 +52,11 @@ async function loadModule(name) {
     apply: '../infra/apply.js',
     bench: '../infra/bench.js',
     accelerator: '../infra/accelerator/index.js',
+    gateway: '../infra/gateway.js',
+    audit: '../infra/audit-store.js',
+    autoscale: '../infra/autoscale.js',
+    modelCache: '../infra/model-cache.js',
+    gate: '../infra/gate.js',
   };
   try {
     modules[name] = await import(specifiers[name]);
@@ -253,6 +261,35 @@ export function latestSnapshot(key) {
   return Array.isArray(list) && list.length > 0 ? list[0].snapshot : null;
 }
 
+/* ────────────────────────── 审计 ────────────────────────── */
+
+let auditStore = null;
+
+/**
+ * 审计存储是惰性单例：模块缺失（还没落地）时返回 null，
+ * 调用方据此跳过审计 —— **审计失败绝不能阻断运维**（真机上一次写审计失败不该让变更回滚）。
+ */
+async function getAuditStore() {
+  if (auditStore) return auditStore;
+  const [mod, db] = await Promise.all([loadModule('audit'), import('../db/index.js').catch(() => null)]);
+  if (!mod?.createAuditStore || !db?.getKv || !db?.setKv) return null;
+  auditStore = mod.createAuditStore({ getKv: db.getKv, setKv: db.setKv });
+  return auditStore;
+}
+
+/** 记录一次变更（失败只 warn，不改变 HTTP 结果） */
+async function recordAudit({ service, result, actor, forced, snapshotRef }) {
+  try {
+    const store = await getAuditStore();
+    const mod = await loadModule('audit');
+    if (!store || !mod?.recordApply) return null;
+    return await mod.recordApply({ store, service, result, actor, forced, snapshotRef });
+  } catch (err) {
+    console.warn(`[Infra] 审计写入失败（变更本身已生效）：${errorMessage(err)}`);
+    return null;
+  }
+}
+
 /* ────────────────────────── 路由 ────────────────────────── */
 
 /**
@@ -393,6 +430,49 @@ export function createInfraRouter({ ensureSettings, saveSettings } = {}) {
     }
 
     const rendered = render.renderModelService(validation.value, { gatewayIP: record.server || '' });
+
+    // ① 弹性：服务声明了 autoscale 就一起渲染 HPA（扩副本会吃 vGPU 配额，所以先过预算校验）
+    const autoscaleMod = await loadModule('autoscale');
+    if (autoscaleMod && validation.value.autoscale && Number(validation.value.autoscale.maxReplicas) > 0) {
+      try {
+        rendered.objects.push(autoscaleMod.renderHpa({
+          service: validation.value,
+          autoscale: validation.value.autoscale,
+        }));
+      } catch (err) {
+        res.status(400).json({ error: `自动伸缩配置无法渲染：${errorMessage(err)}` });
+        return;
+      }
+    }
+
+    // ② 模型缓存：绝不允许每个 Pod 各拷一份权重（真机 DiskPressure 就是这么来的）
+    const cacheMod = await loadModule('modelCache');
+    if (cacheMod) {
+      try {
+        const cachePlan = cacheMod.planModelCache({
+          service: validation.value,
+          nodes: [],
+          existingCaches: [],
+          cache: validation.value.cache,
+        });
+        const cacheRes = cacheMod.renderCacheResources({ plan: cachePlan });
+        const dep = rendered.objects.find((o) => o.kind === 'Deployment');
+        if (dep && cacheRes.volumes.length > 0) {
+          dep.spec.template.spec.volumes = [...(dep.spec.template.spec.volumes || []), ...cacheRes.volumes];
+          const container = dep.spec.template.spec.containers[0];
+          container.volumeMounts = [...(container.volumeMounts || []), ...cacheRes.volumeMounts];
+          dep.metadata.annotations = {
+            ...(dep.metadata.annotations || {}),
+            'openlog.io/model-cache-strategy': String(cachePlan.strategy || 'none'),
+            'openlog.io/model-cache-shared': String(Boolean(cachePlan.shared)),
+          };
+        }
+        rendered.cachePlan = cachePlan;
+      } catch (err) {
+        // 缓存计划失败不能挡住部署（模型仍可用 hostPath 直挂），但要让调用方看见原因
+        rendered.cachePlan = { strategy: 'none', shared: false, warnings: [`模型缓存计划失败：${errorMessage(err)}`] };
+      }
+    }
     const guardResult = guard.checkGuard({
       service: validation.value,
       existing: existing ? [existing, ...(state ? [] : [])] : null,
@@ -432,10 +512,44 @@ export function createInfraRouter({ ensureSettings, saveSettings } = {}) {
       reasons: Array.isArray(rawImpact?.reasons) ? rawImpact.reasons : [],
     };
 
+    // 自动伸缩预算：扩副本会吃 vGPU 配额，超了 HPA 会一直重试 Pending（不会自动止损），
+    // 所以必须在预览阶段就算清楚，而不是等运行期发现。
+    const autoscaleMod2 = await loadModule('autoscale');
+    const autoscaleViolations = [];
+    if (autoscaleMod2 && validation.value.autoscale && Number(validation.value.autoscale.maxReplicas) > 0) {
+      const asCheck = autoscaleMod2.validateAutoscale({ service: validation.value, autoscale: validation.value.autoscale });
+      if (!asCheck.ok) {
+        for (const e of asCheck.errors) {
+          autoscaleViolations.push({ code: 'INVALID_AUTOSCALE', field: e.field, message: e.message });
+        }
+      } else if (placement?.best) {
+        const bestNode = (placement.candidates || []).find((c) => {
+          const name = typeof c.node === 'string' ? c.node : c.node?.name;
+          const bestName = typeof placement.best === 'string' ? placement.best : placement.best?.node || placement.best?.name;
+          return name === bestName;
+        });
+        const perCard = {
+          perCardMemMiB: Number(bestNode?.maxFreeMemMiB || bestNode?.freeMemMiB || 0),
+          perCardCores: 100,
+        };
+        if (perCard.perCardMemMiB > 0) {
+          const budget = autoscaleMod2.autoscaleBudget({
+            service: validation.value,
+            autoscale: asCheck.value,
+            capacity: perCard,
+          });
+          if (budget && budget.allowed === false) {
+            autoscaleViolations.push({ code: 'AUTOSCALE_BUDGET_EXCEEDED', field: 'autoscale.maxReplicas', message: budget.reason });
+          }
+        }
+      }
+    }
+
     res.json({
-      allowed: guardResult.allowed && (placement ? placement.fits : true),
+      allowed: guardResult.allowed && (placement ? placement.fits : true) && autoscaleViolations.length === 0,
       violations: [
         ...(guardResult.violations || []),
+        ...autoscaleViolations,
         ...(placement && placement.fits === false
           ? placement.reasons.map((message) => ({ code: 'CAPACITY_INSUFFICIENT', message }))
           : []),
@@ -537,6 +651,49 @@ export function createInfraRouter({ ensureSettings, saveSettings } = {}) {
     }
 
     const rendered = render.renderModelService(validation.value, { gatewayIP: record.server || '' });
+
+    // ① 弹性：服务声明了 autoscale 就一起渲染 HPA（扩副本会吃 vGPU 配额，所以先过预算校验）
+    const autoscaleMod = await loadModule('autoscale');
+    if (autoscaleMod && validation.value.autoscale && Number(validation.value.autoscale.maxReplicas) > 0) {
+      try {
+        rendered.objects.push(autoscaleMod.renderHpa({
+          service: validation.value,
+          autoscale: validation.value.autoscale,
+        }));
+      } catch (err) {
+        res.status(400).json({ error: `自动伸缩配置无法渲染：${errorMessage(err)}` });
+        return;
+      }
+    }
+
+    // ② 模型缓存：绝不允许每个 Pod 各拷一份权重（真机 DiskPressure 就是这么来的）
+    const cacheMod = await loadModule('modelCache');
+    if (cacheMod) {
+      try {
+        const cachePlan = cacheMod.planModelCache({
+          service: validation.value,
+          nodes: [],
+          existingCaches: [],
+          cache: validation.value.cache,
+        });
+        const cacheRes = cacheMod.renderCacheResources({ plan: cachePlan });
+        const dep = rendered.objects.find((o) => o.kind === 'Deployment');
+        if (dep && cacheRes.volumes.length > 0) {
+          dep.spec.template.spec.volumes = [...(dep.spec.template.spec.volumes || []), ...cacheRes.volumes];
+          const container = dep.spec.template.spec.containers[0];
+          container.volumeMounts = [...(container.volumeMounts || []), ...cacheRes.volumeMounts];
+          dep.metadata.annotations = {
+            ...(dep.metadata.annotations || {}),
+            'openlog.io/model-cache-strategy': String(cachePlan.strategy || 'none'),
+            'openlog.io/model-cache-shared': String(Boolean(cachePlan.shared)),
+          };
+        }
+        rendered.cachePlan = cachePlan;
+      } catch (err) {
+        // 缓存计划失败不能挡住部署（模型仍可用 hostPath 直挂），但要让调用方看见原因
+        rendered.cachePlan = { strategy: 'none', shared: false, warnings: [`模型缓存计划失败：${errorMessage(err)}`] };
+      }
+    }
     const guardResult = guard.checkGuard({
       service: validation.value,
       existing: existingObjects.length > 0 ? existingObjects : null,
@@ -581,6 +738,49 @@ export function createInfraRouter({ ensureSettings, saveSettings } = {}) {
       if (typeof saveSettings === 'function') {
         saveSettings(upsertService(ensureSettings(), merged));
       }
+
+      // 网关注册：服务起好后把路由写进 nginx 配置（hostNetwork 的 ConfigMap + reload 注解）。
+      // 失败不回滚服务本身 —— 服务已经跑起来了，只是外部还访问不到；
+      // 这类"半成功"必须让调用方看见（gateway 字段），不能吞掉。
+      let gateway = null;
+      const gatewayMod = await loadModule('gateway');
+      if (gatewayMod && rendered.routes.length > 0) {
+        try {
+          const all = listServices(ensureSettings());
+          const desired = gatewayMod.renderGatewayConfig({ services: all, baseConfig: '' });
+          if (desired.conflicts.length > 0) {
+            gateway = { ok: false, error: `端口冲突：${desired.conflicts.map((c) => `${c.port} 被 ${c.owners.join('/')} 占用`).join('；')}`, changed: false };
+          } else {
+            gateway = await gatewayMod.applyGatewayConfig({
+              client,
+              namespace: 'inference',
+              configMapName: 'reranker-gateway-conf',
+              nginxConf: desired.nginxConf,
+            });
+          }
+        } catch (err) {
+          gateway = { ok: false, error: `网关注册失败（服务本身已就绪，外部暂不可达）：${errorMessage(err)}`, changed: false };
+        }
+      }
+      result.gateway = gateway;
+
+      // 审计：这是"谁在什么时候改了什么"的唯一持久记录
+      result.auditId = (await recordAudit({
+        service: merged,
+        result,
+        actor: req.body?.actor || req.get?.('x-openlog-actor') || 'api',
+        forced: guardResult.audit?.forced || [],
+        snapshotRef: `${merged.namespace}/${merged.name}@${new Date().toISOString()}`,
+      }))?.id || null;
+    } else {
+      // 被拒/失败也要留痕（尤其是 rejected：有人试图改不属于自己的对象）
+      result.auditId = (await recordAudit({
+        service: validation.value,
+        result,
+        actor: req.body?.actor || 'api',
+        forced: guardResult.audit?.forced || [],
+        snapshotRef: null,
+      }))?.id || null;
     }
 
     res.json({
@@ -665,9 +865,109 @@ export function createInfraRouter({ ensureSettings, saveSettings } = {}) {
         limits: req.body?.limits,
         fetchImpl: globalThis.fetch,
       });
-      res.json(result);
+        // 门禁：跑完立刻判定，并给出可贴进变更单的 markdown 报告。
+        // 基线只在**通过**时更新 —— 否则下次回归对比的参照物就是坏数据。
+        const gateMod = await loadModule('gate');
+        let gate = null;
+        let report = null;
+        if (gateMod?.evaluateGate) {
+          const serviceKey = String(req.body?.serviceKey || '');
+          const service = findService(ensureSettings(), serviceKey) || req.body?.service || null;
+          const baselines = ensureSettings()?.infra?.baselines || {};
+          const baseline = service ? baselines[`${service.namespace}/${service.name}`] || null : null;
+          gate = gateMod.evaluateGate({
+            benchResult: result,
+            baseline,
+            thresholds: req.body?.thresholds || ensureSettings()?.infra?.gateThresholds || undefined,
+            service,
+          });
+          report = gateMod.renderGateReport ? gateMod.renderGateReport({ service, benchResult: result, gate }) : null;
+          if (gate?.pass && gateMod.buildBaseline && service && typeof saveSettings === 'function') {
+            const settings = ensureSettings();
+            saveSettings({
+              ...settings,
+              infra: {
+                ...(settings.infra || {}),
+                baselines: {
+                  ...baselines,
+                  [`${service.namespace}/${service.name}`]: gateMod.buildBaseline({ benchResult: result, service }),
+                },
+              },
+            });
+          }
+        }
+        res.json({ ...result, gate, report });
     } catch (err) {
       res.status(500).json({ error: `基准失败：${errorMessage(err)}` });
+    }
+  });
+
+  /* ── 审计查询（读，不受开关限制） ── */
+  router.get(`${PREFIX}/audit`, async (req, res) => {
+    const mod = await loadModule('audit');
+    const store = await getAuditStore();
+    if (!mod || !store) {
+      res.status(503).json({ error: '审计模块未就绪', items: [], total: 0 });
+      return;
+    }
+    const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 500);
+    const offset = Math.max(Number(req.query.offset) || 0, 0);
+    const filter = {
+      limit,
+      offset,
+      actor: req.query.actor ? String(req.query.actor) : undefined,
+      action: req.query.action ? String(req.query.action) : undefined,
+      serviceKey: req.query.serviceKey ? String(req.query.serviceKey) : undefined,
+    };
+    const [page, stats] = [store.list(filter), store.stats()];
+    res.json({ ...page, stats, demo: isDemoMode() });
+  });
+
+  /* ── 弹性预算（读，给表单实时提示"最多能扩到几副本"） ── */
+  router.get(`${PREFIX}/clusters/:clusterId/autoscale-budget`, async (req, res) => {
+    const record = await resolveCluster(req, res);
+    if (!record) return;
+    const autoscale = await loadModule('autoscale');
+    const capacity = await loadModule('capacity');
+    if (!autoscale) {
+      res.status(503).json({ error: '弹性模块未就绪' });
+      return;
+    }
+    const service = findService(ensureSettings(), String(req.params.clusterId) || '') || null;
+    let perCard = { perCardMemMiB: 0, perCardCores: 100 };
+    try {
+      const { client } = connectCluster(record);
+      const state = await readClusterState(client);
+      const devices = (state.summary?.nodes || []).flatMap((n) => n.devices || []);
+      if (devices.length > 0) {
+        perCard = {
+          perCardMemMiB: Math.max(...devices.map((d) => Number(d.memMiB) || 0)),
+          perCardCores: Math.max(...devices.map((d) => Number(d.cores) || 100)),
+        };
+      }
+    } catch { /* 拿不到就用默认值，前端仍可显示上限 8 */ }
+    const target = service || { resources: { memoryMiB: Number(req.query.memoryMiB) || 0, coresPercent: Number(req.query.coresPercent) || 0 } };
+    res.json({ budget: autoscale.autoscaleBudget({ service: target, autoscale: req.query, capacity: perCard }), capacity: perCard });
+  });
+
+  /* ── 磁盘估算（读，避免又出现 DiskPressure → 整节点 Evicted） ── */
+  router.post(`${PREFIX}/cache-estimate`, async (req, res) => {
+    const cache = await loadModule('modelCache');
+    if (!cache) {
+      res.status(503).json({ error: '缓存模块未就绪' });
+      return;
+    }
+    const { model, replicas, nodeCount } = req.body || {};
+    if (!model || typeof model !== 'object') {
+      res.status(400).json({ error: '缺少 model（需要 { path, format?, quantization?, sizeMiB? }）' });
+      return;
+    }
+    try {
+      const estimate = cache.estimateDiskUsage({ model, replicas: Number(replicas) || 1, nodeCount: Number(nodeCount) || 1 });
+      const plan = cache.planModelCache({ service: req.body.service || { model }, nodes: req.body.nodes || [], existingCaches: [] });
+      res.json({ estimate, plan });
+    } catch (err) {
+      res.status(400).json({ error: `估算失败：${errorMessage(err)}` });
     }
   });
 
