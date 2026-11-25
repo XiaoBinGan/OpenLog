@@ -1033,7 +1033,9 @@ function normalizeSnapshotEntries(snapshot) {
       const ref = {
         apiVersion: raw.ref.apiVersion ?? inferApiVersion(raw.ref.kind),
         kind: raw.ref.kind,
-        namespace: raw.ref.namespace,
+        // ref.namespace 缺失时回落到快照级 namespace：以前直接 continue 跳过，
+        // 表现为「回滚 200 但什么都没恢复」—— 静默不恢复比报错更危险。
+        namespace: raw.ref.namespace || snapshot.namespace || raw.body?.metadata?.namespace,
         name: raw.ref.name,
       };
       const body = raw.existed === false ? null : (isPlainObject(raw.body) ? raw.body : null);

@@ -358,10 +358,38 @@ export function createInfraRouter({ ensureSettings, saveSettings } = {}) {
       const key = model.serviceKey(validation.value);
       const [ns, name] = key.split('/');
       const depPath = `/apis/apps/v1/namespaces/${encodeURIComponent(ns)}/deployments/${encodeURIComponent(name)}`;
-      existing = await client.getJson(depPath).catch(() => null);
+      // 只有 404 才算"不存在"；其它错误（403/超时/网络）必须显式失败 ——
+      // 之前 catch(() => null) 把"读不到"当成"没有"，护栏于是看不见已有对象，
+      // 这正是把生产 Deployment 覆盖掉的同源缺陷（apply 侧的 existing:null 也是它）。
+      existing = await client.getJson(depPath).catch((err) => {
+        if (err?.status === 404) return null;
+        throw err;
+      });
     } catch (err) {
       res.status(502).json({ error: `读取集群现状失败：${errorMessage(err)}` });
       return;
+    }
+
+    // 归属预检：和目标同名却属于别人的对象，预览阶段就要说"不行"，
+    // 而不是等到 apply 才 409 —— 用户在预览里看到 allowed:true 就会以为能改。
+    if (existing) {
+      const labels = existing?.metadata?.labels || {};
+      const owned = labels.managedBy === 'openlog-infra'
+        || labels['app.kubernetes.io/managed-by'] === 'openlog-infra';
+      if (!owned) {
+        res.json({
+          allowed: false,
+          violations: [{
+            code: 'NOT_MANAGED',
+            field: 'name',
+            message: `${validation.value.namespace}/${validation.value.name} 已存在且不属于 OpenLog 管理`
+              + '（缺少 managedBy=openlog-infra 归属标签），拒绝覆盖。换一个服务名，或先人工确认接管。',
+          }],
+          diff: '',
+          impact: { action: 'noop', restarts: false, downtimeSeconds: 0, reasons: ['归属校验未通过，未生成任何清单'] },
+        });
+        return;
+      }
     }
 
     const rendered = render.renderModelService(validation.value, { gatewayIP: record.server || '' });
