@@ -117,10 +117,41 @@ export function appendHistory(service, entry, now = new Date()) {
 
 /* ────────────────────────── 集群连接 ────────────────────────── */
 
-/** 把 settings 里的集群变成可用的 client（与其它 k8s 路由同一套解析路径）。 */
+/**
+ * 把 settings 里的集群记录变成可用的 client。
+ *
+ * 与 routes/k8s-usage.js、routes/k8s.js 的 connectCluster 同一口径（同一套中文错误文案）：
+ * 先 parseKubeconfig 拿到 server/token/证书，再 createK8sClient。
+ * 注意 kubeconfig.js 只导出 parseKubeconfig / describeKubeconfig —— 没有 resolveKubeconfig，
+ * 这里若写错函数名会变成运行期 TypeError（不是编译期能发现的）。
+ */
 export function connectCluster(record) {
-  const resolved = k8sKubeconfig.resolveKubeconfig(record);
-  return { client: k8sClientModule.createK8sClient(resolved), resolved };
+  const text = typeof record?.kubeconfig === 'string' ? record.kubeconfig : '';
+  if (text.trim() === '') {
+    const err = new Error('集群缺少 kubeconfig：请先在「K8s 集群」里补上');
+    err.status = 400;
+    throw err;
+  }
+  let resolved;
+  try {
+    resolved = k8sKubeconfig.parseKubeconfig(text, record?.context || undefined);
+    if (!resolved || typeof resolved !== 'object') throw new Error('kubeconfig 解析结果为空');
+  } catch (err) {
+    const wrapped = new Error(`kubeconfig 解析失败：${errorMessage(err)}`);
+    wrapped.status = 400;
+    throw wrapped;
+  }
+  try {
+    const client = k8sClientModule.createK8sClient(resolved);
+    if (!client || typeof client.getJson !== 'function') {
+      throw new Error('客户端缺少 getJson');
+    }
+    return { client, resolved };
+  } catch (err) {
+    const wrapped = new Error(`创建 Kubernetes 客户端失败：${errorMessage(err)}`);
+    wrapped.status = 502;
+    throw wrapped;
+  }
 }
 
 /** 读节点与 Pod 现状（容量预检 / 归属判定都要用）。 */
@@ -268,7 +299,13 @@ export function createInfraRouter({ ensureSettings, saveSettings } = {}) {
     const record = await resolveCluster(req, res);
     if (!record) return;
 
-    const { client } = connectCluster(record);
+    let client;
+    try {
+      ({ client } = connectCluster(record));
+    } catch (err) {
+      res.status(err.status || 502).json({ error: errorMessage(err) });
+      return;
+    }
     let existing = null;
     let state = null;
     try {
@@ -371,7 +408,13 @@ export function createInfraRouter({ ensureSettings, saveSettings } = {}) {
       return;
     }
 
-    const { client } = connectCluster(record);
+    let client;
+    try {
+      ({ client } = connectCluster(record));
+    } catch (err) {
+      res.status(err.status || 502).json({ error: errorMessage(err) });
+      return;
+    }
     const rendered = render.renderModelService(validation.value, { gatewayIP: record.server || '' });
     const guardResult = guard.checkGuard({
       service: validation.value,
@@ -446,7 +489,13 @@ export function createInfraRouter({ ensureSettings, saveSettings } = {}) {
       return;
     }
 
-    const { client } = connectCluster(record);
+    let client;
+    try {
+      ({ client } = connectCluster(record));
+    } catch (err) {
+      res.status(err.status || 502).json({ error: errorMessage(err) });
+      return;
+    }
     try {
       const result = await applyMod.rollbackService({ snapshot, client });
       res.json({ ok: result?.ok === true, steps: result?.steps || [], error: result?.error || null });
