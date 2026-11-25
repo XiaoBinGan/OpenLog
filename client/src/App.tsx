@@ -23,6 +23,7 @@ const Assistant = lazy(() => import('./pages/Assistant'));
 const Monitor = lazy(() => import('./pages/Monitor'));
 const Docker = lazy(() => import('./pages/Docker'));
 const K8s = lazy(() => import('./pages/K8s'));
+const InfraPanel = lazy(() => import('./pages/infra/InfraPanel'));
 const Settings = lazy(() => import('./pages/Settings'));
 const Remote = lazy(() => import('./pages/Remote'));
 const Skills = lazy(() => import('./pages/Skills'));
@@ -45,6 +46,7 @@ function App() {
                   <Route path="remote" element={<Remote />} />
                   <Route path="docker" element={<Docker />} />
                   <Route path="k8s" element={<K8s />} />
+                  <Route path="infra" element={<InfraPanel />} />
                   <Route path="analytics" element={<Analytics />} />
                   <Route path="analysis-history" element={<AnalysisHistory />} />
                   <Route path="assistant" element={<Assistant />} />

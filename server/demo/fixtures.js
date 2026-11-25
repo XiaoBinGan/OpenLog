@@ -1436,3 +1436,63 @@ export function demoK8sPodsLogs(opts = {}) {
 
   return { logs: [...header, ...crash].join('\n') };
 }
+
+/**
+ * 演示用的 AI Infra 服务定义（两条：一个正常运行的 vLLM，一个配置偏高被降级的 llama.cpp）。
+ *
+ * 形状与真实 `GET /api/infra/services` 的 `services[]` 逐字段一致 —— 前端不需要为演示模式
+ * 写第二条分支；唯一的差别是 `enabled:false`（演示永远不会把变更下发到集群）。
+ */
+export function demoInfraServices() {
+  const at = '2026-06-08T09:20:00.000Z';
+  return [
+    {
+      id: 'demo-svc-qwen',
+      name: 'qwen3-32b',
+      namespace: 'inference',
+      model: { source: 'hostPath', path: '/data/models/Qwen3-32B-AWQ', format: 'safetensors', quantization: 'awq', contextLength: 32768 },
+      engine: { type: 'vllm', image: 'vllm/vllm-openai:v0.6.3' },
+      resources: { accelerators: 1, memoryMiB: 24576, coresPercent: 60, vendor: 'nvidia' },
+      replicas: 2,
+      placement: { acceleratorModel: 'NVIDIA GeForce RTX 4090' },
+      ports: [{ name: 'http', containerPort: 8000 }],
+      health: { path: '/health' },
+      expose: { gatewayPort: 8000 },
+      createdAt: at,
+      updatedAt: at,
+      version: 3,
+      status: { phase: 'running', readyReplicas: 2, message: '2/2 副本就绪，vGPU 配额已下发', observedAt: at },
+      history: [
+        { at, action: 'update', ok: true, version: 3, note: '显存 16 → 24 GiB（重建 Pod，单副本中断约 60s）' },
+        { at: '2026-06-07T14:00:00.000Z', action: 'update', ok: true, version: 2, note: '副本 1 → 2' },
+        { at: '2026-06-07T10:30:00.000Z', action: 'create', ok: true, version: 1, note: '首次创建' },
+      ],
+    },
+    {
+      id: 'demo-svc-llama',
+      name: 'llama3-8b',
+      namespace: 'inference',
+      model: { source: 'hostPath', path: '/data/models/Llama-3-8B-Q4_K_M.gguf', format: 'gguf', quantization: 'Q4_K_M', contextLength: 8192 },
+      engine: { type: 'llama.cpp', image: 'ghcr.io/ggerganov/llama.cpp:server-cuda' },
+      resources: { accelerators: 1, memoryMiB: 14336, coresPercent: 80, vendor: 'nvidia' },
+      replicas: 1,
+      placement: {},
+      ports: [{ name: 'http', containerPort: 8080 }],
+      health: { path: '/health' },
+      expose: { gatewayPort: 8888 },
+      createdAt: at,
+      updatedAt: at,
+      version: 2,
+      status: {
+        phase: 'degraded',
+        readyReplicas: 0,
+        message: '节点单卡最宽剩余 12.0 GiB，申请 14.0 GiB 放不下（HAMi 不能跨卡拼显存）',
+        observedAt: at,
+      },
+      history: [
+        { at, action: 'update', ok: false, version: 2, note: '算力配额 60% → 80%：等待节点余量，未下发' },
+        { at: '2026-06-07T18:00:00.000Z', action: 'create', ok: true, version: 1, note: '首次创建' },
+      ],
+    },
+  ];
+}
