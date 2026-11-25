@@ -292,7 +292,14 @@ export function createK8sClient(resolved) {
   async function writeJson(method, path, body, options = {}) {
     const opts = { ...(options && typeof options === "object" ? options : {}), method: String(method).toUpperCase() };
     if (body !== undefined) opts.body = body;
-    if (opts.dryRun) opts.query = { ...(opts.query || {}), dryRun: opts.dryRun };
+    // dryRun 归一化：k8s 只接受 `dryRun=All`（"true" 会 422：supported values: "All"）。
+  // 调用方（infra/apply.js）习惯传布尔，这里统一成 All；路径里已经有 dryRun 时不重复拼。
+  if (opts.dryRun) {
+    if (!String(path).includes('dryRun=')) {
+      opts.query = { ...(opts.query || {}), dryRun: 'All' };
+    }
+    delete opts.dryRun;
+  }
     const res = await request(path, opts);
     const text = String(res.body ?? "").trim();
     if (text === "") return null;

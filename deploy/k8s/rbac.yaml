@@ -260,3 +260,69 @@ metadata:
   annotations:
     kubernetes.io/service-account.name: openlog-operator
 type: kubernetes.io/service-account-token
+
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# AI Infra：在指定命名空间内「创建 / 删除」工作负载与服务
+#
+# 为什么必须单独加：operator 的 ClusterRole 只有 patch/update（改造已有工作负载），
+# 但「起一个新服务」需要 create，「回滚掉新建对象」需要 delete。真机验证时干跑直接 403：
+#   deployments.apps is forbidden: ... cannot create resource "deployments"
+#
+# 为什么用 Role（命名空间级）而不是扩大 ClusterRole：
+#   create 无法用 resourceNames 收窄（对象还不存在），ClusterRole 一旦给 create
+#   就等于能在 kube-system 里建东西。绑到 inference + infra-test 两个命名空间，
+#   权限边界与护栏的命名空间白名单完全一致 —— 代码拒绝的和 RBAC 拒绝的是同一批。
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: openlog-infra-creator
+  namespace: inference
+rules:
+  - apiGroups: ['apps']
+    resources: ['deployments', 'statefulsets']
+    verbs: ['create', 'delete']
+  - apiGroups: ['']
+    resources: ['services']
+    verbs: ['create', 'delete']
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: openlog-infra-creator
+  namespace: inference
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: openlog-infra-creator
+subjects:
+  - kind: ServiceAccount
+    name: openlog-operator
+    namespace: openlog
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: openlog-infra-creator
+  namespace: infra-test
+rules:
+  - apiGroups: ['apps']
+    resources: ['deployments', 'statefulsets']
+    verbs: ['create', 'delete']
+  - apiGroups: ['']
+    resources: ['services']
+    verbs: ['create', 'delete']
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: openlog-infra-creator
+  namespace: infra-test
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: openlog-infra-creator
+subjects:
+  - kind: ServiceAccount
+    name: openlog-operator
+    namespace: openlog
