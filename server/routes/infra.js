@@ -78,7 +78,12 @@ export function findService(settings, idOrKey) {
   const key = String(idOrKey ?? '').trim();
   if (!key) return null;
   const services = listServices(settings);
-  return services.find((s) => s.id === key) || services.find((s) => `${s.namespace}/${s.name}` === key) || null;
+  return services.find((s) => s.id === key)
+    || services.find((s) => `${s.namespace}/${s.name}` === key)
+    // URL 里传的往往只是服务名（/services/verify-ok/apply），最后再按 name 匹配一次；
+    // 同名跨命名空间极罕见，真出现时用 `ns/name` 或 id 精确指定。
+    || services.find((s) => s.name === key)
+    || null;
 }
 
 /** upsert（按 id 或 ns/name 命中即替换，保留 version 自增与时间戳）。 */
@@ -528,9 +533,17 @@ export function createInfraRouter({ ensureSettings, saveSettings } = {}) {
     }
 
     // 前端只让回滚"上一版"：这里按版本号取历史快照（当前实现以定义里的 snapshot 为准）
-    const service = findService(ensureSettings(), req.params.id);
-    const key = service ? `${service.namespace}/${service.name}` : String(req.params.id);
-    const snapshot = latestSnapshot(key) || service?.lastSnapshot || null;
+    const requested = String(req.params.id || '');
+    const service = findService(ensureSettings(), requested);
+    let snapshot = service ? latestSnapshot(`${service.namespace}/${service.name}`) : null;
+    if (!snapshot) {
+      // 服务定义还没落库（或 URL 只给了名字）时，直接按快照键的 name 后缀匹配，
+      // 避免"明明刚 apply 过却提示没有快照"。
+      const all = loadSnapshots();
+      const hit = Object.keys(all).find((k) => k === requested || k.endsWith(`/${requested}`));
+      if (hit) snapshot = latestSnapshot(hit);
+    }
+    if (!snapshot) snapshot = service?.lastSnapshot || null;
     if (!snapshot) {
       res.status(409).json({ error: '没有可回滚的快照（该服务还没有成功执行过，或快照已过期）' });
       return;
