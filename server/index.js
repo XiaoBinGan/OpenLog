@@ -1967,6 +1967,9 @@ const K8S_OPTIONAL_ROUTERS = [
   // 全部变成 403，未匹配的 /api/* 也拿不到 JSON 404。所以这里按「方法 + 路径前缀」
   // 精确转发，只让它看到自己那三条写端点的请求。
   { name: 'ops', specifier: './routes/k8s-ops.js', factory: 'createK8sOpsRouter', writeOnly: true },
+  // AI Infra 能力层：写能力由 OPENLOG_K8S_INFRA 单独控制，路由内部自己判（读接口不受限）。
+  // 同样用动态 import 容错：能力层任一模块缺失只让 /api/infra 降级，不影响其它功能。
+  { name: 'infra', specifier: './routes/infra.js', factory: 'createInfraRouter' },
 ];
 
 /** 写操作路由独占的路径前缀与方法（与 server/routes/k8s-ops.js 里的三条路由一致）。 */
@@ -2000,7 +2003,9 @@ async function mountOptionalK8sRouter({ name, specifier, factory: factoryName, w
       console.warn(`[K8s] ${name} 路由未挂载：${specifier} 没有导出可调用的 ${factoryName}`);
       return false;
     }
-    const router = factory({ ensureSettings });
+    // 注入两项：ensureSettings 读配置；saveSettings 让需要落库的路由（AI Infra 的服务定义）
+    // 自己保存。其它路由只解构 ensureSettings，多传一个不影响它们。
+    const router = factory({ ensureSettings, saveSettings });
     if (!router) {
       console.warn(`[K8s] ${name} 路由未挂载：${factoryName}({ ensureSettings }) 没有返回 router`);
       return false;

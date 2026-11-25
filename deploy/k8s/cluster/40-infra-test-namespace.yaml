@@ -1,0 +1,70 @@
+# infra-test：AI Infra 能力层的真机验证命名空间。
+#
+# 为什么单独开一个：
+#   inference 里跑的是真实业务（strata / llama-cpp / reranker×6 / 业务检测服务），
+#   任何"验证渲染器能不能起服务"的操作都不能落到那里。infra-test 用配额把它关起来，
+#   就算清单写错、Pod 起不来、配额申请超量，也只在 Namespace 边界内失败。
+#
+# 配额口径（与 HAMi 的 vGPU 资源对齐）：
+#   · nvidia.com/gpu      最多 2 个 vGPU 槽位
+#   · nvidia.com/gpumem   合计最多 16384 MiB（node1 两张卡合计 81747 MiB，这里只借 16 GiB）
+#   · nvidia.com/gpucores 合计最多 200 点（两张卡各 100，等于总共借 2 张卡的算力上限）
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: infra-test
+  labels:
+    openlog.io/managed: 'true'
+    openlog.io/purpose: 'infra-capability-verification'
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: infra-test-quota
+  namespace: infra-test
+spec:
+  hard:
+    requests.cpu: '8'
+    requests.memory: 32Gi
+    limits.cpu: '16'
+    limits.memory: 64Gi
+    pods: '10'
+    count/deployments.apps: '5'
+    count/services: '5'
+    nvidia.com/gpu: '2'
+    nvidia.com/gpumem: '16384'
+    nvidia.com/gpucores: '200'
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: infra-test-limits
+  namespace: infra-test
+spec:
+  limits:
+    - type: Container
+      default:
+        cpu: '2'
+        memory: 4Gi
+      defaultRequest:
+        cpu: 500m
+        memory: 1Gi
+      max:
+        cpu: '8'
+        memory: 32Gi
+---
+# 网络策略：默认允许出站（要拉模型/转发请求），入站只允许同命名空间与 kube-system（探针）。
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: infra-test-default
+  namespace: infra-test
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector: {}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system

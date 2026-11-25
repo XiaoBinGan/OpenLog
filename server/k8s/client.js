@@ -182,6 +182,11 @@ export function createK8sClient(resolved) {
       return err;
     };
 
+    // 写请求体：只有显式给了 body 才带（GET 行为与改造前逐字节一致）
+    const requestBody = opts.body === undefined || opts.body === null
+      ? null
+      : (typeof opts.body === 'string' ? opts.body : JSON.stringify(opts.body));
+
     return new Promise((resolve, reject) => {
       let url;
       try {
@@ -209,6 +214,10 @@ export function createK8sClient(resolved) {
           headers: {
             accept: 'application/json, text/plain, */*',
             ...(token ? { authorization: `Bearer ${token}` } : {}),
+            ...(requestBody !== null
+              ? { 'content-type': opts.contentType || 'application/json', 'content-length': Buffer.byteLength(requestBody) }
+              : {}),
+            ...(opts.headers && typeof opts.headers === 'object' ? opts.headers : {}),
           },
         },
         (res) => {
@@ -240,7 +249,7 @@ export function createK8sClient(resolved) {
         finish(reject, timedOut ? timeoutError() : wrapNetworkError(err));
       });
 
-      req.end();
+      req.end(requestBody === null ? undefined : requestBody);
     });
   }
 
@@ -273,5 +282,31 @@ export function createK8sClient(resolved) {
     };
   }
 
-  return { request, getJson, getText, apiServerVersion };
+  /**
+   * 写请求（POST / PATCH / DELETE）。
+   *
+   * 只在 AI Infra 的变更执行器里用；调用方必须先过护栏（server/infra/guard.js）。
+   * 非 2xx 会 throw，err.status / err.body 保留原样 —— 上层要把 k8s 的 admission webhook
+   * 原话透出来，而不是包装成一句"操作失败"。
+   */
+  async function writeJson(method, path, body, options = {}) {
+    const opts = { ...(options && typeof options === "object" ? options : {}), method: String(method).toUpperCase() };
+    if (body !== undefined) opts.body = body;
+    if (opts.dryRun) opts.query = { ...(opts.query || {}), dryRun: opts.dryRun };
+    const res = await request(path, opts);
+    const text = String(res.body ?? "").trim();
+    if (text === "") return null;
+    try { return JSON.parse(text); } catch {
+      throw new Error(`Kubernetes API 返回的不是合法 JSON（${method} ${path}）：${text.slice(0, BODY_PREVIEW)}`);
+    }
+  }
+
+  const postJson = (path, body, options) => writeJson("POST", path, body, options);
+  const patchJson = (path, body, options) => writeJson("PATCH", path, body, {
+    ...(options || {}),
+    contentType: (options && options.contentType) || "application/merge-patch+json",
+  });
+  const deleteJson = (path, options) => writeJson("DELETE", path, (options && options.body) ?? undefined, options);
+
+  return { request, getJson, getText, apiServerVersion, postJson, patchJson, deleteJson, writeJson };
 }
