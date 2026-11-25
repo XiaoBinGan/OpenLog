@@ -460,10 +460,58 @@ export function createInfraRouter({ ensureSettings, saveSettings } = {}) {
       res.status(err.status || 502).json({ error: errorMessage(err) });
       return;
     }
+
+    // 必须先读现状再进护栏：NOT_MANAGED 的判定依据就是「同名对象存在但不带 openlog-infra 归属」。
+    // 之前这里图省事传了 existing: null，结果护栏无法识别"这是别人的 Deployment"，
+    // 真实集群上的 strata 被覆盖成测试镜像（靠 rollout 失败后的自动回滚才恢复）。
+    // 这是一次真机事故，改成 fail closed：读不到现状就不允许写。
+    let existingObjects = [];
+    try {
+      const key = model.serviceKey(validation.value);
+      const [ns, name] = key.split('/');
+      const paths = [
+        `/apis/apps/v1/namespaces/${encodeURIComponent(ns)}/deployments/${encodeURIComponent(name)}`,
+        `/api/v1/namespaces/${encodeURIComponent(ns)}/services/${encodeURIComponent(name)}`,
+      ];
+      for (const path of paths) {
+        const obj = await client.getJson(path).catch((err) => {
+          if (err?.status === 404) return null;
+          throw err;
+        });
+        if (obj) existingObjects.push(obj);
+      }
+    } catch (err) {
+      res.status(502).json({ error: `读取集群现状失败，已拒绝写入（无法确认对象归属）：${errorMessage(err)}` });
+      return;
+    }
+
+    // 归属硬校验：同名对象存在但不带 openlog-infra 归属 → 直接拒绝，连干跑都不做。
+    // 这是真机事故的直接补丁：曾经因为 existing 传 null，护栏无法识别"别人的对象"，
+    // 结果把 inference/strata 覆盖成测试镜像（靠 rollout 失败后的自动回滚才恢复）。
+    const unmanaged = existingObjects.filter((obj) => {
+      const labels = obj?.metadata?.labels || {};
+      return labels.managedBy !== 'openlog-infra' && labels['app.kubernetes.io/managed-by'] !== 'openlog-infra';
+    });
+    if (unmanaged.length > 0) {
+      const names = unmanaged.map((o) => `${o.kind || 'Object'}/${o.metadata?.name || '?'}`).join('、');
+      res.status(409).json({
+        ok: false,
+        action: 'rejected',
+        error: `${names} 已存在且不属于 OpenLog 管理（缺少 openlog-infra 归属标签），拒绝覆盖。`
+          + '如需接管请先人工确认，或换一个服务名。',
+        steps: [{
+          name: 'guard',
+          ok: false,
+          detail: `归属校验未通过：${names} 缺少 managedBy=openlog-infra 标签`,
+        }],
+      });
+      return;
+    }
+
     const rendered = render.renderModelService(validation.value, { gatewayIP: record.server || '' });
     const guardResult = guard.checkGuard({
       service: validation.value,
-      existing: null, // A5 内部会按需读取；这里传 null 表示"由执行器决定"
+      existing: existingObjects.length > 0 ? existingObjects : null,
       settings: ensureSettings(),
       env: process.env,
       force: req.body?.force === true,
