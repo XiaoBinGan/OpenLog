@@ -34,7 +34,7 @@ function formatSeconds(ms) {
  *   /api/v1/namespaces/default/pods/web-0/log  → pods/log / GET
  *   /api/v1/nodes                              → nodes / LIST
  */
-function inferRequestTarget(pathname) {
+function inferRequestTarget(pathname, method = 'GET') {
   const segments = String(pathname || '').split('/').filter(Boolean);
   let rest = segments;
   if (rest[0] === 'api') rest = rest.slice(2); // /api/<version>/...
@@ -54,7 +54,7 @@ function inferRequestTarget(pathname) {
 }
 
 /** 把 HTTP 非 2xx 响应变成带中文说明的 Error（status/path/body 一并挂在错误上）。 */
-function createHttpError(statusCode, body, pathname) {
+function createHttpError(statusCode, body, pathname, method = 'GET') {
   const text = typeof body === 'string' ? body : '';
   const preview = text.slice(0, BODY_PREVIEW).trim();
   const suffix = preview ? `：${preview}` : '';
@@ -63,7 +63,7 @@ function createHttpError(statusCode, body, pathname) {
   if (statusCode === 401) {
     message = 'Kubernetes API 鉴权失败（HTTP 401）：凭证无效或已过期，请检查 kubeconfig 的 token / 客户端证书';
   } else if (statusCode === 403) {
-    const { resource, verb } = inferRequestTarget(pathname);
+    const { resource, verb } = inferRequestTarget(pathname, method);
     message = `Kubernetes API 权限不足，缺少对 ${resource} 的 ${verb} 权限（HTTP 403）${suffix}`;
   } else if (statusCode === 404) {
     message = `Kubernetes API 资源不存在（HTTP 404）：${pathname}${suffix}`;
@@ -231,7 +231,7 @@ export function createK8sClient(resolved) {
             if (statusCode >= 200 && statusCode < 300) {
               finish(resolve, { statusCode, headers: res.headers, body });
             } else {
-              finish(reject, createHttpError(statusCode, body, pathname));
+              finish(reject, createHttpError(statusCode, body, pathname, method));
             }
           });
         },

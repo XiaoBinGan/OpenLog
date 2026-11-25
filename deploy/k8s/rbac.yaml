@@ -290,7 +290,8 @@ rules:
     verbs: ['create', 'delete']
   - apiGroups: ['']
     resources: ['services']
-    verbs: ['create', 'delete']
+    # patch/update：回滚时要把旧 spec 拉回来（只给 create/delete 会让 restore 403）
+    verbs: ['create', 'delete', 'patch', 'update']
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -317,7 +318,8 @@ rules:
     verbs: ['create', 'delete']
   - apiGroups: ['']
     resources: ['services']
-    verbs: ['create', 'delete']
+    # patch/update：回滚时要把旧 spec 拉回来（只给 create/delete 会让 restore 403）
+    verbs: ['create', 'delete', 'patch', 'update']
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
