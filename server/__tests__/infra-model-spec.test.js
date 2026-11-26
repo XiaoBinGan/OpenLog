@@ -26,7 +26,7 @@ import {
 
 /* ────────────────────────── GGUF 二进制构造 ────────────────────────── */
 
-const T = { UINT32: 4, STRING: 8, ARRAY: 9, FLOAT32: 6, UINT64: 10 };
+const T = { UINT32: 4, STRING: 8, ARRAY: 9, FLOAT32: 6, BOOL: 7, UINT64: 10 };
 
 /** 拼一个最小的 GGUF 头部（v3：counts 为 u64） */
 function buildGguf(entries, { version = 3, tensors = 0 } = {}) {
@@ -41,6 +41,7 @@ function buildGguf(entries, { version = 3, tensors = 0 } = {}) {
     if (type === T.UINT32) { const b = Buffer.alloc(4); b.writeUInt32LE(v); return b; }
     if (type === T.UINT64) { const b = Buffer.alloc(8); b.writeBigUInt64LE(BigInt(v)); return b; }
     if (type === T.FLOAT32) { const b = Buffer.alloc(4); b.writeFloatLE(v); return b; }
+    if (type === T.BOOL) { const b = Buffer.alloc(1); b.writeUInt8(v ? 1 : 0); return b; }
     if (type === T.ARRAY) {
       const elemType = Buffer.alloc(4); elemType.writeUInt32LE(v.elemType);
       const n = Buffer.alloc(8); n.writeBigUInt64LE(BigInt(v.values.length));
@@ -128,6 +129,16 @@ describe('GGUF 解析（真字节，不是 mock）', () => {
     const r = parseGgufHeader(full.subarray(0, 120));
     expect(r.ok).toBe(false);
     expect(r.reason).toContain('缓冲不足');
+  });
+
+  it('bool 类型（7）能解析 —— 真机元数据里确实有 bool 字段', () => {
+    const r = parseGgufHeader(buildGguf([
+      ['a.flag', T.BOOL, true],
+      ['a.block_count', T.UINT32, 48],
+    ]));
+    expect(r.ok).toBe(true);
+    expect(r.meta['a.flag']).toBe(true);
+    expect(r.meta['a.block_count']).toBe(48);
   });
 
   it('v1 的 32 位计数也能解析', () => {

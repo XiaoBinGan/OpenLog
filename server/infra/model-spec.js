@@ -32,6 +32,7 @@ const GGUF_READERS = {
   4: 'readUInt32LE',
   5: 'readInt32LE',
   6: 'readFloatLE',
+  7: 'readUInt8',
   10: 'readBigUInt64LE',
   11: 'readBigInt64LE',
   12: 'readDoubleLE',
@@ -155,7 +156,8 @@ export function parseGgufHeader(buffer) {
       // 显式方法表：嵌套模板 + 对象字面量取索引这种写法解析器容易choke，也不好看
       const reader = GGUF_READERS[type];
       if (!reader) throw new Error(`未知的 GGUF 值类型 ${type}`);
-      const v = type === 7 ? buf.readUInt8(offset) !== 0 : buf[reader](offset);
+      const raw = buf[reader](offset);
+      const v = type === 7 ? raw !== 0 : raw;
       offset += spec.size;
       return typeof v === 'bigint' ? Number(v) : v;
     };
