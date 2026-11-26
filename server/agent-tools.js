@@ -171,6 +171,8 @@ const READ_TOOLS = new Set([
   // （之前 list_metrics / query_metrics 没分类 → 落到「未知工具按写操作处理」→ 弹框等 3 分钟，
   //   用户不点就一直挂在 CONFIRM_TIMEOUT 上，看起来像"助手卡死/长时间等待"）
   'list_metrics', 'query_metrics', 'local_system_stats', 'local_log_files', 'local_read_log',
+  // K8s / AI Infra 只读查询（不弹确认，否则一次排障要点十几次）
+  'k8s_clusters', 'k8s_overview', 'k8s_pods', 'infra_services',
   'local_system_stats', 'local_log_files', 'local_read_log',
 ]);
 
@@ -338,6 +340,52 @@ export const AGENT_TOOLS = [
       name: 'remote_restart_service',
       description: '⚠️ 重启远程 systemd 服务（需确认）',
       parameters: { type: 'object', properties: { serverId: { type: 'string' }, service: { type: 'string', description: '服务名，如 nginx' } }, required: ['serverId', 'service'] },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'k8s_clusters',
+      description: '列出 OpenLog 已接入的 Kubernetes 集群（id/名称/apiserver/是否启用）。排查集群相关问题第一步。',
+      parameters: { type: 'object', properties: {} },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'k8s_overview',
+      description: '看某个 K8s 集群的总览：节点（就绪/版本/内部IP）、Pod 计数、工作负载就绪情况、Warning 事件数。回答“集群有几个节点”“有没有异常 Pod”用这个，不要用 SSH 或 docker 工具。',
+      parameters: {
+        type: 'object',
+        properties: { clusterId: { type: 'string', description: '集群 id；省略则用第一个启用的集群' } },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'k8s_pods',
+      description: '列出集群里的 Pod（可过滤命名空间/异常状态）：阶段、就绪、重启次数、所在节点、vGPU 配额。查 CrashLoopBackOff / OOMKilled / 反复重启用这个。',
+      parameters: {
+        type: 'object',
+        properties: {
+          clusterId: { type: 'string' },
+          namespace: { type: 'string', description: '只列该命名空间' },
+          onlyUnhealthy: { type: 'boolean', description: 'true 时只返回未就绪/重启过/非 Running 的 Pod' },
+          limit: { type: 'number', description: '最多返回多少条，默认 30' },
+        },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'infra_services',
+      description: '列出 AI Infra 里定义/运行的模型服务：引擎、vGPU 配额、副本、实测显存（measuredMemMiB）、足迹判定。回答“哪个服务配额给多了”“谁占着卡”用这个。',
+      parameters: {
+        type: 'object',
+        properties: { clusterId: { type: 'string' } },
+      },
     },
   },
 ];

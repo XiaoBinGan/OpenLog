@@ -52,6 +52,26 @@
 
 ---
 
+## 未发布
+
+### lint 清零（318 → 0）
+
+server 38 条、client 280 条全部处理完。清理过程中挖出一个**内容丢失的真 bug**：
+`writeRemoteFile` / `uploadRemoteFile` 算了 base64 却没通过 stdin 交给远端，
+远端 `base64.b64decode(sys.stdin.read())` 拿到 EOF → **写入 0 字节文件并返回 success**。
+已修（`execCommand(cmd, { stdin: b64 })`）并补回归测试。
+
+### 已知技术债（显式记录，不是"没有"）
+
+- **190 处显式 `any`**：`@typescript-eslint/no-explicit-any` 在 client 配置里**显式关闭**，
+  理由写在 `client/eslint.config.js`。190 行告警会让 lint 长期刷屏、真问题被淹没。
+  收敛路径：① `api/client.ts` 响应边界用类型守卫收敛 → ② `catch (e: any)` 改
+  `catch (e) + e instanceof Error`（35 处）→ ③ 回调参数从签名推导。估 2-3 天。
+- **18 处 `react-hooks/exhaustive-deps`**：均为「只依赖 id/status 而非整个对象」的故意优化
+  （依赖整个对象会每次 render 重跑 → 重复请求甚至死循环），逐条加带理由的 disable。
+- **AMD / 昇腾适配器**：只有 fixture 验证，无硬件。
+- **node2**：Ubuntu 18.04 / cgroup v1，k3s 停在 v1.30（skew）。
+
 ## v1.6.0 — 2026-11-26
 
 AI Infra 从「能定义、能执行」补到「**能判断放不放得下**」：模型足迹预检、KV 精确计算、实测回填。

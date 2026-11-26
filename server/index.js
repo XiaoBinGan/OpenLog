@@ -1695,6 +1695,43 @@ async function ensureRemoteConnected(serverId) {
  * @param {{onOutput?: (stream:'stdout'|'stderr', chunk:string) => void}} [hooks]
  *   流式输出钩子：exec 类工具边跑边把输出推给前端（模型侧仍只拿最终结果）
  */
+/**
+ * 给 agent 用的集群解析：settings → 记录 → client。
+ * 复用 routes/k8s.js 同一套 kubeconfig 解析，不另起一套。
+ */
+function loadK8sClustersForAgent() {
+  const settings = ensureSettings();
+  const list = Array.isArray(settings?.k8sClusters) ? settings.k8sClusters : [];
+  return list.map((c) => ({
+    id: c.id,
+    name: c.name,
+    server: c.server || '',
+    context: c.context || '',
+    enabled: c.enabled !== false,
+  }));
+}
+
+async function resolveClusterForAgent(clusterId) {
+  const settings = ensureSettings();
+  const list = Array.isArray(settings?.k8sClusters) ? settings.k8sClusters : [];
+  if (list.length === 0) return { error: '还没有接入任何 Kubernetes 集群：请先在「K8s 集群」页面接入' };
+  const wanted = String(clusterId || '').trim();
+  const cluster = wanted
+    ? list.find((c) => c.id === wanted || c.name === wanted)
+    : (list.find((c) => c.enabled !== false) || list[0]);
+  if (!cluster) return { error: `集群 ${wanted} 不存在；可用：${list.map((c) => `${c.id}(${c.name})`).join('、')}` };
+  const kubeconfig = await import('./k8s/kubeconfig.js');
+  const clientMod = await import('./k8s/client.js');
+  let resolved;
+  try {
+    resolved = kubeconfig.parseKubeconfig(String(cluster.kubeconfig || ''), cluster.context || undefined);
+  } catch (e) {
+    return { error: `集群 ${cluster.name} 的 kubeconfig 解析失败：${errorMessage(e)}` };
+  }
+  return { cluster, client: clientMod.createK8sClient(resolved) };
+}
+
+
 async function executeAssistantTool(name, args, hooks = {}) {
   const settings = ensureSettings();
   const dockerSources = settings.dockerSources || [];
@@ -1899,6 +1936,98 @@ async function executeAssistantTool(name, args, hooks = {}) {
           range: { start: new Date(v.start).toISOString(), end: new Date(v.end).toISOString(), stepMs: v.step },
         };
       }
+
+      // ── Kubernetes / AI Infra 只读查询 ──
+      // 为什么加这些：模型被问"集群有几个节点"时会去调 remote_system_stats / docker_list，
+      // 实测 189 秒还答错对象。给它正确的工具，比让它猜更重要。
+      case 'k8s_clusters': {
+        const clusters = loadK8sClustersForAgent();
+        return { clusters, total: clusters.length };
+      }
+      case 'k8s_overview': {
+        const target = await resolveClusterForAgent(args.clusterId);
+        if (target.error) return target;
+        const { cluster, client } = target;
+        const [nodesRaw, podsRaw, deployRaw, evRaw] = await Promise.all([
+          client.getJson('/api/v1/nodes'),
+          client.getJson('/api/v1/pods'),
+          client.getJson('/apis/apps/v1/deployments'),
+          client.getJson('/api/v1/events?fieldSelector=type=Warning').catch(() => ({ items: [] })),
+        ]);
+        const nodes = (nodesRaw?.items || []).map((n) => ({
+          name: n.metadata?.name,
+          ready: (n.status?.conditions || []).some((c) => c.type === 'Ready' && c.status === 'True'),
+          version: n.status?.nodeInfo?.kubeletVersion,
+          internalIP: (n.status?.addresses || []).find((a) => a.type === 'InternalIP')?.address,
+          gpu: n.status?.allocatable?.['nvidia.com/gpu'] || null,
+        }));
+        const pods = podsRaw?.items || [];
+        const deployments = deployRaw?.items || [];
+        const unready = deployments.filter((d) => (d.status?.readyReplicas ?? 0) < (d.spec?.replicas ?? 0));
+        return {
+          cluster: { id: cluster.id, name: cluster.name, server: cluster.server },
+          nodes,
+          nodeCount: nodes.length,
+          nodesReady: nodes.filter((n) => n.ready).length,
+          podCount: pods.length,
+          podsNotRunning: pods.filter((p) => !['Running', 'Succeeded'].includes(p.status?.phase)).length,
+          workloadsUnready: unready.length,
+          unreadyWorkloads: unready.slice(0, 20).map((d) => ({
+            name: d.metadata?.name,
+            namespace: d.metadata?.namespace,
+            desired: d.spec?.replicas ?? 0,
+            ready: d.status?.readyReplicas ?? 0,
+          })),
+          warningEvents: (evRaw?.items || []).length,
+        };
+      }
+      case 'k8s_pods': {
+        const target = await resolveClusterForAgent(args.clusterId);
+        if (target.error) return target;
+        const raw = await target.client.getJson('/api/v1/pods');
+        let pods = (raw?.items || []).map((p) => {
+          const cs = p.status?.containerStatuses || [];
+          const total = cs.length || 0;
+          const readyN = cs.filter((c) => c.ready).length;
+          const vgpu = (p.metadata?.annotations || {})['hami.io/vgpu-devices-allocated'];
+          return {
+            name: p.metadata?.name,
+            namespace: p.metadata?.namespace,
+            phase: p.status?.phase,
+            ready: `${readyN}/${total}`,
+            restarts: cs.reduce((a, c) => a + (c.restartCount || 0), 0),
+            node: p.spec?.nodeName,
+            vgpu: vgpu ? String(vgpu).trim() : null,
+          };
+        });
+        if (args.namespace) pods = pods.filter((p) => p.namespace === args.namespace);
+        if (args.onlyUnhealthy) {
+          pods = pods.filter((p) => p.phase !== 'Running' || p.restarts > 0 || (() => {
+            const [a, b] = p.ready.split('/');
+            return Number(a) < Number(b);
+          })());
+        }
+        const limit = Math.min(Math.max(Number(args.limit) || 30, 1), 200);
+        return { total: pods.length, returned: Math.min(pods.length, limit), pods: pods.slice(0, limit) };
+      }
+      case 'infra_services': {
+        const services = Array.isArray(settings.infraServices) ? settings.infraServices : [];
+        return {
+          total: services.length,
+          services: services.map((sv) => ({
+            key: `${sv.namespace}/${sv.name}`,
+            engine: sv.engine?.type,
+            replicas: sv.replicas,
+            quota: { memoryMiB: sv.resources?.memoryMiB, coresPercent: sv.resources?.coresPercent },
+            measuredMemMiB: sv.model?.measuredMemMiB ?? null,
+            measuredAt: sv.model?.measuredAt ?? null,
+            contextLength: sv.model?.contextLength ?? null,
+            lastGate: sv.lastGate ?? null,
+          })),
+          hint: services.length === 0 ? '还没有保存任何模型服务定义' : '实测显存是配额决策的可靠口径（measuredMemMiB）',
+        };
+      }
+
 
       case 'list_metrics': {
         if (args.label) {
