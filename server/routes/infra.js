@@ -320,6 +320,35 @@ async function recordAudit({ service, result, actor, forced, snapshotRef }) {
  *
  * 规则：显式指定优先（夹到 30s..30min）；否则按 sizeMiB 估（每 GiB 约 6 秒，下限 120s，上限 20min）。
  */
+/**
+ * 读某服务实测显存峰值（给 bench 用）。
+ *
+ * 为什么读**进程级**而不是卡级：一张卡上可能跑着多个 vGPU 租户，
+ * 卡级 memory.used 是所有人总和，拿来当"这个模型用了多少"会误导配额决策。
+ * 所以按进程取最大值 —— 单模型服务下它就是该模型的实际占用。
+ * 拿不到返回 null，bench 会降级成 confidence=estimated 并明确告警，不编数字。
+ */
+async function makeGpuMemReader(record, serviceKey) {
+  if (!String(serviceKey || '').trim()) return undefined;
+  try {
+    const remoteModule = await import('../remote.js');
+    const servers = typeof remoteModule.getServers === 'function' ? remoteModule.getServers() : [];
+    const host = String(record?.server || '').replace(/^https?:\/\//, '').split(':')[0];
+    const server = servers.find((x) => x && String(x.host || '').includes(host));
+    if (!server) return undefined;
+    return async () => {
+      const r = await remoteModule.execRemoteCommand(
+        server.id,
+        'nvidia-smi --query-compute-apps=used_memory --format=csv,noheader,nounits | sort -rn | head -1',
+      );
+      const m = String(r?.stdout || '').match(/(\d+)/);
+      return m ? Number(m[1]) : null;
+    };
+  } catch {
+    return undefined;
+  }
+}
+
 export function resolveRolloutTimeout(explicit, service, applyOptions = {}) {
   const base = Number(applyOptions?.rolloutTimeoutMs) || 120_000;
   const MIN = 30_000;
@@ -977,6 +1006,10 @@ export function createInfraRouter({ ensureSettings, saveSettings, applyOptions =
         matrix: req.body?.matrix,
         limits: req.body?.limits,
         fetchImpl: globalThis.fetch,
+        // 实测显存峰值：没有它，推荐配额只能是 null 或按权重猜（confidence=estimated）。
+        // 两种来源：① 调用方直接给 gpuMemPeakMiB；② 用节点 GPU 探针读进程级显存。
+        gpuMemPeakMiB: Number.isFinite(Number(req.body?.gpuMemPeakMiB)) ? Number(req.body.gpuMemPeakMiB) : undefined,
+        readGpuMem: req.body?.gpuMemPeakMiB ? undefined : makeGpuMemReader(record, req.body?.serviceKey),
       });
         // 门禁：跑完立刻判定，并给出可贴进变更单的 markdown 报告。
         // 基线只在**通过**时更新 —— 否则下次回归对比的参照物就是坏数据。
