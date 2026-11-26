@@ -89,7 +89,18 @@ export function createChatRunner({ ensureSettings, executeAssistantTool, pending
    * 走一次确认闸门 + 执行 + 审计。
    * @returns {Promise<{result: object}>} result.error 表示被拒或执行失败
    */
-  async function runToolWithGuard(tc, args, res, approvedOps) {
+/** 稳定序列化：键排序，避免 {a,b} 与 {b,a} 被当成不同调用 */
+function stableStringify(value) {
+  try {
+    if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null';
+    if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
+    return `{${Object.keys(value).sort().map((k) => `${JSON.stringify(k)}:${stableStringify(value[k])}`).join(',')}}`;
+  } catch {
+    return String(value);
+  }
+}
+
+  async function runToolWithGuard(tc, args, res, approvedOps, resultCache) {
     const risk = classifyToolRisk(tc.name, args);
     // 只读命令（ls/cat/grep/ps 等）直接执行，不弹确认；
     // 同一次任务里「完全相同的写操作」确认过一次就不再问（避免反复点批准）。
@@ -137,6 +148,16 @@ export function createChatRunner({ ensureSettings, executeAssistantTool, pending
     const startedAt = Date.now();
     res.write(`data: ${JSON.stringify({ type: 'tool_start', tool: tc.name, args, startedAt })}\n\n`);
 
+    // 相同调用去重：真机上模型把「集群有几个节点」拆成 19 次调用（k8s_pods×4、remote_exec×9），
+    // 白白多花 100 秒。只读工具结果在一次任务内稳定，直接复用并告知模型「这是缓存」。
+    const dedupeKey = `${tc.name}:${stableStringify(args)}`;
+    if (risk.risk === 'read' && resultCache && resultCache.has(dedupeKey)) {
+      const cached = resultCache.get(dedupeKey);
+      res.write(`data: ${JSON.stringify({ type: 'tool_result', tool: tc.name, result: cached.result, durationMs: 0, cached: true })}\n\n`);
+      return { result: { ...cached.result, _cached: '本次任务内已用相同参数调用过，直接复用；不要重复调用' } };
+    }
+
+
     /**
      * 流式输出钩子：exec/read 类工具把 stdout/stderr 边跑边推给前端，
      * 让用户像看终端一样看到「正在执行什么、输出了什么」。
@@ -164,6 +185,8 @@ export function createChatRunner({ ensureSettings, executeAssistantTool, pending
       result = { error: errorMessage(err) };
     }
     const durationMs = Date.now() - startedAt;
+    // 只缓存"只读且成功"的结果：失败允许重试，写操作必须真的执行
+    if (risk.risk === 'read' && resultCache && result && !result.error) resultCache.set(dedupeKey, { result });
 
     if (risk.risk !== 'read') {
       recordAgentAction({
@@ -411,6 +434,8 @@ export function createChatRunner({ ensureSettings, executeAssistantTool, pending
 
     /** 本次任务内已批准过的写操作（完全相同才跳过确认） */
     const approvedOps = new Set();
+    // 只读工具结果缓存：同一任务内相同参数不重复执行（真机实测能省 100 秒）
+    const toolResultCache = new Map();
 
     // 先把生效配置推给前端：齿轮面板/用量条要立刻知道窗口与预算，
     // 不能等第一轮模型返回（大 prompt 时可能几十秒）。
@@ -826,7 +851,7 @@ export function createChatRunner({ ensureSettings, executeAssistantTool, pending
           let args = {};
           try { args = JSON.parse(tc.arguments); } catch { args = {}; }
           const toolStartedAt = Date.now();
-          const { result } = await runToolWithGuard(tc, args, res, approvedOps);
+          const { result } = await runToolWithGuard(tc, args, res, approvedOps, toolResultCache);
           anyToolExecuted = true;
           const toolMs = Date.now() - toolStartedAt;
           if (toolMs > 10_000) console.warn(`[Chat] 工具 ${tc.name} 耗时 ${toolMs}ms`);
@@ -844,7 +869,7 @@ export function createChatRunner({ ensureSettings, executeAssistantTool, pending
 
         if (parsed.kind === 'tool') {
           messages.push({ role: 'assistant', content: contentAcc || null });
-          const { result } = await runToolWithGuard({ name: parsed.tool, arguments: JSON.stringify(parsed.args) }, parsed.args, res, approvedOps);
+          const { result } = await runToolWithGuard({ name: parsed.tool, arguments: JSON.stringify(parsed.args) }, parsed.args, res, approvedOps, toolResultCache);
           anyToolExecuted = true;
           messages.push({ role: 'user', content: renderToolResultForTextProtocol(parsed.tool, result) });
           continue;
