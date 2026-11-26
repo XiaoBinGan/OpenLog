@@ -338,6 +338,14 @@ function validateModel(input, value, limits, fail) {
       value.model.measuredMaxConcurrency = Number(measuredConc);
     }
   }
+  const benchInputTokens = input.benchInputTokens;
+  if (benchInputTokens !== undefined && benchInputTokens !== null) {
+    if (!Array.isArray(benchInputTokens) || benchInputTokens.some((x) => !Number.isInteger(Number(x)) || Number(x) < 1)) {
+      fail('model.benchInputTokens', 'model.benchInputTokens 必须是正整数数组（压测使用的输入长度）');
+    } else {
+      value.model.benchInputTokens = benchInputTokens.map(Number);
+    }
+  }
   const measuredAt = input.measuredAt;
   if (measuredAt !== undefined && measuredAt !== null) {
     if (typeof measuredAt !== 'string' || Number.isNaN(Date.parse(measuredAt))) {

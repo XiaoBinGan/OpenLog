@@ -372,6 +372,7 @@ describe('ModelService 白名单必须包含所有会被上层用到的模型字
         measuredContextLength: 32768,
         measuredMaxConcurrency: 1,
         measuredAt: '2026-11-26T13:30:00.000Z',
+        benchInputTokens: [64, 512],
       },
       engine: { type: 'strata', image: 'i' },
       resources: { accelerators: 1, memoryMiB: 14336, coresPercent: 50 },
@@ -391,6 +392,7 @@ describe('ModelService 白名单必须包含所有会被上层用到的模型字
     expect(m.measuredContextLength).toBe(32768);
     expect(m.measuredMaxConcurrency).toBe(1);
     expect(m.measuredAt).toBe('2026-11-26T13:30:00.000Z');
+    expect(m.benchInputTokens).toEqual([64, 512]);
   });
 
   it('非法值被拒（负数 / 穿越路径 / 坏时间）', async () => {

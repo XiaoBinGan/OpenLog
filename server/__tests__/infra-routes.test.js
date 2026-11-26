@@ -660,3 +660,33 @@ describe('bench 回填的实测值在后续 preview 里生效', () => {
     expect(res.body.footprint.requiredMiB).toBe(7000);
   });
 });
+
+/* ────────── 回填口径：压测长度 ≠ 服务上下文 ────────── */
+describe('bench 回填时不能把压测输入长度当成服务上下文', () => {
+  it('定义里有 contextLength=32768、压测只喂 64 → measuredContextLength 必须是 32768', async () => {
+    // 先存定义（上下文 32768）
+    await post('/api/infra/services/big-svc/definition', {
+      service: service({
+        name: 'big-svc',
+        model: { source: 'hostPath', path: '/a', contextLength: 32768 },
+      }),
+    });
+    // 跑基准（inputTokens 只有 64），并给实测显存
+    const res = await post('/api/infra/bench', {
+      target: { url: 'http://127.0.0.1:9/v1/chat/completions', model: 'm' },
+      matrix: { concurrencies: [1, 2], inputTokens: [64] },
+      limits: { maxTotalMs: 200, maxRequestsPerCell: 1, maxP95TtftMs: 60000 },
+      serviceKey: 'infra-test/big-svc',
+      gpuMemPeakMiB: 9000,
+    });
+    expect(res.status).toBe(200);
+    expect(res.body.backfilled).toBeTruthy();
+
+    // 再 preview：实测上下文应沿用定义的 32768，而不是 64
+    const pv = await post('/api/infra/services/big-svc/preview', {
+      service: service({ name: 'big-svc', model: { source: 'hostPath', path: '/a', contextLength: 32768 } }),
+    });
+    expect(pv.body.footprint.measured.contextLength).toBe(32768);
+    expect(pv.body.footprint.measured.maxConcurrency).toBe(2);
+  });
+});

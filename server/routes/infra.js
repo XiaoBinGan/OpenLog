@@ -1161,8 +1161,20 @@ export function createInfraRouter({ ensureSettings, saveSettings, applyOptions =
                 model: {
                   ...existing.model,
                   measuredMemMiB: Math.round(peak),
-                  measuredContextLength: Number(req.body?.matrix?.inputTokens?.[0]) || existing.model.contextLength || null,
-                  measuredMaxConcurrency: Math.max(...(Array.isArray(req.body?.matrix?.concurrencies) ? req.body.matrix.concurrencies : [1])),
+                  // 注意：压测的 inputTokens 是"这次压测喂了多长"，不是服务实际运行时的上下文。
+                  // 服务上下文以定义里的 model.contextLength 为准（引擎启动参数决定），
+                  // 压测长度只用来判断"这次测量覆盖了多长的请求"。
+                  measuredContextLength: existing.model.contextLength
+                    ?? Number(req.body?.matrix?.inputTokens?.at(-1))
+                    ?? null,
+                  measuredMaxConcurrency: Math.max(
+                    1,
+                    ...(Array.isArray(req.body?.matrix?.concurrencies) ? req.body.matrix.concurrencies : [1]),
+                  ),
+                  // 同时记下压测实际用到的长度区间，便于判断实测值覆盖范围
+                  benchInputTokens: Array.isArray(req.body?.matrix?.inputTokens)
+                    ? req.body.matrix.inputTokens.map(Number).filter(Number.isFinite)
+                    : [],
                   measuredAt: new Date().toISOString(),
                 },
               };
