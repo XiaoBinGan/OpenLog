@@ -89,6 +89,26 @@ export function createChatRunner({ ensureSettings, executeAssistantTool, pending
    * 走一次确认闸门 + 执行 + 审计。
    * @returns {Promise<{result: object}>} result.error 表示被拒或执行失败
    */
+/**
+ * 归一化工具参数，让"语义相同"的调用落到同一个缓存键上。
+ * 只去掉空值（undefined / null / '' / 空对象），不动真实取值。
+ */
+function normalizeToolArgs(value) {
+  if (value === null || value === undefined) return undefined;
+  if (typeof value === 'string') return value === '' ? undefined : value;
+  if (Array.isArray(value)) {
+    const arr = value.map(normalizeToolArgs).filter((v) => v !== undefined);
+    return arr.length === 0 ? undefined : arr;
+  }
+  if (typeof value !== 'object') return value;
+  const out = {};
+  for (const [k, v] of Object.entries(value)) {
+    const nv = normalizeToolArgs(v);
+    if (nv !== undefined) out[k] = nv;
+  }
+  return Object.keys(out).length === 0 ? undefined : out;
+}
+
 /** 稳定序列化：键排序，避免 {a,b} 与 {b,a} 被当成不同调用 */
 function stableStringify(value) {
   try {
@@ -150,7 +170,9 @@ function stableStringify(value) {
 
     // 相同调用去重：真机上模型把「集群有几个节点」拆成 19 次调用（k8s_pods×4、remote_exec×9），
     // 白白多花 100 秒。只读工具结果在一次任务内稳定，直接复用并告知模型「这是缓存」。
-    const dedupeKey = `${tc.name}:${stableStringify(args)}`;
+    // 参数归一化再算 key：模型常把同一件事写成 {} / {clusterId:undefined} / {clusterId:'',limit:0}，
+    // 语义相同却算出不同 key，去重就白做了（真机实测 k8s_overview 被调 3 次就是这原因）。
+    const dedupeKey = `${tc.name}:${stableStringify(normalizeToolArgs(args))}`;
     if (risk.risk === 'read' && resultCache && resultCache.has(dedupeKey)) {
       const cached = resultCache.get(dedupeKey);
       res.write(`data: ${JSON.stringify({ type: 'tool_result', tool: tc.name, result: cached.result, durationMs: 0, cached: true })}\n\n`);
