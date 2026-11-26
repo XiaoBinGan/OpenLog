@@ -1156,6 +1156,10 @@ export function createInfraRouter({ ensureSettings, saveSettings, applyOptions =
           if (Number.isFinite(peak) && peak > 0) {
             const existing = findService(ensureSettings(), serviceKey);
             if (existing && existing.model) {
+              // 压测长度 ≠ 服务上下文：服务上下文由引擎启动参数决定（model.contextLength）
+              const measuredCtxForBackfill = existing.model.contextLength
+                || Number(req.body?.matrix?.inputTokens?.at(-1))
+                || null;
               const nextService = {
                 ...existing,
                 model: {
@@ -1164,9 +1168,7 @@ export function createInfraRouter({ ensureSettings, saveSettings, applyOptions =
                   // 注意：压测的 inputTokens 是"这次压测喂了多长"，不是服务实际运行时的上下文。
                   // 服务上下文以定义里的 model.contextLength 为准（引擎启动参数决定），
                   // 压测长度只用来判断"这次测量覆盖了多长的请求"。
-                  measuredContextLength: existing.model.contextLength
-                    ?? Number(req.body?.matrix?.inputTokens?.at(-1))
-                    ?? null,
+          measuredContextLength: measuredCtxForBackfill,
                   measuredMaxConcurrency: Math.max(
                     1,
                     ...(Array.isArray(req.body?.matrix?.concurrencies) ? req.body.matrix.concurrencies : [1]),
