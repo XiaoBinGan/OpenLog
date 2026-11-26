@@ -44,6 +44,9 @@ import { mapLimit } from './concurrency.js';
 import createSettingsRouter, { SENSITIVE_KEYS } from './routes/settings.js';
 import createDockerRouter from './routes/docker.js';
 import createK8sRouter from './routes/k8s.js';
+// Agent 的 K8s 工具要同步建 client（不能用 await import）
+import * as k8sClientForAgent from './k8s/client.js';
+import * as k8sKubeconfigForAgent from './k8s/kubeconfig.js';
 import { isDemoMode } from './demo/mode.js';
 import createChatRouter from './routes/chat.js';
 import { AGENT_TOOL_NAMES, executeAgentTool } from './agent-tools.js';
@@ -1711,6 +1714,10 @@ function loadK8sClustersForAgent() {
   }));
 }
 
+function buildClient(cluster) {
+  return k8sClientForAgent.createK8sClient(k8sKubeconfigForAgent.parseKubeconfig(String(cluster.kubeconfig || ''), cluster.context || undefined));
+}
+
 async function resolveClusterForAgent(clusterId) {
   const settings = ensureSettings();
   const list = Array.isArray(settings?.k8sClusters) ? settings.k8sClusters : [];
@@ -1719,16 +1726,19 @@ async function resolveClusterForAgent(clusterId) {
   const cluster = wanted
     ? list.find((c) => c.id === wanted || c.name === wanted)
     : (list.find((c) => c.enabled !== false) || list[0]);
-  if (!cluster) return { error: `集群 ${wanted} 不存在；可用：${list.map((c) => `${c.id}(${c.name})`).join('、')}` };
-  const kubeconfig = await import('./k8s/kubeconfig.js');
-  const clientMod = await import('./k8s/client.js');
-  let resolved;
+  if (!cluster) {
+    // 模型会编造 clusterId（实测出现过 "1"、"local"、别的 uuid）。只有一个集群时直接用它，
+    // 并在结果里注明，比反复报错让它继续猜要有用得多。
+    if (list.length === 1) {
+      return { cluster: list[0], client: buildClient(list[0]), note: `clusterId "${wanted}" 不存在，已使用唯一集群 ${list[0].name}` };
+    }
+    return { error: `集群 ${wanted} 不存在；可用：${list.map((c) => `${c.id}(${c.name})`).join('、')}` };
+  }
   try {
-    resolved = kubeconfig.parseKubeconfig(String(cluster.kubeconfig || ''), cluster.context || undefined);
+    return { cluster, client: buildClient(cluster) };
   } catch (e) {
     return { error: `集群 ${cluster.name} 的 kubeconfig 解析失败：${errorMessage(e)}` };
   }
-  return { cluster, client: clientMod.createK8sClient(resolved) };
 }
 
 

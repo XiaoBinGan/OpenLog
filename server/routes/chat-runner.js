@@ -89,6 +89,9 @@ export function createChatRunner({ ensureSettings, executeAssistantTool, pending
    * 走一次确认闸门 + 执行 + 审计。
    * @returns {Promise<{result: object}>} result.error 表示被拒或执行失败
    */
+/** 不接受任何参数的工具：缓存键只看名字，避免模型硬塞无关字段 */
+const NO_ARG_TOOLS = new Set(['k8s_clusters', 'remote_servers', 'infra_services', 'local_system_stats', 'local_log_files']);
+
 /**
  * 归一化工具参数，让"语义相同"的调用落到同一个缓存键上。
  * 只去掉空值（undefined / null / '' / 空对象），不动真实取值。
@@ -172,7 +175,10 @@ function stableStringify(value) {
     // 白白多花 100 秒。只读工具结果在一次任务内稳定，直接复用并告知模型「这是缓存」。
     // 参数归一化再算 key：模型常把同一件事写成 {} / {clusterId:undefined} / {clusterId:'',limit:0}，
     // 语义相同却算出不同 key，去重就白做了（真机实测 k8s_overview 被调 3 次就是这原因）。
-    const dedupeKey = `${tc.name}:${stableStringify(normalizeToolArgs(args))}`;
+    // 无参数工具的额外字段一律忽略：模型会给 k8s_clusters 硬塞 clusterId/sourceId，
+    // 而它根本不收参数 —— 不归一化的话每次 key 都不同，缓存永远不命中（真机实测 3 次全 miss）。
+    const argsForCache = NO_ARG_TOOLS.has(tc.name) ? undefined : normalizeToolArgs(args);
+    const dedupeKey = `${tc.name}:${stableStringify(argsForCache)}`;
     if (risk.risk === 'read' && resultCache && resultCache.has(dedupeKey)) {
       const cached = resultCache.get(dedupeKey);
       res.write(`data: ${JSON.stringify({ type: 'tool_result', tool: tc.name, result: cached.result, durationMs: 0, cached: true })}\n\n`);
