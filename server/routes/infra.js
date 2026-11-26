@@ -274,9 +274,21 @@ export function saveSnapshot(key, snapshot, now = new Date()) {
   }
 }
 
-export function latestSnapshot(key) {
+/**
+ * 取某服务的快照。
+ *
+ * @param {string} key           `namespace/name`
+ * @param {number} [index]       0 = 最近一次（默认）；1 = 上上次…（列表是新的在前）
+ * @returns {object|null}
+ */
+export function latestSnapshot(key, index = 0) {
   const list = loadSnapshots()[key];
-  return Array.isArray(list) && list.length > 0 ? list[0].snapshot : null;
+  if (!Array.isArray(list) || list.length === 0) return null;
+  const i = Math.trunc(Number(index) || 0);
+  // 越界返回 null，**不夹到末位**：夹取会让"回滚到第 5 版"静默变成"回滚到最老一版"，
+  // 用户以为回到了目标版本，实际不是。让调用方显式报 409 更安全。
+  if (i < 0 || i >= list.length) return null;
+  return list[i].snapshot;
 }
 
 /* ────────────────────────── 审计 ────────────────────────── */
@@ -835,6 +847,33 @@ export function createInfraRouter({ ensureSettings, saveSettings, applyOptions =
       return;
     }
 
+    // 可选的门禁强制：`requireGate: true` 时，定义里必须有一条"通过"的门禁记录。
+    // 为什么不默认强制：门禁是**取证工具**——运维在故障时可能就是要先上线止血。
+    // 但既然 UI 会拦，服务端就必须也能拦，否则"前端禁用"只是样子货。
+    if (req.body?.requireGate === true) {
+      const gated = findService(ensureSettings(), `${validation.value.namespace}/${validation.value.name}`);
+      const lastGate = gated?.lastGate || null;
+      if (!lastGate) {
+        res.status(409).json({
+          ok: false,
+          action: 'rejected',
+          error: '要求门禁通过才能执行，但该服务还没有基准记录：请先跑一次 bench',
+          code: 'GATE_MISSING',
+        });
+        return;
+      }
+      if (lastGate.pass !== true) {
+        res.status(409).json({
+          ok: false,
+          action: 'rejected',
+          error: `要求门禁通过才能执行，但最近一次基准未通过（${(lastGate.failures || []).join('、') || '未知项'}）`,
+          code: 'GATE_FAILED',
+          gate: lastGate,
+        });
+        return;
+      }
+    }
+
     let client;
     try {
       ({ client } = connectCluster(record));
@@ -1093,13 +1132,25 @@ export function createInfraRouter({ ensureSettings, saveSettings, applyOptions =
     // 前端只让回滚"上一版"：这里按版本号取历史快照（当前实现以定义里的 snapshot 为准）
     const requested = String(req.params.id || '');
     const service = findService(ensureSettings(), requested);
-    let snapshot = service ? latestSnapshot(`${service.namespace}/${service.name}`) : null;
+    // version 的语义：往回第几份快照（默认 0 = 最近一次）。
+    // 之前完全忽略这个参数 → 只能回退一步，传 version:3 也只会回到最近一版（"成功但没到目标"）。
+    const backSteps = Number(req.body?.version ?? req.body?.stepsBack ?? 0);
+    const idx = Number.isFinite(backSteps) && backSteps > 0 ? Math.trunc(backSteps) : 0;
+
+    let snapshot = service ? latestSnapshot(`${service.namespace}/${service.name}`, idx) : null;
     if (!snapshot) {
       // 服务定义还没落库（或 URL 只给了名字）时，直接按快照键的 name 后缀匹配，
       // 避免"明明刚 apply 过却提示没有快照"。
       const all = loadSnapshots();
       const hit = Object.keys(all).find((k) => k === requested || k.endsWith(`/${requested}`));
-      if (hit) snapshot = latestSnapshot(hit);
+      if (hit) snapshot = latestSnapshot(hit, idx);
+    }
+    if (!snapshot && idx > 0) {
+      res.status(409).json({
+        error: `没有第 ${idx + 1} 新的快照可回滚（该服务只保留了更少的变更记录，默认每服务 5 份）`,
+        code: 'SNAPSHOT_OUT_OF_RANGE',
+      });
+      return;
     }
     if (!snapshot) snapshot = service?.lastSnapshot || null;
     if (!snapshot) {
@@ -1220,6 +1271,21 @@ export function createInfraRouter({ ensureSettings, saveSettings, applyOptions =
               saveSettings(upsertService(ensureSettings(), nextService));
               backfilled = { serviceKey, measuredMemMiB: Math.round(peak) };
             }
+          }
+        }
+        // 把门禁结论存进定义：apply 时若要求强制门禁，就看这里
+        if (gate && typeof saveSettings === 'function' && serviceKey) {
+          const existingForGate = findService(ensureSettings(), serviceKey);
+          if (existingForGate) {
+            saveSettings(upsertService(ensureSettings(), {
+              ...existingForGate,
+              lastGate: {
+                pass: gate.pass === true,
+                score: gate.score ?? null,
+                failures: (gate.failures || []).map((f) => f.metric),
+                at: new Date().toISOString(),
+              },
+            }));
           }
         }
         res.json({ ...result, gate, report, backfilled });

@@ -777,3 +777,109 @@ describe('删除服务定义', () => {
     expect(res.status).toBe(409);
   });
 });
+
+/* ────────── 门禁：默认取证，可显式强制 ────────── */
+describe('requireGate: true 时服务端必须拦住未通过门禁的服务', () => {
+  async function saveWithGate(gateRecord) {
+    await post('/api/infra/services/qwen-test/definition', { service: service() });
+    const settings = h.settings;
+    const list = Array.isArray(settings.infraServices) ? settings.infraServices : [];
+    h.settings = {
+      ...settings,
+      infraServices: list.map((s) => (s.name === 'qwen-test' ? { ...s, lastGate: gateRecord } : s)),
+    };
+  }
+
+  it('没有基准记录 → 409 GATE_MISSING，零写请求', async () => {
+    await post('/api/infra/services/qwen-test/definition', { service: service() });
+    h.cluster.set(depPath('infra-test', 'qwen-test'), ownedDeployment());
+    const res = await post('/api/infra/services/qwen-test/apply', { service: service(), requireGate: true });
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe('GATE_MISSING');
+    expect(h.writeCalls).toEqual([]);
+  });
+
+  it('基准未通过 → 409 GATE_FAILED，带失败项', async () => {
+    await saveWithGate({ pass: false, score: 40, failures: ['TTFT p95', '错误率'] });
+    h.cluster.set(depPath('infra-test', 'qwen-test'), ownedDeployment());
+    const res = await post('/api/infra/services/qwen-test/apply', { service: service(), requireGate: true });
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe('GATE_FAILED');
+    expect(res.body.error).toContain('TTFT p95');
+    expect(h.writeCalls).toEqual([]);
+  });
+
+  it('基准通过 → 放行（继续走正常 7 步）', async () => {
+    await saveWithGate({ pass: true, score: 100, failures: [] });
+    h.cluster.set(depPath('infra-test', 'qwen-test'), ownedDeployment());
+    const res = await post('/api/infra/services/qwen-test/apply', { service: service(), requireGate: true });
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(true);
+  });
+
+  it('不带 requireGate（默认）→ 没有基准也放行（门禁是取证工具）', async () => {
+    await post('/api/infra/services/qwen-test/definition', { service: service() });
+    h.cluster.set(depPath('infra-test', 'qwen-test'), ownedDeployment());
+    const res = await post('/api/infra/services/qwen-test/apply', { service: service() });
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(true);
+  });
+});
+
+/* ────────── 回滚版本选择 + 下线（replicas=0） ────────── */
+describe('回滚能选版本，不是永远回退一步', () => {
+  function seedSnapshots(n) {
+    h.kv.infra_snapshots = {
+      'infra-test/qwen-test': Array.from({ length: n }, (_, i) => ({
+        at: `2026-11-2${i}T00:00:00.000Z`,
+        snapshot: {
+          namespace: 'infra-test',
+          capturedAt: `2026-11-2${i}T00:00:00.000Z`,
+          objects: [{
+            ref: { kind: 'Deployment', name: 'qwen-test' },
+            existed: true,
+            path: depPath('infra-test', 'qwen-test'),
+            body: ownedDeployment(),
+          }],
+        },
+      })),
+    };
+    h.cluster.set(depPath('infra-test', 'qwen-test'), ownedDeployment());
+  }
+
+  it('默认（不带 version）→ 用最近一份', async () => {
+    seedSnapshots(3);
+    const res = await post('/api/infra/services/qwen-test/rollback', {});
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(true);
+  });
+
+  it('version:2 → 用第 3 新的快照（往回两步）', async () => {
+    seedSnapshots(3);
+    const res = await post('/api/infra/services/qwen-test/rollback', { version: 2 });
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(true);
+  });
+
+  it('version 超出保留范围 → 409 SNAPSHOT_OUT_OF_RANGE（而不是静默回退一步）', async () => {
+    seedSnapshots(2);
+    const res = await post('/api/infra/services/qwen-test/rollback', { version: 9 });
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe('SNAPSHOT_OUT_OF_RANGE');
+  });
+});
+
+describe('replicas=0 是合法的下线方式', () => {
+  it('定义里 replicas=0 能通过校验', async () => {
+    const res = await post('/api/infra/services/qwen-test/definition', {
+      service: service({ replicas: 0 }),
+    });
+    expect(res.status).toBe(200);
+    expect(res.body.service.replicas).toBe(0);
+  });
+
+  it('replicas=-1 与 9 仍然被拒', async () => {
+    expect((await post('/api/infra/services/a/definition', { service: service({ replicas: -1 }) })).status).toBe(400);
+    expect((await post('/api/infra/services/a/definition', { service: service({ replicas: 9 }) })).status).toBe(400);
+  });
+});

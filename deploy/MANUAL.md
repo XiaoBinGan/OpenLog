@@ -8,12 +8,13 @@
 - [3. 首次部署](#3-首次部署)
 - [4. 日常更新（一键部署）](#4-日常更新一键部署)
 - [5. 升级到新版本](#5-升级到新版本)
-- [6. 镜像归档与离线部署](#6-镜像归档与离线部署)
-- [7. 数据备份与恢复](#7-数据备份与恢复)
-- [8. 回滚](#8-回滚)
-- [9. 排障](#9-排障)
-- [10. 配置项全表](#10-配置项全表)
-- [11. 上线检查清单](#11-上线检查清单)
+- [6. AI Infra 能力层（模型服务编排）](#6-ai-infra-能力层模型服务编排)
+- [7. 镜像归档与离线部署](#7-镜像归档与离线部署)
+- [8. 数据备份与恢复](#8-数据备份与恢复)
+- [9. 回滚](#9-回滚)
+- [10. 排障](#10-排障)
+- [11. 配置项全表](#11-配置项全表)
+- [12. 上线检查清单](#12-上线检查清单)
 
 ---
 
@@ -92,7 +93,7 @@ OPENLOG_PG_POOL_MAX=10
 OPENLOG_ENABLE_CONTAINER_EXEC=1
 ```
 
-完整字段说明见 [第 10 节](#10-配置项全表)。
+完整字段说明见 [第 11 节](#11-配置项全表)。
 
 开发机侧还需要 `deploy/.deploy.json`（SSH 连接信息）：
 
@@ -286,7 +287,7 @@ curl -s -H "Authorization: Bearer $TOK" http://127.0.0.1:3001/api/settings | hea
 2）备份与空间必须在：
 
 ```bash
-ls -lt backups/ | head -3                     # 最近一份 openlog-pg-*.sql.gz（第 7 节）
+ls -lt backups/ | head -3                     # 最近一份 openlog-pg-*.sql.gz（第 8 节）
 df -h /workspace                              # 镜像约 600MB + 构建缓存，留 5GB 以上更稳
 docker images openlog --format '{{.Tag}} {{.Size}}' | head
 ```
@@ -376,7 +377,7 @@ bash deploy/install.sh --upgrade --dry-run                          # 只打印�
 | v1.1.1 | 健康检查去噪：不再把「读不到日志」当容器报错，按证据分成 `problem` / `stale` / `unobserved`，OOM(137) 与段错误(139) 照报 | 无需手工动作。新增两个设置项：`containerHealthStaleHours`（默认 `24`，可选 0 / 1 / 6 / 24 / 72 / 168，`0` = 不过滤）与 `containerHealthIgnoreUnobserved`（默认开），位置在「设置 → 容器异常监控 → 健康检查过滤」。升级后 `unhealthy` 数量明显下降属预期（被过滤的条数在 `summary.ignoredStale` / `ignoredUnobserved` 里单独计数，没有静默吞掉） |
 | v1.2（未发布） | 只读 Kubernetes 监控：kubeconfig 直连 apiserver，节点 / Pod / 工作负载 / Warning 事件 / Pod 日志 / 多集群 | **要在集群里 apply RBAC 并生成 kubeconfig**，见下一小节。不 apply 也能升级：K8s 页没有数据、不报错，其它功能不受影响 |
 
-> 升级是单向前进的：升级到 v1.1.x 之后要降回 v1.0.x，按 [第 8 节](#8-回滚) 回滚到升级前的镜像，
+> 升级是单向前进的：升级到 v1.1.x 之后要降回 v1.0.x，按 [第 9 节](#9-回滚) 回滚到升级前的镜像，
 > 并先确认备份可用（旧代码不读 TSDB 的两张表，但升级期间写入的时序数据在旧版本里没有入口）。
 
 ### 升级后验证
@@ -425,7 +426,7 @@ docker ps --filter name=openlog --format '{{.Names}} {{.Image}} {{.Status}}'
 docker images openlog --format '{{.Tag}} {{.CreatedAt}}' | head -10
 ```
 
-自动回滚没兜住，或健康检查过了但业务不对，手动回（详细版在 [第 8 节](#8-回滚)）：
+自动回滚没兜住，或健康检查过了但业务不对，手动回（详细版在 [第 9 节](#9-回滚)）：
 
 ```bash
 # A) 回到上一个镜像：最快，不改代码
@@ -446,8 +447,8 @@ git reset --hard backup/predeploy-<sha> && bash deploy/deploy.sh
 ```
 
 - `backup/predeploy-<sha>` **只有** `npm run deploy -- --force` 覆盖服务端本地提交时才会建；
-  正常快进部署没有这个分支，回滚走 A / B，或者用 [第 6 节](#6-镜像归档与离线部署) 的镜像归档。
-- 只有数据被写坏才恢复数据库（[第 7 节](#7-数据备份与恢复)）；单纯代码回滚不要顺手恢复，
+  正常快进部署没有这个分支，回滚走 A / B，或者用 [第 7 节](#7-镜像归档与离线部署) 的镜像归档。
+- 只有数据被写坏才恢复数据库（[第 8 节](#8-数据备份与恢复)）；单纯代码回滚不要顺手恢复，
   否则会丢掉升级期间正常写入的采集数据。
 - 回滚完记得把 `deploy/deploy.env` 也退回与新版本匹配的内容（新版本新增的开关旧版本读不懂，
   一般无害，但不要留下半新半旧的配置）。
@@ -534,15 +535,16 @@ kubectl $K auth can-i create pods/exec -n openlog   # no
 #    测试通过后删掉本地副本：rm -f /tmp/openlog-operator-kubeconfig.yaml
 
 # 5) 打开服务端开关（deploy/deploy.env）
-#    deploy.sh 只透传白名单变量，OPENLOG_K8S_WRITE 不在白名单里，必须走 EXTRA_ENV：
+#    OPENLOG_K8S_WRITE 在 deploy.sh 的透传白名单里，直接写进 deploy.env 即可；
+#    走 install.sh（离线包）时它不在白名单，用 EXTRA_ENV 传：
 #      EXTRA_ENV="OPENLOG_K8S_WRITE=1"
-#    已有别的额外变量就合并到同一行，空格分隔；改完重新部署：
-bash deploy/deploy.sh
+#    改完重新部署（只换环境变量，不用重建镜像）：
+bash deploy/deploy.sh --no-build
 ```
 
 ```ini
-# deploy/deploy.env 片段
-EXTRA_ENV="OPENLOG_K8S_WRITE=1"
+# deploy/deploy.env 片段（deploy.sh 路径）
+OPENLOG_K8S_WRITE=1
 ```
 
 **6) 刷新**「K8s 集群」页：工作负载行出现「扩缩容」「重启」，Pod 列表出现「删除」，操作成功返回 `auditId`。
@@ -563,7 +565,427 @@ EXTRA_ENV="OPENLOG_K8S_WRITE=1"
 
 ---
 
-## 6. 镜像归档与离线部署
+## 6. AI Infra 能力层（模型服务编排）
+
+前置：第 5 节的 K8s 接入已经走通（`/k8s` 页能看到集群、节点、GPU 分配）。这一节只讲**运维怎么做**；
+设计原理、估算公式、兼容矩阵放在文末指向的两份文档里，不在本手册重复。
+
+### 6.1 它是什么、什么时候用
+
+一句话：在 `inference` / `infra-test` 两个命名空间里，把「模型路径 + 引擎镜像 + vGPU 配额 + 副本」
+变成跑得起来的服务，全程**可预检、可回滚**。
+
+什么时候用：新模型要上线一个 vLLM / llama.cpp / strata 服务；给现有服务加显存（KV cache 不够、OOM 过）；
+把空转的配额压回去；改错了要回到上一版对象。
+
+它**不是**这三样东西，边界会直接影响你怎么用它：
+
+| 不是 | 含义 | 该去哪 |
+|---|---|---|
+| 不做训练 | 只编排推理服务，没有 job 队列、checkpoint、分布式通信拓扑 | 训练任务用 k8s Job / Kubeflow，本层不接管 |
+| 不替代 k8s / HAMi | 不实现调度器、不改 kubelet；只生成标准对象。怎么排、能不能超卖、vGPU 怎么隔离，全由 HAMi + kube-scheduler 决定 | 集群侧配置（device-plugin、节点标签） |
+| 不能跨卡拼显存 | 一个副本的显存/算力必须来自**同一张卡**：两张 24 GiB 各剩一半，拼不成一个 48 GiB 的副本 | 要跨卡 = 引擎自己的张量并行（`accelerators: N` + `--tensor-parallel-size`） |
+
+### 6.2 开启与关闭
+
+```bash
+# deploy/deploy.env 追加一行
+OPENLOG_K8S_INFRA=1
+```
+
+```bash
+# 只改环境变量，不需要重新构建镜像
+bash deploy/deploy.sh --no-build
+
+# 核对：容器里必须能看到这一行（看不到就是没传进去）
+docker exec openlog env | grep OPENLOG_K8S_
+# OPENLOG_K8S_INFRA=1
+# OPENLOG_K8S_WRITE=1        ← 有这行说明另一类开关也开着
+```
+
+关闭：把值改成 `0`（或整行删掉）再 `bash deploy/deploy.sh --no-build`。**读接口不受影响**——
+服务列表、审计、缓存估算、弹性预算照常能查，只是不能改。
+
+| 状态 | 读接口 | 写接口 |
+|---|---|---|
+| 未设 / `0` | 正常 | `preview` 返回 `violations[]` 里一条 `INFRA_DISABLED`、`allowed:false`；`apply` / `rollback` 返回 `403`，集群一个字节没动 |
+| `1` | 正常 | 放行，然后还要过护栏与命名空间白名单 |
+
+只认字面量 `'1'`：`true` / `yes` / `01` 一律当关闭（与 `OPENLOG_K8S_WRITE` 同一口径）。
+开关在进程启动时读一次，改完必须重建容器才生效。
+
+**与 `OPENLOG_K8S_WRITE` 相互独立，各管一类操作**：
+
+| 开关 | 管什么 | 不开时的后果 |
+|---|---|---|
+| `OPENLOG_K8S_INFRA=1` | 本层：定义服务、渲染、apply、回滚、基准 | `/api/infra/*` 的写路径被拦 |
+| `OPENLOG_K8S_WRITE=1` | 「K8s 集群」页的扩缩容 / 重启 / 删 Pod | 那三个按钮 403，本层照常工作 |
+
+只想手动扩缩容就开 `WRITE`，想用模型服务编排就开 `INFRA`，两个都开也行。
+
+> 离线机器走的是 `deploy/install.sh`，它同样只透传白名单变量；这两个开关都要写在 `EXTRA_ENV` 里：
+> `EXTRA_ENV="OPENLOG_K8S_INFRA=1 OPENLOG_K8S_WRITE=1"`。
+
+### 6.3 权限准备（一次性）
+
+`deploy/k8s/rbac.yaml` 里与 Infra 相关的是三类权限：
+
+| 权限 | 范围 | 给了什么 | 为什么需要 |
+|---|---|---|---|
+| ClusterRole `openlog-readonly` | 全集群只读（原有） | 各类资源 `get/list/watch`，含 `services` 读 | 预览要读集群现状：节点余量算容量、同名对象判归属、快照要读旧对象 |
+| ClusterRole `openlog-operator` | 全集群 | 工作负载 `patch/update`、`pods delete`、`services get/list`（读 `services` 是这版新增的） | 更新已有对象、把旧 spec PATCH 回去、删单个 Pod 做重启 |
+| Role `openlog-infra-creator` | **只绑 `inference` 与 `infra-test`** | `deployments`/`statefulsets` 的 `create`+`delete`；`services` 的 `create`+`delete`+`patch`+`update` | 起新服务要 `create`，回滚掉本次新建的对象要 `delete`，`services` 的 `patch/update` 是回滚恢复旧 spec 用的（只给 create/delete 会在 restore 那步 403） |
+
+```bash
+kubectl apply -f deploy/k8s/rbac.yaml
+```
+
+**为什么用命名空间级 Role，而不是把 `create` 加进 ClusterRole**：`create` 的对象还不存在，
+没法用 `resourceNames` 收窄到一个白名单。ClusterRole 一旦给了 `create`，等于拿到「在 `kube-system`
+里建 Deployment」的能力——那是让集群自己挂掉的按钮。绑成两个命名空间的 Role 之后，
+被 RBAC 拒绝的范围和护栏的命名空间白名单完全一致：代码拒绝的、apiserver 拒绝的是同一批。
+
+用 operator 那份 kubeconfig 自检一遍（四条都要对上）：
+
+```bash
+K=--kubeconfig=/tmp/openlog-operator-kubeconfig.yaml
+kubectl $K auth can-i create deployments -n inference     # yes
+kubectl $K auth can-i delete services -n infra-test       # yes
+kubectl $K auth can-i create deployments -n kube-system   # no  ← 必须是 no
+kubectl $K auth can-i create pods -n inference            # no  ← 本层不建裸 Pod
+```
+
+对不上时：第一条 no → RBAC 里没有 `openlog-infra-creator` 这两段，重新 `apply`；
+`kube-system` 那条是 yes → 有人把 `create` 加到了 ClusterRole 上，立刻改回去。
+
+### 6.4 起一个新服务（最常用）
+
+前置（缺一条就别往下走）：`inference` 命名空间存在；节点上已有这个引擎镜像（离线环境先
+`k3s ctr images import`）；模型目录在目标节点上（`hostPath` 是**节点本地**路径，跨节点挂不到）。
+
+```bash
+TOK=$(docker exec openlog cat /app/data/.auth_token)
+API=http://127.0.0.1:3001/api/infra
+AUTH="Authorization: Bearer $TOK"
+```
+
+定义存成 `qwen.json`（字段全表见 `docs/INFRA.md` 附录 A）：
+
+```json
+{
+  "service": {
+    "name": "qwen3-8b",
+    "namespace": "inference",
+    "model": {
+      "source": "hostPath",
+      "path": "/models/Qwen3-8B-AWQ",
+      "specPath": "/models/Qwen3-8B-AWQ",
+      "format": "safetensors",
+      "quantization": "awq",
+      "sizeMiB": 6000,
+      "parametersB": 8,
+      "contextLength": 8192,
+      "maxConcurrency": 4
+    },
+    "engine": { "type": "vllm", "image": "vllm/vllm-openai:v0.11.0", "args": ["--max-model-len", "8192"] },
+    "resources": { "accelerators": 1, "memoryMiB": 16384, "coresPercent": 50, "vendor": "nvidia" },
+    "replicas": 1,
+    "placement": { "nodeSelector": { "kubernetes.io/hostname": "node1" } },
+    "ports": [{ "name": "http", "containerPort": 8000 }],
+    "health": { "path": "/health", "initialDelaySeconds": 120 },
+    "expose": { "gatewayPort": 30601 }
+  }
+}
+```
+
+**1）存定义（不下发集群）**
+
+```bash
+curl -s -X POST "$API/services/qwen3-8b/definition" \
+  -H "$AUTH" -H 'content-type: application/json' -d @qwen.json \
+  | jq '{ok, note, version: .service.version, id: .service.id}'
+# 期望：{"ok":true,"note":"已保存定义（未下发集群）","version":1,"id":"svc-…"}
+# 校验不过：{"error":"服务定义校验未通过","violations":[{"code":"INVALID_SERVICE",
+#            "field":"resources.memoryMiB","message":"…"}]} → 按 field 改 qwen.json
+```
+
+这条路由**不碰集群、不需要开关**：先把定义想清楚、先跑 bench 回填实测值（6.6），都靠它。
+`:id` 位置写服务名或 `namespace/name` 都行。下面的 `preview` / `apply` 要读集群，多集群时在 URL 上加
+`?clusterId=<集群 id>`；不写就用 settings 里第一个启用的集群。
+
+**2）预览（校验 + 护栏 + 容量预检 + 足迹预检 + diff + 中断预期）**
+
+```bash
+curl -s -X POST "$API/services/qwen3-8b/preview?clusterId=$CLUSTER_ID" \
+  -H "$AUTH" -H 'content-type: application/json' -d @qwen.json \
+  | jq '{allowed, violations, impact,
+         fits: .placement.fits,
+         footprint: {verdict: .footprint.verdict, basis: .footprint.basis, need: .footprint.requiredMiB}}'
+# 期望：{"allowed":true,"violations":[],
+#        "impact":{"action":"create","restarts":false,"downtimeSeconds":0},
+#        "fits":true,"footprint":{"verdict":"fits","basis":"measured",...}}
+```
+
+三个字段必须逐个看完再点执行：
+
+| 字段 | 通过长什么样 | 不通过怎么办 |
+|---|---|---|
+| `allowed` | `true` | `false` 时逐条读 `violations[].message`，按 6.5 的表处置 |
+| `impact.downtimeSeconds` | 新建是 `0` | 不是 `0` 说明这次会**改到已有对象**：先看 `diff` 里有没有 `-` 行，有就说明改多了 |
+| `footprint.verdict` | `fits`（`tight` 也放行，但余量 < 10%） | `insufficient` 会被硬拦，按 `footprint.reasons` 里的建议值调整 |
+
+**3）执行（7 步状态机，失败自动回滚）**
+
+```bash
+curl -s -X POST "$API/services/qwen3-8b/apply?clusterId=$CLUSTER_ID" \
+  -H "$AUTH" -H 'content-type: application/json' -d @qwen.json \
+  | jq '{ok, action, auditId, errorStep,
+         steps: [.steps[] | {name, ok, detail}],
+         gateway: {ok: .gateway.ok, action: .gateway.action, error: .gateway.error}}'
+# 期望：{"ok":true,"action":"create","auditId":"aud_1a2b3c4d5e6f","errorStep":null,
+#        "steps":[{"name":"guard","ok":true},{"name":"dry-run","ok":true},
+#                 {"name":"snapshot","ok":true},{"name":"apply","ok":true},
+#                 {"name":"rollout","ok":true},{"name":"allocation","ok":true},
+#                 {"name":"endpoint","ok":true}],
+#        "gateway":{"ok":true,"action":"patched"}}
+#        gateway.action：created / patched（首次或改动了路由）；配置没变时是 noop
+#        gateway.ok:false 且 action:"configmap-written" = 半成功（线上仍是旧配置），处理见 6.9
+```
+
+七个步骤名是固定的：`guard` → `dry-run` → `snapshot` → `apply` → `rollout` → `allocation` → `endpoint`。
+任何一步 `ok:false` 就停在那一步，并追加一条 `rollback`。
+`rollout` 的超时按模型大小自动放大（约每 GiB 6 秒，下限 120s、上限 20min），大模型冷启动慢不会被误杀；要覆盖就带 `"rolloutTimeoutMs": <毫秒>`。
+
+- `ok:true` 且 `steps` 全绿 = 服务起来了；`auditId` 有值说明这次变更已进审计。
+- `ok:true` 但 `gateway.ok:false` **不是失败**：服务在跑，只是外部还访问不到，按 6.9 里 `configmap-written` 那一条处理。
+- `ok:false` 时**不要重复 apply**，先看 `errorStep` 落在哪一步，照 6.9 的表处置。
+
+验收：
+
+```bash
+curl -s http://NODE_IP:30601/v1/models | jq '.data[].id'        # 期望返回模型名
+curl -s -H "$AUTH" "http://127.0.0.1:3001/api/k8s/clusters/$CLUSTER_ID/usage" \
+  | jq '.nodes[] | {name, devices: [.devices[] | {uuid, allocMemMiB, usedMemMiB, measured}]}'
+# 期望：allocMemMiB ≈ 16384，measured: true，usedMemMiB 随请求上涨
+```
+
+### 6.5 三个预检怎么读
+
+`preview` 一次跑三个预检，回答三个不同的问题，别混着看：
+
+| 预检 | 看哪个字段 | 回答的问题 | 典型不通过 | 怎么办 |
+|---|---|---|---|---|
+| 容量 | `placement.fits`；`violations[].code = CAPACITY_INSUFFICIENT` | 配额**放得进卡**吗 | 「显存不足：GPU-x 剩余 12000 MiB < 需要 16384 MiB」 | 降副本 / 降 `memoryMiB` / 换节点（`placement.nodeSelector`）/ 等邻居腾卡。**单卡剩余不够就是不够**：两张卡各剩 9 GiB 放不下一个 16 GiB 的副本 |
+| 足迹 | `footprint.verdict`；`violations[].code = MODEL_FOOTPRINT_EXCEEDED` | 模型**放得进配额**吗 | `insufficient`：权重 + 引擎开销 + KV cache > 配额 | 按 `footprint.reasons` 里给出的建议值调 `resources.memoryMiB`；调不动就换更大显存的卡或换量化 |
+| 基准门禁 | `gate.pass`（`POST /api/infra/bench` 的响应里） | 这个配置**能不能上线** | `failures[]`：TTFT p95 超阈、错误率超阈、显存超卖 | 按 `failures[].message` 修配置（降并发 / 加显存 / 换量化）后重跑 bench；基线只在通过时才更新 |
+
+三条附带事实：
+
+- 容量预检是**单卡语义**的估算，不是承诺：最终裁决在 kube-scheduler / HAMi。预检说 `fits: true`
+  而 Pod 仍 `Pending`，看 6.9。
+- `footprint.basis` 决定结论有多可信：
+
+| `basis` | 含义 | 怎么用 |
+|---|---|---|
+| `measured` | 用的是 bench 回填的实测值 | **以它为准**，可以直接据此定配额 |
+| `estimated` | 按 `model.sizeMiB` 或「参数量 × 位宽」估算 | 看 `footprint.warnings`；卸载型引擎必须改跑 bench（6.6） |
+
+- 门禁当前是**取证工具**，`apply` 不读 `gate`：它不会替你拦下上线，要看的就是 `pass` 与 `failures[]` 本身。
+
+### 6.6 实测显存回填（重要，别跳过）
+
+卸载型引擎下**磁盘文件大小 ≠ 显存占用**，差 4~5 倍是常态：真机上 strata 的 63 GB 权重文件
+实测只占 **13.3 GiB**（`--expert-cache` 把 expert 放在内存里）。llama.cpp 默认 mmap、
+vLLM `--cpu-offload-gb` 同理。拿文件大小当权重口径，足迹预检会报 `MODEL_FOOTPRINT_EXCEEDED`，
+而实际上配额绰绰有余——反过来（照着文件大小去配配额）就是 OOM。
+
+正确做法：**跑一次 bench，让实测值回填进定义**。
+
+```bash
+curl -s -X POST "$API/bench?clusterId=$CLUSTER_ID" \
+  -H "$AUTH" -H 'content-type: application/json' -d '{
+    "serviceKey": "inference/qwen3-8b",
+    "target": { "url": "http://NODE_IP:30601/v1", "model": "qwen3-8b" },
+    "matrix": { "concurrencies": [1, 4], "inputTokens": [512, 4096] },
+    "gpuMemPeakMiB": 13600
+  }' | jq '{ok, backfilled,
+           gate: {pass: .gate.pass, failures: [.gate.failures[].metric]},
+           recommended: .summary.recommended}'
+# 期望：{"ok":true,
+#        "backfilled":{"serviceKey":"inference/qwen3-8b","measuredMemMiB":13600},
+#        "gate":{"pass":true,"failures":[]},
+#        "recommended":{"memoryMiB":16384,"coresPercent":50,"confidence":"measured",...}}
+```
+
+- `backfilled` 是**回填回执**：告诉你哪个服务被写入了多少 MiB。它是 `null` 说明没回填——
+  多半是 `serviceKey` 在定义里找不到（定义还没存，先做 6.4 第 1 步），或者压根没拿到显存峰值。
+- 不想手抄数字就别传 `gpuMemPeakMiB`：给了 `serviceKey` 之后，服务端会走已注册的 SSH 通道到
+  集群对应节点读**进程级**显存峰值（卡级读数是同卡所有租户的总和，不能当本模型的占用）。
+  读不到不报错，退回估算并明确告警。
+- 回填之后再 preview，`footprint.basis` 会从 `estimated` 变成 `measured`，结论以实测为准：
+
+```bash
+curl -s -X POST "$API/services/qwen3-8b/preview" -H "$AUTH" \
+  -H 'content-type: application/json' -d @qwen.json \
+  | jq '{verdict: .footprint.verdict, basis: .footprint.basis, need: .footprint.requiredMiB}'
+# 期望：{"verdict":"fits","basis":"measured","need":…}
+```
+
+在 GPU 节点上手工复核（进程级占用，单位 MiB）：
+
+```bash
+nvidia-smi --query-compute-apps=pid,used_memory --format=csv,noheader
+# 12345, 13600 MiB
+```
+
+看到的数比 `backfilled.measuredMemMiB` 大很多，通常是同卡还有别的租户进程：按 `pid` 对
+`kubectl -n inference get pod` 找到自己那个，别把邻居的算进去。
+
+> bench 会**真打这个服务**（压力可控：矩阵串行跑，单格上限并发 8、请求 20 条、整轮 120s），
+> 生产上挑低峰跑。演示模式（`OPENLOG_DEMO=1`）直接 `409`，不会压测。
+
+### 6.7 改配额（会中断，必须知道）
+
+**k8s 里 Pod 的 `resources` 不可原地修改**：`nvidia.com/gpumem` 一变就等价于换 Pod。
+这是 k8s 的语义，没有绕过的办法，只能把中断安排进窗口。
+
+中断多久，护栏会在 `impact` 里算给你：
+
+| 情形 | `impact.restarts` | `impact.downtimeSeconds` | 实际表现 |
+|---|---|---|---|
+| `replicas: 1` 时改配额 | `true` | **60** | 旧 Pod 删 → 新 Pod 起并加载模型，这段时间服务不可用 |
+| 变更前后都 ≥2 副本 | `true` | **5** | 就绪探针逐个替换，只有连接抖动 |
+| 只改 `replicas` | `false` | `0` | 扩缩容，不重建已有 Pod |
+| 只改 `expose` / 网关端口 | `false` | `0` | Pod 不重建 |
+
+做法固定是「先看 impact，再决定要不要挑时间窗」：
+
+```bash
+# 1) 改定义：16384 → 24576
+jq '.service.resources.memoryMiB = 24576' qwen.json > qwen-24g.json
+
+# 2) 预览：diff 应该只有一行，impact 告诉你断多久
+curl -s -X POST "$API/services/qwen3-8b/preview" -H "$AUTH" \
+  -H 'content-type: application/json' -d @qwen-24g.json | jq '{allowed, impact, diff}'
+# 期望：{"allowed":true,"impact":{"restarts":true,"downtimeSeconds":60,...},
+#        "diff":"…-  nvidia.com/gpumem: \"16384\"\n…+  nvidia.com/gpumem: \"24576\""}
+# diff 里出现别的行 = 这次改多了，回第 1 步；downtimeSeconds 不是预期的数 = 先别 apply
+```
+
+```bash
+# 3) 挑窗口执行，并核对「真的拿到了配额」
+curl -s -X POST "$API/services/qwen3-8b/apply" -H "$AUTH" \
+  -H 'content-type: application/json' -d @qwen-24g.json | jq '[.steps[] | {name, ok, detail}]'
+# 期望：allocation 这一步绿。它读新 Pod 的 hami.io/vgpu-devices-allocated，
+#       核对申请值真的到位——rollout 绿了但 allocation 红，就是「Pod 起来了没拿到配额」
+
+kubectl -n inference exec <pod> -- nvidia-smi --query-gpu=memory.total --format=csv,noheader
+# 期望：24576 MiB。HAMi 下容器内看到的就是配额，不是物理卡容量
+# 还是旧值 = 新 Pod 没起来、旧 Pod 还在服务，去 /k8s 看 Pod 是否 Pending
+```
+
+两条硬规则：
+
+- **单次变动超过 4 倍会被拦**（`BIG_CHANGE`）：`1024 → 8192`、`replicas 1 → 8` 都算。要么拆成两步小改动，
+  要么显式带 `"force": true`；强制放行会写进 `audit.forced[]`，责任在按确认的人。
+- **想少中断就先加副本**：`replicas: 1 → 2`（2 倍，不触发 `BIG_CHANGE`）→ 等新副本 `Ready`
+  → 再改配额（逐个替换，约 5 秒抖动）→ 按需缩回。加副本本身要先过容量预检：多一份副本 = 多占一份显存。
+
+### 6.8 回滚
+
+两种入口，恢复的都是**快照里存下来的对象原样**（不是重新渲染一遍旧定义）：
+
+| 形态 | 触发 | 看哪里 |
+|---|---|---|
+| 执行失败自动回滚 | `apply` 任一步 `ok:false` | `steps[]` 末尾多一条 `rollback`：`ok:true` = 已经拉回变更前；`ok:false` 会点名哪些对象没恢复，此时集群可能处于中间状态，人工核对 |
+| 手动回滚 | 你调 `POST .../rollback` | 响应的 `steps[]`，每项形如 `restore:Deployment/qwen3-8b` 或 `delete:Service/qwen3-8b` |
+
+```bash
+# 有哪些服务、最后一版是什么时候
+curl -s "$API/services" -H "$AUTH" | jq '.services[] | {name, version, updatedAt, last: .history[0]}'
+
+# 回滚（取该服务最近一份快照）
+curl -s -X POST "$API/services/qwen3-8b/rollback" -H "$AUTH" \
+  -H 'content-type: application/json' -d '{}' | jq '{ok, steps, error}'
+# 期望：{"ok":true,"steps":[{"name":"restore:Deployment/qwen3-8b","ok":true,...}],...}
+# 没有快照：{"error":"没有可回滚的快照（该服务还没有成功执行过，或快照已过期）"}
+#           → 没有退路，改完配置直接 apply
+```
+
+快照存在 **KV** 里（键 `infra_snapshots`），按 `namespace/name` 索引，每个服务保留最近 **5** 份；
+`DELETE /api/infra/services/:id` **删定义时会连快照一起清掉**——所以「准备删定义但还想留退路」时，
+先把那份 `qwen.json` 存到自己机器上。
+
+> 回滚取的是最近一份快照；请求体里的 `version` 目前不参与选版本，别指望「回滚到 v3」。
+
+回滚的三条边界，不知道就会误判：
+
+- **不重新过护栏、不重新评估容量**：集群现在没地方放旧配额，回滚照样 PATCH，然后 Pod 起不来。
+  回滚之后必须回 `/k8s` 看一遍 Pod 状态。
+- 回滚同样**重建 Pod**、同样中断，不要指望「回滚是瞬间的」。
+- 只回滚对象，不回滚数据：hostPath 上的模型文件、PVC 里的内容一律不动。
+
+### 6.9 常见故障排查
+
+有 `steps` 的按停在哪一步对号入座；预览阶段的按 `violations[].code` 对。
+
+| 现象 / 判据 | 根因 | 处置 |
+|---|---|---|
+| 网关 Pod `CrashLoopBackOff`，日志 `nginx: [emerg] host not found in upstream "x.inference.svc.cluster.local"` | 网关配置引用了不存在的 Service（历史脏配置，或服务删了路由还在）。网关一挂，所有端口上的服务一起不可用 | 现在网关注册只接受「集群里真实存在且受管」的服务，不会再新写脏路由；已有的要手工清：`kubectl -n inference get cm reranker-gateway-conf -o yaml`，找到 `# openlog-service: <ns>/<name>` 那段，确认对应 Service 不存在后整块删掉，网关自己会起来 |
+| `apply` 返回 `ok:true`，但 `gateway:{ok:false, changed:true, action:"configmap-written"}` | ConfigMap 已写入新配置，但给网关 Deployment 打 reload 注解失败 → **线上仍跑旧配置**，服务在跑、端口不通 | 不用重跑 apply（服务本身是好的）：`kubectl -n inference rollout restart deployment/reranker-gateway`，再 `kubectl -n inference rollout status deployment/reranker-gateway --timeout=120s`；然后 `kubectl -n inference get deploy reranker-gateway -o jsonpath='{.metadata.annotations.openlog\.io/nginx-reload}'` 确认注解值变过 |
+| Pod 卡在 `ContainerCreating` / `FailedMount`，rollout 最后超时 | hostPath 不存在。k8s **不会**拒绝创建，只在挂载时失败，最终只表现为「rollout 超时」 | `kubectl -n inference describe pod <pod> \| grep -A3 FailedMount` 看具体路径；把 `model.path` / `cache.hostPath` 改成节点上真实存在的目录，或用 `placement.nodeSelector` 钉到有数据的节点 |
+| `ImagePullBackOff` | `imagePullPolicy` 固定 `IfNotPresent`，节点上没这个镜像 | 离线环境先在**目标节点**导入：`k3s ctr images import <镜像 tar>`；或换成节点上已有的 tag |
+| rollout 超时，但 Pod 是 `Running`、`ready: 0/1` | 探针没过：`health.path` 写错、`containerPort` 与引擎实际监听端口不一致、`initialDelaySeconds` 太小（模型还在加载） | `kubectl -n inference logs <pod> --tail=50` 看引擎监听在哪个端口；`health.path` 改成引擎真实的健康端点，`initialDelaySeconds` 按模型大小给到 120~300 |
+| `MODEL_FOOTPRINT_EXCEEDED`，但你确信放得下 | `model.sizeMiB` 填的是**磁盘文件大小**，而引擎是卸载型的（strata `--expert-cache`、llama.cpp mmap、vLLM `--cpu-offload-gb`） | 别动配额，改口径：跑一次 bench 让实测值回填（6.6），再 preview 看 `footprint.basis` 是否变成 `measured` |
+| 服务日志 `bind: address already in use`，或 Pod `Pending` 事件提到端口 | docker 里还有同名容器抢着 `hostPort`；或两个服务 expose 了同一个网关端口 | ① `ss -ltnp \| grep :<端口>` 找占端口的进程；② `docker ps --format '{{.Names}}\t{{.Ports}}' \| grep <端口>` 看是不是迁移期的旧容器（停掉，保留镜像）；③ 撞网关端口时 `apply` 返回 `gateway.conflicts`，改其中一个的 `expose.gatewayPort` |
+| `apply` 返回 `403 {"error":"AI Infra 写能力未启用…"}` | 开关没开 | 按 6.2 打开并重建容器；先 `docker exec openlog env \| grep OPENLOG_K8S_INFRA` 确认到底传进去没有 |
+| `apply` 返回 `409`，错误里有「已存在且不属于 OpenLog 管理」 | 同名 Deployment/Service 是别人手工 `kubectl apply` 的，没有 `managedBy=openlog-infra` 标签 | 换一个服务名；真要接管就先人工确认，再 `kubectl -n inference label deploy <name> managedBy=openlog-infra` |
+| `dry-run` 步骤报 `forbidden` | 用的是只读那份 kubeconfig，或 `openlog-infra-creator` 那两段 Role 没 apply | 按 6.3 自检 `auth can-i create deployments -n inference`，然后换 operator kubeconfig 并重新 apply RBAC |
+
+### 6.10 删除定义与清理
+
+```bash
+curl -s -X DELETE "$API/services/qwen3-8b" -H "$AUTH" | jq .
+# 期望：{"ok":true,"removed":"inference/qwen3-8b","remaining":3,
+#        "note":"只删除了定义记录，集群里的工作负载未受影响"}
+```
+
+**只删定义记录，不删集群里的工作负载**：Pod、Deployment、Service 都还在跑。所以要下线一个服务，
+顺序是「先缩到 0，再删定义」：
+
+```bash
+# 1) 缩到 0。注意 replicas 只允许 1..8，replicas=0 会被定义校验拒掉，
+#    下线是 k8s 侧动作：要么 kubectl，要么页面「K8s 集群 → 工作负载 → 扩缩容」（需 OPENLOG_K8S_WRITE=1）
+kubectl -n inference scale deploy/qwen3-8b --replicas=0
+
+# 2) 确认 Pod 全没了
+kubectl -n inference get pods | grep qwen3-8b || echo '已无 Pod'
+
+# 3) 再删定义（定义里记得先留一份 qwen.json，删定义会连快照一起清掉）
+curl -s -X DELETE "$API/services/qwen3-8b" -H "$AUTH" | jq '{ok, removed}'
+
+# 4) 需要连对象一起清掉，手工删（本层不做这件事）
+kubectl -n inference delete deploy/qwen3-8b svc/qwen3-8b
+```
+
+测试命名空间用 `deploy/k8s/cluster/40-infra-test-namespace.yaml`（带 `ResourceQuota` + `LimitRange` +
+入站 `NetworkPolicy`）：配额限制 `nvidia.com/gpu: 2`、`gpumem: 16384`、`gpucores: 200`，
+清单写错、Pod 起不来、配额申请超量都只在 Namespace 边界内失败，不会波及 `inference` 里的真实业务。
+
+```bash
+kubectl apply -f deploy/k8s/cluster/40-infra-test-namespace.yaml
+kubectl -n infra-test describe resourcequota infra-test-quota | sed -n '1,12p'
+# 期望：nvidia.com/gpumem   Used 0 / Hard 16384
+#       nvidia.com/gpu      Used 0 / Hard 2
+```
+
+清理前记住两件不可撤销的事：删定义会带走它的快照（6.8）；删命名空间会带走里面所有对象。
+
+原理、估算公式、兼容矩阵见 [docs/INFRA.md](../docs/INFRA.md) 与 [docs/INFRA-COMPAT.md](../docs/INFRA-COMPAT.md)
+
+---
+
+## 7. 镜像归档与离线部署
 
 用途：长期回滚点、离线机器部署、避免旧镜像被自动清理后无法回退。
 
@@ -649,7 +1071,7 @@ openlog-deploy-<sha>-arm64.tar   # linux/arm64
 > CI 里的 `.github/workflows/release-package.yml` 保留作**备用通道**（手动触发，x86 runner 上构建；
 > arm64 需 QEMU，较慢且偶发失败），日常以 Mac 本地脚本为准。
 
-## 7. 数据备份与恢复
+## 8. 数据备份与恢复
 
 ### 自动备份
 
@@ -704,7 +1126,7 @@ cat data/.auth_token
 
 ---
 
-## 8. 回滚
+## 9. 回滚
 
 ### 自动回滚
 
@@ -745,7 +1167,7 @@ docker run -d --name openlog --network host --restart unless-stopped \
 
 ---
 
-## 9. 排障
+## 10. 排障
 
 ### 部署失败
 
@@ -822,7 +1244,7 @@ docker image prune -f
 
 ---
 
-## 10. 配置项全表
+## 11. 配置项全表
 
 `deploy/deploy.env`：
 
@@ -851,6 +1273,8 @@ docker image prune -f
 |---|---|
 | `OPENLOG_ENABLE_CONTAINER_EXEC` | 容器内命令面板（只读白名单），`1` 开启 |
 | `OPENLOG_ENABLE_REMOTE_EXEC` | REST 远程命令执行（外部脚本用，默认关） |
+| `OPENLOG_K8S_WRITE` | K8s 写操作（扩缩容 / 重启 / 删 Pod），`1` 开启；只认字面量 `1`（见 [第 5 节](#5-升级到新版本)） |
+| `OPENLOG_K8S_INFRA` | AI Infra 能力层（模型服务编排），`1` 开启；与 `OPENLOG_K8S_WRITE` 正交，只认字面量 `1`（见 [第 6 节](#6-ai-infra-能力层模型服务编排)） |
 | `OPENLOG_TOKEN` | 固定访问令牌；不设则自动生成到 `data/.auth_token` |
 | `OPENLOG_SECRET_KEY` | 凭据加密密钥，**设置后不要再取消**（单向迁移） |
 | `OPENLOG_ALLOWED_ORIGINS` | 浏览器来源白名单，逗号分隔 |
@@ -876,7 +1300,7 @@ docker image prune -f
 
 ---
 
-## 11. 上线检查清单
+## 12. 上线检查清单
 
 部署完逐项确认：
 

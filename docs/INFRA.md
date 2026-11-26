@@ -44,17 +44,17 @@ OpenLog 挂掉，Pod 照跑，只是暂时改不动配置。
 
 | # | 能力 | 内部实现 | HTTP | UI |
 |---|---|---|---|---|
-| 1 | 模型服务定义（校验 + 落库） | `validateModelService` | `GET/POST /api/infra/services`、`GET/PUT/DELETE /api/infra/services/:id` | `/infra` 表单 |
+| 1 | 模型服务定义（校验 + 落库） | `validateModelService` | `GET/POST /api/infra/services/:id/definition`、`GET/PUT/DELETE /api/infra/services/:id` | `/infra` 表单 |
 | 2 | 渲染清单 | `renderModelService` | 随 `preview` / `apply` 返回 | `/infra` 清单树 |
-| 3 | 护栏 + diff + 影响估算 | `checkGuard`、`renderDiff`、`summarizeImpact` | `POST /api/infra/services/:id/preview` | diff 面板 + 「会断多久」 |
+| 3 | 护栏 + diff + 影响估算 | `checkGuard`、`renderDiff`、`summarizeImpact` | `POST /api/infra/services/:id/definition/:id/preview` | diff 面板 + 「会断多久」 |
 | 4 | 干跑 | apiserver server-side dry-run（`dryRun=All`） | `apply` 内部的 `dry-run` 步骤 | 步骤进度 |
-| 5 | 执行 | `applyService` | `POST /api/infra/services/:id/apply` | 步骤进度条 |
+| 5 | 执行 | `applyService` | `POST /api/infra/services/:id/definition/:id/apply` | 步骤进度条 |
 | 6 | 校验 | `apply` 的 `rollout` + `allocation` + `endpoint` 三步 | 同上（`steps[]`）；服务视图的 `status.phase` / `status.readyReplicas` 随列表接口下发 | 步骤明细 + 每行状态徽标 |
-| 7 | 回滚 | `rollbackService` + 快照（`buildSnapshot`） | `POST /api/infra/services/:id/rollback` | 历史页「回滚到 vN」 |
+| 7 | 回滚 | `rollbackService` + 快照（`buildSnapshot`） | `POST /api/infra/services/:id/definition/:id/rollback` | 历史页「回滚到 vN」 |
 | 8 | 配额下发 | `renderAcceleratorResources` | 随渲染（`spec.containers[0].resources`） | 表单「显存 / 算力」 |
-| 9 | 容量预检 | `planPlacement` | `POST /api/infra/capacity` | 暂无 UI 入口（只有接口；`reasons` 直接可读） |
+| 9 | 容量预检 | `planPlacement` | `POST /api/infra/services/:id/preview（容量结果在 placement 字段）` | 暂无 UI 入口（只有接口；`reasons` 直接可读） |
 | 10 | 基准与推荐 | `runBenchmark`、`recommendQuota` | `POST /api/infra/bench` | 暂无 UI 入口（面板暂不触发；结果经接口取） |
-| 11 | 变更历史 | 快照 + 执行记录（落库见 §3.5） | `GET /api/infra/services/:id/history`，列表接口里也带 `history` | `/infra` 每行服务的历史区 + 「回滚到 vN」 |
+| 11 | 变更历史 | 快照 + 执行记录（落库见 §3.5） | `GET /api/infra/audit?serviceKey=ns/name`，列表接口里也带 `history` | `/infra` 每行服务的历史区 + 「回滚到 vN」 |
 | 12 | 网关自动注册 | `renderGatewayConfig` / `planGatewayUpdate` / `applyGatewayConfig` | 随 `apply` 返回 `gateway` 字段（无独立端点） | 无专用组件：`gateway` 字段目前只在 `apply` 响应里（面板未渲染） |
 | 13 | 变更审计 | `buildAuditEntry` / `createAuditStore` / `recordApply` | `GET /api/infra/audit`；`apply` 响应新增 `auditId` | `AuditList` 组件已就绪（未挂进面板）；`/infra` apply 提示里显示「审计 `aud_xxx`」 |
 | 14 | 弹性（HPA + 预算） | `renderHpa` / `validateAutoscale` / `autoscaleBudget` / `evaluateScaleDecision` | `GET /api/infra/clusters/:clusterId/autoscale-budget`；`preview` 的 `AUTOSCALE_BUDGET_EXCEEDED` | `AutoscaleFields` 组件已就绪（未挂进面板） |
@@ -65,8 +65,8 @@ OpenLog 挂掉，Pod 照跑，只是暂时改不动配置。
 > 会做 URL 编码）。下面 runbook 里的 `SERVICE_ID` 两种写法都行。
 >
 > 路由文件是 `server/routes/infra.js`（挂根、路径写全，与 `/api/k8s/*` 同一套约定）。
-> 面板已经在用的四条：`GET /api/infra/services`、`POST /api/infra/services/:id/preview`、
-> `POST /api/infra/services/:id/apply`、`POST /api/infra/services/:id/rollback`；
+> 面板已经在用的四条：`GET /api/infra/services`、`POST /api/infra/services/:id/definition/:id/preview`、
+> `POST /api/infra/services/:id/definition/:id/apply`、`POST /api/infra/services/:id/definition/:id/rollback`；
 > 定义 CRUD、容量预检、基准、历史单查是同一套约定下的接口，接线后按本表对齐路径。
 
 ### 1.1 模型服务定义（ModelService）
@@ -216,7 +216,7 @@ OpenLog 挂掉，Pod 照跑，只是暂时改不动配置。
 | 入口 | 触发 | 行为 |
 |---|---|---|
 | 自动回滚 | `apply` 任一步失败 | 用本次 `snapshot` 调 `rollbackService`，把对象 PATCH 回变更前；本次新建的对象 DELETE |
-| 手动回滚 | `POST /api/infra/services/:id/rollback {version}` | 取该版本的历史快照，走同一条 `rollbackService` |
+| 手动回滚 | `POST /api/infra/services/:id/definition/:id/rollback {version}` | 取该版本的历史快照，走同一条 `rollbackService` |
 
 行为细节（都写在 `steps` 里，`restore:<Kind>/<name>` 或 `delete:<Kind>/<name>`）：
 
@@ -386,7 +386,7 @@ OpenLog 挂掉，Pod 照跑，只是暂时改不动配置。
 | 端点 | 参数 | 返回 |
 |---|---|---|
 | `GET /api/infra/clusters/:clusterId/autoscale-budget` | query：`memoryMiB`、`coresPercent`（查不到服务定义时兜底） | `{budget: {maxReplicasByMemory, maxReplicasByCores, allowed, reason}, capacity: {perCardMemMiB, perCardCores}}` |
-| `POST /api/infra/services/:id/preview` | 定义里带 `autoscale.maxReplicas` | `violations[]` 里多出 `INVALID_AUTOSCALE`（字段级）与 `AUTOSCALE_BUDGET_EXCEEDED`（`field: autoscale.maxReplicas`） |
+| `POST /api/infra/services/:id/definition/:id/preview` | 定义里带 `autoscale.maxReplicas` | `violations[]` 里多出 `INVALID_AUTOSCALE`（字段级）与 `AUTOSCALE_BUDGET_EXCEEDED`（`field: autoscale.maxReplicas`） |
 
 预算算的是「**单卡**塞得下几个副本」，不是「集群总剩余够不够」：集群总剩余 40 GiB 而每张卡只剩
 10 GiB 时，8 GiB 的副本照样只放得下 1 个 —— 与 §1.9 的单卡语义同源。给不出单卡容量时
@@ -1353,6 +1353,24 @@ mock **不能**证明：真实 nginx 起不起来、reload 是否真的发生、
 三者并列才有意义：分配高而实测低 = 空转；实测高而 MFU 低 = 跑得慢（不是没活干）；
 `measured: false` = 没有数据，不是 0。
 
+## 6.5 基准门禁的真实语义（重要）
+
+门禁**默认是取证工具，不是硬闸门**：`apply` 路径不读 gate 结论，未通过也能执行。
+这样设计是为了故障时能先止血。
+
+需要强制时在 apply 请求体里带 `requireGate: true`：
+
+```bash
+curl -X POST "$BASE/api/infra/services/qwen/apply" -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"service": {...}, "requireGate": true}'
+# 没有基准记录 → 409 GATE_MISSING
+# 最近一次基准未通过 → 409 GATE_FAILED（带失败项）
+```
+
+前端门禁未通过时会拦一次点击并提示，但那只是省一次往返；**服务端 `requireGate` 才是真拦**。
+基准结论会存进定义的 `lastGate` 字段（pass / score / failures / at），apply 就看这个。
+
 ## 7. 模型足迹预检（回答「模型放得进配额吗」）
 
 容量预检（`capacity.js`）只回答**配额放得进卡**；它回答不了**模型放得进配额**。两者是不同问题，
@@ -1403,8 +1421,9 @@ required = (weights + engineOverhead + kvCache) / gpuMemoryUtilization
 
 | 口径 | 每 token | 32k 上下文 |
 |---|---|---|
-| 经验表（512B 参数档位） | 768 KiB | **768 MiB** |
-| 读 GGUF 精确计算 | 7.0 KiB | **219 MiB** |
+| 经验表（512B 参数 → 1 MiB/token 档） | 1024 KiB | **32768 MiB（32 GiB）** |
+| 读 GGUF 精确计算 | 6.86 KiB | **219.4 MiB** |
+| **差** | **149 倍** | **149 倍** |
 
 经验表错在三处：48 层里只有 12 层是全注意力（其余是 SSM/线性层，KV 不随 token 增长）、
 KV 头数 2 远小于注意力头数 24（GQA）、KV 精度 int8 只有 fp16 的一半。

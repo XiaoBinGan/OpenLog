@@ -698,7 +698,7 @@ export default function InfraPanel({ demo: demoProp, initialServiceId }: InfraPa
           )}
           {gate && !gate.pass && preview && (
             <p data-testid="infra-gate-block" className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-1.5 text-[11px] text-red-300">
-              基准门禁未通过，执行已禁用
+              基准门禁未通过 —— 默认仍可执行（门禁是取证工具）；需要强制时在 apply 请求里带 requireGate: true
             </p>
           )}
 

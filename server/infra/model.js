@@ -503,15 +503,20 @@ function validateResources(input, value, limits, fail) {
   }
 }
 
-/** replicas：1..maxReplicas（默认 8）。 */
+/**
+ * replicas：0..maxReplicas（默认 8）。
+ *
+ * 0 是合法值且很重要 —— 它是**下线服务**的唯一干净方式：
+ * 把副本缩到 0 比删定义安全（定义还在，随时能再拉起来），也比直接删 Deployment 可回滚。
+ */
 function validateReplicas(input, value, limits, fail) {
   if (input === undefined || input === null) return;
   if (!Number.isInteger(input)) {
-    fail('replicas', `replicas 必须是 1..${limits.maxReplicas} 的整数（收到 ${quote(input)}）`);
+    fail('replicas', `replicas 必须是 0..${limits.maxReplicas} 的整数（0 表示下线；收到 ${quote(input)}）`);
     return;
   }
-  if (input < 1 || input > limits.maxReplicas) {
-    fail('replicas', `replicas 必须是 1..${limits.maxReplicas} 的整数（收到 ${input}），超过 ${limits.maxReplicas} 副本请拆成多个服务`);
+  if (input < 0 || input > limits.maxReplicas) {
+    fail('replicas', `replicas 必须是 0..${limits.maxReplicas} 的整数（收到 ${input}），超过 ${limits.maxReplicas} 副本请拆成多个服务`);
     return;
   }
   value.replicas = input;

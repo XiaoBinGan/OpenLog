@@ -52,18 +52,50 @@
 
 ---
 
-## 未发布
+## v1.6.0 — 2026-11-26
+
+AI Infra 从「能定义、能执行」补到「**能判断放不放得下**」：模型足迹预检、KV 精确计算、实测回填。
 
 ### 新增
 
-- `npm run verify`：一条命令跑完 CI 的全部四项检查（lint server → lint client → build → test），
-  顺序与 `.github/workflows/ci.yml` 完全一致，失败即停。支持 `--fast` / `--only=` / `--quiet`。
+- **模型足迹预检**（`server/infra/footprint.js`）：回答「模型放得进配额吗」——容量预检只回答
+  「配额放得进卡」，两者是不同问题。按 `(权重 + 引擎开销 + KV) / gpu-memory-utilization` 估算，
+  三档结论 `fits` / `tight`（放行但解释）/ `insufficient`（硬拦，给建议配额）。
+  真机对账：同一个 32B-AWQ 模型，21504 MiB 与 23284 MiB 两档必须判"放不下"（实测分别 CUDA OOM 与
+  KV cache 为负），28672 MiB 判"放得下"（实测进程占用 25076 MiB，估算误差 <4%）。
+- **KV cache 精确计算**（`server/infra/model-spec.js`）：从 GGUF 头部 / HF `config.json` 读层数、
+  KV 头数、head_dim、混合架构的全注意力层数、KV 压缩比与精度，按公式算而不是查经验表。
+  真机 strata 模型：经验值 768 MiB vs 精确值 219 MiB（混合架构 48 层里只有 12 层全注意力 + GQA + int8）。
+- **实测显存回填**：卸载型引擎（strata `--expert-cache`、llama.cpp mmap、vLLM `--cpu-offload-gb`）
+  磁盘文件 ≠ 显存占用（63GB 文件实测只占 13.3 GiB）。跑一次基准把实测值回填成权重口径，
+  之后预检的 `footprint.basis` 为 `measured`。
+- **只保存定义不下发** / **删除定义**：前者让 bench 回填与"先想清楚再下发"可行；后者只删记录不动集群。
+- `npm run verify`：一条命令跑完 CI 的四项检查，顺序一致、失败即停（支持 `--fast` / `--only=` / `--quiet`）。
 
-### 修复
+### 修复（真机验证与 CI 暴露）
 
-- AI Infra 网关注册只接受「集群里真实存在且带 `managedBy=openlog-infra`」的服务 ——
-  防止 settings 里的残留/草稿定义把不存在的 upstream 写进 nginx（那会导致网关 CrashLoop）。
-- 删除服务定义接口：只删记录不动集群，顺带清快照。
+- 网关注册只接受「集群里真实存在且带 `managedBy=openlog-infra`」的服务 —— 防止残留定义把不存在的
+  upstream 写进 nginx（那会导致网关 CrashLoop，本项目踩过 5916 条告警）。
+- GGUF 解析三处：bool 类型（7）读取缺失、头部 512KB 不够（改 4MB + 自动翻倍）、数组未完整消费导致错位。
+- 回填把压测输入长度当成服务上下文（64 tokens ≠ 引擎的 32768），会让足迹判断严重偏乐观。
+- preview 用请求体而非已存定义，导致回填了却看不到效果。
+- rollout 超时固定 120s 会误杀大模型（32B 冷启动实测 197s）→ 按 `model.sizeMiB` 推导。
+- **门禁默认不拦 apply**（取证工具），但 UI 曾写「执行已禁用」而按钮其实可用 → 现在服务端支持
+  `requireGate: true` 显式强制（无基准记录 409 `GATE_MISSING`、未通过 409 `GATE_FAILED`），
+  前端拦截与文案也改成如实描述。
+- **回滚忽略 `version`**：传 `version: 3` 实际只回退一步 → 现在按「往回第 N 份快照」取，
+  越界返回 409 `SNAPSHOT_OUT_OF_RANGE`（不夹取，避免"成功但没到目标版本"）。
+- **`replicas=0` 被校验拒绝** → 现在 0 合法（下线服务的干净方式）。
+- `deploy/deploy.env.example` 补 `OPENLOG_K8S_WRITE` / `OPENLOG_K8S_INFRA` 两行。
+- 白名单丢字段已踩四次（`autoscale` / `cache` / `sizeMiB`+`specPath` / `fileSizeMiB`）→ 加白名单完整性守卫测试。
+
+### 真机验证（243，infra-test，业务零影响）
+
+```
+真实 32B vLLM   应用 7 步全绿 197s，配额实证 28672,40，推理回 "2"
+基准对拍        TTFT p50 5.8ms、23.79 tok/s；推荐显存 +11% 需扩容、算力 -50% 可回收
+实测回填        13330 MiB 回填后，同一配置从 insufficient（需 65743）翻转为 tight（需 13330）
+```
 
 ## v1.5.0 — 2026-11-26
 

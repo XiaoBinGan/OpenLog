@@ -92,7 +92,7 @@ html[lang="en"] .deck-caption span{overflow-wrap:anywhere}
         <h1><span class="nw" data-i18n="hero_h1a">把运维的「看」</span><span class="nw" data-i18n="hero_h1b">和「动手」</span><br /><em data-i18n="hero_h1c">放进同一个面板</em></h1>
         <p class="lead" data-i18n="hero_lead">
           日志分析、GPU / MFU 监控、Docker 管理、远程服务器运维、AI 运维助手，
-          收进一个 Web 面板。11 个页面共享同一套鉴权、同一份数据、同一套告警通道。
+          收进一个 Web 面板。13 个页面共享同一套鉴权、同一份数据、同一套告警通道。
         </p>
         <div class="hero-cta">
           <a class="btn btn-primary" href="https://github.com/XiaoBinGan/OpenLog" target="_blank" rel="noopener" data-i18n-html="hero_cta1">查看源码 <span aria-hidden="true">→</span></a>
@@ -336,7 +336,7 @@ html[lang="en"] .deck-caption span{overflow-wrap:anywhere}
       <div class="stat reveal"><b>11</b><span data-i18n="n_pages">个功能页面</span></div>
       <div class="stat reveal"><b>7</b><span data-i18n="n_engines">种推理引擎适配</span></div>
       <div class="stat reveal"><b>1000</b><span data-i18n="n_loadtest">台压测通过</span></div>
-      <div class="stat reveal"><b>625</b><span data-i18n="n_tests">项自动化测试</span></div>
+      <div class="stat reveal"><b>4000+</b><span data-i18n="n_tests">项自动化测试</span></div>
       <div class="stat reveal"><b>3</b><span data-i18n="n_dbs">种数据库后端</span></div>
       <div class="stat reveal"><b>1<i>ms</i></b><span data-i18n="n_pg_latency">PG 接口延迟</span></div>
     </div>
@@ -682,8 +682,8 @@ html[lang="en"] .deck-caption span{overflow-wrap:anywhere}
     <div class="wrap">
       <div class="sec-head reveal">
         <p class="kicker">Product</p>
-        <h2 data-i18n="prod_h2">12 个页面，一套底座</h2>
-        <p class="sec-sub" data-i18n="prod_sub">所有页面共享同一套鉴权、同一份数据、同一套告警通道 —— 不是把 11 个工具拼在一起。</p>
+        <h2 data-i18n="prod_h2">13 个页面，一套底座</h2>
+        <p class="sec-sub" data-i18n="prod_sub">所有页面共享同一套鉴权、同一份数据、同一套告警通道 —— 不是把 13 个工具拼在一起。</p>
       </div>
       <div class="pages-grid">
         <article class="page-card reveal"><h3 data-i18n="prod1_h">仪表盘</h3><p data-i18n="prod1_p">全局总览：告警、机器、算力、容器</p></article>
@@ -698,13 +698,41 @@ html[lang="en"] .deck-caption span{overflow-wrap:anywhere}
         <article class="page-card reveal"><h3 data-i18n="prod10_h">技能管理</h3><p data-i18n="prod10_p">把排障流程沉淀成可复用技能</p></article>
         <article class="page-card reveal"><h3 data-i18n="prod11_h">设置</h3><p data-i18n="prod11_p">模型 / 告警 / 巡检 / 数据库</p></article>
         <article class="page-card reveal"><h3 data-i18n="prod12_h">K8s 集群</h3><p data-i18n="prod12_p">只读接入 · 节点/Pod/事件 · HAMi vGPU 分配 vs 实测</p></article>
+        <article class="page-card reveal"><h3 data-i18n="prod13_h">AI Infra</h3><p data-i18n="prod13_p">模型服务定义 · 容量/足迹预检 · 七步执行与回滚</p></article>
         <article class="page-card page-card-cta reveal">
           <h3 data-i18n="prod_cta_h">自托管部署</h3>
           <p data-i18n="prod_cta_p">单端口部署，浏览器打开即用</p>
           <a class="link" href="https://github.com/XiaoBinGan/OpenLog" target="_blank" rel="noopener">openlog.example.com:3001 →</a>
         </article>
       </div>
+    </div>
+  </section>
 
+  <!-- ========== AI Infra 能力层 ========== -->
+  <section id="infra">
+    <div class="wrap">
+      <div class="sec-head reveal">
+        <p class="kicker">AI Infra</p>
+        <h2 data-i18n="infra_h">AI Infra — 让模型真的跑起来</h2>
+        <p class="sec-sub" data-i18n="infra_sub">这一层把「模型 + 引擎 + vGPU 配额 + 副本」变成 inference / infra-test 里真在跑的服务：先预检、先出 diff、每一步都能回滚。</p>
+      </div>
+      <div class="pages-grid">
+        <article class="page-card reveal"><h3 data-i18n="infra_pre_h">三项预检</h3><p data-i18n="infra_pre_p">配额放得进卡？模型放得进配额？基准过得了门禁？前两个在 preview 里直接拦下；第三个目前只出报告，不拦 apply。</p></article>
+        <article class="page-card reveal"><h3 data-i18n="infra_steps_h">七步执行</h3><p data-i18n="infra_steps_p">护栏 → 干跑 → 快照 → 应用 → 滚动 → 配额实证 → 端点；任一步失败自动回滚。</p></article>
+        <article class="page-card reveal"><h3 data-i18n="infra_kv_h">KV 精确计算</h3><p data-i18n="infra_kv_p">读模型元数据（GGUF / config.json）算 KV，而不是查经验表 —— 混合架构 + GQA + int8 KV 的模型差过 80 倍。</p></article>
+        <article class="page-card reveal"><h3 data-i18n="infra_measured_h">实测优先</h3><p data-i18n="infra_measured_p">卸载型引擎（expert offload / mmap）磁盘文件 ≠ 显存占用，跑一次基准把实测值回填成权重口径。</p></article>
+      </div>
+      <article class="page-card page-card-cta reveal">
+        <h3 data-i18n="infra_scope_h">改动边界</h3>
+        <p data-i18n="infra_scope_p">写能力默认关闭（OPENLOG_K8S_INFRA=1 才启用）· 只动 inference / infra-test · 只改带 managedBy=openlog-infra 的对象</p>
+        <a class="link" href="https://github.com/XiaoBinGan/OpenLog/blob/main/docs/INFRA.md" target="_blank" rel="noopener">docs/INFRA.md →</a>
+      </article>
+    </div>
+  </section>
+
+  <!-- ========== 截图墙 ========== -->
+  <section id="shots">
+    <div class="wrap">
     <!-- 截图墙：每张卡片点开看大图 -->
     <div class="sec-head reveal" id="screenshots">
       <p class="kicker">Screenshots</p>
@@ -740,7 +768,7 @@ html[lang="en"] .deck-caption span{overflow-wrap:anywhere}
     <div class="wrap">
       <div class="sec-head reveal">
         <p class="kicker">Capability</p>
-        <h2 data-i18n="feat_h2">六个真正「能动手」的能力</h2>
+        <h2 data-i18n="feat_h2">七个真正「能动手」的能力</h2>
         <p class="sec-sub" data-i18n="feat_sub">每个能力都能落到一次具体操作上，不只是给个图表看。</p>
       </div>
       <div class="feat-grid">
@@ -929,17 +957,17 @@ html[lang="en"] .deck-caption span{overflow-wrap:anywhere}
         <h2 data-i18n="q_h2">能跑，也要能改</h2>
         <p class="sec-sub" data-i18n="q_sub">每一次提交都要过测试、Lint、构建三道闸，数据库迁移与 bug 修复都带回归测试。</p>
         <ul class="gates">
-          <li data-i18n-html="q_l1"><b>625</b> 个测试通过（2 skipped）· 31 个测试文件</li>
+          <li data-i18n-html="q_l1"><b>4000+</b> 个测试通过 · 174 个测试文件</li>
           <li data-i18n-html="q_l2"><b>npm run lint:all</b>：0 error</li>
           <li data-i18n-html="q_l3"><b>npm run build</b>：前端构建通过后才发布</li>
-          <li data-i18n-html="q_l4">后端约 <b>17k</b> 行、前端约 <b>13k</b> 行，模块边界清晰</li>
+          <li data-i18n-html="q_l4">后端约 <b>99k</b> 行、前端约 <b>41k</b> 行，模块边界清晰</li>
         </ul>
       </div>
       <div class="code-card reveal" aria-hidden="true">
         <div class="code-head"><span class="lights"><i></i><i></i><i></i></span><em>release checklist</em></div>
         <div class="code-body">
           <span class="c-dim" data-i18n="code_dim1"># 每次上线前</span>
-          <span class="c-line"><b>$</b> npm test              <i class="ok">625 passed</i></span>
+          <span class="c-line"><b>$</b> npm test              <i class="ok">4000+ passed</i></span>
           <span class="c-line"><b>$</b> npm run lint:all      <i class="ok">0 error</i></span>
           <span class="c-line"><b>$</b> npm run build         <i class="ok">built in 6.2s</i></span>
           <span class="c-line"><b>$</b> npm run db:info       <i class="ok">postgres · 1ms</i></span>

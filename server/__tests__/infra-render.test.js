@@ -390,11 +390,11 @@ describe('validateModelService：反例（resources / replicas / ports / health 
     expect(result.errors.find((item) => item.field === 'resources.coresPercent').message).toContain('0..100');
   });
 
-  it('replicas 越界（0 与 12）被拒，并提示拆服务', () => {
+  it('replicas 越界（-1 与 12）被拒，并提示拆服务（0 合法 = 下线）', () => {
     const zero = validateModelService(svc({ replicas: 0 }));
-    expect(zero.ok).toBe(false);
-    expect(zero.errors[0].field).toBe('replicas');
-
+    // 0 现在是合法值：它是「下线服务」的唯一干净方式
+    expect(zero.ok).toBe(true);
+    expect(zero.value.replicas).toBe(0);
     const tooMany = validateModelService(svc({ replicas: 12 }));
     expect(tooMany.ok).toBe(false);
     expect(tooMany.errors[0].message).toContain('请拆成多个服务');
@@ -468,7 +468,7 @@ describe('validateModelService：反例（resources / replicas / ports / health 
       namespace: 'kube-system',
       name: 'Bad_Name',
       resources: { accelerators: 99 },
-      replicas: 0,
+      replicas: -1,
     }));
     expect(result.ok).toBe(false);
     expect(result.errors.length).toBeGreaterThanOrEqual(4);

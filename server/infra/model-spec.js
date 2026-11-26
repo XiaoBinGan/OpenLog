@@ -3,10 +3,10 @@
  *
  * 为什么要它（实测数据说话）：
  *   `footprint.js` 里 KV 用的是"按参数量档位查经验表"（30B 级 ≈ 256 KiB/token）。
- *   拿真机的 strata 模型（Qwen3.8-Flash-Next，GGUF 元数据）对账，误差是 **80 倍**：
- *     经验值    256 KiB/token × 32768 = 8 GiB
- *     真算      12 层全注意力 × 2 KV头 × (256+256) B × int8 ÷ 压缩4 ≈ 3 KiB/token
- *               → 32768 × 3 KiB ≈ 96 MiB
+ *   拿真机的 strata 模型（Qwen3.8-Flash-Next，GGUF 元数据）对账，误差是 **149 倍**：
+ *     经验值    1024 KiB/token × 32768 = 32 GiB（512B 参数走最高档）
+ *     真算      12 层全注意力 × 2 KV头 × (256+256) B × int8 ÷ 1.75 ≈ 6.86 KiB/token
+ *               → 32768 × 6.86 KiB ≈ 219 MiB
  *   原因是三条都被经验表忽略了：
  *     ① 混合架构：48 层里只有 12 层是全注意力，其余是 SSM/线性层（KV 不随 token 增长）
  *     ② GQA/MQA：KV 头数（2）远小于注意力头数（24）
