@@ -52,6 +52,15 @@ const ASSISTANT_TOOLS = [
   { type: 'function', function: { name: 'local_system_stats', description: '本机（OpenLog 所在机）系统状态', parameters: { type: 'object', properties: {} } } },
   { type: 'function', function: { name: 'local_log_files', description: '列本机日志文件', parameters: { type: 'object', properties: {} } } },
   { type: 'function', function: { name: 'local_read_log', description: '读本机日志文件', parameters: { type: 'object', properties: { filePath: { type: 'string' }, lines: { type: 'number', description: '行数，默认 200' } }, required: ['filePath'] } } },
+  // ── Kubernetes / AI Infra（只读，执行器在 server/index.js）──
+  // 注意：这几个工具的 **schema 必须在这里**，不能放进 agent-tools.js 的 AGENT_TOOLS ——
+  // 那个数组会被 AGENT_TOOL_NAMES 收走并在 index.js 里抢先分发给 agent-tools 执行器，
+  // 而 agent-tools 不认识它们，会返回「未知 agent 工具」。之前踩过这个坑：
+  // 工具出现、模型调用、结果恒为错误，表现为"加了工具但一句答案都出不来"。
+  { type: 'function', function: { name: 'k8s_clusters', description: '列出 OpenLog 已接入的 Kubernetes 集群（id/名称/apiserver/启用状态）。问集群相关问题先调这个；不要用 remote_exec 跑 kubectl。', parameters: { type: 'object', properties: {} } } },
+  { type: 'function', function: { name: 'k8s_overview', description: '集群总览：节点（就绪/版本/内部IP/GPU 可分配）、Pod 计数、未就绪工作负载、Warning 事件数。回答"几个节点""有没有异常"用这个，clusterId 可省略。不要用 SSH 或 docker 工具查集群。', parameters: { type: 'object', properties: { clusterId: { type: 'string', description: '集群 id；省略则用第一个启用的集群' } } } } },
+  { type: 'function', function: { name: 'k8s_pods', description: 'Pod 明细（阶段/就绪/重启次数/节点/vGPU 配额）。查 CrashLoopBackOff / OOMKilled / 反复重启用这个。', parameters: { type: 'object', properties: { clusterId: { type: 'string' }, namespace: { type: 'string' }, onlyUnhealthy: { type: 'boolean', description: 'true 时只返回未就绪/重启过/非 Running 的 Pod' }, limit: { type: 'number', description: '最多返回多少条，默认 30' } } } } },
+  { type: 'function', function: { name: 'infra_services', description: 'AI Infra 里定义的模型服务：引擎、vGPU 配额、实测显存（measuredMemMiB）、最近门禁结论。回答"哪个服务配额给多了""谁占着卡"用这个。', parameters: { type: 'object', properties: {} } } },
   // ── 远程代码/配置读写（错误定位 + 修复）──
   ...AGENT_TOOLS,
   // ── 时序库（PromQL）──
