@@ -1270,6 +1270,43 @@ export function createInfraRouter({ ensureSettings, saveSettings, applyOptions =
     res.json({ ok: true, service: saved, note: '已保存定义（未下发集群）' });
   });
 
+  /* ── 删除定义（只删记录，不动集群） ── */
+  /**
+   * 明确语义：删的是 settings 里的**定义**，不删集群里的工作负载。
+   * 想下线服务请先 apply 一份 replicas=0，或走 k8s 侧操作 —— 避免"删了个定义，服务还在跑"
+   * 这种更难排查的半状态。
+   */
+  router.delete(`${PREFIX}/services/:id`, async (req, res) => {
+    if (isDemoMode()) {
+      res.status(409).json({ error: '演示模式不修改定义', demo: true });
+      return;
+    }
+    if (typeof saveSettings !== 'function') {
+      res.status(503).json({ error: '当前实例不支持修改定义（缺少 saveSettings）' });
+      return;
+    }
+    const requested = String(req.params.id || '').trim();
+    const settings = ensureSettings();
+    const all = listServices(settings);
+    const target = findService(settings, requested);
+    if (!target) {
+      res.status(404).json({ error: `没有这个服务定义：${requested}` });
+      return;
+    }
+    const remaining = all.filter((s) => s.id !== target.id && `${s.namespace}/${s.name}` !== `${target.namespace}/${target.name}`);
+    saveSettings({ ...settings, infraServices: remaining });
+    // 顺带清掉它的快照（否则回滚历史会指向一个不存在的服务）
+    try {
+      const snaps = loadSnapshots();
+      const key = `${target.namespace}/${target.name}`;
+      if (snaps[key]) {
+        delete snaps[key];
+        setKv(SNAPSHOT_KV_KEY, snaps);
+      }
+    } catch { /* 快照清理失败不影响删除本身 */ }
+    res.json({ ok: true, removed: `${target.namespace}/${target.name}`, remaining: remaining.length, note: '只删除了定义记录，集群里的工作负载未受影响' });
+  });
+
   /* ── 审计查询（读，不受开关限制） ── */
   router.get(`${PREFIX}/audit`, async (req, res) => {
     const mod = await loadModule('audit');

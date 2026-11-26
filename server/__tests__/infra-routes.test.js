@@ -740,3 +740,40 @@ describe('settings 里的残留定义即使带 expose 也不能进网关', () =>
     expect(written).not.toContain('someone-else');
   });
 });
+
+/* ────────── 删除定义（只删记录，不动集群） ────────── */
+describe('删除服务定义', () => {
+  it('删掉后列表里不再出现，且零集群调用', async () => {
+    await post('/api/infra/services/qwen-test/definition', { service: service() });
+    const res = await fetch(`${base}/api/infra/services/qwen-test`, { method: 'DELETE' });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.ok).toBe(true);
+    expect(body.removed).toBe('infra-test/qwen-test');
+    expect(body.note).toContain('集群里的工作负载未受影响');
+    expect(h.getJsonCalls).toEqual([]);
+
+    const list = await fetch(`${base}/api/infra/services`);
+    const data = await list.json();
+    expect((data.services || []).some((s) => s.name === 'qwen-test')).toBe(false);
+  });
+
+  it('删不存在的 → 404', async () => {
+    const res = await fetch(`${base}/api/infra/services/nope`, { method: 'DELETE' });
+    expect(res.status).toBe(404);
+  });
+
+  it('顺带清掉快照（否则回滚历史指向不存在的服务）', async () => {
+    await post('/api/infra/services/qwen-test/definition', { service: service() });
+    h.kv.infra_snapshots = { 'infra-test/qwen-test': [{ at: 'x', snapshot: { objects: [] } }] };
+    const res = await fetch(`${base}/api/infra/services/qwen-test`, { method: 'DELETE' });
+    expect(res.status).toBe(200);
+    expect(h.kv.infra_snapshots['infra-test/qwen-test']).toBeUndefined();
+  });
+
+  it('演示模式 → 409', async () => {
+    process.env.OPENLOG_DEMO = '1';
+    const res = await fetch(`${base}/api/infra/services/x`, { method: 'DELETE' });
+    expect(res.status).toBe(409);
+  });
+});
