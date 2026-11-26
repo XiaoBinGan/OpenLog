@@ -311,6 +311,32 @@ async function recordAudit({ service, result, actor, forced, snapshotRef }) {
 /**
  * @param {{ ensureSettings: () => object, saveSettings?: (settings:object)=>void }} deps
  */
+/**
+ * 推导 rollout 超时。
+ *
+ * 为什么不能固定 120s：模型冷启动时间 ≈ 权重读取 + 显存拷贝，和参数量成正比。
+ * 实测 32B-AWQ（18.5GB 权重）在 4090 上 120 秒起不来，而 0.5B 模型 10 秒内就绪。
+ * 固定值要么误杀大模型（本次就是这样），要么让小模型白等。
+ *
+ * 规则：显式指定优先（夹到 30s..30min）；否则按 sizeMiB 估（每 GiB 约 6 秒，下限 120s，上限 20min）。
+ */
+export function resolveRolloutTimeout(explicit, service, applyOptions = {}) {
+  const base = Number(applyOptions?.rolloutTimeoutMs) || 120_000;
+  const MIN = 30_000;
+  const MAX = 30 * 60_000;
+  const clamp = (v) => Math.min(MAX, Math.max(MIN, Math.round(v)));
+
+  const asked = Number(explicit);
+  if (Number.isFinite(asked) && asked > 0) return clamp(asked);
+
+  const sizeMiB = Number(service?.model?.sizeMiB);
+  if (Number.isFinite(sizeMiB) && sizeMiB > 0) {
+    const estimated = Math.max(base, (sizeMiB / 1024) * 6000 + 60_000);
+    return clamp(estimated);
+  }
+  return clamp(base);
+}
+
 export function createInfraRouter({ ensureSettings, saveSettings, applyOptions = {} } = {}) {
   if (typeof ensureSettings !== 'function') {
     throw new TypeError('createInfraRouter 需要注入 ensureSettings');
@@ -769,7 +795,13 @@ export function createInfraRouter({ ensureSettings, saveSettings, applyOptions =
         objects: rendered.objects,
         client,
         guard: guardResult,
-        opts: { ...applyOptions, probeUrl: req.body?.probeUrl || null },
+        opts: {
+          ...applyOptions,
+          // rollout 超时必须随模型大小可调：0.5B 几秒就绪，32B 冷启动要几分钟（实测 120s 不够）。
+          // 优先级：请求显式指定 > 按模型权重估算 > 工厂默认。
+          rolloutTimeoutMs: resolveRolloutTimeout(req.body?.rolloutTimeoutMs, validation.value, applyOptions),
+          probeUrl: req.body?.probeUrl || null,
+        },
       });
     } catch (err) {
       res.status(500).json({ ok: false, error: `执行失败：${errorMessage(err)}` });

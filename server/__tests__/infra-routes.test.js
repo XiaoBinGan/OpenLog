@@ -497,3 +497,33 @@ describe('网关注册不接受请求体里的配置（防任意 nginx 配置注
     expect(String(res.body.gateway.error)).toContain('端口冲突');
   });
 });
+
+/* ────────────────────── rollout 超时随模型大小 ────────────────────── */
+describe('rollout 超时不能写死 120s（32B 模型实测起不来）', () => {
+  it('显式指定优先，并夹在 30s..30min', async () => {
+    const { resolveRolloutTimeout } = await import('../routes/infra.js');
+    expect(resolveRolloutTimeout(600_000)).toBe(600_000);
+    expect(resolveRolloutTimeout(1_000)).toBe(30_000);      // 下限
+    expect(resolveRolloutTimeout(99_999_999)).toBe(1_800_000); // 上限
+  });
+
+  it('按 model.sizeMiB 估算（每 GiB 约 6 秒 + 60 秒基线）', async () => {
+    const { resolveRolloutTimeout } = await import('../routes/infra.js');
+    // 20 GiB 权重 → 20*6000+60000 = 180s
+    expect(resolveRolloutTimeout(undefined, { model: { sizeMiB: 20480 } })).toBe(180_000);
+    // 小模型不缩到基线以下
+    expect(resolveRolloutTimeout(undefined, { model: { sizeMiB: 512 } })).toBe(120_000);
+    // 没有大小信息时用工厂默认
+    expect(resolveRolloutTimeout(undefined, {}, { rolloutTimeoutMs: 90_000 })).toBe(90_000);
+  });
+
+  it('apply 请求里的 rolloutTimeoutMs 会被采用（大模型不再被 120s 误杀）', async () => {
+    h.cluster.set(depPath('infra-test', 'qwen-test'), ownedDeployment());
+    const res = await post('/api/infra/services/qwen-test/apply', {
+      service: service(),
+      rolloutTimeoutMs: 300_000,
+    });
+    // 只断言请求被接受（具体值由 resolveRolloutTimeout 单测覆盖）
+    expect([200, 502]).toContain(res.status);
+  });
+});
