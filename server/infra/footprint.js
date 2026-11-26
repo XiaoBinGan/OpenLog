@@ -170,6 +170,14 @@ export function estimateModelFootprint({ model, engine, resources, replicas, spe
     warnings.push(
       `未提供量化方式，权重按 fp16 推算 ${weightsMiB} MiB —— 若实际是 4bit 量化，真实值约为其 1/4，结论会偏保守`,
     );
+  } else if (Number.isFinite(Number(model?.fileSizeMiB)) && Number(model.fileSizeMiB) > 0) {
+    // 有文件大小但没有显式 sizeMiB：卸载型引擎可用，但必须说清这是"文件大小"而不是"显存占用"
+    weightsMiB = round1(Number(model.fileSizeMiB));
+    warnings.push(
+      `权重按文件大小 ${weightsMiB} MiB 估算（没有 model.sizeMiB）。`
+      + '对卸载型引擎（strata 的 --expert-cache、llama.cpp mmap、vLLM --cpu-offload-gb）这不等于显存占用，'
+      + '实测可能只有文件大小的 1/4~1/5；请以 bench 实测显存为准。',
+    );
   } else {
     warnings.push('既没有 model.sizeMiB 也没有 parametersB，无法估算权重占用：请至少填一个，否则"放不下"的判断无从做起');
   }

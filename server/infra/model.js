@@ -283,6 +283,22 @@ function validateModel(input, value, limits, fail) {
   // 模型足迹估算需要的三个字段（sizeMiB / parametersB / maxConcurrency）。
   // 注意：白名单里没有的键会被静默丢弃 —— autoscale 与 cache 已经因此丢过一次，
   // 表现是"上层分支永远进不去"。这里必须显式接住。
+  // specPath：宿主机上的模型路径（读 GGUF 头 / config.json 用）。
+  // 为什么和 path 分开：path 是**容器内**路径（可能被 volumeMount 映射过），
+  // SSH 读元数据是在宿主机上执行，两者经常不一致（strata: 容器 /data/... ↔ 宿主 /workspace/agent/models/...）。
+  const specPath = input.specPath;
+  if (specPath !== undefined && specPath !== null) {
+    if (typeof specPath !== 'string' || !specPath.trim()) {
+      fail('model.specPath', 'model.specPath 必须是非空字符串（宿主机上的模型文件/目录绝对路径）');
+    } else if (specPath.includes('..')) {
+      fail('model.specPath', 'model.specPath 不允许包含 ..');
+    } else if (!specPath.startsWith('/')) {
+      fail('model.specPath', `model.specPath 必须是绝对路径，收到 ${quote(specPath)}`);
+    } else {
+      value.model.specPath = specPath.trim();
+    }
+  }
+
   const sizeMiB = input.sizeMiB;
   if (sizeMiB !== undefined && sizeMiB !== null) {
     if (!Number.isFinite(Number(sizeMiB)) || Number(sizeMiB) <= 0) {
