@@ -131,7 +131,7 @@ export function kvBytesPerToken(paramsB) {
  *   reasons:string[], warnings:string[], assumption:string
  * }}
  */
-export function estimateModelFootprint({ model, engine, resources, replicas, spec, kvBudget } = {}) {
+export function estimateModelFootprint({ model, engine, resources, replicas, spec, kvBudget, measured } = {}) {
   const warnings = [];
   const reasons = [];
   const m = model && typeof model === 'object' ? model : {};
@@ -139,6 +139,109 @@ export function estimateModelFootprint({ model, engine, resources, replicas, spe
   const engineType = typeof engine?.type === 'string' && engine.type ? engine.type : 'vllm';
   const overheadMiB = ENGINE_OVERHEAD_MIB[engineType] ?? ENGINE_OVERHEAD_MIB.vllm;
   const quotaMiB = Number.isFinite(Number(r.memoryMiB)) ? Number(r.memoryMiB) : 0;
+
+  // ── 0. 实测优先 ──
+  // 卸载型引擎（strata --expert-cache、llama.cpp mmap、vLLM --cpu-offload-gb）下
+  // 「文件大小」「参数量×位宽」都不是显存占用：strata 那个 63GB 文件只占 13.3 GiB。
+  // 所以只要有实测值，就以实测为准，其余估算全部退居参考。
+  const measuredMemMiB = Number(
+    measured?.memMiB ?? measured?.measuredMemMiB ?? m.measuredMemMiB,
+  );
+  if (Number.isFinite(measuredMemMiB) && measuredMemMiB > 0) {
+    const measuredCtx = Number(measured?.contextLength ?? m.measuredContextLength);
+    const measuredConc = Number(measured?.maxConcurrency ?? m.measuredMaxConcurrency);
+    const measuredAt = measured?.at ?? m.measuredAt ?? null;
+    const quotaMeasured = Number.isFinite(Number(r.memoryMiB)) ? Number(r.memoryMiB) : 0;
+    const headroomMeasured = quotaMeasured > 0 ? round1(quotaMeasured - measuredMemMiB) : null;
+
+    reasons.push(
+      `以实测为准：该配置实测显存峰值 ${round1(measuredMemMiB)} MiB`
+      + (measuredCtx > 0 ? `（上下文 ${measuredCtx} tokens` : '')
+      + (measuredConc > 0 ? ` × ${measuredConc} 路并发）` : measuredCtx > 0 ? '）' : '')
+      + (measuredAt ? `，测量时间 ${String(measuredAt).slice(0, 19)}` : ''),
+    );
+
+    // 条件不一致时实测值可能不适用（并发/上下文变了，KV 部分会变）
+    const ctxNow = Number.isFinite(Number(m.contextLength)) && Number(m.contextLength) > 0 ? Number(m.contextLength) : null;
+    const concNow = Number.isFinite(Number(m.maxConcurrency)) && Number(m.maxConcurrency) > 0 ? Number(m.maxConcurrency) : null;
+    let conditionsDiffer = false;
+    if (measuredCtx > 0 && ctxNow && measuredCtx !== ctxNow) {
+      conditionsDiffer = true;
+      warnings.push(`实测时的上下文（${measuredCtx}）与当前声明（${ctxNow}）不同，KV 部分会随之变化，实测值仅供参考`);
+    }
+    if (measuredConc > 0 && concNow && measuredConc !== concNow) {
+      conditionsDiffer = true;
+      warnings.push(`实测时的并发（${measuredConc}）与当前声明（${concNow}）不同，实测值仅供参考`);
+    }
+
+    if (quotaMeasured === 0) {
+      reasons.push(`整卡模式（未限显存）：实测峰值 ${round1(measuredMemMiB)} MiB，请确认整卡容量足够`);
+      return {
+        verdict: conditionsDiffer ? 'tight' : 'fits',
+        basis: 'measured',
+        quotaMiB: 0,
+        requiredMiB: round1(measuredMemMiB),
+        headroomMiB: null,
+        breakdown: { basis: 'measured', measuredMiB: round1(measuredMemMiB), weightsMiB: null, overheadMiB: 0, kvCacheMiB: null, kvSource: 'measured' },
+        inputs: { contextLength: ctxNow, maxConcurrency: concNow, bits: null, paramsB: null, engine: engineType },
+        measured: { memMiB: round1(measuredMemMiB), contextLength: measuredCtx || null, maxConcurrency: measuredConc || null, at: measuredAt },
+        reasons,
+        warnings,
+        assumption: `实测 ${round1(measuredMemMiB)} MiB（不再按权重/开销/KV 分别估算）`,
+      };
+    }
+
+    const neededMeasured = Math.ceil(measuredMemMiB * SAFETY_RATIO);
+    let verdictMeasured;
+    if (quotaMeasured < measuredMemMiB) {
+      verdictMeasured = 'insufficient';
+      reasons.push(
+        `放不下：配额 ${quotaMeasured} MiB < 实测峰值 ${round1(measuredMemMiB)} MiB（缺口 ${Math.abs(headroomMeasured)} MiB）。`
+        + `建议把 resources.memoryMiB 提到至少 ${neededMeasured} MiB（含 10% 余量）。`,
+      );
+    } else if (quotaMeasured < neededMeasured) {
+      verdictMeasured = 'tight';
+      reasons.push(
+        `勉强够：配额 ${quotaMeasured} MiB 刚过实测峰值 ${round1(measuredMemMiB)} MiB，`
+        + `但低于含 10% 余量的 ${neededMeasured} MiB —— 并发或上下文一涨就会 OOM。`,
+      );
+    } else {
+      verdictMeasured = 'fits';
+      reasons.push(
+        `放得下：配额 ${quotaMeasured} MiB ≥ 实测峰值 ${round1(measuredMemMiB)} MiB（余量 ${headroomMeasured} MiB）`,
+      );
+      if (quotaMeasured > neededMeasured * 2) {
+        reasons.push(
+          `注意：配额是实测值的 ${round1(quotaMeasured / measuredMemMiB)} 倍，可能有较大空转占卡，可考虑回收`,
+        );
+      }
+    }
+    if (conditionsDiffer) {
+      verdictMeasured = verdictMeasured === 'fits' ? 'tight' : verdictMeasured;
+    }
+
+    return {
+      verdict: verdictMeasured,
+      basis: 'measured',
+      quotaMiB: quotaMeasured,
+      requiredMiB: round1(measuredMemMiB),
+      headroomMiB: headroomMeasured,
+      breakdown: {
+        basis: 'measured',
+        measuredMiB: round1(measuredMemMiB),
+        // 分项估算仍然给出，便于对照"实测 vs 声明"差多少
+        weightsMiB: Number.isFinite(Number(m.sizeMiB)) ? round1(Number(m.sizeMiB)) : null,
+        overheadMiB: overheadMiB,
+        kvCacheMiB: null,
+        kvSource: 'measured',
+      },
+      inputs: { contextLength: ctxNow, maxConcurrency: concNow, bits: null, paramsB: null, engine: engineType },
+      measured: { memMiB: round1(measuredMemMiB), contextLength: measuredCtx || null, maxConcurrency: measuredConc || null, at: measuredAt },
+      reasons,
+      warnings,
+      assumption: `实测 ${round1(measuredMemMiB)} MiB（不再按权重/开销/KV 分别估算）；判定阈值 ${SAFETY_RATIO}×`,
+    };
+  }
 
   // ── 1. 权重 ──
   const sizeMiB = Number(m.sizeMiB);
@@ -226,6 +329,7 @@ export function estimateModelFootprint({ model, engine, resources, replicas, spe
   if (weightsMiB === null) {
     return {
       verdict: 'unknown',
+      basis: 'estimated',
       quotaMiB,
       requiredMiB: null,
       headroomMiB: null,
@@ -302,6 +406,7 @@ export function estimateModelFootprint({ model, engine, resources, replicas, spe
 
   return {
     verdict,
+    basis: 'estimated',
     quotaMiB,
     requiredMiB,
     headroomMiB,

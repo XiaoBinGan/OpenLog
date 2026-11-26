@@ -293,3 +293,87 @@ describe('有模型规格时用精确值，没有才退回经验表', () => {
     expect(r.warnings.join(' ')).toContain('fp8');
   });
 });
+
+/* ────────── 实测优先：卸载型引擎的唯一可信口径 ────────── */
+describe('有实测值时以实测为准（文件大小/参数量都不再作数）', () => {
+  const strataShape = {
+    model: { sizeMiB: 64500, contextLength: 32768 },  // 故意用文件大小 63GB
+    engine: { type: 'strata', args: ['--expert-cache', 'auto'] },
+    resources: { memoryMiB: 14336 },
+  };
+
+  it('strata 真机：文件 63GB 但实测 13330 MiB → 从 insufficient 变 tight', () => {
+    const noMeasure = estimateModelFootprint(strataShape);
+    expect(noMeasure.verdict).toBe('insufficient');
+    expect(noMeasure.breakdown.weightsMiB).toBe(64500);
+
+    const measured = estimateModelFootprint({
+      ...strataShape,
+      measured: { memMiB: 13330, contextLength: 32768, maxConcurrency: 1 },
+    });
+    expect(measured.basis).toBe('measured');
+    expect(measured.requiredMiB).toBe(13330);
+    expect(measured.headroomMiB).toBeCloseTo(1006, 0);
+    // 14336 / 13330 = 1.075 倍，不足 10% 余量 → tight（诚实：并发一涨就 OOM）
+    expect(measured.verdict).toBe('tight');
+    expect(measured.reasons[0]).toContain('以实测为准');
+  });
+
+  it('实测低于配额且有 10% 余量 → fits 并提示可回收', () => {
+    const r = estimateModelFootprint({
+      ...strataShape,
+      resources: { memoryMiB: 32768 },
+      measured: { memMiB: 13330 },
+    });
+    expect(r.verdict).toBe('fits');
+    expect(r.reasons.join(' ')).toContain('空转');
+  });
+
+  it('实测量超过配额 → insufficient 并给建议值', () => {
+    const r = estimateModelFootprint({
+      ...strataShape,
+      resources: { memoryMiB: 8192 },
+      measured: { memMiB: 13330 },
+    });
+    expect(r.verdict).toBe('insufficient');
+    expect(r.reasons.join(' ')).toMatch(/提到至少 \d+ MiB/);
+  });
+
+  it('实测条件（上下文/并发）与当前声明不一致 → 降级为 tight 并告警', () => {
+    const r = estimateModelFootprint({
+      ...strataShape,
+      model: { sizeMiB: 64500, contextLength: 65536, maxConcurrency: 4 },
+      resources: { memoryMiB: 32768 },
+      measured: { memMiB: 13330, contextLength: 32768, maxConcurrency: 1 },
+    });
+    expect(r.verdict).toBe('tight');
+    expect(r.warnings.join(' ')).toContain('实测时的上下文');
+    expect(r.warnings.join(' ')).toContain('实测时的并发');
+  });
+
+  it('整卡模式（memoryMiB=0）+ 实测 → 给出实测值不判死', () => {
+    const r = estimateModelFootprint({
+      ...strataShape,
+      resources: { memoryMiB: 0 },
+      measured: { memMiB: 13330 },
+    });
+    expect(r.requiredMiB).toBe(13330);
+    expect(r.headroomMiB).toBeNull();
+    expect(r.reasons.join(' ')).toContain('整卡模式');
+  });
+
+  it('实测可以绕过"权重未知"：只给 measuredMemMiB 也能判定', () => {
+    const r = estimateModelFootprint({
+      model: { measuredMemMiB: 9000, contextLength: 4096 },
+      engine: { type: 'strata' },
+      resources: { memoryMiB: 14336 },
+    });
+    expect(r.verdict).toBe('fits');
+    expect(r.basis).toBe('measured');
+  });
+
+  it('估算路径明确标记 basis=estimated，实测标记 measured（前端据此标注可信度）', () => {
+    expect(estimateModelFootprint(strataShape).basis).toBe('estimated');
+    expect(estimateModelFootprint({ ...strataShape, measured: { memMiB: 13330 } }).basis).toBe('measured');
+  });
+});

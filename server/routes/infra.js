@@ -671,6 +671,15 @@ export function createInfraRouter({ ensureSettings, saveSettings, applyOptions =
           replicas: validation.value.replicas,
           spec: specInfo.spec,
           kvBudget: specInfo.kvBudget,
+          // 定义里存过实测值就用它（卸载型引擎下这是唯一可信的权重口径）
+          measured: validation.value.model?.measuredMemMiB
+            ? {
+              memMiB: validation.value.model.measuredMemMiB,
+              contextLength: validation.value.model.measuredContextLength,
+              maxConcurrency: validation.value.model.measuredMaxConcurrency,
+              at: validation.value.model.measuredAt,
+            }
+            : null,
         });
         if (specInfo.spec) footprint.specSource = specInfo.kind || 'model-file';
         if (specInfo.reason) footprint.warnings = [...(footprint.warnings || []), `模型元数据：${specInfo.reason}`];
@@ -1093,8 +1102,8 @@ export function createInfraRouter({ ensureSettings, saveSettings, applyOptions =
         const gateMod = await loadModule('gate');
         let gate = null;
         let report = null;
+        const serviceKey = String(req.body?.serviceKey || '');
         if (gateMod?.evaluateGate) {
-          const serviceKey = String(req.body?.serviceKey || '');
           const service = findService(ensureSettings(), serviceKey) || req.body?.service || null;
           const baselines = ensureSettings()?.infra?.baselines || {};
           const baseline = service ? baselines[`${service.namespace}/${service.name}`] || null : null;
@@ -1119,7 +1128,33 @@ export function createInfraRouter({ ensureSettings, saveSettings, applyOptions =
             });
           }
         }
-        res.json({ ...result, gate, report });
+        // 回填实测显存：卸载型引擎（strata --expert-cache、llama.cpp mmap、vLLM --cpu-offload-gb）
+        // 的文件大小与显存占用能差 4~5 倍，只有实测值能当权重口径。
+        // 仅在拿到显存峰值且指定了服务时回填，避免污染无关服务。
+        let backfilled = null;
+        if (gateMod?.evaluateGate && serviceKey && typeof saveSettings === 'function') {
+          const peak = Number(result?.summary?.recommended?.basis?.peakGpuMemMiB
+            ?? result?.gate?.metrics?.memMiB
+            ?? req.body?.gpuMemPeakMiB);
+          if (Number.isFinite(peak) && peak > 0) {
+            const existing = findService(ensureSettings(), serviceKey);
+            if (existing && existing.model) {
+              const nextService = {
+                ...existing,
+                model: {
+                  ...existing.model,
+                  measuredMemMiB: Math.round(peak),
+                  measuredContextLength: Number(req.body?.matrix?.inputTokens?.[0]) || existing.model.contextLength || null,
+                  measuredMaxConcurrency: Math.max(...(Array.isArray(req.body?.matrix?.concurrencies) ? req.body.matrix.concurrencies : [1])),
+                  measuredAt: new Date().toISOString(),
+                },
+              };
+              saveSettings(upsertService(ensureSettings(), nextService));
+              backfilled = { serviceKey, measuredMemMiB: Math.round(peak) };
+            }
+          }
+        }
+        res.json({ ...result, gate, report, backfilled });
     } catch (err) {
       res.status(500).json({ error: `基准失败：${errorMessage(err)}` });
     }

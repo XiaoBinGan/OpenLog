@@ -299,6 +299,42 @@ function validateModel(input, value, limits, fail) {
     }
   }
 
+  // 实测显存（bench 回填）：卸载型引擎下这是唯一可信的权重口径
+  // （strata 63GB 文件实测只有 13.3 GiB），所以必须能存进定义里。
+  const measuredMemMiB = input.measuredMemMiB;
+  if (measuredMemMiB !== undefined && measuredMemMiB !== null) {
+    const n = Number(measuredMemMiB);
+    if (!Number.isFinite(n) || n <= 0) {
+      fail('model.measuredMemMiB', `model.measuredMemMiB 必须是正数（实测显存峰值 MiB），收到 ${quote(measuredMemMiB)}`);
+    } else {
+      value.model.measuredMemMiB = Math.round(n);
+    }
+  }
+  const measuredCtx = input.measuredContextLength;
+  if (measuredCtx !== undefined && measuredCtx !== null) {
+    if (!Number.isInteger(Number(measuredCtx)) || Number(measuredCtx) < 1) {
+      fail('model.measuredContextLength', 'model.measuredContextLength 必须是正整数（实测时的上下文长度）');
+    } else {
+      value.model.measuredContextLength = Number(measuredCtx);
+    }
+  }
+  const measuredConc = input.measuredMaxConcurrency;
+  if (measuredConc !== undefined && measuredConc !== null) {
+    if (!Number.isInteger(Number(measuredConc)) || Number(measuredConc) < 1) {
+      fail('model.measuredMaxConcurrency', 'model.measuredMaxConcurrency 必须是正整数（实测时的并发数）');
+    } else {
+      value.model.measuredMaxConcurrency = Number(measuredConc);
+    }
+  }
+  const measuredAt = input.measuredAt;
+  if (measuredAt !== undefined && measuredAt !== null) {
+    if (typeof measuredAt !== 'string' || Number.isNaN(Date.parse(measuredAt))) {
+      fail('model.measuredAt', 'model.measuredAt 必须是可解析的 ISO 时间字符串');
+    } else {
+      value.model.measuredAt = measuredAt;
+    }
+  }
+
   const sizeMiB = input.sizeMiB;
   if (sizeMiB !== undefined && sizeMiB !== null) {
     if (!Number.isFinite(Number(sizeMiB)) || Number(sizeMiB) <= 0) {
