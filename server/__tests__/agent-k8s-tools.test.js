@@ -52,3 +52,31 @@ describe('工具名集合包含新工具', () => {
     }
   });
 });
+
+/* ────────── kubectl 走 SSH 要引导到 k8s_* 工具 ────────── */
+describe('kubectl 命令必须被引导到 k8s_* 工具而不是走 SSH', () => {
+  // 与 server/index.js 里 remote_exec 分支的正则保持一致
+  const KUBECTL_RE = /^\s*(sudo\s+)?(kubectl|k(ubectl)?\s+get)\b/;
+
+  it('识别各种 kubectl 写法（含 sudo / 前导空格）', () => {
+    for (const cmd of ['kubectl get nodes', 'sudo kubectl get pods -A', '   kubectl describe pod x', 'kubectl']) {
+      expect(KUBECTL_RE.test(cmd), cmd).toBe(true);
+    }
+  });
+
+  it('不误伤普通运维命令', () => {
+    for (const cmd of ['ls -l', 'docker ps', 'systemctl status nginx', 'grep -r foo /var/log', 'k6 run x.js']) {
+      expect(KUBECTL_RE.test(cmd), cmd).toBe(false);
+    }
+  });
+
+  it('引导文案必须点名正确工具（模型会照抄这句）', async () => {
+    const fs = await import('node:fs');
+    const src = fs.readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+    const idx = src.indexOf('不要用 remote_exec 跑 kubectl');
+    expect(idx).toBeGreaterThan(-1);
+    const seg = src.slice(idx, idx + 400);
+    expect(seg).toContain('k8s_clusters');
+    expect(seg).toMatch(/k8s_overview|k8s_pods/);
+  });
+});

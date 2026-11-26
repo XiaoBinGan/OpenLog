@@ -1827,6 +1827,15 @@ async function executeAssistantTool(name, args, hooks = {}) {
         return { servers, total: servers.length };
       }
       case 'remote_exec': {
+      // kubectl 走 SSH 是错的路径：要先确认、要等 SSH、还得节点上有 kubectl，
+      // 而 k8s_* 工具直连 kube-apiserver 是秒级。真机上模型会反复用 remote_exec 跑 kubectl
+      // （实测 10 次），这里直接把它引导到正确的工具，而不是陪着它慢慢跑。
+      if (/^\s*(sudo\s+)?(kubectl|k(ubectl)?\s+get)\b/.test(String(args.command || ''))) {
+        return {
+          error: '不要用 remote_exec 跑 kubectl：这样要先确认、等 SSH，还依赖节点上有 kubectl',
+          hint: '改用 k8s_clusters（拿 clusterId）→ k8s_overview（节点/Pod 计数/未就绪工作负载）或 k8s_pods（Pod 明细）。它们直连 kube-apiserver，秒级返回。',
+        };
+      }
         // 确保已连接
         const servers = remote.getServers();
         const s = servers.find(x => x.id === args.serverId);
