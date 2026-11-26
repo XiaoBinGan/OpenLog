@@ -131,7 +131,7 @@ export function kvBytesPerToken(paramsB) {
  *   reasons:string[], warnings:string[], assumption:string
  * }}
  */
-export function estimateModelFootprint({ model, engine, resources, replicas } = {}) {
+export function estimateModelFootprint({ model, engine, resources, replicas, spec, kvBudget } = {}) {
   const warnings = [];
   const reasons = [];
   const m = model && typeof model === 'object' ? model : {};
@@ -190,8 +190,29 @@ export function estimateModelFootprint({ model, engine, resources, replicas } = 
       + '这里算出的足迹偏小（每多一路约多 1 份 KV），结论会偏乐观',
     );
   }
-  const kvPerToken = weightsMiB === null && paramsB === null ? null : kvBytesPerToken(paramsB);
-  const kvCacheMiB = kvPerToken === null ? null : toMiB(kvPerToken * contextLength * maxConcurrency);
+  // KV：有模型规格就精确算（6.9 KiB/token 级），没有才退回经验表（256 KiB/token 级，可能差 80 倍）
+  let kvPerToken = weightsMiB === null && paramsB === null ? null : kvBytesPerToken(paramsB);
+  let kvCacheMiB = kvPerToken === null ? null : toMiB(kvPerToken * contextLength * maxConcurrency);
+  let kvSource = kvPerToken === null ? 'none' : 'experience-table';
+  if (kvBudget && kvBudget.ok === true) {
+    kvPerToken = kvBudget.kvBytesPerToken;
+    kvCacheMiB = Math.round((kvBudget.totalMiB ?? kvBudget.kvMiB) * 10) / 10;
+    kvSource = 'model-spec';
+    warnings.push(
+      `KV cache 按模型元数据精确计算：${kvBudget.formula}，KV 精度 ${kvBudget.kvDtype}`
+      + `（来源：${kvBudget.kvDtypeSource}）→ ${contextLength} tokens × ${maxConcurrency} 路 = ${kvCacheMiB} MiB`
+      + (kvBudget.ssmMiB > 0 ? `，另加线性注意力常量状态 ${kvBudget.ssmMiB} MiB` : ''),
+    );
+    for (const note of kvBudget.specNotes || []) warnings.push(note);
+  } else if (spec && spec.ok === true) {
+    warnings.push('拿到了模型规格但 KV 预算计算失败，退回经验表估算');
+  } else {
+    warnings.push(
+      '没有模型元数据（GGUF 头 / config.json），KV cache 用的是"按参数量查经验表"，'
+      + '对混合架构（SSM+少量全注意力）、GQA、int8 KV 的模型可能高估或低估数倍到数十倍；'
+      + '填 model.specPath 或让它能读到模型目录可获得精确值',
+    );
+  }
 
   // ── 3. 汇总 ──
   if (weightsMiB === null) {
@@ -200,7 +221,7 @@ export function estimateModelFootprint({ model, engine, resources, replicas } = 
       quotaMiB,
       requiredMiB: null,
       headroomMiB: null,
-      breakdown: { weightsMiB: null, overheadMiB, kvCacheMiB, kvBytesPerToken: kvPerToken, rawNeedMiB: null },
+      breakdown: { weightsMiB: null, overheadMiB, kvCacheMiB, kvBytesPerToken: kvPerToken, kvSource, rawNeedMiB: null },
       inputs: { contextLength, maxConcurrency, bits, paramsB, engine: engineType },
       reasons: ['缺少权重信息（model.sizeMiB 或 model.parametersB），无法判断模型是否放得进配额'],
       warnings,
@@ -232,7 +253,7 @@ export function estimateModelFootprint({ model, engine, resources, replicas } = 
       quotaMiB,
       requiredMiB,
       headroomMiB: null,
-      breakdown: { weightsMiB, overheadMiB, kvCacheMiB, kvBytesPerToken: kvPerToken, rawNeedMiB: weightsMiB === null ? null : rawNeedMiB },
+      breakdown: { weightsMiB, overheadMiB, kvCacheMiB, kvBytesPerToken: kvPerToken, kvSource, rawNeedMiB: weightsMiB === null ? null : rawNeedMiB },
       inputs: { contextLength, maxConcurrency, bits, paramsB, engine: engineType },
       reasons,
       warnings,
@@ -276,7 +297,7 @@ export function estimateModelFootprint({ model, engine, resources, replicas } = 
     quotaMiB,
     requiredMiB,
     headroomMiB,
-    breakdown: { weightsMiB, overheadMiB, kvCacheMiB, kvBytesPerToken: kvPerToken, rawNeedMiB: weightsMiB === null ? null : rawNeedMiB },
+    breakdown: { weightsMiB, overheadMiB, kvCacheMiB, kvBytesPerToken: kvPerToken, kvSource, rawNeedMiB: weightsMiB === null ? null : rawNeedMiB },
     inputs: { contextLength, maxConcurrency, bits, paramsB, engine: engineType },
     reasons,
     warnings,

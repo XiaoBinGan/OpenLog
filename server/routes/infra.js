@@ -51,7 +51,7 @@ const SERVICES_KEY = 'infraServices';
 
 const modules = {
   model: null, render: null, guard: null, capacity: null, apply: null, bench: null, accelerator: null,
-  gateway: null, audit: null, autoscale: null, modelCache: null, gate: null, footprint: null,
+  gateway: null, audit: null, autoscale: null, modelCache: null, gate: null, footprint: null, modelSpec: null,
 };
 
 /**
@@ -74,6 +74,7 @@ async function loadModule(name) {
     modelCache: '../infra/model-cache.js',
     gate: '../infra/gate.js',
     footprint: '../infra/footprint.js',
+    modelSpec: '../infra/model-spec.js',
   };
   try {
     modules[name] = await import(specifiers[name]);
@@ -350,6 +351,44 @@ async function makeGpuMemReader(record, serviceKey) {
   }
 }
 
+/**
+ * 读模型规格（GGUF 头 / config.json），走已有的 SSH 通道。
+ *
+ * 为什么要读真机文件：KV cache 的大小取决于层数、KV 头数、head_dim、KV 精度，
+ * 这些只有模型文件里有。经验表对"混合架构 + GQA + int8 KV"的模型会差 80 倍（实测）。
+ *
+ * 失败一律返回 null —— footprint 会安全退回经验值并明确告警，不影响预览。
+ */
+async function readModelSpecSafe(record, model) {
+  const specMod = await loadModule('modelSpec');
+  if (!specMod?.readModelSpec) return { spec: null, kvBudget: null, reason: '模型规格模块未就绪' };
+
+  const modelPath = String(model?.specPath || model?.path || '').trim();
+  if (!modelPath) return { spec: null, kvBudget: null, reason: '没有模型路径' };
+
+  try {
+    const remoteModule = await import('../remote.js');
+    const servers = typeof remoteModule.getServers === 'function' ? remoteModule.getServers() : [];
+    const host = String(record?.server || '').replace(/^https?:\/\//, '').split(':')[0];
+    const server = servers.find((x) => x && String(x.host || '').includes(host));
+    if (!server) {
+      return { spec: null, kvBudget: null, reason: `没有与集群 server（${host}）匹配的 SSH 服务器，读不到模型元数据` };
+    }
+    const exec = async (cmd) => remoteModule.execRemoteCommand(server.id, cmd);
+    const read = await specMod.readModelSpec({ path: modelPath, exec });
+    if (!read.ok) return { spec: null, kvBudget: null, reason: read.reason };
+    const kvBudget = specMod.preciseKvBudget({
+      spec: read.spec,
+      args: model?.engineArgs || [],
+      contextLength: model?.contextLength,
+      maxConcurrency: model?.maxConcurrency,
+    });
+    return { spec: read.spec, kvBudget: kvBudget.ok ? kvBudget : null, reason: kvBudget.ok ? null : kvBudget.reason, kind: read.kind };
+  } catch (err) {
+    return { spec: null, kvBudget: null, reason: `读取模型元数据失败：${errorMessage(err)}` };
+  }
+}
+
 export function resolveRolloutTimeout(explicit, service, applyOptions = {}) {
   const base = Number(applyOptions?.rolloutTimeoutMs) || 120_000;
   const MIN = 30_000;
@@ -620,12 +659,21 @@ export function createInfraRouter({ ensureSettings, saveSettings, applyOptions =
     let footprint = null;
     if (footprintMod?.estimateModelFootprint) {
       try {
+        // 先尝试读真机模型元数据（精确 KV），读不到才用经验值
+        const specInfo = await readModelSpecSafe(record, {
+          ...validation.value.model,
+          engineArgs: validation.value.engine?.args,
+        });
         footprint = footprintMod.estimateModelFootprint({
           model: validation.value.model,
           engine: validation.value.engine,
           resources: validation.value.resources,
           replicas: validation.value.replicas,
+          spec: specInfo.spec,
+          kvBudget: specInfo.kvBudget,
         });
+        if (specInfo.spec) footprint.specSource = specInfo.kind || 'model-file';
+        if (specInfo.reason) footprint.warnings = [...(footprint.warnings || []), `模型元数据：${specInfo.reason}`];
         if (footprint.verdict === 'insufficient') {
           footprintViolations.push({
             code: 'MODEL_FOOTPRINT_EXCEEDED',

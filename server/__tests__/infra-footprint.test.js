@@ -219,3 +219,77 @@ describe('工具函数', () => {
     }
   });
 });
+
+/* ────────── 精确 KV vs 经验值：用真机 strata 模型对账 ────────── */
+describe('有模型规格时用精确值，没有才退回经验表', () => {
+  const { parseGgufHeader, specFromGgufMeta, preciseKvBudget } = require('../infra/model-spec.js');
+
+  it('spec 存在的模型：KV 差 80 倍，结论必须跟着变', async () => {
+    const { parseGgufHeader: parse, specFromGgufMeta: toSpec, preciseKvBudget: budget } = await import('../infra/model-spec.js');
+    // 真机 strata 模型的元数据（同 infra-model-spec.test.js 的夹具值）
+    const meta = {
+      'general.architecture': 'qwen4exp',
+      'qwen4exp.block_count': 48,
+      'qwen4exp.attention.head_count': 24,
+      'qwen4exp.attention.head_count_kv': 2,
+      'qwen4exp.attention.key_length': 256,
+      'qwen4exp.attention.value_length': 256,
+      'qwen4exp.full_attention_interval': 4,
+    };
+    const spec = toSpec(meta);
+    const kb = budget({ spec, meta, args: ['--kv', 'int8'], contextLength: 32768, maxConcurrency: 1 });
+    expect(kb.ok).toBe(true);
+
+    const withSpec = estimateModelFootprint({
+      model: { sizeMiB: 14336, contextLength: 32768 },
+      engine: { type: 'strata' },
+      resources: { memoryMiB: 20000 },
+      spec,
+      kvBudget: kb,
+    });
+    const withoutSpec = estimateModelFootprint({
+      model: { sizeMiB: 14336, parametersB: 512, contextLength: 32768 },
+      engine: { type: 'strata' },
+      resources: { memoryMiB: 20000 },
+    });
+
+    // 精确 KV ≈ 32768 × 6860B ≈ 214 MiB；经验表 512B 参数量档位 → 1 MiB/token → 32 GiB
+    expect(withSpec.breakdown.kvSource).toBe('model-spec');
+    expect(withoutSpec.breakdown.kvSource).toBe('experience-table');
+    // 12 层 × 2头 × 512B × 32768 tokens = 384 MiB（夹具未含 compress_ratios，故无 ÷1.75）
+    expect(withSpec.breakdown.kvCacheMiB).toBeLessThan(400);
+    expect(withoutSpec.breakdown.kvCacheMiB).toBeGreaterThan(20000);
+    // 结论差异：精确值下 14 GiB 配额可能够，经验值下必然判放不下
+    expect(withSpec.verdict).toBe('fits');
+    expect(withoutSpec.verdict).toBe('insufficient');
+  });
+
+  it('没有规格时明确告警"可能差数倍到数十倍"', async () => {
+    const r = estimateModelFootprint({
+      model: { sizeMiB: 20000, parametersB: 32, contextLength: 4096 },
+      engine: { type: 'vllm' },
+      resources: { memoryMiB: 32768 },
+    });
+    expect(r.breakdown.kvSource).toBe('experience-table');
+    expect(r.warnings.join(' ')).toContain('经验表');
+  });
+
+  it('有规格时告警里带公式与 KV 精度来源', async () => {
+    const { specFromGgufMeta: toSpec, preciseKvBudget: budget } = await import('../infra/model-spec.js');
+    const spec = toSpec({
+      'general.architecture': 'x', 'x.block_count': 32,
+      'x.attention.head_count': 32, 'x.attention.head_count_kv': 8,
+      'x.attention.key_length': 128, 'x.attention.value_length': 128,
+    });
+    const kb = budget({ spec, args: ['--kv-cache-dtype', 'fp8'], contextLength: 8192 });
+    const r = estimateModelFootprint({
+      model: { sizeMiB: 15000, contextLength: 8192 },
+      engine: { type: 'vllm', args: ['--kv-cache-dtype', 'fp8'] },
+      resources: { memoryMiB: 32768 },
+      spec, kvBudget: kb,
+    });
+    expect(r.breakdown.kvSource).toBe('model-spec');
+    expect(r.warnings.join(' ')).toContain('32 层');
+    expect(r.warnings.join(' ')).toContain('fp8');
+  });
+});
