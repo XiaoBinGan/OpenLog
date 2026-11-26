@@ -650,7 +650,12 @@ export async function runReconnectPass(now = Date.now(), connect = connectServer
       const nextAt = nextRetryAt(count, now);
       retryState.set(server.id, { count, nextAt });
       const wait = Math.round((nextAt - now) / 1000);
-      console.log(`[Remote] ⏳ ${server.name} 仍不可达（第 ${count} 次），${wait}s 后重试: ${errorMessage(err)}`);
+      // 永久下线的主机会被无限重试：每次都打一行会在几小时内刷满日志（真机实测 6 次/2h
+      // 就把一条已下线的 179.160 刷成了"看起来像 OpenLog 一直在报错"）。
+      // 前 3 次照常提示，之后每 10 次才提一次，且退避已封顶 5 分钟 —— 既不静默失联，也不刷屏。
+      if (count <= 3 || count % 10 === 0) {
+        console.log(`[Remote] ⏳ ${server.name} 仍不可达（第 ${count} 次），${wait}s 后重试: ${errorMessage(err)}`);
+      }
       return { id: server.id, name: server.name, ok: false, error: errorMessage(err) };
     }
   });

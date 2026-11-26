@@ -60,3 +60,26 @@ describe('远程写入必须带 stdin（否则远端写空文件）', () => {
     expect(seg).toMatch(/stdin:\s*cleanBase64/);
   });
 });
+
+/* ────────── 永久下线主机不能让日志刷屏 ────────── */
+describe('不可达服务器的重试提示要有节流', () => {
+  it('前 3 次照常提示，之后每 10 次才提一次（避免"看起来一直在报错"）', async () => {
+    const fs = await import('node:fs');
+    const src = fs.readFileSync(new URL('../remote.js', import.meta.url), 'utf8');
+    const idx = src.indexOf('仍不可达（第');
+    expect(idx).toBeGreaterThan(-1);
+    // 判断条件必须存在于该日志之前
+    const before = src.slice(Math.max(0, idx - 400), idx);
+    expect(before).toMatch(/count\s*<=\s*3/);
+    expect(before).toMatch(/count\s*%\s*10\s*===\s*0/);
+  });
+
+  it('退避有上限（不会无限增长到几小时才重试一次）', async () => {
+    const fs = await import('node:fs');
+    const src = fs.readFileSync(new URL('../remote.js', import.meta.url), 'utf8');
+    expect(src).toMatch(/RETRY_MAX_MS\s*=\s*[\d_]+/);
+    const m = src.match(/RETRY_MAX_MS\s*=\s*([\d_]+)/);
+    const max = Number(m[1].replace(/_/g, ''));
+    expect(max).toBeLessThanOrEqual(15 * 60 * 1000); // ≤15 分钟
+  });
+});
