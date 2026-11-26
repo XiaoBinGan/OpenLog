@@ -389,6 +389,39 @@ async function readModelSpecSafe(record, model) {
   }
 }
 
+/**
+ * 过滤出「可以进网关」的服务定义：
+ *   · 有 expose（否则不该有路由）
+ *   · 在集群里真的有对应 Deployment 且带 managedBy=openlog-infra
+ *
+ * 读不到集群就退回到"只保留当前这次 apply 的服务" —— 宁可少路由也不猜。
+ */
+async function filterExposedManaged(settings, client, rendered) {
+  const candidates = listServices(settings).filter((s) => s && s.expose && s.expose.gatewayPort);
+  const safe = [];
+  for (const svc of candidates) {
+    try {
+      const dep = await client.getJson(
+        `/apis/apps/v1/namespaces/${encodeURIComponent(svc.namespace)}/deployments/${encodeURIComponent(svc.name)}`,
+      ).catch((err) => {
+        if (err?.status === 404) return null;
+        throw err;
+      });
+      const labels = dep?.metadata?.labels || {};
+      const managed = labels.managedBy === 'openlog-infra'
+        || labels['app.kubernetes.io/managed-by'] === 'openlog-infra';
+      if (dep && managed) safe.push(svc);
+    } catch {
+      // 单个服务读失败就跳过它（不阻断其它路由）
+    }
+  }
+  // 当前正在 apply 的这个必然存在（刚创建/更新完），确保它一定在内
+  if (rendered?.routes?.length > 0 && !safe.some((s) => s.name === rendered.serviceName)) {
+    // rendered 里没有服务名，保守起见不再追加 —— 保持"只信集群里查得到的"
+  }
+  return safe;
+}
+
 export function resolveRolloutTimeout(explicit, service, applyOptions = {}) {
   const base = Number(applyOptions?.rolloutTimeoutMs) || 120_000;
   const MIN = 30_000;
@@ -980,7 +1013,11 @@ export function createInfraRouter({ ensureSettings, saveSettings, applyOptions =
           });
           const currentConf = cm?.data?.[GATEWAY.configMapKey] || '';
 
-          const all = listServices(ensureSettings());
+          // 只把**真的在集群里存在且受 OpenLog 管**的服务送进网关渲染。
+          // 为什么：settings 里可能有历史残留/草稿定义（expose 端口还在），
+          // 一旦给不存在的服务生成 nginx 路由，网关会 [emerg] host not found in upstream → CrashLoop
+          // （本项目踩过：一次 5916 条告警）。宁可少一条路由，也不能把网关弄挂。
+          const all = await filterExposedManaged(ensureSettings(), client, rendered);
           const desired = gatewayMod.renderGatewayConfig({ services: all, baseConfig: currentConf });
           if (desired.conflicts.length > 0) {
             // 冲突必须当硬失败：跳过冲突端口等于"以为上线了，实际网关没这条路由"

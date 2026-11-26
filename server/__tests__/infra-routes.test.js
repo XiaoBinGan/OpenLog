@@ -479,12 +479,15 @@ describe('网关注册不接受请求体里的配置（防任意 nginx 配置注
 
   it('端口冲突时网关侧硬失败，不会静默少一条路由', async () => {
     // 两个服务抢同一端口
+    // 两个服务都必须"真实存在且受管"才会进入网关渲染（否则会被 filterExposedManaged 过滤掉）
+    const mk = (name) => {
+      const dep = ownedDeployment(name);
+      h.cluster.set(depPath('infra-test', name), dep);
+      return { name, namespace: 'infra-test', expose: { gatewayPort: 8125 } };
+    };
     h.settings = {
       k8sClusters: [CLUSTER],
-      infraServices: [
-        { name: 'a', namespace: 'infra-test', expose: { gatewayPort: 8125 } },
-        { name: 'b', namespace: 'infra-test', expose: { gatewayPort: 8125 } },
-      ],
+      infraServices: [mk('a'), mk('b'), mk('qwen-test')],
     };
     h.cluster.set(depPath('infra-test', 'qwen-test'), ownedDeployment());
     h.cluster.set('/api/v1/namespaces/inference/configmaps/reranker-gateway-conf', {
@@ -688,5 +691,52 @@ describe('bench 回填时不能把压测输入长度当成服务上下文', () =
     });
     expect(pv.body.footprint.measured.contextLength).toBe(32768);
     expect(pv.body.footprint.measured.maxConcurrency).toBe(2);
+  });
+});
+
+/* ────────── 脏定义不能污染网关（本项目踩过 nginx CrashLoop） ────────── */
+describe('settings 里的残留定义即使带 expose 也不能进网关', () => {
+  it('集群里不存在的服务 + 带 expose 端口 → 不写进网关配置', async () => {
+    h.settings = {
+      k8sClusters: [CLUSTER],
+      infraServices: [
+        // 幽灵服务：有 expose 但集群里没有 Deployment
+        { name: 'ghost-svc', namespace: 'infra-test', expose: { gatewayPort: 8199 } },
+      ],
+    };
+    h.cluster.set(depPath('infra-test', 'qwen-test'), ownedDeployment());
+    h.cluster.set('/api/v1/namespaces/inference/configmaps/reranker-gateway-conf', {
+      metadata: { name: 'reranker-gateway-conf', namespace: 'inference' },
+      data: { 'nginx.conf': 'stream {\n  # 既有\n}\n' },
+    });
+
+    const res = await post('/api/infra/services/qwen-test/apply', {
+      service: service({ expose: { gatewayPort: 8126 } }),
+    });
+    expect(res.status).toBe(200);
+    // 关键：写进 ConfigMap 的 nginx 配置里不能出现幽灵服务的上游
+    const written = h.writeCalls.map(([, , body]) => JSON.stringify(body ?? '')).join('\n');
+    expect(written).not.toContain('ghost-svc');
+  });
+
+  it('集群里存在但不受管（无 managedBy）的服务 → 同样不进网关', async () => {
+    const foreign = foreignDeployment('someone-else');
+    h.cluster.set(depPath('infra-test', 'someone-else'), foreign);
+    h.settings = {
+      k8sClusters: [CLUSTER],
+      infraServices: [{ name: 'someone-else', namespace: 'infra-test', expose: { gatewayPort: 8198 } }],
+    };
+    h.cluster.set(depPath('infra-test', 'qwen-test'), ownedDeployment());
+    h.cluster.set('/api/v1/namespaces/inference/configmaps/reranker-gateway-conf', {
+      metadata: { name: 'reranker-gateway-conf', namespace: 'inference' },
+      data: { 'nginx.conf': 'stream {\n}\n' },
+    });
+
+    const res = await post('/api/infra/services/qwen-test/apply', {
+      service: service({ expose: { gatewayPort: 8127 } }),
+    });
+    expect(res.status).toBe(200);
+    const written = h.writeCalls.map(([, , body]) => JSON.stringify(body ?? '')).join('\n');
+    expect(written).not.toContain('someone-else');
   });
 });
