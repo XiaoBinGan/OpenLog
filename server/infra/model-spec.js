@@ -341,7 +341,7 @@ export function detectSpecKind(path) {
  * @param {(cmd:string)=>Promise<{stdout?:string}>} input.exec  在目标机器上执行命令
  * @returns {Promise<{ok:true, spec:object, kind:string, bytesRead:number} | {ok:false, reason:string}>}
  */
-export async function readModelSpec({ path, exec, headBytes = 512 * 1024 } = {}) {
+export async function readModelSpec({ path, exec, headBytes = 4 * 1024 * 1024 } = {}) {
   if (typeof exec !== 'function') return { ok: false, reason: '缺少 exec（需要在目标机器上执行命令）' };
   const target = String(path || '').trim();
   if (!target) return { ok: false, reason: '模型路径为空' };
@@ -358,7 +358,11 @@ export async function readModelSpec({ path, exec, headBytes = 512 * 1024 } = {})
       const out = String(res?.stdout || '').trim();
       if (!out) return { ok: false, reason: `读不到 GGUF 头部（文件不存在或为空）：${target}` };
       const buf = Buffer.from(out, 'base64');
-      const parsed = parseGgufHeader(buf);
+      let parsed = parseGgufHeader(buf);
+      if (!parsed.ok && /缓冲不足|out of range/i.test(parsed.reason || '') && headBytes < 32 * 1024 * 1024) {
+        // 元数据比读到的更长（大词表模型常见）：翻倍重试一次
+        return readModelSpec({ path: target, exec, headBytes: headBytes * 2 });
+      }
       if (!parsed.ok) return { ok: false, reason: parsed.reason };
       const spec = specFromGgufMeta(parsed.meta);
       if (!spec.ok) return { ok: false, reason: spec.reason };
