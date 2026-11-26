@@ -181,6 +181,7 @@ function stableStringify(value) {
     const dedupeKey = `${tc.name}:${stableStringify(argsForCache)}`;
     if (risk.risk === 'read' && resultCache && resultCache.has(dedupeKey)) {
       const cached = resultCache.get(dedupeKey);
+      console.log(`[Chat] 工具 ${tc.name} 命中缓存（参数相同，跳过执行）`);
       res.write(`data: ${JSON.stringify({ type: 'tool_result', tool: tc.name, result: cached.result, durationMs: 0, cached: true })}\n\n`);
       return { result: { ...cached.result, _cached: '本次任务内已用相同参数调用过，直接复用；不要重复调用' } };
     }
@@ -214,7 +215,10 @@ function stableStringify(value) {
     }
     const durationMs = Date.now() - startedAt;
     // 只缓存"只读且成功"的结果：失败允许重试，写操作必须真的执行
-    if (risk.risk === 'read' && resultCache && result && !result.error) resultCache.set(dedupeKey, { result });
+    if (risk.risk === 'read' && resultCache && result && !result.error) {
+      resultCache.set(dedupeKey, { result });
+      console.log(`[Chat] 工具 ${tc.name} 结果已入缓存（key=${dedupeKey.slice(0, 60)}）`);
+    }
 
     if (risk.risk !== 'read') {
       recordAgentAction({
