@@ -1961,7 +1961,14 @@ async function executeAssistantTool(name, args, hooks = {}) {
       // 实测 189 秒还答错对象。给它正确的工具，比让它猜更重要。
       case 'k8s_clusters': {
         const clusters = loadK8sClustersForAgent();
-        return { clusters, total: clusters.length };
+        return {
+          clusters,
+          total: clusters.length,
+          // 一句话把"下一步该做什么"塞给模型：真机上它拿到集群列表后仍会去 SSH 找 kubectl
+          next: clusters.length > 0
+            ? `直接用 k8s_overview 看节点/Pod（clusterId 可省略，默认用第一个启用的集群）。不要用 remote_exec 跑 kubectl，也不要 SSH 上去找 kubectl。`
+            : '还没有接入集群',
+        };
       }
       case 'k8s_overview': {
         const target = await resolveClusterForAgent(args.clusterId);
@@ -1998,6 +2005,7 @@ async function executeAssistantTool(name, args, hooks = {}) {
             ready: d.status?.readyReplicas ?? 0,
           })),
           warningEvents: (evRaw?.items || []).length,
+          summary: `${nodes.length} 个节点（${nodes.filter((n) => n.ready).length} 就绪）、${pods.length} 个 Pod、${unready.length} 个工作负载副本不足`,
         };
       }
       case 'k8s_pods': {
