@@ -1160,6 +1160,45 @@ export function createInfraRouter({ ensureSettings, saveSettings, applyOptions =
     }
   });
 
+  /* ── 只保存定义，不下发集群 ── */
+  /**
+   * 为什么需要它：bench 回填实测显存、以及"先把定义想清楚再下发"都要求定义能独立存在。
+   * 这条路由**不碰集群**（不需要开关、不需要 kubeconfig），只做校验 + 落库。
+   */
+  router.post(`${PREFIX}/services/:id/definition`, async (req, res) => {
+    if (isDemoMode()) {
+      res.status(409).json({ error: '演示模式不保存定义', demo: true });
+      return;
+    }
+    const model = await loadModule('model');
+    if (!model) {
+      res.status(503).json({ error: 'AI Infra 能力层未就绪（缺少 model 模块）' });
+      return;
+    }
+    const validation = model.validateModelService(req.body?.service);
+    if (!validation.ok) {
+      res.status(400).json({
+        error: '服务定义校验未通过',
+        violations: validation.errors.map((e) => ({ code: 'INVALID_SERVICE', field: e.field, message: e.message })),
+      });
+      return;
+    }
+    if (typeof saveSettings !== 'function') {
+      res.status(503).json({ error: '当前实例不支持保存定义（缺少 saveSettings）' });
+      return;
+    }
+    const key = `${validation.value.namespace}/${validation.value.name}`;
+    const current = findService(ensureSettings(), key) || {};
+    const merged = {
+      ...validation.value,
+      id: current.id || validation.value.id || `svc-${Date.now().toString(36)}`,
+      createdAt: current.createdAt || validation.value.createdAt || new Date().toISOString(),
+    };
+    saveSettings(upsertService(ensureSettings(), merged));
+    const saved = findService(ensureSettings(), key);
+    res.json({ ok: true, service: saved, note: '已保存定义（未下发集群）' });
+  });
+
   /* ── 审计查询（读，不受开关限制） ── */
   router.get(`${PREFIX}/audit`, async (req, res) => {
     const mod = await loadModule('audit');

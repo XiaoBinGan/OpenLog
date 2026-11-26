@@ -584,3 +584,37 @@ describe('模型放不进配额时必须挡住（真机 21 GiB / 22.7 GiB 都崩
     expect(res.body.footprint.reasons.join(' ')).toContain('勉强够');
   });
 });
+
+/* ────────────── 只保存定义（不下发） ────────────── */
+describe('保存定义不需要碰集群（bench 回填与"先想清楚再下发"都靠它）', () => {
+  it('合法定义 → 200 且零集群调用', async () => {
+    const res = await post('/api/infra/services/qwen-test/definition', { service: service() });
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.service.name).toBe('qwen-test');
+    expect(h.getJsonCalls).toEqual([]);
+  });
+
+  it('不合法定义 → 400 + 字段级 violations', async () => {
+    const res = await post('/api/infra/services/x/definition', {
+      service: { name: 'Bad_Name', namespace: 'kube-system' },
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.violations.map((v) => v.field)).toContain('name');
+  });
+
+  it('保存两次是 upsert 而不是重复（id 稳定、version 自增）', async () => {
+    const a = await post('/api/infra/services/qwen-test/definition', { service: service() });
+    const id = a.body.service.id;
+    const b = await post('/api/infra/services/qwen-test/definition', { service: service({ replicas: 2 }) });
+    expect(b.body.service.id).toBe(id);
+    expect(b.body.service.version).toBeGreaterThan(a.body.service.version);
+    expect(b.body.service.replicas).toBe(2);
+  });
+
+  it('演示模式 → 409', async () => {
+    process.env.OPENLOG_DEMO = '1';
+    const res = await post('/api/infra/services/qwen-test/definition', { service: service() });
+    expect(res.status).toBe(409);
+  });
+});
