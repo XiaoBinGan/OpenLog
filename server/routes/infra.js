@@ -1194,8 +1194,11 @@ export function createInfraRouter({ ensureSettings, saveSettings, applyOptions =
       id: current.id || validation.value.id || `svc-${Date.now().toString(36)}`,
       createdAt: current.createdAt || validation.value.createdAt || new Date().toISOString(),
     };
-    saveSettings(upsertService(ensureSettings(), merged));
-    const saved = findService(ensureSettings(), key);
+    // 从 upsert 的结果里读回，而不是再读一次 ensureSettings() ——
+    // 后者依赖"保存后 settings 会立刻更新"，在注入式测试与某些存储实现下不成立。
+    const nextSettings = upsertService(ensureSettings(), merged);
+    saveSettings(nextSettings);
+    const saved = findService(nextSettings, key) || merged;
     res.json({ ok: true, service: saved, note: '已保存定义（未下发集群）' });
   });
 

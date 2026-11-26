@@ -173,7 +173,8 @@ beforeAll(async () => {
   app.use(express.json({ limit: '2mb' }));
   app.use(createInfraRouter({
     ensureSettings: () => h.settings,
-    saveSettings: (next) => { h.savedSettings = next; },
+    // 模拟真实实现：保存后 ensureSettings() 立刻能读到新值
+    saveSettings: (next) => { h.savedSettings = next; h.settings = next; },
     // 测试里不要真的等 rollout：注入假 sleep + 极短超时（生产用 A5 的默认 120s/2s）
     applyOptions: { sleep: async () => {}, rolloutTimeoutMs: 50, pollIntervalMs: 1 },
   }));
