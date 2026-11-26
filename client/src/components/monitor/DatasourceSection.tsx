@@ -72,7 +72,7 @@ export default function DatasourceSection() {
     }
   }, [manualHost]);
 
-  const save = useCallback(async (payload: Record<string, unknown>) => {
+  const _save = useCallback(async (payload: Record<string, unknown>) => {
     const id = String(payload.id || '');
     setBusy((b) => ({ ...b, [id]: true }));
     try {

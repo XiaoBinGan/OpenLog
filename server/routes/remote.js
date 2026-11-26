@@ -404,7 +404,11 @@ router.post('/api/remote/import', async (req, res) => {
 // 导出服务器配置（不含凭据，仅配置）
 router.get('/api/remote/export', async (req, res) => {
   try {
-    const servers = remote.getServersWithEncryptedPasswords().map(({ password, ...rest }) => rest);
+    // 用"解构丢弃"去掉密码字段：ESLint 会报 password 未使用，但这是**故意的**
+    const servers = remote.getServersWithEncryptedPasswords().map((server) => {
+      const { password: _password, ...rest } = server;
+      return rest;
+    });
     res.json({ servers });
   } catch (err) {
     res.status(500).json({ error: errorMessage(err) });

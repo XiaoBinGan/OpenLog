@@ -212,13 +212,15 @@ export function resetDockerInstance(sourceId) {
 // 通用工具
 // ============================================================
 
+/** 容器 ID 归一：只留 hex、取前 12 位。当前无调用方，保留以备 CLI 输出解析用。 */
+// eslint-disable-next-line no-unused-vars -- 保留的工具函数，暂无调用方
 function parseContainerId(id) {
   return id.replace(/[^a-f0-9]/g, '').slice(0, 12);
 }
 
 // 解析容器退出码和异常类型
 // Docker: 0=正常, 1=错误, 137=OOM(SIGKILL), 139=Segfault, 143=SIGTERM
-function parseExitInfo(status, state) {
+function parseExitInfo(status, _state) {
   const match = status?.match(/Exited \((\d+)\)/);
   if (!match) return { exitCode: null, exitType: null };
   const code = parseInt(match[1]);

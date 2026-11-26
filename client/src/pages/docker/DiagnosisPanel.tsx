@@ -21,7 +21,7 @@ interface DiagnosisPanelProps {
   onClose: () => void;
 }
 
-function DiagnosisPanel({ panelKey, containerName, loading, text, copied, onCopy, onClose }: DiagnosisPanelProps) {
+function DiagnosisPanel({ containerName, loading, text, copied, onCopy, onClose }: DiagnosisPanelProps) {
   const contentRef = useRef<HTMLDivElement>(null);
 
   // Auto-scroll 内容区底部（流式输出时）。

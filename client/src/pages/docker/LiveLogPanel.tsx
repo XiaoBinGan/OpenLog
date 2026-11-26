@@ -23,7 +23,7 @@ interface LiveLogPanelProps {
   onClose: () => void;
 }
 
-function LiveLogPanel({ panelKey, containerName, lines, paused, connecting, onPause, onResume, onClear, onClose }: LiveLogPanelProps) {
+function LiveLogPanel({ containerName, lines, paused, connecting, onPause, onResume, onClear, onClose }: LiveLogPanelProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [autoScroll, setAutoScroll] = useState(true);

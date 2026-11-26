@@ -60,7 +60,6 @@ const MAX_WINDOW_MS = 90 * 1000;
 /** 端点发现缓存时长 */
 const SOURCE_TTL_MS = 5 * 60 * 1000;
 /** 采样缓存时长 */
-const SAMPLE_TTL_MS = 5 * 60 * 1000;
 /** 单台服务器最多采集的引擎数（避免极端环境下探测过久） */
 const MAX_ENGINES_PER_HOST = 4;
 

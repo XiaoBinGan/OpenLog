@@ -11,10 +11,9 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import {
   X, Maximize2, Minimize2, Terminal, AlertCircle, Loader,
-  Sparkles, Send, Check, Save, RotateCcw, Command,
+  Sparkles, Send, Check,
   ArrowRight, Clipboard, ClipboardCheck, ChevronDown,
-  BookOpen, Square, ShieldAlert, Cpu, AlertTriangle, Trash2, History,
-} from 'lucide-react';
+  BookOpen, Square, ShieldAlert, Cpu, AlertTriangle, Trash2, History } from 'lucide-react';
 import type { RemoteServer } from '../types';
 import { withWsToken, wsProtocols } from '../api/auth';
 import { apiFetch } from '../api/client';
@@ -1001,6 +1000,6 @@ function ChevronRightIcon() {
 }
 
 /** exitCode → step 状态 */
-function DataViewDone(exitCode: number): Step['status'] {
+function _DataViewDone(exitCode: number): Step['status'] {
   return exitCode === 0 || exitCode == null ? 'done' : 'done';
 }

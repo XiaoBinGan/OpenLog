@@ -18,7 +18,7 @@ import * as remote from '../remote.js';
 import { classifyToolRisk, buildEditPreview } from '../agent-tools.js';
 import { recordAgentAction } from '../agent-audit.js';
 import {
-  normalizeBaseUrl, guessEngine, getCachedToolSupport, setCachedToolSupport,
+  guessEngine, getCachedToolSupport, setCachedToolSupport,
   isToolUnsupportedError, looksLikeUncalledToolUse, looksLikeFakeExecution,
   looksLikeEnglishProse, stripEnglishReasoningPreamble,
   TOOL_PROTOCOL_PROMPT, renderToolsAsText,

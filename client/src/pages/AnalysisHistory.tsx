@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { marked } from 'marked';
 import { sanitizeHtml } from '../utils/sanitize';
@@ -6,10 +6,8 @@ import { apiFetch } from '../api/client';
 import {
   History,
   Brain,
-  Filter,
   Trash2,
   ChevronRight,
-  AlertTriangle,
   CheckCircle,
   XCircle,
   Clock,
@@ -68,6 +66,7 @@ export default function AnalysisHistory() {
     setLoading(false);
   };
 
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- 只依赖稳定字段而非整个对象：依赖整个对象会在每次 render 重跑（对象未 memo 化），导致重复请求甚至死循环
   useEffect(() => { loadHistory(); }, [filter]);
 
   const deleteRecord = async (id: string) => {

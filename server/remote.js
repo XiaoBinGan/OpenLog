@@ -5,9 +5,9 @@ import { v4 as uuidv4 } from 'uuid';
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
-import { getDb, getDbType } from './db/index.js';
+import { getDb } from './db/index.js';
 import {
-  ensureServersTable, listServerRows, countServerRows, rowToServer, serverToRow,
+  ensureServersTable, listServerRows, rowToServer, serverToRow,
   queueServerWrite, queueServerDelete, flushServerWrites, migrateLegacyKvServers, repairServerRows,
 } from './remote-store.js';
 import { mapLimit } from './concurrency.js';
@@ -886,9 +886,11 @@ export async function writeRemoteFile(id, filePath, content) {
     // base64 编码内容，避免 shell 转义
     const b64 = Buffer.from(content, 'utf8').toString('base64');
     // 通过 python 解码写入（支持任意内容）
+    // 注意：内容必须走 **stdin** 传过去。之前只算了 b64 却没传给 execCommand，
+    // 远端 sys.stdin.read() 立刻拿到 EOF → 写入的是空文件（且返回 success）。
     const result = await ssh.execCommand(
       `python3 -c "import sys,base64; open('${filePath}','w').write(base64.b64decode(sys.stdin.read()).decode('utf-8'))"`,
-      { encoding: 'utf8' }
+      { stdin: b64, execOptions: { timeout: 60_000 } },
     );
     if (result.code !== 0) {
       return { error: result.stderr || '写入失败' };
@@ -938,9 +940,10 @@ export async function uploadRemoteFile(id, localFileBuffer, remotePath) {
 
   try {
     const b64 = localFileBuffer.toString('base64');
+    // 同 writeRemoteFile：必须通过 stdin 传，否则远端解码空输入 → 0 字节文件
     const result = await ssh.execCommand(
       `python3 -c "import sys,base64; open('${remotePath}','wb').write(base64.b64decode(sys.stdin.read()))"`,
-      { encoding: 'utf8' }
+      { stdin: b64, execOptions: { timeout: 120_000 } },
     );
     if (result.code !== 0) {
       return { error: result.stderr || '上传失败' };
@@ -1020,7 +1023,7 @@ export async function uploadChunk(id, uploadId, chunkIndex, base64Data) {
 }
 
 // 完成分片上传：合并分片 + 校验 + 清理
-export async function completeChunkedUpload(id, uploadId, totalChunks) {
+export async function completeChunkedUpload(id, uploadId, _totalChunks) {
   // 按需重连（同 readRemoteFileRaw 的说明）
   let ssh;
   try {

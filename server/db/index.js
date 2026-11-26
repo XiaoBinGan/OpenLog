@@ -945,7 +945,6 @@ export async function listAnalysis({ machine_id, log_record_id, limit = 50 } = {
 // kv_store 存的是配置/小数据（几十条），全量缓存完全划算。
 
 const kvCache = new Map();
-let kvCacheLoaded = false;
 let kvFlushChain = Promise.resolve();
 
 /** 启动时加载 kv 全表到内存（异步）。SQLite 也走这条路，保持行为一致。 */
@@ -957,14 +956,12 @@ export async function loadKvCache() {
     try { parsed = JSON.parse(row.value); } catch { parsed = row.value; }
     kvCache.set(row.key, parsed);
   }
-  kvCacheLoaded = true;
   return kvCache.size;
 }
 
 /** 测试用：清空缓存状态 */
 export function _resetKvCache() {
   kvCache.clear();
-  kvCacheLoaded = false;
   kvFlushChain = Promise.resolve();
 }
 

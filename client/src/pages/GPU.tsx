@@ -1,8 +1,7 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { useState, useCallback, useMemo, useRef } from 'react';
 import { usePolling } from '../utils/usePolling';
 import {
-  Cpu, MemoryStick, Thermometer, RefreshCw, Wifi, AlertCircle, Loader, Server, Monitor,
-} from 'lucide-react';
+  Cpu, RefreshCw, Wifi, AlertCircle, Loader, Server, Monitor } from 'lucide-react';
 import { useRemote } from '../contexts/RemoteContext';
 import { useDevice } from '../contexts/DeviceContext';
 import { apiFetch } from '../api/client';
@@ -88,7 +87,7 @@ export default function GPU() {
   );
 
   // 从 DeviceContext 获取当前选中设备
-  const { selectedDevice, isRemote } = useDevice();
+  const { isRemote } = useDevice();
 
   const [serverGPUs, setServerGPUs] = useState<ServerGPU[]>([]);
   const [globalLoading, setGlobalLoading] = useState(true);
@@ -262,6 +261,7 @@ export default function GPU() {
       setGlobalLoading(false);
     }
     setLastRefresh(new Date());
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- 只依赖稳定字段而非整个对象：依赖整个对象会在每次 render 重跑（对象未 memo 化），导致重复请求甚至死循环
   }, [connectedServers, fetchServerGPU, fetchLocalGPU, isRemote, toServerGPU]);
 
   // 30s 刷新（页面隐藏时暂停；GPU 查询要连服务器跑 nvidia-smi，后台轮询纯浪费）

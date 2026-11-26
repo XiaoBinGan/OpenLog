@@ -103,7 +103,6 @@ export function planBudget({ windowTokens, maxOutputTokens = 4096, fixedTokens =
 }
 
 const TOOL_MSG_CHARS = 1200;
-const TOOL_MSG_SUMMARY_CHARS = 240;
 
 /**
  * 把消息数组压进 `budget`（token），返回新数组。

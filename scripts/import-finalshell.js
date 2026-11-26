@@ -3,7 +3,6 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { v4 as uuidv4 } from 'uuid';
-import crypto from 'crypto';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -148,7 +147,7 @@ FinalShell 配置导入工具
 }
 
 // 使用 better-sqlite3 直接执行
-async function importToDatabaseDirect(server) {
+async function _importToDatabaseDirect(server) {
   const Database = (await import('better-sqlite3')).default;
   const db = new Database(DB_PATH);
   

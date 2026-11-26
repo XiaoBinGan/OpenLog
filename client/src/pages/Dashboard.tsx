@@ -9,8 +9,6 @@ import {
   Clock,
   Zap,
   Monitor,
-  Server,
-  ChevronDown,
   Loader,
   RotateCcw
 } from 'lucide-react';
@@ -92,9 +90,7 @@ function GripIcon({ className }: { className?: string }) {
 // ─── Draggable panel wrapper ─────────────────────────────────────────────
 
 function DraggablePanel({
-  panelId,
   index,
-  length,
   dragState,
   onDragStart,
   onDragOver,
@@ -367,6 +363,7 @@ export default function Dashboard() {
         wsInstance.close();
       }
     };
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- 只依赖稳定字段而非整个对象：依赖整个对象会在每次 render 重跑（对象未 memo 化），导致重复请求甚至死循环
   }, [selectedDevice.id, isRemote]);
 
   const formatPercent = (val: number | undefined | null) => {

@@ -46,7 +46,7 @@ import createDockerRouter from './routes/docker.js';
 import createK8sRouter from './routes/k8s.js';
 import { isDemoMode } from './demo/mode.js';
 import createChatRouter from './routes/chat.js';
-import { AGENT_TOOLS, AGENT_TOOL_NAMES, executeAgentTool } from './agent-tools.js';
+import { AGENT_TOOL_NAMES, executeAgentTool } from './agent-tools.js';
 import createAuthRouter from './routes/auth.js';
 import { isLoopbackAddress } from './security/loopback.js';
 import { migrateWatchSourceFields } from './settings-migrations.js';
@@ -474,7 +474,6 @@ let apiStore = null;
 let dbSampler = null;
 let probes = null;
 /** 监控相关的定时器（shutdown 时必须清，否则进程不退） */
-const metricsTimers = { flush: null, prune: null, probe: null };
 const metricsState = { schemaReady: false, lastFlushAt: null, lastFlushRows: 0 };
 
 // CORS 白名单：OPENLOG_ALLOWED_ORIGINS（逗号分隔）优先；未设置时仅允许 localhost/127.0.0.1 任意端口，
@@ -890,7 +889,9 @@ function startSourceWatcher(source) {
 }
 
 // 停止指定服务监控
+// eslint-disable-next-line no-unused-vars -- 保留的运维函数，当前无调用方（页面用 removeSource 走另一条路径）
 function stopSourceWatcher(sourceId) {
+// 停止指定服务监控
   const w = watchers.get(sourceId);
   if (w) {
     w.close();
@@ -1676,7 +1677,6 @@ function buildAssistantContext() {
 }
 
 
-const DANGEROUS_TOOLS = new Set(['docker_start', 'docker_stop', 'docker_restart', 'docker_exec', 'remote_exec']);
 
 /** 确保远程服务器已连接（agent 工具执行前调用） */
 async function ensureRemoteConnected(serverId) {

@@ -287,7 +287,7 @@ export function AnalysisProvider({ children }: { children: React.ReactNode }) {
     await refreshPatrol();
   }, [refreshPatrol]);
 
-  const startPatrolAnalysis = useCallback(async (results?: any[]) => {
+  const startPatrolAnalysis = useCallback(async (_results?: any[]) => {
     patrolAbortRef.current?.abort();
     const controller = new AbortController();
     patrolAbortRef.current = controller;

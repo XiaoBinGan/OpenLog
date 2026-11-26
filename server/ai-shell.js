@@ -564,14 +564,12 @@ ${renderDigest(digest)}
   });
 
   /** 每步请求模型前裁剪一次（返回是否发生了裁剪） */
-  let trimmedTimes = 0;
   const fitBeforeCall = () => {
     messages[0] = { ...messages[0], content: systemContent() };
     const fit = fitAgentMessages(messages, { promptBudget: plan.promptBudget });
     if (fit.messages !== messages) {
       for (let i = messages.length - 1; i >= 0; i--) messages.pop();
       messages.push(...fit.messages);
-      trimmedTimes += 1;
       send({
         type: 'context_trimmed',
         windowTokens: plan.windowTokens,

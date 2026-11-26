@@ -27,7 +27,7 @@ import ApiSection from '../components/monitor/ApiSection';
 import DbSection from '../components/monitor/DbSection';
 import DatasourceSection from '../components/monitor/DatasourceSection';
 import TsdbSection from '../components/monitor/TsdbSection';
-import type { MonitorStats, MonitorHistory, RemoteServer } from '../types';
+import type { MonitorStats, MonitorHistory } from '../types';
 
 // ─── Panel drag-and-drop system ───────────────────────────────────────────
 
@@ -98,9 +98,7 @@ function GripIcon({ className }: { className?: string }) {
 // ─── Draggable panel wrapper ─────────────────────────────────────────────
 
 function DraggablePanel({
-  panelId,
   index,
-  length,
   dragState,
   onDragStart,
   onDragOver,
@@ -257,7 +255,6 @@ export default function Monitor() {
           } as MonitorStats);
           
           // 追加到历史（仅 CPU/内存/磁盘/GPU，网络和进程不追踪历史）
-          const now = Date.now();
           const memPct = data.memory ? (data.memory.used / (data.memory.total || 1)) * 100 : 0;
           const gpuUtil = Array.isArray(data.gpus) && data.gpus.length > 0 ? (data.gpus[0].util ?? 0) : 0;
           setHistory(prev => {

@@ -373,7 +373,7 @@ describe('探针延迟', () => {
     const db = fakeDb({ pg_stat_activity: [], pg_locks: [], 'SELECT 1': [{ ok: 1 }] });
     const sampler = createDbSampler({ db, dbType: 'postgres' });
     for (let i = 0; i < 3; i += 1) {
-      const snap = await sampler.sample('light'); // eslint-disable-line no-await-in-loop
+      const snap = await sampler.sample('light');
       expect(typeof snap.probeMs).toBe('number');
       expect(Number.isFinite(snap.probeMs)).toBe(true);
       expect(snap.probeMs).toBeGreaterThanOrEqual(0);

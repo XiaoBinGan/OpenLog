@@ -6,7 +6,7 @@ import {
   MessageSquare, Pencil, Sidebar, History, ArrowRight,
 } from 'lucide-react';
 import { useAssistantContext } from '../contexts/AssistantContext';
-import type { ContextSettings, ContextUsage } from '../contexts/AssistantContext';
+import type { ContextSettings } from '../contexts/AssistantContext';
 import { marked } from 'marked';
 import { sanitizeHtml } from '../utils/sanitize';
 import { apiFetch } from '../api/client';
@@ -87,7 +87,7 @@ export default function Assistant() {
     opsConvs, opsActiveId, opsMessages, setOpsMessages,
     createOpsConv, switchOpsConv, deleteOpsConv, renameOpsConv,
     opsContextSettings, opsContextUsage, setOpsContextSettings, setOpsContextUsage,
-    memoryFiles, reloadMemory, deleteMemory, saveMemory,
+    memoryFiles, deleteMemory, saveMemory,
   } = useAssistantContext();
 
   const [searchParams, setSearchParams] = useSearchParams();
@@ -176,6 +176,7 @@ export default function Assistant() {
       if (data?.config) setCtxConfig(data.config);
       setCtxWarnings(Array.isArray(data?.warnings) ? data.warnings : []);
     } catch { /* 配置拉取失败不影响聊天，用量条退化为不显示 */ }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- 只依赖稳定字段而非整个对象：依赖整个对象会在每次 render 重跑（对象未 memo 化），导致重复请求甚至死循环
   }, [JSON.stringify(opsContextSettings)]);
 
   useEffect(() => { reloadCtxConfig(); }, [reloadCtxConfig]);
@@ -293,6 +294,7 @@ export default function Assistant() {
         }
       } catch {}
     })();
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- 只依赖稳定字段而非整个对象（依赖对象会每次 render 重跑，可能导致重复请求或死循环）
   }, [refParam]);
 
   // 来自技能管理的快捷使用
@@ -303,6 +305,7 @@ export default function Assistant() {
     setInput(msg);
     // 延迟自动发送（等待 input 状态同步）
     setTimeout(() => sendMessage(msg), 100);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- 只依赖稳定字段而非整个对象（依赖对象会每次 render 重跑，可能导致重复请求或死循环）
   }, [skillParam, cmdParam]);
 
   // 输入变化处理 @

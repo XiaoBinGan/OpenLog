@@ -66,15 +66,13 @@ export default function Docker() {
   const [filter, setFilter] = useState('');
   const [levelFilter, setLevelFilter] = useState('all');
   const [selected, setSelected] = useState<{ sourceId: string; container: ContainerInfo }[]>([]);
-  const [viewMode, setViewMode] = useState<'grid' | 'list'>('list');
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [containerLogs, setContainerLogs] = useState<Record<string, any[]>>({});
   const [loadingLogs, setLoadingLogs] = useState<Set<string>>(new Set());
   const [traceResults, setTraceResults] = useState<Record<string, TraceResult>>({});
   const [traceLoading, setTraceLoading] = useState<Set<string>>(new Set());
-  const [batchAnalysis, setBatchAnalysis] = useState(false);
   const [batchResult, setBatchResult] = useState<any>(null);
-  const [batchLogs, setBatchLogs] = useState<any[]>([]);
+  const [, setBatchLogs] = useState<any[]>([]);
   const [batchAnalyzing, setBatchAnalyzing] = useState(false);
 
   // AI 诊断（同一时刻只有一个容器可见，state 归页面）
@@ -174,6 +172,7 @@ export default function Docker() {
       console.error(err);
     }
     if (!silent) setLoading(false);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- 只依赖稳定字段而非整个对象：依赖整个对象会在每次 render 重跑（对象未 memo 化），导致重复请求甚至死循环
   }, [isRemote, selectedDevice.id]);
 
   /**

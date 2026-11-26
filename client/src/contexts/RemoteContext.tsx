@@ -2,7 +2,7 @@
  * RemoteContext — 全局远程服务器状态管理（重构版）
  * 修复：闭包陈旧、状态竞态、内存泄漏
  */
-import { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
+import { createContext, useContext, useState, useCallback, useRef } from 'react';
 import type { RemoteServer, RemoteServerState, RemoteFileList, Log } from '../types';
 import { useDevice } from './DeviceContext';
 import { apiFetch, apiJson } from '../api/client';
@@ -155,6 +155,7 @@ export function RemoteProvider({ children }: { children: React.ReactNode }) {
       showToast('error', `连接失败: ${err.message}`);
       throw err;
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- 只依赖稳定字段而非整个对象：依赖整个对象会在每次 render 重跑（对象未 memo 化），导致重复请求甚至死循环
   }, [refreshServers, showToast]);
 
   // 断开连接：支持传入指定 serverId，否则断开当前活跃服务器
@@ -389,7 +390,7 @@ export function RemoteProvider({ children }: { children: React.ReactNode }) {
     } finally {
       uploadAbortRef.current = null;
     }
-  }, [loadFiles, showToast]);
+  }, [loadFiles, showToast, CHUNK_SIZE]);
 
   // Stats 轮询：用 ref 确保不陈旧（页面隐藏时暂停，SSH 查询不便宜）
   const pollStats = useCallback(async () => {

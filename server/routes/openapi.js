@@ -101,7 +101,6 @@ export function createOpenApiRouter(deps = {}) {
   const d = deps || {};
   const { spec, renderDocsHtml, authGuard, collectRoutes } = d;
   const title = typeof d.title === 'string' && d.title ? d.title : 'OpenLog API';
-  const version = typeof d.version === 'string' && d.version ? d.version : '1.0.0';
 
   // 创建期就把配置错误炸出来：spec 不是函数的话，每个请求都会变成 500，
   // 那样监控里只会看到一片 5xx，看不出是「接线漏了参数」。

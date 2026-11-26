@@ -1,8 +1,7 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { marked } from 'marked';
 import { sanitizeHtml } from '../utils/sanitize';
-import { useToast } from '../contexts/ToastContext';
 import { 
   Brain, 
   Sparkles, 
@@ -20,10 +19,8 @@ import {
   Server,
   Monitor,
   Stethoscope,
-  Boxes,
   Container,
   X,
-  Clock,
   Search
 } from 'lucide-react';
 import { useDevice } from '../contexts/DeviceContext';
@@ -42,7 +39,6 @@ export default function Analytics() {
   const [healthMode, setHealthMode] = useState<'logs' | 'containers'>('logs');
   const [customPrompt, setCustomPrompt] = useState('');
   const [copied, setCopied] = useState(false);
-  const toast = useToast();
 
   // 从 context 派生当前模式的 analysis/analyzing
   const isContainerMode = healthMode === 'containers';
@@ -74,7 +70,7 @@ export default function Analytics() {
     setExitAlerts(prev => [{ ...data, _key: key }, ...prev].slice(0, 20));
   });
 
-  useWsMessage('container_patrol', (data) => {
+  useWsMessage('container_patrol', (_data) => {
     // 巡检结果由 context (refreshPatrol/startPatrolAnalysis) 统一管理
     // Layout.tsx 已处理 toast 通知，此处不再重复更新
   });
@@ -86,6 +82,7 @@ export default function Analytics() {
       setSearchParams({}, { replace: true });
       ctx.runAutoPatrol();
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- 只依赖稳定字段而非整个对象：依赖整个对象会在每次 render 重跑（对象未 memo 化），导致重复请求甚至死循环
   }, [searchParams]);
 
   // 从容器退出 toast 跳转过来的，触发单容器诊断（后台运行）
@@ -110,10 +107,12 @@ export default function Analytics() {
         ctx.runAutoExit(sourceId, containerId, containerName, exitData);
       }, 300);
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- 只依赖稳定字段而非整个对象（依赖对象会每次 render 重跑，可能导致重复请求或死循环）
   }, [searchParams]);
 
   useEffect(() => {
     fetchLogs();
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- 只依赖稳定字段而非整个对象（依赖对象会每次 render 重跑，可能导致重复请求或死循环）
   }, [errorLogsOnly, selectedDevice.id, isRemote]);
 
   const fetchLogs = async () => {
@@ -438,7 +437,7 @@ export default function Analytics() {
       </div>
 
       {/* 容器异常退出通知 */}
-      {exitAlerts.filter(a => !dismissedAlerts.has(a._key)).slice(0, 3).map((alert, i) => (
+      {exitAlerts.filter((a) => !dismissedAlerts.has(a._key)).slice(0, 3).map((alert) => (
         <div key={alert._key} className={`rounded-xl p-4 flex items-start gap-3 animate-fade-in ${
           alert.exitType === 'oom' ? 'bg-red-500/15 border border-red-500/30'
           : alert.exitType === 'segfault' ? 'bg-orange-500/15 border border-orange-500/30'

@@ -97,7 +97,7 @@ export function mapConnectionsToEdges(conns, ipToId, { portToId, hostIps, hostId
 
   const hostIpSet = hostIps instanceof Set ? hostIps : new Set();
   const hostIdSet = hostIds instanceof Set ? hostIds : new Set();
-  const resolve = (ip, port, isLocal) => {
+  const resolve = (ip, port, _isLocal) => {
     // 先按容器 IP 精确匹配
     const direct = ipToId.get(ip);
     if (direct) return direct;

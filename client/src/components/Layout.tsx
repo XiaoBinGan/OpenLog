@@ -233,6 +233,7 @@ function LayoutContent() {
     });
 
     setWs(wsInstance);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- 只依赖稳定字段而非整个对象：依赖整个对象会在每次 render 重跑（对象未 memo 化），导致重复请求甚至死循环
   }, []);
 
   // 挂载时连接，卸载时清理

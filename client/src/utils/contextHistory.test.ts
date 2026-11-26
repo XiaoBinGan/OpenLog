@@ -29,7 +29,7 @@ describe('trimHistoryToBudget', () => {
 
   it('超预算时从最早开始丢，保留最近的消息', () => {
     // 每条 500 个中文字 ≈ 500 token，预算 1200 → 只留最近 2 条
-    const items = Array.from({ length: 10 }, (_, i) => msg('user', '字'.repeat(500)));
+    const items = Array.from({ length: 10 }, (_, _i) => msg('user', '字'.repeat(500)));
     const { kept, droppedCount } = trimHistoryToBudget(items, tokensOf, 1200);
     expect(kept.length).toBeLessThan(items.length);
     expect(droppedCount).toBe(items.length - kept.length);

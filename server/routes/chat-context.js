@@ -125,12 +125,10 @@ export function compactMessages(messages, opts = {}) {
 
   // 第一级：最近 keepRecentTurns 之外的工具结果 → 一行摘要
   const cutoff = Math.max(0, list.length - keepRecentTurns);
-  let compressedCount = 0;
   let out = list.map((m, i) => {
     if (m?.role !== 'tool' || i >= cutoff) return m;
     const toolName = toolNameForToolMessage(list, i);
     const next = summarizeToolResult(toolName, m.content);
-    if (next !== m.content) compressedCount += 1;
     return { ...m, content: next };
   });
 

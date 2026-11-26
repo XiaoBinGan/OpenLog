@@ -131,7 +131,7 @@ export function kvBytesPerToken(paramsB) {
  *   reasons:string[], warnings:string[], assumption:string
  * }}
  */
-export function estimateModelFootprint({ model, engine, resources, replicas, spec, kvBudget, measured } = {}) {
+export function estimateModelFootprint({ model, engine, resources, _replicas, spec, kvBudget, measured } = {}) {
   const warnings = [];
   const reasons = [];
   const m = model && typeof model === 'object' ? model : {};

@@ -104,6 +104,7 @@ function ModelSection({
   }, [apiKey, baseUrl]);
 
   // 挂载时拉一次（与原实现一致：用的是 settings 默认值，而非服务端返回值）
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- 只依赖稳定字段而非整个对象：依赖整个对象会在每次 render 重跑（对象未 memo 化），导致重复请求甚至死循环
   useEffect(() => { fetchOllamaModels(); }, []);
 
   return (

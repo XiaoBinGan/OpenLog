@@ -21,7 +21,7 @@ interface TermPanelProps {
   execLoading: boolean;
 }
 
-function TerminalPanel({ panelKey, containerName, cmds, cmdInput, setCmdInput, onRun, onClear, execLoading }: TermPanelProps) {
+function TerminalPanel({ containerName, cmds, cmdInput, setCmdInput, onRun, onClear, execLoading }: TermPanelProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const [copied, setCopied] = useState(false);
   useEffect(() => { bottomRef.current?.scrollIntoView({ block: 'nearest' }); }, [cmds]);

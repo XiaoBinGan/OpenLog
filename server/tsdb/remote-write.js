@@ -202,7 +202,6 @@ export function snappyDecodeLiteral(input) {
   }
 
   const out = [];
-  let produced = 0;
   while (i < src.length) {
     const tag = src[i]; i += 1;
     const type = tag & 0x03;
@@ -222,7 +221,6 @@ export function snappyDecodeLiteral(input) {
     if (i + len > src.length) throw new Error('snappy: literal 数据超出缓冲区');
     out.push(src.subarray(i, i + len));
     i += len;
-    produced += len;
   }
 
   const buf = Buffer.concat(out);

@@ -1,8 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import {
-  X, Maximize2, Minimize2, Terminal, AlertCircle, Loader,
-  Upload, FileText, ChevronDown, ChevronUp, Wifi, WifiOff,
-  Download, Info, Keyboard, Command
+  X, Maximize2, Minimize2, Terminal, Loader,
+  Upload, Keyboard, Command
 } from 'lucide-react';
 import type { RemoteServer } from '../types';
 import { withWsToken, wsProtocols } from '../api/auth';
@@ -61,7 +60,6 @@ export default function ShellTerminal({ server, onClose }: ShellTerminalProps) {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [showHelp, setShowHelp] = useState(true);
   const [showQuick, setShowQuick] = useState(false);
-  const [uploading, setUploading] = useState(false);
   const [dragOver, setDragOver] = useState(false);
 
   const wsRef = useRef<WebSocket | null>(null);

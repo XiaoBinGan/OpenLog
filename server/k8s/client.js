@@ -34,7 +34,7 @@ function formatSeconds(ms) {
  *   /api/v1/namespaces/default/pods/web-0/log  → pods/log / GET
  *   /api/v1/nodes                              → nodes / LIST
  */
-function inferRequestTarget(pathname, method = 'GET') {
+function inferRequestTarget(pathname, _method = 'GET') {
   const segments = String(pathname || '').split('/').filter(Boolean);
   let rest = segments;
   if (rest[0] === 'api') rest = rest.slice(2); // /api/<version>/...

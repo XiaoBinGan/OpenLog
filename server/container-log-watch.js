@@ -15,7 +15,7 @@
  */
 
 import { readFileSync } from 'node:fs';
-import { parseLogLevel, matchAlertLine } from './log-level.js';
+import { parseLogLevel } from './log-level.js';
 import { errorMessage } from './errors.js';
 
 /** 默认轮询间隔（ms）。可在设置里改，最小 2s。 */

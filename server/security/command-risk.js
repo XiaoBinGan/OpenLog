@@ -197,7 +197,6 @@ const ABSOLUTE_BLOCKLIST = [
 ];
 
 /** 解析失败/判为非只读时的默认原因 */
-const GENERIC_REASON = '可能修改系统状态';
 
 /**
  * 按引号感知地切分命令（不在引号内的 ; && || | 换行处切）。

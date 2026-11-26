@@ -71,6 +71,7 @@ export default function Logs() {
     if (!isRemote && !autoRefresh) {
       fetchLocalLogs();
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- 只依赖稳定字段而非整个对象：依赖整个对象会在每次 render 重跑（对象未 memo 化），导致重复请求甚至死循环
   }, [levelFilter, selectedDevice.id, isRemote]);
 
   // 远程：首次进入时自动加载文件列表
@@ -78,6 +79,7 @@ export default function Logs() {
     if (isRemote && activeServer && activeServer.status === 'connected') {
       loadFiles();
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- 只依赖稳定字段而非整个对象（依赖对象会每次 render 重跑，可能导致重复请求或死循环）
   }, [isRemote, activeServer?.id, activeServer?.status]);
 
   // search / levelFilter 已在组件顶部声明

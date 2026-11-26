@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Monitor, Server, ChevronDown, Loader } from 'lucide-react';
+import { Monitor, Server, ChevronDown } from 'lucide-react';
 import { useDevice } from '../contexts/DeviceContext';
 
 export default function DeviceSelector() {

@@ -1,8 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import {
-  Gauge, SlidersHorizontal, X, AlertTriangle, ArrowRight, RotateCcw,
-  Sparkles, Check, TriangleAlert,
-} from 'lucide-react';
+  Gauge, SlidersHorizontal, X, AlertTriangle, RotateCcw,
+  Sparkles, Check, TriangleAlert } from 'lucide-react';
 import type { ContextSettings } from '../contexts/AssistantContext';
 import Toggle from './Toggle';
 import {

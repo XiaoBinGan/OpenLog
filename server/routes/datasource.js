@@ -35,7 +35,7 @@ export function createDatasourceRouter(deps = {}) {
   const router = express.Router();
   const store = deps.store;
   const isOn = () => { try { return deps.enabled ? Boolean(deps.enabled()) : true; } catch { return false; } };
-  const cfg = () => { try { return deps.getDockerConfig ? deps.getDockerConfig() : {}; } catch { return {}; } };
+  const _cfg = () => { try { return deps.getDockerConfig ? deps.getDockerConfig() : {}; } catch { return {}; } };
 
   /**
    * 演示模式闸门（必须挂在**所有** handler 之前，包括下面 `!store` 的降级中间件）。

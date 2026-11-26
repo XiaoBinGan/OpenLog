@@ -440,7 +440,7 @@ export default function InfraPanel({ demo: demoProp, initialServiceId }: InfraPa
   // ── 执行：护栏通过 + 非演示模式才允许 ─────────────────────────────────
   // 门禁结论：null = 没有基准/正在跑 —— 此时不允许 apply（旧结论不能给新配置背书）
   const [gate, setGate] = useState<GateResult | null>(null);
-  const [autoscale, setAutoscale] = useState<AutoscaleFieldState | null>(null);
+  const [, setAutoscale] = useState<AutoscaleFieldState | null>(null);
 
   const handleApply = useCallback(async () => {
     if (!preview || demo || applying) return;

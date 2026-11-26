@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { Brain, AlertTriangle, CheckCircle, XCircle, X, Loader, ChevronRight, Send, BookOpen } from 'lucide-react';
+import { Brain, AlertTriangle, XCircle, X, Loader, ChevronRight, Send, BookOpen } from 'lucide-react';
 import { sanitizeHtml } from '../utils/sanitize';
 import { analysisToastKey } from '../utils/alertKeys';
 import { useToast } from '../contexts/ToastContext';

@@ -1399,7 +1399,6 @@ export function createInfraRouter({ ensureSettings, saveSettings, applyOptions =
     const record = await resolveCluster(req, res);
     if (!record) return;
     const autoscale = await loadModule('autoscale');
-    const capacity = await loadModule('capacity');
     if (!autoscale) {
       res.status(503).json({ error: '弹性模块未就绪' });
       return;

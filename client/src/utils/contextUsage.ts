@@ -230,11 +230,9 @@ export function trimHistoryToBudget<T>(
   const kept = keepFromEnd.reverse();
 
   // 修正边界：kept 的第一条若是 tool 消息，说明它的父 assistant 被丢了 → 一起丢
-  let dropMore = 0;
   while (kept.length > 1 && (kept[0] as any)?.role === 'tool') {
     used -= tokensOf(kept[0]);
     kept.shift();
-    dropMore += 1;
   }
 
   return { kept, droppedCount: list.length - kept.length, usedTokens: used };

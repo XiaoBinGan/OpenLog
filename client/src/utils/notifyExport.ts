@@ -12,7 +12,7 @@
  * 只有一个 sheet、单元格用 inlineStr、ZIP 用 store（不压缩）。Excel/WPS 都能正常打开。
  */
 
-import { formatNotificationTime, type NotificationItem } from './notifications';
+import { type NotificationItem } from './notifications';
 
 export interface ExportRow {
   index: number;

@@ -2,10 +2,10 @@
  * Remote.tsx — 远程服务器管理（修复版）
  * 修复：编辑按钮不显示、文件列表点击触发上传、状态切换竞态
  */
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import {
   filterServers, windowServers, countLabel,
-  DEFAULT_VISIBLE_COUNT, LOAD_MORE_STEP, type ServerStatusFilter,
+  DEFAULT_VISIBLE_COUNT, LOAD_MORE_STEP,
 } from '../utils/serverList';
 import { useToast } from '../contexts/ToastContext';
 import {
@@ -13,9 +13,8 @@ import {
   ChevronLeft, Search, Terminal, Check, X, AlertCircle, Loader,
   Cpu, MemoryStick, HardDrive, Clock, Home, Eye, EyeOff, Upload,
   Code2, Save, Pencil, Wifi, WifiOff, PanelLeftClose,
-  PanelLeftOpen, ArrowUp, FileCode, FolderOpen, FileJson, Sparkles, Download, PowerOff,
-  FolderPlus, MoreHorizontal,
-} from 'lucide-react';
+  PanelLeftOpen, ArrowUp, FileCode, FileJson, Sparkles, Download, PowerOff,
+  FolderPlus, MoreHorizontal } from 'lucide-react';
 import { useRemote } from '../contexts/RemoteContext';
 import { apiFetch, apiJson } from '../api/client';
 import ShellTerminal from '../components/ShellTerminal';
@@ -24,9 +23,8 @@ import FileContextMenu, { type FileMenuTarget, type FileOpKind } from '../compon
 import { DEMO_DISABLED_HINT, useDemoMode } from '../hooks/useDemoMode';
 import {
   validateFileName, validateRemotePathInput, validateMode,
-  joinPath, baseName, parentDir, deleteConfirmText,
-} from '../utils/fileOpPrompt';
-import type { RemoteServer, RemoteServerConfig, RemoteServerState, RemoteFile, RemoteDir } from '../types';
+  joinPath, parentDir, deleteConfirmText } from '../utils/fileOpPrompt';
+import type { RemoteServer, RemoteServerConfig, RemoteFile, RemoteDir } from '../types';
 
 const levelColors: Record<string, string> = {
   ERROR: 'text-red-400 bg-red-500/10 border border-red-500/20',
@@ -517,6 +515,7 @@ export default function Remote() {
       loadedRef.current = activeServer.id;
       loadFiles(activeServer.logPath || '/var/log');
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- 只依赖稳定字段而非整个对象：依赖整个对象会在每次 render 重跑（对象未 memo 化），导致重复请求甚至死循环
   }, [activeServer?.id, activeServer?.status, activeServer?.logPath, loadFiles]);
 
   // 测试连接

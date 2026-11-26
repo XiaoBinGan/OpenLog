@@ -26,8 +26,6 @@ const NO_CACHE_HEADERS = (res) => {
   res.setHeader('Expires', '0');
 };
 
-const QUERY_GPUS = 'nvidia-smi --query-gpu=index,name,utilization.gpu,memory.used,'
-  + 'memory.total,temperature.gpu --format=csv,noheader,nounits';
 
 /** 本机 nvidia-smi。不在 PATH 或无 GPU 时返回 []。 */
 function readLocalGpus() {

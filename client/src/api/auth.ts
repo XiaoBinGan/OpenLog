@@ -269,7 +269,6 @@ function ensureTokenResolved(): Promise<string | null> {
  * localhost, no token available" and is a normal outcome.
  */
 async function fetchTokenFromServer(): Promise<string | null> {
-  const state = authState();
   // Bound the request so `whenTokenReady()` ALWAYS settles. The promise is cached
   // and awaited before the first render and before opening sockets, so a hung
   // request would otherwise block or silently degrade them.

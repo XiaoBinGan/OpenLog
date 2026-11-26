@@ -365,7 +365,7 @@ router.post('/api/docker/analyze/batch', async (req, res) => {
   // 演示模式：批量分析会读真实容器日志并调用 LLM，直接禁用
   if (isDemoMode()) return res.status(409).json(DEMO_DISABLED);
   try {
-    const { containers, prompt: customPrompt, sourceId = 'docker-batch' } = req.body;
+    const { containers, prompt: customPrompt } = req.body;
     if (!containers || containers.length === 0) {
       return res.status(400).json({ error: '缺少容器列表' });
     }
