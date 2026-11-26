@@ -527,3 +527,60 @@ describe('rollout 超时不能写死 120s（32B 模型实测起不来）', () =>
     expect([200, 502]).toContain(res.status);
   });
 });
+
+/* ─────────────── 模型足迹：档位预检（真机三次尝试的回归） ─────────────── */
+describe('模型放不进配额时必须挡住（真机 21 GiB / 22.7 GiB 都崩过）', () => {
+  /** 32B-AWQ 的形状，配额按真机三档传 */
+  function bigService(memoryMiB) {
+    return service({
+      name: 'big-model',
+      model: { source: 'hostPath', path: '/models/Qwen2.5-VL-32B-Instruct-AWQ', sizeMiB: 20237, quantization: 'awq', parametersB: 32, contextLength: 2048 },
+      engine: { type: 'vllm', image: 'vllm/vllm-openai:v0.32.0', args: ['--gpu-memory-utilization', '0.92'] },
+      resources: { accelerators: 1, memoryMiB, coresPercent: 10 },
+    });
+  }
+
+  it('21 GiB 配额 → allowed:false + MODEL_FOOTPRINT_EXCEEDED', async () => {
+    const res = await post('/api/infra/services/big-model/preview', { service: bigService(21504) });
+    expect(res.status).toBe(200);
+    expect(res.body.allowed).toBe(false);
+    const codes = (res.body.violations || []).map((v) => v.code);
+    expect(codes).toContain('MODEL_FOOTPRINT_EXCEEDED');
+    expect(res.body.footprint.verdict).toBe('insufficient');
+  });
+
+  it('22.7 GiB（4090 全部剩余）仍不够 —— KV cache 会为负', async () => {
+    const res = await post('/api/infra/services/big-model/preview', { service: bigService(23284) });
+    expect(res.body.allowed).toBe(false);
+    expect((res.body.violations || []).map((v) => v.code)).toContain('MODEL_FOOTPRINT_EXCEEDED');
+  });
+
+  it('28 GiB → 放得下，且响应里带 footprint 明细', async () => {
+    const res = await post('/api/infra/services/big-model/preview', { service: bigService(28672) });
+    expect(res.body.allowed).toBe(true);
+    expect((res.body.violations || []).map((v) => v.code)).not.toContain('MODEL_FOOTPRINT_EXCEEDED');
+    expect(res.body.footprint.verdict).toBe('fits');
+    expect(res.body.footprint.breakdown.weightsMiB).toBe(20237);
+  });
+
+  it('小模型在小配额下也能通过（不能把正常配置也拦掉）', async () => {
+    const res = await post('/api/infra/services/qwen-test/preview', {
+      service: service({
+        model: { source: 'hostPath', path: '/models/tiny', sizeMiB: 1024, quantization: 'fp16', parametersB: 0.6, contextLength: 2048 },
+        resources: { accelerators: 1, memoryMiB: 4096, coresPercent: 10 },
+      }),
+    });
+    expect(res.body.allowed).toBe(true);
+    expect(res.body.footprint.verdict).toBe('fits');
+  });
+
+  it('tight 不拦，但把原因透出来（让用户自己判断）', async () => {
+    // 配额刚好超过需求但不足 10% 余量
+    const probe = await post('/api/infra/services/big-model/preview', { service: bigService(28672) });
+    const need = probe.body.footprint.requiredMiB;
+    const res = await post('/api/infra/services/big-model/preview', { service: bigService(Math.ceil(need)) });
+    expect(res.body.footprint.verdict).toBe('tight');
+    expect(res.body.allowed).toBe(true);   // tight 是警告不是阻断
+    expect(res.body.footprint.reasons.join(' ')).toContain('勉强够');
+  });
+});

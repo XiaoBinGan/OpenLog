@@ -279,6 +279,37 @@ function validateModel(input, value, limits, fail) {
       value.model.contextLength = contextLength;
     }
   }
+
+  // 模型足迹估算需要的三个字段（sizeMiB / parametersB / maxConcurrency）。
+  // 注意：白名单里没有的键会被静默丢弃 —— autoscale 与 cache 已经因此丢过一次，
+  // 表现是"上层分支永远进不去"。这里必须显式接住。
+  const sizeMiB = input.sizeMiB;
+  if (sizeMiB !== undefined && sizeMiB !== null) {
+    if (!Number.isFinite(Number(sizeMiB)) || Number(sizeMiB) <= 0) {
+      fail('model.sizeMiB', `model.sizeMiB 必须是正数（模型权重占用的 MiB，可用 du -sm 得到），收到 ${quote(sizeMiB)}`);
+    } else {
+      value.model.sizeMiB = Math.round(Number(sizeMiB));
+    }
+  }
+
+  const parametersB = input.parametersB ?? input.parameters;
+  if (parametersB !== undefined && parametersB !== null) {
+    const parsed = typeof parametersB === 'number' ? parametersB : Number(String(parametersB).replace(/[bB]$/, ''));
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      fail('model.parametersB', `model.parametersB 必须是正数（单位 B，例如 32 或 "32B"），收到 ${quote(parametersB)}`);
+    } else {
+      value.model.parametersB = parsed;
+    }
+  }
+
+  const maxConcurrency = input.maxConcurrency;
+  if (maxConcurrency !== undefined && maxConcurrency !== null) {
+    if (!Number.isInteger(Number(maxConcurrency)) || Number(maxConcurrency) < 1 || Number(maxConcurrency) > 1024) {
+      fail('model.maxConcurrency', `model.maxConcurrency 必须是 1..1024 的整数（KV cache 估算按它算），收到 ${quote(maxConcurrency)}`);
+    } else {
+      value.model.maxConcurrency = Number(maxConcurrency);
+    }
+  }
 }
 
 /** engine：类型枚举、镜像非空、args 字符串数组、env 变量名安全。 */

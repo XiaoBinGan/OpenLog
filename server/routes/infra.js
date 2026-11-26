@@ -51,7 +51,7 @@ const SERVICES_KEY = 'infraServices';
 
 const modules = {
   model: null, render: null, guard: null, capacity: null, apply: null, bench: null, accelerator: null,
-  gateway: null, audit: null, autoscale: null, modelCache: null, gate: null,
+  gateway: null, audit: null, autoscale: null, modelCache: null, gate: null, footprint: null,
 };
 
 /**
@@ -73,6 +73,7 @@ async function loadModule(name) {
     autoscale: '../infra/autoscale.js',
     modelCache: '../infra/model-cache.js',
     gate: '../infra/gate.js',
+    footprint: '../infra/footprint.js',
   };
   try {
     modules[name] = await import(specifiers[name]);
@@ -612,6 +613,31 @@ export function createInfraRouter({ ensureSettings, saveSettings, applyOptions =
       }
     }
 
+    // 模型足迹：容量预检只回答"配额放得进卡"，回答不了"模型放得进配额"。
+    // 真机上就是因为缺这一步，21 GiB 配额下 AWQ 反量化 OOM、22.7 GiB 下 KV cache 为负。
+    const footprintMod = await loadModule('footprint');
+    const footprintViolations = [];
+    let footprint = null;
+    if (footprintMod?.estimateModelFootprint) {
+      try {
+        footprint = footprintMod.estimateModelFootprint({
+          model: validation.value.model,
+          engine: validation.value.engine,
+          resources: validation.value.resources,
+          replicas: validation.value.replicas,
+        });
+        if (footprint.verdict === 'insufficient') {
+          footprintViolations.push({
+            code: 'MODEL_FOOTPRINT_EXCEEDED',
+            field: 'resources.memoryMiB',
+            message: footprint.reasons.join(' '),
+          });
+        }
+      } catch (err) {
+        footprint = { verdict: 'unknown', reasons: [`模型足迹估算失败：${errorMessage(err)}`], warnings: [] };
+      }
+    }
+
     // 自动伸缩预算：扩副本会吃 vGPU 配额，超了 HPA 会一直重试 Pending（不会自动止损），
     // 所以必须在预览阶段就算清楚，而不是等运行期发现。
     const autoscaleMod2 = await loadModule('autoscale');
@@ -649,11 +675,13 @@ export function createInfraRouter({ ensureSettings, saveSettings, applyOptions =
       allowed: guardResult.allowed
         && (placement ? placement.fits : true)
         && autoscaleViolations.length === 0
-        && pathViolations.length === 0,
+        && pathViolations.length === 0
+        && footprintViolations.length === 0,
       violations: [
         ...(guardResult.violations || []),
         ...autoscaleViolations,
         ...pathViolations,
+        ...footprintViolations,
         ...(placement && placement.fits === false
           ? placement.reasons.map((message) => ({ code: 'CAPACITY_INSUFFICIENT', message }))
           : []),
@@ -663,6 +691,7 @@ export function createInfraRouter({ ensureSettings, saveSettings, applyOptions =
       objects: rendered.objects,
       routes: rendered.routes,
       placement,
+      footprint,
     });
   });
 
