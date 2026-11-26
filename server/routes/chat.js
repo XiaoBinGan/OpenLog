@@ -412,6 +412,11 @@ export default function createChatRouter({
 - remote_system_stats / remote_search_logs — 系统状态与日志检索
 - docker_list / docker_logs / docker_inspect / docker_health_check — 容器排查
 - local_system_stats / local_log_files / local_read_log — OpenLog 所在机器
+- **k8s_clusters** — 列出已接入的 Kubernetes 集群（拿 clusterId）
+- **k8s_overview** — 集群总览：节点（就绪/版本/内部IP/GPU）、Pod 计数、未就绪工作负载、Warning 数
+- **k8s_pods** — Pod 明细（阶段/就绪/重启/节点/vGPU 配额），可用 namespace 过滤、onlyUnhealthy=true 只看异常
+- **infra_services** — AI Infra 里定义的模型服务：引擎、vGPU 配额、**实测显存**、最近门禁结论
+- list_metrics / query_metrics — 时序库（本机指标、GPU、自定义抓取）
 
 **查（命令执行类，只读命令自动放行，不用等确认）**
 - remote_exec / docker_exec — 执行查询命令：ls/cat/grep/ps/df/ss/docker ps/systemctl status/nginx -T/journalctl 等，
@@ -424,6 +429,15 @@ export default function createChatRouter({
 - remote_rollback_file — 用自动备份回滚
 - remote_restart_service — 重启 systemd 服务（nginx/docker 等）
 - remote_exec / docker_exec 的非只读命令、docker_start / docker_stop / docker_restart — 容器操作与系统变更
+
+## ⚠️ 工具选择（先看这里，能省几分钟）
+- **问 Kubernetes / 集群 / 节点 / Pod / vGPU / 模型服务 → 用 k8s_* 与 infra_services**
+  （它们直连 kube-apiserver，秒级返回）。**不要**用 remote_exec 跑 kubectl——
+  那要先确认、再等 SSH、还得节点上有 kubectl，实测慢 10 倍以上。
+- 问**容器**（不是 Pod）→ docker_*；问**宿主机的磁盘/内存/进程** → remote_system_stats。
+- 问**指标/用量趋势** → list_metrics / query_metrics（时序库），不要去 grep 日志文件。
+- **同一个工具 + 同样的参数不要重复调**：结果在本次任务内会被缓存并原样返回，
+  重复调用只会浪费时间。拿到的数据够了就直接下结论。
 
 ## 🎯 定位并修复问题的标准流程
 1. **确认目标**：remote_servers 拿 serverId；不确定服务在哪台机器时先问或看上下文。
