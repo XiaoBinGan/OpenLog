@@ -52,6 +52,19 @@
 
 ---
 
+## 未发布
+
+### 新增
+
+- `npm run verify`：一条命令跑完 CI 的全部四项检查（lint server → lint client → build → test），
+  顺序与 `.github/workflows/ci.yml` 完全一致，失败即停。支持 `--fast` / `--only=` / `--quiet`。
+
+### 修复
+
+- AI Infra 网关注册只接受「集群里真实存在且带 `managedBy=openlog-infra`」的服务 ——
+  防止 settings 里的残留/草稿定义把不存在的 upstream 写进 nginx（那会导致网关 CrashLoop）。
+- 删除服务定义接口：只删记录不动集群，顺带清快照。
+
 ## v1.5.0 — 2026-11-26
 
 AI Infra 能力层：从「只看得到 / 只能扩缩容」到「定义服务 → 预检 → 执行 → 校验 → 回滚」的完整闭环，

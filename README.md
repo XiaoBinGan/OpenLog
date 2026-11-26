@@ -493,13 +493,21 @@ attached - not for validating real cluster behaviour.
 ## 🧪 Dev & Quality Gates
 
 ```bash
-npm test              # unit + integration (2,600+ cases, incl. security regressions)
+npm run verify        # ← everything CI runs, in the same order (~35s)
+npm run verify:fast   # same, minus the client build
+npm test              # unit + integration (4,000+ cases, incl. security regressions)
 npm run test:coverage # with coverage
 npm run lint          # server ESLint
 npm run lint:client   # client ESLint (React + TS)
 npm run lint:all      # both
 npm run build         # tsc -b && vite build
 ```
+
+**`npm run verify` is the one to run before pushing.** It executes exactly the four commands CI
+runs — `lint` (server), `lint --prefix client`, `build`, `test` — in the same order, and stops at the
+first failure. Linting only the files you touched is not enough: CI runs `eslint .`, so a stray
+`no-constant-binary-expression` in a file you "didn't really change" still turns the build red. Support
+flags: `--fast` (skip build), `--only=lint|lint-client|build|test`, `--quiet` (print failures only).
 
 CI (`.github/workflows/ci.yml`) runs install → lint (both sides) → build → test on push/PR to
 `node` / `main`, with a **matrix over ubuntu-latest and windows-latest** (Docker-over-SSH bridge

@@ -20,7 +20,9 @@
     "deploy": "node deploy/deploy.mjs",
     "deploy:logs": "node deploy/deploy.mjs --logs",
     "deploy:image:save": "bash deploy/scripts/save-image.sh",
-    "deploy:image:load": "bash deploy/scripts/load-image.sh"
+    "deploy:image:load": "bash deploy/scripts/load-image.sh",
+    "verify": "node scripts/verify.mjs",
+    "verify:fast": "node scripts/verify.mjs --fast"
   },
   "engines": {
     "node": ">=22.22"
