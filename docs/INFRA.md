@@ -1395,3 +1395,62 @@ required = (weights + engineOverhead + kvCache) / gpuMemoryUtilization
 | `model.maxConcurrency` | 建议 | 目标并发；不填按 1 路算，KV 会偏小 |
 
 对应接口：`POST /api/infra/cache-estimate`（磁盘视角）与 `POST .../preview` 返回的 `footprint` 字段（显存视角）。
+
+## 8. KV cache 精确计算（读模型元数据，不再查经验表）
+
+`footprint.js` 最初按参数量档位查经验表（30B 级 ≈ 256 KiB/token）。真机对账发现对
+**混合架构 + GQA + int8 KV** 的模型会差数倍到数十倍 —— 以本项目 strata 的模型为例：
+
+| 口径 | 每 token | 32k 上下文 |
+|---|---|---|
+| 经验表（512B 参数档位） | 768 KiB | **768 MiB** |
+| 读 GGUF 精确计算 | 7.0 KiB | **219 MiB** |
+
+经验表错在三处：48 层里只有 12 层是全注意力（其余是 SSM/线性层，KV 不随 token 增长）、
+KV 头数 2 远小于注意力头数 24（GQA）、KV 精度 int8 只有 fp16 的一半。
+
+### 怎么算的
+
+```
+每 token KV 字节 = 全注意力层数 × KV头数 × (key_dim + value_dim) × KV字节宽 ÷ 平均压缩比
+```
+
+| 输入 | 来源 |
+|---|---|
+| 层数 / 全注意力间隔 | GGUF `*.block_count` / `*.full_attention_interval`；HF `num_hidden_layers` / `layer_types` |
+| KV 头数 | GGUF `*.attention.head_count_kv`；HF `num_key_value_heads`（缺省按 MHA） |
+| key/value 维度 | GGUF `*.attention.key_length`/`value_length`；HF `head_dim` 或 `hidden_size ÷ heads` |
+| 压缩比 | GGUF `*.attention.compress_ratios` 的平均值（>1 才生效） |
+| KV 精度 | 引擎参数 `--kv` / `--kv-cache-dtype`（int8/fp8/fp16…），缺省 fp16 |
+| 线性层常量状态 | GGUF `*.ssm.*`，与上下文无关，单独列一项 |
+
+### 真机可见证据
+
+预览响应里的 `footprint.warnings` 会原样给出公式与来源：
+
+```
+KV cache 按模型元数据精确计算：12 层 × 2 KV头 × (256+256) × 1B ÷ 1.75，KV 精度 int8（来源：--kv）
+→ 32768 tokens × 1 路 = 219.4 MiB
+混合架构：48 层里 12 层全注意力 + 36 层线性/SSM（后者 KV 不随 token 增长）
+```
+
+`footprint.breakdown.kvSource` 取 `model-spec`（精确）或 `experience-table`（退化），前端据此标注可信度。
+
+### 怎么让它读到模型
+
+新增 `model.specPath`：**宿主机**上的模型文件/目录绝对路径（`model.path` 是容器内路径，两者常被
+volumeMount 映射得不一样）。读法是通过已有的 SSH 通道取文件头（GGUF 通常 4MB 内读完元数据，
+超了会自动翻倍重试，上限 32MB）。
+
+读不到时不会失败，而是退回经验表并明确告警「可能高估或低估数倍到数十倍」。
+
+### 引擎卸载：文件大小 ≠ 显存占用
+
+| 引擎/参数 | 现象 |
+|---|---|
+| strata `--expert-cache` / `--ple-io` | expert 与 PLE 放内存，63GB 文件只占 14 GiB 显存 |
+| llama.cpp（默认 mmap） | 权重按需分页，RSS 可能远小于文件大小 |
+| vLLM `--cpu-offload-gb` | 部分层在 CPU |
+
+这些情况下权重项**必须用实测值**（bench 的 `readGpuMem`）而不是文件大小，否则估算严重偏大。
+`detectWeightOffload()` 会识别并把这条告警带进 warnings。
