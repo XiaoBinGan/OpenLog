@@ -652,6 +652,23 @@ export function createInfraRouter({ ensureSettings, saveSettings, applyOptions =
       }
     }
 
+    // 实测值属于「这个服务」而不是「这次请求」：
+    // bench 回填后，哪怕前端的预览请求里没带 measuredMemMiB，也应该用已存定义里的实测值，
+    // 否则用户会看到"压测回填了但还是按文件大小估算"的矛盾结论。
+    const storedForMeasure = findService(
+      ensureSettings(),
+      `${validation.value.namespace}/${validation.value.name}`,
+    );
+    if (storedForMeasure?.model?.measuredMemMiB && !validation.value.model?.measuredMemMiB) {
+      validation.value.model = {
+        ...validation.value.model,
+        measuredMemMiB: storedForMeasure.model.measuredMemMiB,
+        measuredContextLength: storedForMeasure.model.measuredContextLength,
+        measuredMaxConcurrency: storedForMeasure.model.measuredMaxConcurrency,
+        measuredAt: storedForMeasure.model.measuredAt,
+      };
+    }
+
     // 模型足迹：容量预检只回答"配额放得进卡"，回答不了"模型放得进配额"。
     // 真机上就是因为缺这一步，21 GiB 配额下 AWQ 反量化 OOM、22.7 GiB 下 KV cache 为负。
     const footprintMod = await loadModule('footprint');

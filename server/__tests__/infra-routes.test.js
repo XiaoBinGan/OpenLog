@@ -619,3 +619,44 @@ describe('保存定义不需要碰集群（bench 回填与"先想清楚再下发
     expect(res.status).toBe(409);
   });
 });
+
+/* ────────── 实测值的归属：属于服务，不是属于这次请求 ────────── */
+describe('bench 回填的实测值在后续 preview 里生效', () => {
+  it('请求体没带 measuredMemMiB，但已存定义里有 → footprint 用实测', async () => {
+    // 先存一份带实测的定义
+    const saved = await post('/api/infra/services/qwen-test/definition', {
+      service: service({
+        model: { source: 'hostPath', path: '/a', contextLength: 4096, measuredMemMiB: 3000, measuredMaxConcurrency: 1 },
+        resources: { accelerators: 1, memoryMiB: 8192, coresPercent: 10 },
+      }),
+    });
+    expect(saved.status).toBe(200);
+
+    // 预览时故意不带 measuredMemMiB
+    const res = await post('/api/infra/services/qwen-test/preview', {
+      service: service({
+        model: { source: 'hostPath', path: '/a', contextLength: 4096 },
+        resources: { accelerators: 1, memoryMiB: 8192, coresPercent: 10 },
+      }),
+    });
+    expect(res.status).toBe(200);
+    expect(res.body.footprint.basis).toBe('measured');
+    expect(res.body.footprint.requiredMiB).toBe(3000);
+  });
+
+  it('请求体显式带实测值时以请求为准（可以临时试算）', async () => {
+    await post('/api/infra/services/qwen-test/definition', {
+      service: service({
+        model: { source: 'hostPath', path: '/a', contextLength: 4096, measuredMemMiB: 3000 },
+        resources: { accelerators: 1, memoryMiB: 8192, coresPercent: 10 },
+      }),
+    });
+    const res = await post('/api/infra/services/qwen-test/preview', {
+      service: service({
+        model: { source: 'hostPath', path: '/a', contextLength: 4096, measuredMemMiB: 7000 },
+        resources: { accelerators: 1, memoryMiB: 8192, coresPercent: 10 },
+      }),
+    });
+    expect(res.body.footprint.requiredMiB).toBe(7000);
+  });
+});
