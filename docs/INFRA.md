@@ -1352,3 +1352,46 @@ mock **不能**证明：真实 nginx 起不起来、reload 是否真的发生、
 
 三者并列才有意义：分配高而实测低 = 空转；实测高而 MFU 低 = 跑得慢（不是没活干）；
 `measured: false` = 没有数据，不是 0。
+
+## 7. 模型足迹预检（回答「模型放得进配额吗」）
+
+容量预检（`capacity.js`）只回答**配额放得进卡**；它回答不了**模型放得进配额**。两者是不同问题，
+2026-11-26 真机三次尝试证明了这一点：
+
+| 配额 | 真机结果 | 足迹预检 |
+|---|---|---|
+| 21504 MiB | CUDA OOM（AWQ 反量化需额外 1.05 GiB 暂存） | `insufficient`（需求 24222 MiB） |
+| 23284 MiB（4090 全部剩余） | vLLM 报 KV cache 剩 **-0.73 GiB** | `insufficient` |
+| 28672 MiB | 正常服务，实测进程占用 25076 MiB | `fits`（估算 24222，误差 <4%） |
+
+### 估算口径
+
+```
+required = (weights + engineOverhead + kvCache) / gpuMemoryUtilization
+```
+
+| 项 | 来源 | 说明 |
+|---|---|---|
+| `weights` | `model.sizeMiB`（优先）或 `parametersB × 位宽/8 × 1.05` | 两者都有但不一致（差 >30%）会告警并采信 sizeMiB |
+| `engineOverhead` | 按引擎固定开销（vllm 1536 / sglang 1792 / llama.cpp 768 MiB…） | AWQ/GPTQ 反量化暂存就在这一块 |
+| `kvCache` | 每 token 字节（按参数量档位）× `contextLength` × `maxConcurrency` | 未声明并发/上下文时明确告警"结论会偏乐观" |
+| `gpuMemoryUtilization` | 从 `engine.args` 的 `--gpu-memory-utilization` 读，缺省 0.9 | **关键**：vLLM 只用配额的 N%，所以配额必须 ≥ 需求/N |
+
+### 三档结论
+
+| verdict | 含义 | 行为 |
+|---|---|---|
+| `fits` | 配额 ≥ 需求 × 1.1 | 放行；配额 > 需求 2 倍时提示可能空转占卡 |
+| `tight` | 配额够但余量 < 10% | **放行 + 解释**（真机上这类配置最容易 OOM，但不该替用户拍板） |
+| `insufficient` | 配额 < 需求 | **硬拦**，`MODEL_FOOTPRINT_EXCEEDED`，文案含缺口与建议配额 |
+| `unknown` | 没有 sizeMiB 也没有 parametersB | 不编数字，提示先补字段 |
+
+### 新增的 ModelService 字段
+
+| 字段 | 必填 | 作用 |
+|---|---|---|
+| `model.sizeMiB` | 建议 | 权重实际占用（`du -sm` 即可）。有它才可能估准 |
+| `model.parametersB` | 建议 | 参数量（`32` 或 `"32B"`），用于 KV 档位与交叉校验 |
+| `model.maxConcurrency` | 建议 | 目标并发；不填按 1 路算，KV 会偏小 |
+
+对应接口：`POST /api/infra/cache-estimate`（磁盘视角）与 `POST .../preview` 返回的 `footprint` 字段（显存视角）。
