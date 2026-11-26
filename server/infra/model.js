@@ -299,6 +299,18 @@ function validateModel(input, value, limits, fail) {
     }
   }
 
+  // 磁盘文件大小（不是显存占用）：卸载型引擎下两者能差 4~5 倍，
+  // 所以只作为最后兜底，且必须配 detectWeightOffload 的告警。
+  const fileSizeMiB = input.fileSizeMiB;
+  if (fileSizeMiB !== undefined && fileSizeMiB !== null) {
+    const fs = Number(fileSizeMiB);
+    if (!Number.isFinite(fs) || fs <= 0) {
+      fail('model.fileSizeMiB', `model.fileSizeMiB 必须是正数（磁盘占用 MiB），收到 ${quote(fileSizeMiB)}`);
+    } else {
+      value.model.fileSizeMiB = Math.round(fs);
+    }
+  }
+
   // 实测显存（bench 回填）：卸载型引擎下这是唯一可信的权重口径
   // （strata 63GB 文件实测只有 13.3 GiB），所以必须能存进定义里。
   const measuredMemMiB = input.measuredMemMiB;

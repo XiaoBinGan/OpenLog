@@ -350,3 +350,62 @@ describe('MoE 卸载检测（权重≠文件大小）', () => {
     expect(r.offloads).toBe(true);
   });
 });
+
+/* ─────────── 白名单完整性（这一课已经踩了四次） ─────────── */
+describe('ModelService 白名单必须包含所有会被上层用到的模型字段', () => {
+  it('足迹/规格相关字段全都透传（踩过四次：autoscale/cache/sizeMiB/specPath/fileSizeMiB）', async () => {
+    const { validateModelService } = await import('../infra/model.js');
+    const r = validateModelService({
+      name: 'wl-check',
+      namespace: 'infra-test',
+      model: {
+        source: 'hostPath',
+        path: '/container/path',
+        specPath: '/host/path',
+        sizeMiB: 20237,
+        fileSizeMiB: 64500,
+        parametersB: 32,
+        quantization: 'awq',
+        contextLength: 32768,
+        maxConcurrency: 4,
+        measuredMemMiB: 13330,
+        measuredContextLength: 32768,
+        measuredMaxConcurrency: 1,
+        measuredAt: '2026-11-26T13:30:00.000Z',
+      },
+      engine: { type: 'strata', image: 'i' },
+      resources: { accelerators: 1, memoryMiB: 14336, coresPercent: 50 },
+      replicas: 1,
+      ports: [{ name: 'http', containerPort: 8080 }],
+      health: { path: '/health' },
+    });
+    expect(r.ok).toBe(true);
+    const m = r.value.model;
+    // 任何一个被丢掉，上层就会静默降级到错误的估算 —— 逐个钉住
+    expect(m.specPath).toBe('/host/path');
+    expect(m.sizeMiB).toBe(20237);
+    expect(m.fileSizeMiB).toBe(64500);
+    expect(m.parametersB).toBe(32);
+    expect(m.maxConcurrency).toBe(4);
+    expect(m.measuredMemMiB).toBe(13330);
+    expect(m.measuredContextLength).toBe(32768);
+    expect(m.measuredMaxConcurrency).toBe(1);
+    expect(m.measuredAt).toBe('2026-11-26T13:30:00.000Z');
+  });
+
+  it('非法值被拒（负数 / 穿越路径 / 坏时间）', async () => {
+    const { validateModelService } = await import('../infra/model.js');
+    const base = {
+      name: 'bad', namespace: 'infra-test',
+      engine: { type: 'vllm', image: 'i' },
+      resources: { accelerators: 1, memoryMiB: 4096, coresPercent: 10 },
+      replicas: 1, ports: [{ name: 'http', containerPort: 8000 }], health: { path: '/' },
+    };
+    const bad = (model) => validateModelService({ ...base, model: { source: 'hostPath', path: '/a', ...model } });
+    expect(bad({ measuredMemMiB: -1 }).ok).toBe(false);
+    expect(bad({ fileSizeMiB: 0 }).ok).toBe(false);
+    expect(bad({ specPath: '../etc/passwd' }).ok).toBe(false);
+    expect(bad({ specPath: 'relative/path' }).ok).toBe(false);
+    expect(bad({ measuredAt: 'not-a-date' }).ok).toBe(false);
+  });
+});
