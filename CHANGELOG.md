@@ -54,6 +54,26 @@
 
 ## 未发布
 
+### 运维助手：补 K8s/Infra 工具 + 修分发 bug（189s→25s）
+
+真机实测驱动，三处修复：
+
+1. **新增 4 个只读工具**：`k8s_clusters` / `k8s_overview` / `k8s_pods` / `infra_services`。
+   此前问「集群有几个节点」，模型只能调 remote_servers + docker_list + remote_system_stats×3，
+   189 秒还答的是 SSH 服务器而非 Kubernetes 节点。
+2. **修 schema 放错文件的 bug**：这四个工具的 schema 一度被放进 `agent-tools.js` 的 `AGENT_TOOLS`，
+   于是 `AGENT_TOOL_NAMES` 抢先分发、由不认识的执行器返回「未知 agent 工具」——
+   表现为「工具可见、模型也在调、但一句答案都出不来」。schema 已移到 `ASSISTANT_TOOLS`，
+   并加守卫测试断言它们**不在** `AGENT_TOOL_NAMES` 里。
+3. **减少绕路**：系统提示词补工具清单与「K8s 问题用 k8s_*，不要用 remote_exec 跑 kubectl」；
+   `remote_exec` 检测到 kubectl 时直接返回引导；只读工具结果按参数去重（无参工具忽略额外字段）；
+   单集群时编造的 clusterId 自动兜底。
+
+| 问题 | 改动前 | 改动后 |
+|---|---|---|
+| 集群有几个节点 | 189s / 19 次调用 / 答错对象 | **25s / 2 次调用 / 正确** |
+| 有没有异常 Pod | 157s / 19 次调用 / 0 字正文 | **52s / 5 次调用 / 783 字结论** |
+
 ### lint 清零（318 → 0）
 
 server 38 条、client 280 条全部处理完。清理过程中挖出一个**内容丢失的真 bug**：
