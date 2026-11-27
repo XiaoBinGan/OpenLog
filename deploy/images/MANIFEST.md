@@ -27,6 +27,8 @@
 
 | 归档文件 | 镜像 | 镜像 ID | commit | 大小 | 归档时间 | SHA256 | 备注 | 位置 |
 |---|---|---|---|---|---|---|---|---|
+| `openlog-53e2c05e-20261128-013217.tar.gz` | `openlog:53e2c05e` | `2ad76302fefc` | `53e2c05e` | 197M | 2026-11-28 01:32 | `777a0fafe189…` | 最新（linux/amd64）：HAMi 指标走 apiserver 代理（/usage 5.1s→0.2s）+ 算力实测进容量预检（TTL/单飞/超时降级） | 本地 + 离线包 |
+| `openlog-53e2c05e-20261128-013238.tar.gz` | `openlog:53e2c05e` | `2ad76302fefc` | `53e2c05e` | 188M | 2026-11-28 01:32 | `8e4c68898308…` | 同上（linux/arm64，原生构建） | 本地 + 离线包 |
 | `openlog-b9068f9a-20261127-233809.tar.gz` | `openlog:b9068f9a` | `f33b7700e874` | `b9068f9a` | 197M | 2026-11-27 23:38 | `3d57187f5bb2…` | 最新（linux/amd64）：真机演练挖出的三个回滚缺陷（version 语义错位 / 历史被覆盖 / 回滚不记历史）+ 容量与足迹上屏 | 本地 + 离线包 |
 | `openlog-b9068f9a-20261127-233823.tar.gz` | `openlog:b9068f9a` | `f33b7700e874` | `b9068f9a` | 188M | 2026-11-27 23:38 | `99119f0226c8…` | 同上（linux/arm64，原生构建） | 本地 + 离线包 |
 | `openlog-0d8d8aba-20261127-230829.tar.gz` | `openlog:0d8d8aba` | `494d0c6ab12b` | `0d8d8aba` | 197M | 2026-11-27 23:08 | `9847c8aeed27…` | 最新（linux/amd64）：AI Infra 面板把 preview 里的 `placement` / `footprint` 上屏（容量三档 + 足迹三档 + 候选节点表），apply 的 `gateway.ok:false` 渲染成「半成功」；19 条新用例；全量 4087 通过 | 本地 + 离线包 |
