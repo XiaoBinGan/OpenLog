@@ -73,8 +73,13 @@
 集群里 `nvidia.com/gpumem` 回到 `2048`，Pod `Running / ready=true`，
 HAMi 注解 `GPU-…,NVIDIA,2048,10:;`。
 
-新增 4 条服务端用例（`server/__tests__/infra-routes.test.js`）：目标版本取最新快照、
-目标 ≥ 当前 409、`stepsBack` 兼容、`upsertService` 保留新历史。
+3. **回滚不记历史**：回滚成功后只返回 `steps`，不写定义也不追加历史 ——
+   面板上的版本号与历史区一动不动，下一次选「回到上一版」的参照物还是回滚前的，
+   能一路退到同一个快照。现在回滚成功会 `upsertService`（版本 +1）并追加
+   `action: 'rollback'` 的历史条目（`note: 回滚到 vN`）。
+
+新增 5 条服务端用例（`server/__tests__/infra-routes.test.js`）：目标版本取最新快照、
+目标 ≥ 当前 409、`stepsBack` 兼容、`upsertService` 保留新历史、回滚写历史。
 
 ### AI Infra 面板：容量结论与流失的半成功
 

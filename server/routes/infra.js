@@ -1199,6 +1199,29 @@ export function createInfraRouter({ ensureSettings, saveSettings, applyOptions =
     }
     try {
       const result = await applyMod.rollbackService({ snapshot, client });
+      // 回滚也要落历史：否则「回滚过」这件事只存在于审计里，面板上的版本号与历史区一动不动，
+      // 下一次选「回到上一版」时参照物还是回滚前的，能一路退回同一个快照。
+      if (result?.ok === true && typeof saveSettings === 'function') {
+        const current = (service && findService(ensureSettings(), `${service.namespace}/${service.name}`)) || service;
+        if (current) {
+          const nextVersion = Number(current.version || 0) + 1;
+          try {
+            saveSettings(upsertService(ensureSettings(), {
+              ...current,
+              history: appendHistory(current, {
+                action: 'rollback',
+                ok: true,
+                version: nextVersion,
+                note: Number.isFinite(requestedVersion) && requestedVersion > 0
+                  ? `回滚到 v${requestedVersion}`
+                  : `回滚到最近快照（往回 ${idx} 份）`,
+              }),
+            }));
+          } catch (err) {
+            console.warn(`[Infra] 回滚历史写入失败（集群已恢复，仅记录丢失）：${errorMessage(err)}`);
+          }
+        }
+      }
       res.json({ ok: result?.ok === true, steps: result?.steps || [], error: result?.error || null });
     } catch (err) {
       res.status(500).json({ ok: false, error: `回滚失败：${errorMessage(err)}` });

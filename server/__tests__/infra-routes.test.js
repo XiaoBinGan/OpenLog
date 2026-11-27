@@ -963,6 +963,16 @@ describe('回滚的 version 是「目标版本号」，不是「往回退几步�
     expect(h.writeCalls.some(([method]) => method === 'PATCH')).toBe(false);
   });
 
+  it('回滚成功后写历史（action=rollback，版本号前进）', async () => {
+    seedVersioned(4, [9, 8]);
+    const res = await post('/api/infra/services/qwen-test/rollback', { version: 3 });
+    expect(res.status).toBe(200);
+    const saved = h.settings.infraServices[0];
+    expect(saved.version).toBe(5);
+    expect(saved.history?.[0]?.action).toBe('rollback');
+    expect(saved.history?.[0]?.note).toContain('v3');
+  });
+
   it('stepsBack 仍按「往回几份」走（脚本/内部用法不被破坏）', async () => {
     seedVersioned(4, [9, 8, 7]);
     const res = await post('/api/infra/services/qwen-test/rollback', { stepsBack: 2 });
