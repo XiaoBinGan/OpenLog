@@ -160,13 +160,88 @@ export interface InfraImpact {
   reasons: string[];
 }
 
-/** `POST /api/infra/services/:id/preview` 的响应（= A2 checkGuard + renderDiff）。 */
+/** 一个候选落点（`capacity.js` 的 `candidates[]`）。字段随适配器增减，故宽进。 */
+export interface CapacityCandidate {
+  node: string;
+  /** 型号亲和是否匹配；false = 这个节点的卡不参与判定（即使显存更大）。 */
+  eligible?: boolean;
+  /** 单卡剩余显存（MiB）。 */
+  freeMemMiB?: number;
+  /** 该节点上单卡的最大剩余显存（多卡节点取最大）。 */
+  maxFreeMemMiB?: number;
+  /** 放下副本之后还剩多少（MiB）。 */
+  remainingMiB?: number;
+  /** 落在这个节点上的副本数。 */
+  placedReplicas?: number;
+}
+
+/**
+ * A4 容量预检结论：回答「配额放得进卡吗」。
+ *
+ * 与「模型足迹」是两个不同的问题：容量看的是单卡剩余显存够不够装下配额，
+ * 足迹看的是模型本身（权重 + 开销 + KV）装不装得进配额。两张卡拼不出一个副本，
+ * 所以 `fits:false` 时把副本拆到两台机器上是**无效解法**。
+ */
+export interface PlacementResult {
+  /** false = 至少一个副本没有落点。 */
+  fits: boolean;
+  /** 结论 + 为什么（中文，按顺序展示，不要截断）。 */
+  reasons: string[];
+  /** 采集异常（被忽略的节点/卡）；空数组表示数据干净。 */
+  warnings: string[];
+  /** 承载副本最多的节点；null = 一个落点都没有。 */
+  best: string | null;
+  /** 碎片描述：为什么剩下的显存"看着有、拼不出来"。 */
+  fragments: string[];
+  /** 参与判定的节点（含不可用的，用 `eligible` 区分）。 */
+  candidates: CapacityCandidate[];
+}
+
+/** A7 模型足迹的判定档位。`unknown` = 读不到模型元数据，不是「放得下」。 */
+export type FootprintVerdict = 'fits' | 'tight' | 'insufficient' | 'unknown';
+
+/** A7 模型足迹结论：回答「模型放得进配额吗」。 */
+export interface FootprintResult {
+  verdict: FootprintVerdict;
+  /** `measured` = 用压测实测值；`estimated` = 按权重 + 开销 + KV 估算。 */
+  basis?: string;
+  quotaMiB?: number | null;
+  requiredMiB?: number | null;
+  headroomMiB?: number | null;
+  reasons: string[];
+  warnings: string[];
+  /** 一句话口径（「实测 13330 MiB，不再按权重估算」）。 */
+  assumption?: string;
+  /** 元数据来源（gguf 头 / HF config.json / 经验表）。 */
+  specSource?: string;
+  /** 用过的实测值（`basis: 'measured'` 时才有意义）。 */
+  measured?: {
+    memMiB?: number | null;
+    contextLength?: number | null;
+    maxConcurrency?: number | null;
+    at?: string | null;
+  } | null;
+  /** 分项：权重 / 引擎开销 / KV cache。 */
+  breakdown?: {
+    weightsMiB?: number | null;
+    overheadMiB?: number | null;
+    kvCacheMiB?: number | null;
+    kvSource?: string | null;
+    measuredMiB?: number | null;
+  } | null;
+}
+
+/** `POST /api/infra/services/:id/preview` 的响应（= A2 checkGuard + renderDiff + A4 容量 + A7 足迹）。 */
 export interface GuardResult {
   allowed: boolean;
   violations: GuardViolation[];
   /** 文本 diff（unified 风格，`+`/`-` 前缀）。 */
   diff: string;
   impact: InfraImpact;
+  /** A4 容量预检；老后端或没有集群状态时为 null。 */
+  placement?: PlacementResult | null;
+  /** A7 模型足迹；读不到模型元数据时为 `{ verdict: 'unknown' }`，缺失代表后端没有这一层。 */
+  footprint?: FootprintResult | null;
 }
 
 /** A5 执行器的一个步骤。 */
@@ -184,6 +259,16 @@ export interface ApplyResult {
   auditId?: string;
   /** 回滚是否可用（快照落盘了才可用）。 */
   snapshot?: { available: boolean; id?: string } | null;
+  /**
+   * 网关注册结果。`ok:false` 是**半成功**：服务本身已经就绪，只是外部访问不到
+   * （端口冲突 / reload 没打上 / 读不到 ConfigMap）。不显示它，用户会以为「上线了」。
+   */
+  gateway?: {
+    ok?: boolean;
+    changed?: boolean;
+    error?: string;
+    conflicts?: unknown[];
+  } | null;
   /** 执行后的服务视图（前端就地更新，不必等下一次列表刷新）。 */
   service?: InfraServiceView | null;
 }
@@ -749,6 +834,124 @@ export function normalizeImpact(input: unknown, fallback: InfraImpact): InfraImp
   return { action, restarts, downtimeSeconds, reasons: reasons.length > 0 ? reasons : fallback.reasons };
 }
 
+/** 字符串数组 → 去空后的中文列表（后端给 null / 非数组时返回空，绝不渲染 undefined）。 */
+function stringList(input: unknown): string[] {
+  if (!Array.isArray(input)) return [];
+  const out: string[] = [];
+  for (const item of input) {
+    if (typeof item !== 'string') continue;
+    const text = item.trim();
+    if (text) out.push(text);
+  }
+  return out;
+}
+
+/** 数字或 null（NaN / Infinity / 空串一律 null：显示 `—` 而不是假的 0）。 */
+function numberOrNull(value: unknown): number | null {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  if (typeof value === 'string' && value.trim() !== '') {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+/** 节点名：后端可能给字符串，也可能给 `{ name }` 对象（旧适配器形状）。 */
+function nodeNameOf(value: unknown): string {
+  if (typeof value === 'string') return value.trim();
+  const record = asRecord(value);
+  const name = record?.name ?? record?.node;
+  return typeof name === 'string' ? name.trim() : '';
+}
+
+/**
+ * 容量预检归一。
+ *
+ * `fits` **只认布尔 true**：缺字段说明这次没有结论（比如没接集群），
+ * 按 `false` 处理会让「没查」显示成「放不下」，用户于是去改一个本来就对的配额。
+ * 所以缺字段时返回 `null`（= 未验证），由组件显示「未验证」而不是任何一档结论。
+ */
+export function normalizePlacement(input: unknown): PlacementResult | null {
+  const record = asRecord(input);
+  if (!record) return null;
+  if (typeof record.fits !== 'boolean') return null;
+
+  const candidatesRaw = Array.isArray(record.candidates) ? record.candidates : [];
+  const candidates: CapacityCandidate[] = [];
+  for (const item of candidatesRaw) {
+    const candidate = asRecord(item);
+    if (!candidate) continue;
+    const node = nodeNameOf(candidate.node);
+    if (!node) continue;
+    candidates.push({
+      node,
+      eligible: typeof candidate.eligible === 'boolean' ? candidate.eligible : undefined,
+      freeMemMiB: numberOrNull(candidate.freeMemMiB) ?? undefined,
+      maxFreeMemMiB: numberOrNull(candidate.maxFreeMemMiB) ?? undefined,
+      remainingMiB: numberOrNull(candidate.remainingMiB) ?? undefined,
+      placedReplicas: numberOrNull(candidate.placedReplicas) ?? undefined,
+    });
+  }
+
+  const best = nodeNameOf(record.best);
+
+  return {
+    fits: record.fits,
+    reasons: stringList(record.reasons),
+    warnings: stringList(record.warnings),
+    best: best || null,
+    fragments: stringList(record.fragments),
+    candidates,
+  };
+}
+
+/** 足迹档位白名单：认不出的值一律 `unknown`（显示「未验证」），不猜成 `fits`。 */
+function footprintVerdictOf(value: unknown): FootprintVerdict {
+  if (value === 'fits' || value === 'tight' || value === 'insufficient' || value === 'unknown') {
+    return value;
+  }
+  return 'unknown';
+}
+
+/** 模型足迹归一：缺 `verdict` 时返回 null（= 后端没有这一层），有则至少给 `unknown`。 */
+export function normalizeFootprint(input: unknown): FootprintResult | null {
+  const record = asRecord(input);
+  if (!record) return null;
+  if (typeof record.verdict !== 'string') return null;
+
+  const measuredRaw = asRecord(record.measured);
+  const breakdownRaw = asRecord(record.breakdown);
+
+  return {
+    verdict: footprintVerdictOf(record.verdict),
+    basis: typeof record.basis === 'string' ? record.basis : undefined,
+    quotaMiB: numberOrNull(record.quotaMiB),
+    requiredMiB: numberOrNull(record.requiredMiB),
+    headroomMiB: numberOrNull(record.headroomMiB),
+    reasons: stringList(record.reasons),
+    warnings: stringList(record.warnings),
+    assumption: typeof record.assumption === 'string' ? record.assumption : undefined,
+    specSource: typeof record.specSource === 'string' ? record.specSource : undefined,
+    measured: measuredRaw
+      ? {
+        memMiB: numberOrNull(measuredRaw.memMiB),
+        contextLength: numberOrNull(measuredRaw.contextLength),
+        maxConcurrency: numberOrNull(measuredRaw.maxConcurrency),
+        at: typeof measuredRaw.at === 'string' ? measuredRaw.at : null,
+      }
+      : null,
+    breakdown: breakdownRaw
+      ? {
+        weightsMiB: numberOrNull(breakdownRaw.weightsMiB),
+        overheadMiB: numberOrNull(breakdownRaw.overheadMiB),
+        kvCacheMiB: numberOrNull(breakdownRaw.kvCacheMiB),
+        kvSource: typeof breakdownRaw.kvSource === 'string' ? breakdownRaw.kvSource : null,
+        measuredMiB: numberOrNull(breakdownRaw.measuredMiB),
+      }
+      : null,
+  };
+}
+
 /**
  * preview 响应归一。
  *
@@ -758,12 +961,16 @@ export function normalizeImpact(input: unknown, fallback: InfraImpact): InfraImp
 export function normalizeGuardResult(raw: unknown, fallbackImpact: InfraImpact): GuardResult {
   const record = asRecord(raw);
   if (!record) {
-    return { allowed: false, violations: [], diff: '', impact: fallbackImpact };
+    return { allowed: false, violations: [], diff: '', impact: fallbackImpact, placement: null, footprint: null };
   }
   return {
     allowed: record.allowed === true,
     violations: normalizeViolations(record.violations),
     diff: typeof record.diff === 'string' ? record.diff : '',
     impact: normalizeImpact(record.impact, fallbackImpact),
+    // 这两块一直是后端给了、前端丢掉的：preview 响应里早就有 placement / footprint，
+    // 归一函数没透传，于是"放不下"只能靠 violations 里一条 CAPACITY_INSUFFICIENT 猜。
+    placement: normalizePlacement(record.placement),
+    footprint: normalizeFootprint(record.footprint),
   };
 }

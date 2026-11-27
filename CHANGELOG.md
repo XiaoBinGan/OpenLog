@@ -54,6 +54,29 @@
 
 ## 未发布
 
+### AI Infra 面板：容量结论与流失的半成功
+
+界面一直缺两块结论 —— 后端早就给了，前端没接：
+
+1. **容量预检与模型足迹卡片**（`client/src/pages/infra/CapacityReport.tsx`）。
+   `preview` 响应里一直有 `placement`（配额放得进卡吗）和 `footprint`（模型放得进配额吗），
+   但 `normalizeGuardResult` 只取 `allowed / violations / diff / impact`，这两块被整块丢掉，
+   于是「放不下」只能从 violations 里一条 `CAPACITY_INSUFFICIENT` 去猜。
+   现在卡片直接给结论徽标、逐条理由、候选节点表（单卡剩余 / 落点后剩余 / 承载副本 / 是否参与判定）
+   与碎片说明；足迹给三档（`fits` / `tight` / `insufficient`）+ 需要 / 配额 / 余量与分项。
+   **三者口径**：没有结论显示「未验证」而不是「放得下」；`tight` 是琥珀不是绿；warnings 与 reasons 分开。
+2. **网关注册的「半成功」**（`InfraPanel`）。`apply` 的 `gateway.ok:false` 意味着服务已经就绪、
+   但外部访问不到（端口冲突 / reload 没打上 / 读不到 ConfigMap），审计里这条仍是 `ok:true`。
+   之前面板只说「已执行 N 个步骤」，用户会以为上线成功；现在顶部给琥珀色提示写清原因与下一步。
+
+### 文档与测试
+
+- `docs/INFRA.md` §1 能力表按实际接线更正：9/10/12/13/14 行此前写着「暂无 UI 入口」「组件已就绪（未挂进面板）」，
+  与代码不符（`CapacityReport` / `GateReport` / `AutoscaleFields` / `CachePlan` / `AuditList` 都已挂载）。
+  速查表补上 `footprint` / `model-spec` / B1–B5 模块与面板四张卡的分工表。
+- 新增 `client/src/pages/__tests__/infra-capacity.test.tsx`：19 条，覆盖
+  「未知不折叠成放得下」「tight 不弱化成通过」「warnings 不混进 reasons」「半成功提示会消失」等错误形态。
+
 ### 运维助手：补 K8s/Infra 工具 + 修分发 bug（189s→25s）
 
 真机实测驱动，三处修复：

@@ -22,10 +22,10 @@
  *
  * 数据来源（见 `types.ts` 的响应类型；后端尚未落地，路径与形状是 A9 的接线依据）：
  *   GET  /api/infra/services                   → InfraServiceListResponse
- *   POST /api/infra/services/:id/preview       → GuardResult
+ *   POST /api/infra/services/:id/preview       → GuardResult（含 placement / footprint）
  *   POST /api/infra/services/:id/apply         → ApplyResult
  *   POST /api/infra/services/:id/rollback      → ApplyResult
- *   POST /api/infra/bench                      → BenchResult（本面板暂不触发）
+ *   POST /api/infra/bench                      → BenchResult（由 GateReport 的「运行基准」触发）
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
@@ -45,6 +45,7 @@ import { ErrorBar } from '../k8s/Feedback';
 import ServiceForm from './ServiceForm';
 import DiffPreview from './DiffPreview';
 import AutoscaleFields, { type AutoscaleFieldState } from './AutoscaleFields';
+import CapacityReport from './CapacityReport';
 import GateReport, { type GateResult } from './GateReport';
 import AuditList from './AuditList';
 import CachePlan from './CachePlan';
@@ -304,6 +305,8 @@ export default function InfraPanel({ demo: demoProp, initialServiceId }: InfraPa
   const [applying, setApplying] = useState(false);
   const [applyError, setApplyError] = useState<string | null>(null);
   const [applyNotice, setApplyNotice] = useState<string | null>(null);
+  /** 网关注册的半成功状态：服务已就绪但外部访问不到（§0 状态表里的「半成功」）。 */
+  const [gatewayWarning, setGatewayWarning] = useState<string | null>(null);
   /** 正在回滚的历史条目 id（用来禁用按钮 + 显示转圈）。 */
   const [rollbackBusy, setRollbackBusy] = useState<string | null>(null);
   const [rollbackError, setRollbackError] = useState<string | null>(null);
@@ -380,6 +383,7 @@ export default function InfraPanel({ demo: demoProp, initialServiceId }: InfraPa
     setPreviewError(null);
     setApplyError(null);
     setApplyNotice(null);
+    setGatewayWarning(null);
     setRollbackError(null);
   }, []);
 
@@ -449,6 +453,7 @@ export default function InfraPanel({ demo: demoProp, initialServiceId }: InfraPa
     setApplying(true);
     setApplyError(null);
     setApplyNotice(null);
+    setGatewayWarning(null);
     try {
       const raw = await apiJson<ApplyResult>(infraServicePath(preview.key, '/apply'), 'POST', {
         service: preview.service,
@@ -459,6 +464,16 @@ export default function InfraPanel({ demo: demoProp, initialServiceId }: InfraPa
           `已执行 ${steps} 个步骤${raw.auditId ? `（审计 ${raw.auditId}）` : ''}${
             raw.snapshot?.available ? '，回滚快照已保留' : '，未保留回滚快照'
           }`,
+        );
+        // 半成功：服务跑起来了，但没有路由 / 端口撞车 → 外部访问不到。
+        // 审计里这条仍是 ok:true，所以这条提示是唯一会告诉用户"外面打不开"的地方。
+        const gateway = raw.gateway;
+        setGatewayWarning(
+          gateway && gateway.ok === false
+            ? gateway.error && gateway.error.trim()
+              ? gateway.error
+              : '网关注册未成功：服务本身已就绪，但外部访问不到（见 docs/INFRA.md §4.6）'
+            : null,
         );
         setPreview(null);
         reload();
@@ -685,6 +700,18 @@ export default function InfraPanel({ demo: demoProp, initialServiceId }: InfraPa
             />
           )}
 
+          {/* 容量 + 足迹：回答「配额放得进卡吗」（A4）与「模型放得进配额吗」（A7）。
+              两者都从 preview 响应里来 —— 门禁只测吞吐/显存回归，拦不住"根本调度不上"。 */}
+          {selection && (
+            <CapacityReport
+              placement={preview?.result.placement ?? null}
+              footprint={preview?.result.footprint ?? null}
+              loading={previewLoading}
+              demo={demo}
+              hasPreview={Boolean(preview)}
+            />
+          )}
+
           {/* 基准门禁：必须放在 DiffPreview 之前 —— 执行按钮在那里，结论要先出现 */}
           {selection.kind === 'edit' && selected && (
             <GateReport
@@ -699,6 +726,18 @@ export default function InfraPanel({ demo: demoProp, initialServiceId }: InfraPa
           {gate && !gate.pass && preview && (
             <p data-testid="infra-gate-block" className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-1.5 text-[11px] text-red-300">
               基准门禁未通过 —— 默认仍可执行（门禁是取证工具）；需要强制时在 apply 请求里带 requireGate: true
+            </p>
+          )}
+
+          {gatewayWarning && (
+            <p
+              data-testid="infra-gateway-warning"
+              className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-1.5 text-[11px] leading-relaxed text-amber-200 break-words"
+            >
+              半成功：{gatewayWarning}
+              <span className="ml-1 text-amber-300/70">
+                服务本身已下发成功；网关修好后重跑一次 apply 即可补上路由（不会重建 Pod）
+              </span>
             </p>
           )}
 

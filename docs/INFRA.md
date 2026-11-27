@@ -18,9 +18,9 @@ OpenLog 挂掉，Pod 照跑，只是暂时改不动配置。
 | 归属标签 | `managedBy: openlog-infra`（不带这个标签的对象不读不写） |
 | 渲染产物 | 只有 `Deployment` + `Service`（集群级对象一律不生成） |
 | 网关端口 | `30000..30999`，按服务名稳定哈希；也可用 `expose.gatewayPort` 指定 |
-| 服务端代码 | `server/infra/{model,render,guard,capacity,apply,bench}.js`、`server/infra/accelerator/` |
+| 服务端代码 | `server/infra/{model,render,guard,capacity,apply,bench,footprint,model-spec}.js`、`server/infra/{gateway,audit-store,autoscale,model-cache,gate}.js`、`server/infra/accelerator/` |
 | HTTP 前缀 | `/api/infra/*`（服务端默认端口 `3011`） |
-| UI 入口 | `/infra`：定义表单、diff 预览、步骤进度、历史与回滚 |
+| UI 入口 | `/infra`：定义表单、diff 预览、**容量预检与模型足迹**、基准门禁、弹性与缓存、步骤进度、历史与回滚、审计 |
 | 观察侧入口 | `/k8s?cluster=<集群 id>`：GPU 分配 / 实测 / MFU、事件、Pod 表 |
 | 鉴权 | `Authorization: Bearer <token>`（`GET /api/auth/token`，仅 localhost） |
 | 数据模型 | `ModelService`，字段见[附录 A](#附录-amodelservice-字段) |
@@ -28,6 +28,15 @@ OpenLog 挂掉，Pod 照跑，只是暂时改不动配置。
 | 网关写入目标（常量） | 命名空间 `inference`、ConfigMap `reranker-gateway-conf`、键 `nginx.conf`、Deployment `reranker-gateway` |
 | 审计存储 | KV 键 `infra_audit`，环形保留 500 条；`snapshot` 只存 ref，body 归 `saveSnapshot()` |
 | 新增端点 | `GET /api/infra/audit`、`GET /api/infra/clusters/:clusterId/autoscale-budget`、`POST /api/infra/cache-estimate` |
+
+面板上按「先便宜后昂贵」排：
+
+| 卡片 | 回答什么 | 数据来自 | 没有结论时 |
+|---|---|---|---|
+| 容量预检与模型足迹（`CapacityReport`） | 配额放得进**卡**吗 / 模型放得进**配额**吗 | `preview` 的 `placement` / `footprint` | 显示「未验证」+ 原因，**不折叠成放得下** |
+| 基准门禁（`GateReport`） | 这份配置的吞吐/显存达标吗 | `POST /api/infra/bench`（真实压测，二次确认） | `scored:false` 显示「未验证」 |
+| 弹性 / 缓存（`AutoscaleFields` / `CachePlan`） | 扩副本吃不吃得下预算 / 权重会不会每 Pod 一份 | 定义 + `autoscale-budget` / `cache-estimate` | 缺卡容量时跳过并说明 |
+| 变更预览（`DiffPreview`） | 这次会动什么、断多久 | `preview` 的 `diff` / `impact` / `violations` | 无预览时执行按钮禁用 |
 
 三个状态回答「现在能不能动」：
 
@@ -52,12 +61,12 @@ OpenLog 挂掉，Pod 照跑，只是暂时改不动配置。
 | 6 | 校验 | `apply` 的 `rollout` + `allocation` + `endpoint` 三步 | 同上（`steps[]`）；服务视图的 `status.phase` / `status.readyReplicas` 随列表接口下发 | 步骤明细 + 每行状态徽标 |
 | 7 | 回滚 | `rollbackService` + 快照（`buildSnapshot`） | `POST /api/infra/services/:id/definition/:id/rollback` | 历史页「回滚到 vN」 |
 | 8 | 配额下发 | `renderAcceleratorResources` | 随渲染（`spec.containers[0].resources`） | 表单「显存 / 算力」 |
-| 9 | 容量预检 | `planPlacement` | `POST /api/infra/services/:id/preview（容量结果在 placement 字段）` | 暂无 UI 入口（只有接口；`reasons` 直接可读） |
-| 10 | 基准与推荐 | `runBenchmark`、`recommendQuota` | `POST /api/infra/bench` | 暂无 UI 入口（面板暂不触发；结果经接口取） |
+| 9 | 容量预检 | `planPlacement` | `POST /api/infra/services/:id/preview`（容量结果在 `placement` 字段） | `/infra` 容量卡片（`CapacityReport`）：结论徽标 + 逐条理由 + 候选节点表 + 碎片 |
+| 10 | 基准与推荐 | `runBenchmark`、`recommendQuota` | `POST /api/infra/bench` | `/infra` 门禁卡片（`GateReport`）的「运行基准」：压并发矩阵 → 逐项判定 → markdown 报告 |
 | 11 | 变更历史 | 快照 + 执行记录（落库见 §3.5） | `GET /api/infra/audit?serviceKey=ns/name`，列表接口里也带 `history` | `/infra` 每行服务的历史区 + 「回滚到 vN」 |
-| 12 | 网关自动注册 | `renderGatewayConfig` / `planGatewayUpdate` / `applyGatewayConfig` | 随 `apply` 返回 `gateway` 字段（无独立端点） | 无专用组件：`gateway` 字段目前只在 `apply` 响应里（面板未渲染） |
-| 13 | 变更审计 | `buildAuditEntry` / `createAuditStore` / `recordApply` | `GET /api/infra/audit`；`apply` 响应新增 `auditId` | `AuditList` 组件已就绪（未挂进面板）；`/infra` apply 提示里显示「审计 `aud_xxx`」 |
-| 14 | 弹性（HPA + 预算） | `renderHpa` / `validateAutoscale` / `autoscaleBudget` / `evaluateScaleDecision` | `GET /api/infra/clusters/:clusterId/autoscale-budget`；`preview` 的 `AUTOSCALE_BUDGET_EXCEEDED` | `AutoscaleFields` 组件已就绪（未挂进面板） |
+| 12 | 网关自动注册 | `renderGatewayConfig` / `planGatewayUpdate` / `applyGatewayConfig` | 随 `apply` 返回 `gateway` 字段（无独立端点） | 无专用组件；`gateway.ok:false` 在面板顶部渲染成琥珀色「半成功」提示（服务已就绪、外部访问不到） |
+| 13 | 变更审计 | `buildAuditEntry` / `createAuditStore` / `recordApply` | `GET /api/infra/audit`；`apply` 响应新增 `auditId` | `AuditList` 挂在 `/infra` 页面底部（跨服务，可按服务过滤）；apply 提示里显示「审计 `aud_xxx`」 |
+| 14 | 弹性（HPA + 预算） | `renderHpa` / `validateAutoscale` / `autoscaleBudget` / `evaluateScaleDecision` | `GET /api/infra/clusters/:clusterId/autoscale-budget`；`preview` 的 `AUTOSCALE_BUDGET_EXCEEDED` | `AutoscaleFields` 挂在编辑区（超预算时红字说明「HPA 会一直重试 Pending」） |
 | 15 | 模型权重共享 | `validateModelCache` / `planModelCache` / `estimateDiskUsage` / `renderCacheResources` | `POST /api/infra/cache-estimate` | `CachePlan` 组件已就绪（未挂进面板） |
 | 16 | 基准门禁 | `collectBenchMetrics` / `evaluateGate` / `renderGateReport` / `buildBaseline` | `POST /api/infra/bench` 响应新增 `gate` + `report` | `GateReport` 组件已就绪（未挂进面板；`/infra` 面板本身不触发 bench） |
 
