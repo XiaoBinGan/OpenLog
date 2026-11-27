@@ -126,7 +126,12 @@ export function upsertService(settings, service, now = new Date()) {
       createdAt: prev.createdAt || service.createdAt || stamp,
       updatedAt: stamp,
       version: Number(prev.version || 0) + 1,
-      history: prev.history || [],
+      // 新历史优先：调用方（apply）已经把 appendHistory 的结果放进 service.history，
+      // 这里若仍取 prev.history，那一条就永远进不来 —— 真机表现是「改了 4 版，
+      // 历史里只有 1 条 create」，回滚面板上根本看不到「回到哪一版」。
+      history: Array.isArray(service.history) && service.history.length > 0
+        ? service.history
+        : (Array.isArray(prev.history) ? prev.history : []),
     };
   } else {
     services.push({
@@ -1134,8 +1139,35 @@ export function createInfraRouter({ ensureSettings, saveSettings, applyOptions =
     const service = findService(ensureSettings(), requested);
     // version 的语义：往回第几份快照（默认 0 = 最近一次）。
     // 之前完全忽略这个参数 → 只能回退一步，传 version:3 也只会回到最近一版（"成功但没到目标"）。
-    const backSteps = Number(req.body?.version ?? req.body?.stepsBack ?? 0);
-    const idx = Number.isFinite(backSteps) && backSteps > 0 ? Math.trunc(backSteps) : 0;
+    // 两个语义必须分开，否则「回滚到 v3」会变成「往回退 3 份快照」：
+    //   · version    = 目标**定义版本号**（UI 历史行、文档 §1.7 的「回滚到 vN」都按这个说话）
+    //   · stepsBack  = 往回第几份快照（内部/脚本用法）
+    // 真机演练踩过：定义已经到 v4、快照有 4 份，点「回滚到 v3」按旧语义会退 3 份，
+    // 正好落到「首次创建前」的空快照上 —— 回滚成功、集群里对象被删光，配额根本没回来。
+    const currentVersion = Number(service?.version);
+    const requestedVersion = Number(req.body?.version);
+    const requestedBack = Number(req.body?.stepsBack);
+    let idx = 0;
+    if (Number.isFinite(requestedBack) && requestedBack > 0) {
+      idx = Math.trunc(requestedBack);
+    } else if (Number.isFinite(requestedVersion) && requestedVersion > 0) {
+      if (Number.isFinite(currentVersion) && currentVersion > 0) {
+        // 目标版本必须早于当前版本，否则「回滚到当前版」等于什么都不做，语义上应是 409
+        // 快照是**变更前**抓的：产生版本 V 的那次 apply 存下的是「V-1 之后」的状态，
+        // 所以「回到 vT」对应的下标是 current - T - 1（不是 current - T，差一位就退过头）。
+        idx = currentVersion > requestedVersion ? currentVersion - requestedVersion - 1 : 0;
+        if (currentVersion <= requestedVersion) {
+          res.status(409).json({
+            error: `回滚目标 v${requestedVersion} 不小于当前 v${currentVersion}：只能回滚到更早的版本（当前版本对应的就是「不回滚」）`,
+            code: 'ROLLBACK_TARGET_NOT_OLDER',
+          });
+          return;
+        }
+      } else {
+        // 定义还没落库（旧数据 / 只传了名字）：退回「往回 N 份」的兼容语义
+        idx = Math.trunc(requestedVersion);
+      }
+    }
 
     let snapshot = service ? latestSnapshot(`${service.namespace}/${service.name}`, idx) : null;
     if (!snapshot) {

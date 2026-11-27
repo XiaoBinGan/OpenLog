@@ -869,6 +869,109 @@ describe('回滚能选版本，不是永远回退一步', () => {
   });
 });
 
+describe('upsertService 不能把新历史丢掉', () => {
+  it('更新既有定义时保留 appendHistory 追加的条目（真机：改 4 版只剩 1 条 create）', async () => {
+    const { upsertService, appendHistory } = await import('../routes/infra.js');
+    const base = {
+      id: 'svc-1',
+      name: 'qwen-test',
+      namespace: 'infra-test',
+      model: { source: 'hostPath', path: '/models/x' },
+      engine: { type: 'vllm', image: 'img' },
+      resources: { accelerators: 1, memoryMiB: 2048, coresPercent: 10 },
+      replicas: 1,
+      placement: {},
+      ports: [{ name: 'http', containerPort: 8000 }],
+      health: { path: '/health' },
+      history: [{ at: '2026-11-27T00:00:00.000Z', action: 'create', ok: true, version: 1 }],
+    };
+    let settings = upsertService({}, base);
+    const current = settings.infraServices[0];
+    const next = {
+      ...current,
+      resources: { ...current.resources, memoryMiB: 4096 },
+      history: appendHistory(current, { action: 'update', ok: true, version: 2 }),
+    };
+    settings = upsertService(settings, next);
+    const saved = settings.infraServices[0];
+    expect(saved.version).toBe(2);
+    expect(saved.history).toHaveLength(2);
+    expect(saved.history[0].action).toBe('update');
+    expect(saved.history[1].action).toBe('create');
+  });
+});
+
+describe('回滚的 version 是「目标版本号」，不是「往回退几步」', () => {
+  /**
+   * 真机演练（243 / infra-test）暴露的错位：定义已经到 v4、快照留了 4 份，
+   * UI 点「回滚到 v3」传 { version: 3 }，服务端按旧语义当成「往回退 3 份快照」，
+   * 正好落到「首次创建前」的空快照 → 回滚"成功"、Deployment/Service 被删光，
+   * 配额根本没回到 2048。下面两条把两个方向都钉死。
+   */
+  function seedVersioned(version, snapshotReplicas) {
+    h.settings.infraServices = [{
+      id: 'svc-1',
+      name: 'qwen-test',
+      namespace: 'infra-test',
+      version,
+      replicas: 4,
+      model: { source: 'hostPath', path: '/models/x' },
+      engine: { type: 'vllm', image: 'vllm/vllm-openai:latest' },
+      resources: { accelerators: 1, memoryMiB: 4096, coresPercent: 100 },
+      placement: {},
+      ports: [{ name: 'http', containerPort: 8000 }],
+      health: { path: '/health' },
+      history: [],
+    }];
+    h.kv.infra_snapshots = {
+      'infra-test/qwen-test': snapshotReplicas.map((replicas, i) => ({
+        at: `2026-11-2${i}T00:00:00.000Z`,
+        snapshot: {
+          namespace: 'infra-test',
+          capturedAt: `2026-11-2${i}T00:00:00.000Z`,
+          objects: [{
+            ref: { kind: 'Deployment', name: 'qwen-test' },
+            existed: true,
+            path: depPath('infra-test', 'qwen-test'),
+            body: { ...ownedDeployment(), spec: { ...ownedDeployment().spec, replicas } },
+          }],
+        },
+      })),
+    };
+    h.cluster.set(depPath('infra-test', 'qwen-test'), ownedDeployment());
+  }
+
+  it('v4 定义 + 4 份快照，回滚到 v3 → 取「v3 之后」那份（最新一份，不是退 3 份）', async () => {
+    seedVersioned(4, [9, 8, 7, 6]);
+    const res = await post('/api/infra/services/qwen-test/rollback', { version: 3 });
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(true);
+    // 快照存的是「变更前」状态：v4 那次 apply 存下来的就是 v3 之后的状态 = 最新一份
+    const patch = h.writeCalls.find(([method]) => method === 'PATCH');
+    expect(patch).toBeTruthy();
+    expect(patch[2].spec.replicas).toBe(9);
+  });
+
+  it('回滚到当前版本（或更新的版本）→ 409，而不是"成功但什么都没变"', async () => {
+    seedVersioned(4, [9, 8]);
+    const same = await post('/api/infra/services/qwen-test/rollback', { version: 4 });
+    expect(same.status).toBe(409);
+    expect(same.body.code).toBe('ROLLBACK_TARGET_NOT_OLDER');
+    const newer = await post('/api/infra/services/qwen-test/rollback', { version: 7 });
+    expect(newer.status).toBe(409);
+    expect(newer.body.code).toBe('ROLLBACK_TARGET_NOT_OLDER');
+    expect(h.writeCalls.some(([method]) => method === 'PATCH')).toBe(false);
+  });
+
+  it('stepsBack 仍按「往回几份」走（脚本/内部用法不被破坏）', async () => {
+    seedVersioned(4, [9, 8, 7]);
+    const res = await post('/api/infra/services/qwen-test/rollback', { stepsBack: 2 });
+    expect(res.status).toBe(200);
+    const patch = h.writeCalls.find(([method]) => method === 'PATCH');
+    expect(patch[2].spec.replicas).toBe(7);
+  });
+});
+
 describe('replicas=0 是合法的下线方式', () => {
   it('定义里 replicas=0 能通过校验', async () => {
     const res = await post('/api/infra/services/qwen-test/definition', {

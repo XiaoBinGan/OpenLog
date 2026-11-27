@@ -54,6 +54,28 @@
 
 ## 未发布
 
+### 真机演练挖出两个回滚缺陷（243 / infra-test）
+
+按 `docs/INFRA.md` §6.2 在 243（RTX 4090 + 5090、HAMi）跑写入演练，全链路 7 步都绿了，
+但「回滚到上一版」走出来的结果是 **Deployment/Service 被删光、配额没回来**。两个独立缺陷：
+
+1. **`version` 语义错位**：UI 传的是历史版本号（`回滚到 v3`），服务端当成
+   「往回退 3 份快照」。定义到 v4、快照 4 份时正好落到「首次创建前」的空快照 →
+   `ok:true` + `delete:*`，用户以为回滚成功，实际把服务删了。
+   现在 `version` = 目标定义版本号（服务端换算 `idx = current - version - 1`），
+   `stepsBack` 保留「往回几份」的旧语义；目标 ≥ 当前返回 `409 ROLLBACK_TARGET_NOT_OLDER`。
+2. **历史被覆盖**：`upsertService` 更新既有定义时写 `history: prev.history || []`，
+   把 `apply` 刚追加的那条丢掉 —— 真机表现是「改了 4 版，历史里只有 1 条 create」，
+   回滚面板上根本没有「回到哪一版」可选。改成新历史优先。
+
+真机复验（同一集群、同一命名空间）：`2048 → 4096 → 回滚到上一版`，
+`steps` 从 `delete:*` 变成 `restore:Deployment` + `restore:Service`，
+集群里 `nvidia.com/gpumem` 回到 `2048`，Pod `Running / ready=true`，
+HAMi 注解 `GPU-…,NVIDIA,2048,10:;`。
+
+新增 4 条服务端用例（`server/__tests__/infra-routes.test.js`）：目标版本取最新快照、
+目标 ≥ 当前 409、`stepsBack` 兼容、`upsertService` 保留新历史。
+
 ### AI Infra 面板：容量结论与流失的半成功
 
 界面一直缺两块结论 —— 后端早就给了，前端没接：

@@ -225,7 +225,14 @@ OpenLog 挂掉，Pod 照跑，只是暂时改不动配置。
 | 入口 | 触发 | 行为 |
 |---|---|---|
 | 自动回滚 | `apply` 任一步失败 | 用本次 `snapshot` 调 `rollbackService`，把对象 PATCH 回变更前；本次新建的对象 DELETE |
-| 手动回滚 | `POST /api/infra/services/:id/definition/:id/rollback {version}` | 取该版本的历史快照，走同一条 `rollbackService` |
+| 手动回滚 | `POST /api/infra/services/:id/rollback {version}` | 取该**目标版本**对应的历史快照，走同一条 `rollbackService` |
+
+`version` 的语义是**目标定义版本号**（「回到 v3 之后的状态」），不是「往回退几步」：
+快照是**变更前**抓的，产生版本 V 的那次 apply 存下的是「V-1 之后」的状态，所以服务端算的是
+`idx = currentVersion - version - 1`。要按「往回第几份」操作，用 `stepsBack`。
+目标版本 ≥ 当前版本时返回 `409 ROLLBACK_TARGET_NOT_OLDER` —— 「回滚到当前版」等于什么都不做，
+不该回 `ok:true` 让人以为发生了一次恢复。真机演练踩过反向的坑：把 `version` 当步数用，
+「回滚到 v3」会退到「首次创建前」的空快照，同时把 Deployment/Service 删光（§8.1）。
 
 行为细节（都写在 `steps` 里，`restore:<Kind>/<name>` 或 `delete:<Kind>/<name>`）：
 
@@ -861,9 +868,12 @@ curl -s -H "$AUTH" "http://127.0.0.1:3011/api/k8s/clusters/CLUSTER_ID/overview" 
 ```bash
 # 有哪些版本可回（历史也随列表接口下发：GET $API/services → services[].history）
 curl -s -H "$AUTH" "$API/services" | jq '.services[] | select(.name=="qwen-7b") | .history[] | {version, at, action, ok}'
-# 回滚到指定版本
+# 回滚到指定版本（version = 历史里的版本号；服务端换算成快照下标 current - version - 1）
 curl -s -X POST "$API/services/SERVICE_ID/rollback" -H "$AUTH" -H 'content-type: application/json' \
   -d '{"version": 3}' | jq '{ok, steps, rollbackAvailable}'
+# 按「往回第几份快照」操作（脚本场景）：stepsBack 优先于 version
+curl -s -X POST "$API/services/SERVICE_ID/rollback" -H "$AUTH" -H 'content-type: application/json' \
+  -d '{"stepsBack": 1}' | jq '{ok, steps}'
 ```
 
 回滚的边界（都是刻意的）：
