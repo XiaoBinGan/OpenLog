@@ -426,6 +426,20 @@ function resolveScrapedAt(now) {
 }
 
 /** 拼 `/metrics` URL；IPv6 的 podIP 必须加方括号，否则 URL 解析会把冒号当端口分隔符。 */
+/**
+ * apiserver 代理路径：`pods/<name>:<port>/proxy/metrics`。
+ *
+ * 为什么优先走它：podIP 只在集群网络内可达。OpenLog 部署在集群外（开发机、
+ * 另一台机器）时，`http://<podIP>:9395/metrics` 会 SYN 重试到超时 —— 实测
+ * `/api/k8s/.../usage` 因此稳定多花 5 秒。apiserver 代理走的是 kubeconfig 那条
+ * 连接，跨网可用，且不要求额外开放端口。
+ */
+function buildProxyPath(podName, port) {
+  const name = String(podName || '').trim();
+  if (!name) return '';
+  return `/api/v1/namespaces/${SCHEDULER_NAMESPACE}/pods/${encodeURIComponent(name)}:${port}/proxy/metrics`;
+}
+
 function buildMetricsUrl(podIP, port) {
   const host = String(podIP).includes(':') ? `[${podIP}]` : String(podIP);
   return `http://${host}:${port}/metrics`;
@@ -586,25 +600,44 @@ export async function fetchSchedulerMetrics(options = {}) {
     return unavailable(`hami-scheduler Pod ${pod.name || '（未知名称）'} 尚未分配 podIP（可能未就绪）`);
   }
 
-  // ② 抓 /metrics
-  const endpoint = buildMetricsUrl(pod.podIP, metricsPort);
-  let res;
-  try {
-    res = await httpGet(endpoint, { timeoutMs, headers: { accept: 'text/plain, */*' } });
-  } catch (err) {
-    return unavailable(describeFetchError(err, endpoint, timeoutMs));
+  // ② 抓 /metrics：apiserver 代理优先（跨网可用），podIP 直连兜底
+  const proxyPath = buildProxyPath(pod.name, metricsPort);
+  let endpoint = buildMetricsUrl(pod.podIP, metricsPort);
+  let transport = 'podip';
+  let proxyError = '';
+  let body = '';
+
+  if (proxyPath && typeof client.getText === 'function') {
+    try {
+      body = await client.getText(proxyPath, { timeoutMs });
+      transport = 'apiserver';
+      endpoint = `apiserver:${proxyPath}`;
+    } catch (err) {
+      // 代理被 RBAC 拒绝（pods/proxy 没权限）或 apiserver 不转发时，退回直连
+      proxyError = errorMessage(err);
+    }
   }
 
-  // httpGet 允许直接返回字符串（测试里最省事的写法），也允许返回 { statusCode, body }
-  const statusCode = typeof res === 'string'
-    ? 200
-    : Number(res && typeof res === 'object' ? res.statusCode ?? 200 : 0);
-  const body = typeof res === 'string'
-    ? res
-    : typeof res?.body === 'string' ? res.body : '';
+  if (!body) {
+    let res;
+    try {
+      res = await httpGet(endpoint, { timeoutMs, headers: { accept: 'text/plain, */*' } });
+    } catch (err) {
+      const reason = describeFetchError(err, endpoint, timeoutMs);
+      return unavailable(proxyError ? `${reason}（apiserver 代理也不可用：${proxyError}）` : reason);
+    }
 
-  if (!(statusCode >= 200 && statusCode < 300)) {
-    return unavailable(`HAMi 指标接口返回 HTTP ${statusCode}：${endpoint}`);
+    // httpGet 允许直接返回字符串（测试里最省事的写法），也允许返回 { statusCode, body }
+    const statusCode = typeof res === 'string'
+      ? 200
+      : Number(res && typeof res === 'object' ? res.statusCode ?? 200 : 0);
+    body = typeof res === 'string'
+      ? res
+      : typeof res?.body === 'string' ? res.body : '';
+
+    if (!(statusCode >= 200 && statusCode < 300)) {
+      return unavailable(`HAMi 指标接口返回 HTTP ${statusCode}：${endpoint}`);
+    }
   }
   // ③ 解析 + 归并
   let devices;
@@ -628,9 +661,14 @@ export async function fetchSchedulerMetrics(options = {}) {
     endpoint,
     metricsPort,
     podName: pod.name,
+    // 走的是 apiserver 代理还是 podIP 直连：跨网排障第一眼看这个
+    transport,
+    ...(proxyError ? { proxyError } : {}),
     // 显式 opt-in 才附带原始映射：A2 需要按标签自行聚合时用（默认不返回，避免响应体膨胀）
     ...(opts.includeParsed === true ? { parsed } : {}),
   };
 }
 
-export default { parseSchedulerMetrics, fetchSchedulerMetrics, extractHamiDevices, pickKeySeries };
+export { buildProxyPath };
+
+export default { parseSchedulerMetrics, fetchSchedulerMetrics, extractHamiDevices, pickKeySeries, buildProxyPath };

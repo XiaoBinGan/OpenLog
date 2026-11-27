@@ -213,7 +213,7 @@ OpenLog 挂掉，Pod 照跑，只是暂时改不动配置。
 
 | 看什么 | 接口 | 字段 |
 |---|---|---|
-| 分配 / 实测 / MFU | `GET /api/k8s/clusters/:id/usage` | `nodes[].devices[].{allocMemMiB,usedMemMiB,utilPercent,measured}`、`nodes[].mfu.percent` |
+| 分配 / 实测 / MFU | `GET /api/k8s/clusters/:id/usage` | `nodes[].devices[].{allocMemMiB,usedMemMiB,utilPercent,measured}`、`nodes[].mfu.percent`。HAMi 指标优先走 **apiserver 代理**（`pods/<name>:9395/proxy/metrics`，跨网可用），podIP 直连只作兜底：外网部署下 podIP 不可达会让这个接口稳定多等 5 秒（实测 5.1–5.5s → 0.16–0.46s） |
 | 调度策略（binpack / spread、超卖比） | `GET /api/k8s/clusters/:id/policy` | `nodeSchedulerPolicy`、`overcommit`（各带 `source`） |
 | Warning 聚合 | `GET /api/k8s/clusters/:id/warning-digest?window=1h` | 按 `reason` 分组、计数、最后发生时间 |
 | Pod 状态 | `GET /api/k8s/clusters/:id/overview` | `pods[].{phase,ready,restarts,reason,message}` |
@@ -287,6 +287,27 @@ OpenLog 挂掉，Pod 照跑，只是暂时改不动配置。
 预检的核心硬约束（用户最常踩的坑）写在返回的 `reasons` 里：
 
 > HAMi 是单卡语义：一个副本的显存/算力必须由同一张卡提供，两张卡各剩一半也拼不成一个副本。
+
+### 1.9.1 实测对照（只提示，不改判定）
+
+`fits` 用的是 HAMi **分配**口径（`hami.io/node-nvidia-register` + 当前分配），因为调度器只认这个。
+但卡上可能有非 HAMi 进程占着显存，那部分在分配记账里看不见。所以预览会并列一份 nvidia-smi 实测：
+
+| 字段 | 来源 | 用途 |
+|---|---|---|
+| `candidates[].maxFreeMemMiB` | HAMi 分配口径 | `fits` 判定依据 |
+| `candidates[].measuredMaxFreeMiB` | nvidia-smi（`gpu.js` 采集，UUID 对齐） | 并排展示；缺失 = 未采到，不是 0 |
+| `placement.measured.nodes[node].maxFreeMiB` | 同上 | 逐节点实测空闲 |
+| `placement.measured.timedOut` / `fromCache` | 采样层状态 | 超时/命中缓存说明 |
+
+实测**不参与** `fits`：按实测拦人会拦掉 HAMi 明明能调度成功的服务（分配是额度的唯一事实来源）。
+两者的差写成 `warnings[]`：`分配还剩 X MiB，但实测单卡只剩 Y MiB（低于单副本 Z MiB）——若有
+非 HAMi 进程占着显存，Pod 会 Pending 或 OOM`。
+
+采集成本（243 实测）：`nvidia-smi` 本身 0.03–0.07s，同机 SSH 往返 0.28s，跨网 0.45–0.5s ——
+成本几乎全在“够到那台机器”。因此采样层带 **TTL 3s + 单飞 + 800ms 超时降级**
+（`server/k8s/gpu-usage.js#collectNodeGpuUsageCached`）：超时这一帧不等、后台跑完写缓存，
+下一帧直接命中。
 
 预检是估算，不是承诺：真正的裁决在 kube-scheduler / HAMi。预检说 `fits: true` 而 Pod 仍
 `Pending`，看 §5.1。

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 
 import {
+  buildProxyPath,
   parseSchedulerMetrics,
   extractHamiDevices,
   pickKeySeries,
@@ -297,6 +298,63 @@ describe('pickKeySeries / extractHamiDevices', () => {
 });
 
 /* ────────────────────────── fetchSchedulerMetrics ────────────────────────── */
+
+describe('fetchSchedulerMetrics：apiserver 代理优先（跨网部署不再等 podIP 超时）', () => {
+  const withText = (items, getText) => ({
+    getJson: vi.fn(async () => schedulerPodList(items)),
+    getText,
+  });
+
+  it('有 getText 时走 pods/<name>:<port>/proxy/metrics，且不再直连 podIP', async () => {
+    const getText = vi.fn(async () => EXPOSITION);
+    const client = withText([pod({ name: 'hami-scheduler-0', ip: '10.0.0.7' })], getText);
+    const httpGet = vi.fn(async () => ({ statusCode: 200, body: EXPOSITION }));
+
+    const result = await fetchSchedulerMetrics({ client, httpGet });
+
+    expect(result.available).toBe(true);
+    expect(result.transport).toBe('apiserver');
+    expect(result.endpoint).toContain('/proxy/metrics');
+    expect(getText).toHaveBeenCalledTimes(1);
+    expect(String(getText.mock.calls[0][0])).toBe(
+      '/api/v1/namespaces/kube-system/pods/hami-scheduler-0:9395/proxy/metrics',
+    );
+    // 关键：代理成功就绝不发 podIP 请求（那条在外网会 SYN 重试到超时）
+    expect(httpGet).not.toHaveBeenCalled();
+  });
+
+  it('代理被拒（RBAC 没 pods/proxy）→ 回落到 podIP，并记录 proxyError', async () => {
+    const getText = vi.fn(async () => { throw new Error('Kubernetes API 权限不足（HTTP 403）'); });
+    const client = withText([pod({ name: 'hami-scheduler-0', ip: '10.0.0.7' })], getText);
+    const httpGet = vi.fn(async () => ({ statusCode: 200, body: EXPOSITION }));
+
+    const result = await fetchSchedulerMetrics({ client, httpGet });
+
+    expect(result.available).toBe(true);
+    expect(result.transport).toBe('podip');
+    expect(result.proxyError).toContain('403');
+    expect(httpGet).toHaveBeenCalledTimes(1);
+  });
+
+  it('代理与直连都失败 → available:false，reason 里同时给出两条路径的原因', async () => {
+    const getText = vi.fn(async () => { throw new Error('apiserver 503'); });
+    const client = withText([pod({ name: 'hami-scheduler-0', ip: '10.0.0.7' })], getText);
+    const httpGet = vi.fn(async () => { throw new Error('connect ECONNREFUSED'); });
+
+    const result = await fetchSchedulerMetrics({ client, httpGet });
+
+    expect(result.available).toBe(false);
+    expect(result.reason).toContain('ECONNREFUSED');
+    expect(result.reason).toContain('apiserver 代理也不可用');
+  });
+
+  it('buildProxyPath 对 Pod 名做 URL 编码', () => {
+    expect(buildProxyPath('hami-scheduler-0', 9395)).toBe(
+      '/api/v1/namespaces/kube-system/pods/hami-scheduler-0:9395/proxy/metrics',
+    );
+    expect(buildProxyPath('', 9395)).toBe('');
+  });
+});
 
 describe('fetchSchedulerMetrics：成功路径', () => {
   it('找到 scheduler Pod → available:true，端口/端点正确', async () => {

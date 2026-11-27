@@ -173,6 +173,12 @@ export interface CapacityCandidate {
   remainingMiB?: number;
   /** 落在这个节点上的副本数。 */
   placedReplicas?: number;
+  /**
+   * nvidia-smi 实测的单卡最大空闲显存（MiB）。
+   * 与 `maxFreeMemMiB`（HAMi **分配**口径）不同源：一个是调度器记账，一个是卡上真实剩余。
+   * 缺失 = 这次没采到，不是 0。
+   */
+  measuredMaxFreeMiB?: number;
 }
 
 /**
@@ -195,6 +201,15 @@ export interface PlacementResult {
   fragments: string[];
   /** 参与判定的节点（含不可用的，用 `eligible` 区分）。 */
   candidates: CapacityCandidate[];
+  /**
+   * 实测对照（可选）。只做提示，不参与 `fits` 判定 ——
+   * HAMi 调度只认分配口径，按实测拦人会拦掉实际能跑的服务。
+   */
+  measured?: {
+    timedOut?: boolean;
+    fromCache?: string[];
+    nodes?: Record<string, { maxFreeMiB?: number }>;
+  } | null;
 }
 
 /** A7 模型足迹的判定档位。`unknown` = 读不到模型元数据，不是「放得下」。 */
@@ -890,10 +905,21 @@ export function normalizePlacement(input: unknown): PlacementResult | null {
       maxFreeMemMiB: numberOrNull(candidate.maxFreeMemMiB) ?? undefined,
       remainingMiB: numberOrNull(candidate.remainingMiB) ?? undefined,
       placedReplicas: numberOrNull(candidate.placedReplicas) ?? undefined,
+      measuredMaxFreeMiB: numberOrNull(candidate.measuredMaxFreeMiB) ?? undefined,
     });
   }
 
   const best = nodeNameOf(record.best);
+  const measuredRaw = asRecord(record.measured);
+  const measuredNodesRaw = asRecord(measuredRaw?.nodes);
+  const measuredNodes: Record<string, { maxFreeMiB?: number }> = {};
+  if (measuredNodesRaw) {
+    for (const [node, value] of Object.entries(measuredNodesRaw)) {
+      const item = asRecord(value);
+      if (!node || !item) continue;
+      measuredNodes[node] = { maxFreeMiB: numberOrNull(item.maxFreeMiB) ?? undefined };
+    }
+  }
 
   return {
     fits: record.fits,
@@ -902,6 +928,13 @@ export function normalizePlacement(input: unknown): PlacementResult | null {
     best: best || null,
     fragments: stringList(record.fragments),
     candidates,
+    measured: measuredRaw
+      ? {
+        timedOut: measuredRaw.timedOut === true,
+        fromCache: stringList(measuredRaw.fromCache),
+        nodes: measuredNodes,
+      }
+      : null,
   };
 }
 

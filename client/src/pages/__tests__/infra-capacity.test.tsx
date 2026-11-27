@@ -227,6 +227,28 @@ describe('CapacityReport 渲染', () => {
     expect(rows[1].textContent).toContain('型号不匹配');
   });
 
+  it('候选表并列「分配剩余」与「实测剩余」：采不到显示未采到，不显示 0', async () => {
+    await render(
+      createElement(CapacityReport, {
+        placement: {
+          ...PLACEMENT_FITS,
+          candidates: [
+            { node: 'gpu4090-a', eligible: true, maxFreeMemMiB: 24576, measuredMaxFreeMiB: 8192, placedReplicas: 1 },
+            { node: 'gpu4090-b', eligible: true, maxFreeMemMiB: 16384, placedReplicas: 0 },
+          ],
+        } as never,
+        hasPreview: true,
+      }),
+    );
+
+    const rows = all('capacity-candidate');
+    expect(rows[0].textContent).toContain('24.0 GiB');
+    expect(rows[0].textContent).toContain('8.0 GiB');
+    // 没采到 = 未知，不是 0 MiB
+    expect(rows[1].textContent).toContain('未采到');
+    expect(rows[1].textContent).not.toContain('0 MiB');
+  });
+
   it('足迹 tight：琥珀色「勉强够」，并给出需要/配额/余量与分项', async () => {
     await render(createElement(CapacityReport, { footprint: FOOTPRINT_TIGHT, hasPreview: true }));
 

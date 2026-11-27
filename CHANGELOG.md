@@ -54,6 +54,28 @@
 
 ## 未发布
 
+### HAMi 指标改走 apiserver 代理：`/usage` 5.1s → 0.2s
+
+跨网部署下 `http://<podIP>:9395/metrics` 不可达（podIP 只在集群网络内），接口稳定多等
+一个 SYN 超时：实测 5.13 / 5.48 / 5.16s。现在优先走
+`/api/v1/namespaces/kube-system/pods/<name>:9395/proxy/metrics`（走 kubeconfig 那条连接，
+跨网可用），`getText` 不可用或 RBAC 缺 `pods/proxy` 时才回落 podIP。返回值新增
+`transport`（`apiserver` / `podip`）与 `proxyError`，排障一眼看得出走的哪条路。
+
+实测同一接口：**0.16 / 0.18 / 0.24 / 0.46s**。
+
+### 算力实测进容量预检：并列口径 + TTL/单飞/超时降级
+
+- `collectNodeGpuUsageCached`：TTL 3s、并发单飞、超时降级（默认 800ms）。超时这一帧立刻返回，
+  在飞的那条跑完写缓存，下一帧命中 —— 采集成本实测：`nvidia-smi` 0.03–0.07s、同机 SSH 0.28s、
+  跨网 0.45–0.5s，贵在连接不在查询。
+- `preview` 的 `placement` 新增实测对照：`candidates[].measuredMaxFreeMiB` +
+  `placement.measured.{nodes,timedOut,fromCache}`，`/infra` 容量表并列「单卡剩余（分配）」与
+  「实测剩余（SMI）」。**不改 `fits`**（HAMi 调度只认分配口径），差异写进 `warnings`。
+- `makeGpuMemReader` 不再自带一套 csv 正则：改调 `gpu.js#buildRemoteGPUPayload`，
+  与 `/gpu`、`/k8s` 的进程级显存解析同源。
+- 实测：preview 0.17–0.27s（无 SSH 目标）/ 0.51–0.71s（SSH 不可达，走降级），无 800ms 卡顿。
+
 ### 真机演练挖出两个回滚缺陷（243 / infra-test）
 
 按 `docs/INFRA.md` §6.2 在 243（RTX 4090 + 5090、HAMi）跑写入演练，全链路 7 步都绿了，

@@ -225,7 +225,8 @@ export default function CapacityReport({
                       <thead>
                         <tr className="border-b border-dark-800/60 text-xs text-dark-500">
                           <th className="px-2.5 py-1.5 text-left font-medium">节点</th>
-                          <th className="px-2.5 py-1.5 text-left font-medium">单卡剩余</th>
+                          <th className="px-2.5 py-1.5 text-left font-medium">单卡剩余（分配）</th>
+                          <th className="px-2.5 py-1.5 text-left font-medium">实测剩余（SMI）</th>
                           <th className="px-2.5 py-1.5 text-left font-medium">落点后剩余</th>
                           <th className="px-2.5 py-1.5 text-left font-medium">承载副本</th>
                           <th className="px-2.5 py-1.5 text-left font-medium">参与判定</th>
@@ -244,6 +245,18 @@ export default function CapacityReport({
                             </td>
                             <td className="px-2.5 py-1.5 font-mono text-[11px] text-dark-300">
                               {formatMiB(candidate.maxFreeMemMiB ?? candidate.freeMemMiB)}
+                            </td>
+                            <td
+                              data-testid="capacity-candidate-measured"
+                              className={`px-2.5 py-1.5 font-mono text-[11px] ${
+                                typeof candidate.measuredMaxFreeMiB === 'number'
+                                  ? 'text-dark-400'
+                                  : 'text-dark-600'
+                              }`}
+                            >
+                              {typeof candidate.measuredMaxFreeMiB === 'number'
+                                ? formatMiB(candidate.measuredMaxFreeMiB)
+                                : '未采到'}
                             </td>
                             <td className="px-2.5 py-1.5 font-mono text-[11px] text-dark-400">
                               {formatMiB(candidate.remainingMiB)}

@@ -75,6 +75,8 @@ async function loadModule(name) {
     gate: '../infra/gate.js',
     footprint: '../infra/footprint.js',
     modelSpec: '../infra/model-spec.js',
+    gpu: '../gpu.js',
+    gpuUsage: '../k8s/gpu-usage.js',
   };
   try {
     modules[name] = await import(specifiers[name]);
@@ -347,6 +349,17 @@ async function recordAudit({ service, result, actor, forced, snapshotRef }) {
  * 所以按进程取最大值 —— 单模型服务下它就是该模型的实际占用。
  * 拿不到返回 null，bench 会降级成 confidence=estimated 并明确告警，不编数字。
  */
+/**
+ * 进程级显存 + 设备快照，两段输出用 `---PROC---` 分隔。
+ * 列顺序必须与 gpu.js 的 parseRemoteNvidiaGPUs / parseRemoteNvidiaProcesses 对齐。
+ */
+const INFRA_GPU_QUERY = [
+  'echo ---GPU---',
+  'nvidia-smi --query-gpu=index,name,uuid,utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader,nounits',
+  'echo ---PROC---',
+  'nvidia-smi --query-compute-apps=gpu_uuid,pid,process_name,used_memory --format=csv,noheader,nounits',
+].join('; ');
+
 async function makeGpuMemReader(record, serviceKey) {
   if (!String(serviceKey || '').trim()) return undefined;
   try {
@@ -355,13 +368,20 @@ async function makeGpuMemReader(record, serviceKey) {
     const host = String(record?.server || '').replace(/^https?:\/\//, '').split(':')[0];
     const server = servers.find((x) => x && String(x.host || '').includes(host));
     if (!server) return undefined;
+    const gpuMod = await loadModule('gpu');
+    if (!gpuMod?.buildRemoteGPUPayload) return undefined;
     return async () => {
-      const r = await remoteModule.execRemoteCommand(
-        server.id,
-        'nvidia-smi --query-compute-apps=used_memory --format=csv,noheader,nounits | sort -rn | head -1',
+      // 与 /gpu、/k8s 的实测同源：解析统一交给 gpu.js，这里不再自带一套 csv 正则。
+      // 两段查询共用一次 SSH（同机 0.28s，跨网 0.45s），成本几乎全在连接。
+      const r = await remoteModule.execRemoteCommand(server.id, INFRA_GPU_QUERY);
+      if (r?.error) throw new Error(r.error);
+      const [gpuPart, procPart] = String(r?.stdout || '').split('---PROC---');
+      const { devices } = gpuMod.buildRemoteGPUPayload(gpuPart || '', procPart || '');
+      const peak = Math.max(
+        0,
+        ...devices.flatMap((device) => (device.processes || []).map((proc) => Number(proc.usedMemory) || 0)),
       );
-      const m = String(r?.stdout || '').match(/(\d+)/);
-      return m ? Number(m[1]) : null;
+      return peak > 0 ? peak : null;
     };
   } catch {
     return undefined;
@@ -672,6 +692,62 @@ export function createInfraRouter({ ensureSettings, saveSettings, applyOptions =
         });
       } catch (err) {
         placement = { fits: true, reasons: [`容量预检跳过：${errorMessage(err)}`], warnings: [] };
+      }
+    }
+
+    // 实测对照（只读、可选、绝不改判定）：
+    // 容量预检的 fits 是 HAMi **分配**口径 —— 调度器也只认这个。但卡上可能有非 HAMi
+    // 进程占着显存，那部分在分配里看不见。所以并列一份 nvidia-smi 实测：
+    // 判定不变（否则会拦掉 HAMi 明明能调度的服务），差异写成 warning 让人自己判断。
+    if (placement && capacity && state) {
+      try {
+        const usageMod = await loadModule('gpuUsage');
+        const gpuMod = await loadModule('gpu');
+        if (usageMod?.collectNodeGpuUsageCached && gpuMod?.buildRemoteGPUPayload) {
+          const wanted = new Set((placement.candidates || []).map((c) => c.node));
+          const nodes = nodesForCapacity(state.nodes, state.rawNodes).filter((n) => wanted.has(n.name));
+          const remoteModule = await import('../remote.js');
+          const servers = typeof remoteModule.getServers === 'function' ? remoteModule.getServers() : [];
+          const getRemoteGPUs = async (server) => {
+            const r = await remoteModule.execRemoteCommand(server.id, INFRA_GPU_QUERY);
+            if (r?.error) throw new Error(r.error);
+            const [gpuPart, procPart] = String(r?.stdout || '').split('---PROC---');
+            return gpuMod.buildRemoteGPUPayload(gpuPart || '', procPart || '').devices;
+          };
+          const sampled = await usageMod.collectNodeGpuUsageCached({
+            nodes,
+            servers,
+            deps: { getRemoteGPUs },
+            timeoutMs: 800,
+            ttlMs: 3000,
+          });
+          placement.measured = {
+            timedOut: sampled.timedOut,
+            fromCache: sampled.fromCache,
+            nodes: {},
+          };
+          const needMiB = Number(validation.value.resources?.memoryMiB) || 0;
+          for (const candidate of placement.candidates || []) {
+            const perNode = sampled.usage.get(candidate.node);
+            if (!perNode || perNode.size === 0) continue;
+            const frees = [...perNode.values()]
+              .map((device) => Number(device.memTotal) - Number(device.memUsed))
+              .filter((value) => Number.isFinite(value) && value >= 0);
+            if (frees.length === 0) continue;
+            const bestFree = Math.round(Math.max(...frees));
+            candidate.measuredMaxFreeMiB = bestFree;
+            placement.measured.nodes[candidate.node] = { maxFreeMiB: bestFree };
+            if (needMiB > 0 && bestFree < needMiB) {
+              placement.warnings.push(
+                `节点 ${candidate.node}：HAMi 分配口径还剩 ${Number(candidate.maxFreeMemMiB) || 0} MiB，`
+                + `但 nvidia-smi 实测单卡只剩 ${bestFree} MiB（低于单副本 ${needMiB} MiB）——`
+                + ' 若有非 HAMi 进程占着显存，Pod 会 Pending 或 OOM；判定仍按分配口径，这里只提示。',
+              );
+            }
+          }
+        }
+      } catch (err) {
+        // 实测只是加分项：采不到就让卡片显示「未采到」，绝不影响预检结论
       }
     }
 
