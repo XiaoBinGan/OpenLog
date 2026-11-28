@@ -54,6 +54,25 @@
 
 ## 未发布
 
+### AI Shell：长命令心跳 + 只读进程替换不再误判 + progress 补文案
+
+真机实测（243 / Strata）暴露的三个体验问题，全部修掉并复验：
+
+1. **长命令没有心跳**：`du -sh /*` 实测 31.9s，界面只有「执行中…」一动不动，用户会以为卡死。
+   现在每 `COMMAND_HEARTBEAT_MS`（15s）推一条 `command_progress{step,elapsedMs,command}`，
+   前端显示「执行中（已运行 15s）」；`command_done` 后定时器立即清除。
+   真机复验：`sleep 20 && date` 在 16.5s 收到心跳，21.6s 结束，结束后无多余心跳。
+2. **只读组合被误判 `write`**：`diff - <(uname -a)` 里的 `<( )` 既不是重定向也不是普通参数，
+   首 token 是 `diff`（只读），但内部命令完全没被检查 —— `autoRun=false` 时会弹确认框打断只读任务。
+   现在按 shell 语义处理：`<( )` 递归判定内部命令（全只读才放行）、`>( )` 直接判 `write`、
+   括号不配对保守判 `write`、嵌套超过 4 层拒绝；顺带补齐白名单（`diff`/`cmp`/`comm`/`ping`/`dig`/`pgrep` 等）。
+   真机复验：`uname -a && uname -a | diff - <(uname -a)` → `RUN(read)`，不再弹确认。
+3. **`progress` 事件 `message` 为空**：界面会渲染成空行。服务端补「第 N 步完成：<命令>」，
+   前端补兜底文案与 `data-testid="aishell-progress-note"`。
+
+测试：`ai-shell.test.js` 43 条（新增进程替换 6 条 + 心跳 2 条）、`aishell-elapsed.test.ts` 3 条；
+全量 **4114 通过 + 1 跳过**，lint 0/0，build ✅。
+
 ### /usage 在 243 真机从 16s 降到 0.09s（P50）
 
 部署到 243 后第一版还是 16–17s，拆开看不是代理的锅：apiserver proxy 0.14s、`nvidia-smi` 两段
