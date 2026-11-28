@@ -3,7 +3,8 @@ import { describe, it, expect, vi } from 'vitest';
 const {
   classifyCommand, buildContextScript, parseContext, summarizeContext,
   buildSystemPrompt, parseAgentReply, toObservation, runAgent,
-  MAX_STEPS, OBSERVATION_LIMIT, _resetContextCache,
+  extractProcessSubstitutions,
+  MAX_STEPS, OBSERVATION_LIMIT, COMMAND_HEARTBEAT_MS, _resetContextCache,
 } = await import('../ai-shell.js');
 
 describe('classifyCommand —— 风险分级', () => {
@@ -75,6 +76,51 @@ describe('classifyCommand —— 风险分级', () => {
   it('read 命令重定向到 /dev/null 仍算 read', () => {
     expect(classifyCommand('cat /etc/passwd > /dev/null').risk).toBe('read');
     expect(classifyCommand('ls /nope 2> /dev/null').risk).toBe('read');
+  });
+});
+
+describe('进程替换 <( ) / >( ) 的风险分类', () => {
+  it('纯只读的进程替换 → read（真机上 diff - <(uname -a) 曾被误判 write）', () => {
+    for (const cmd of [
+      'diff - <(uname -a)',
+      'uname -a && uname -a | diff - <(uname -a)',
+      'diff <(ls /tmp) <(ls /var)',
+      'cat <(ls /workspace)',
+    ]) {
+      expect(classifyCommand(cmd).risk, cmd).toBe('read');
+    }
+  });
+
+  it('进程替换内部有写/危险命令 → write（不能因为外层是 diff 就放行）', () => {
+    for (const cmd of ['cat <(rm -rf /)', 'diff <(tee /tmp/x) -', 'ls <(mkdir /tmp/y)']) {
+      const verdict = classifyCommand(cmd);
+      expect(verdict.risk, cmd).toBe('write');
+      expect(verdict.reason, cmd).toContain('进程替换');
+    }
+  });
+
+  it('>( ) 是写操作，无论内部命令是什么', () => {
+    for (const cmd of ['tee >(cat > /tmp/x)', 'ls >(cat)']) {
+      const verdict = classifyCommand(cmd);
+      expect(verdict.risk, cmd).toBe('write');
+      expect(verdict.reason, cmd).toContain('>( )');
+    }
+  });
+
+  it('括号不配对时保守判 write（宁可多问一次）', () => {
+    expect(classifyCommand('cat <(uname -a').risk).toBe('write');
+  });
+
+  it('extractProcessSubstitutions 保留占位符并抽出内部命令', () => {
+    const r = extractProcessSubstitutions('diff - <(uname -a) >(cat)');
+    expect(r.inner).toEqual(['uname -a', 'cat']);
+    expect(r.writeForm).toBe(true);
+    expect(r.replaced).not.toContain('<(');
+  });
+
+  it('嵌套过深（>4 层）直接拒绝，避免递归打爆', () => {
+    const deep = 'cat ' + '<(cat '.repeat(6) + ')' + ')'.repeat(5);
+    expect(classifyCommand(deep).risk).toBe('write');
   });
 });
 
@@ -318,6 +364,56 @@ describe('runAgent —— 多步 agent 循环', () => {
     expect(exec).not.toHaveBeenCalled(); // 被拒绝，没执行
     expect(events.some(e => e.type === 'command_rejected')).toBe(true);
     expect(result.status).toBe('done');
+  });
+
+  it('长命令心跳：跑满 heartbeatMs 推 command_progress，命令结束后不再推', async () => {
+    const { events, send } = collector();
+    const exec = vi.fn(async () => {
+      // 挂 45ms，足够触发两次 10ms 的心跳
+      await new Promise((resolve) => setTimeout(resolve, 45));
+      return { success: true, stdout: 'slow', stderr: '', exitCode: 0 };
+    });
+    const result = await runAgent({
+      serverId: 's-heartbeat',
+      text: '跑个慢命令',
+      send,
+      callModel: fakeModel(['RUN: du -sh /workspace/*', 'ANSWER: 完成']),
+      execStream: exec,
+      execContext: NOOP_EXEC,
+      heartbeatMs: 10,
+    });
+
+    expect(result.status).toBe('done');
+    const beats = events.filter((e) => e.type === 'command_progress');
+    expect(beats.length).toBeGreaterThanOrEqual(2);
+    expect(beats[0].step).toBe(1);
+    expect(beats[0].elapsedMs).toBeGreaterThanOrEqual(10);
+    // 心跳必须带命令原文，前端才能显示「执行中（已运行 Ns）: <cmd>」
+    expect(String(beats[0].command)).toContain('du -sh');
+    // 命令结束后不应再有心跳（定时器已清）
+    const afterDone = events.findIndex((e) => e.type === 'command_done');
+    expect(events.slice(afterDone + 1).some((e) => e.type === 'command_progress')).toBe(false);
+  });
+
+  it('progress 事件必须带 message（空文案会在界面上渲染成空行）', async () => {
+    const { events, send } = collector();
+    const result = await runAgent({
+      serverId: 's-progress',
+      text: '看下磁盘',
+      send,
+      callModel: fakeModel(['RUN: df -h', 'ANSWER: 42%']),
+      execStream: EXEC_OK,
+      execContext: NOOP_EXEC,
+    });
+
+    expect(result.status).toBe('done');
+    const progress = events.filter((e) => e.type === 'progress');
+    expect(progress.length).toBeGreaterThan(0);
+    for (const p of progress) {
+      expect(typeof p.message, JSON.stringify(p)).toBe('string');
+      expect(p.message.trim().length, JSON.stringify(p)).toBeGreaterThan(0);
+    }
+    expect(COMMAND_HEARTBEAT_MS).toBeGreaterThanOrEqual(5000);
   });
 
   it('write 命令在 autoRun 模式下直接执行，在手动模式下要确认', async () => {

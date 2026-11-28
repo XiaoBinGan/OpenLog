@@ -26,6 +26,12 @@ export const MAX_STEPS = 24;
 export const MAX_STEPS_CAP = 64;
 /** 单次任务默认时长上限（前端可调 5~60 分钟） */
 export const MAX_WALL_MS = 20 * 60 * 1000;
+/**
+ * 长命令心跳：命令跑满这个间隔就推一条 `command_progress`。
+ * 没有它，`du -sh /*` 这种跑 30 秒的命令在界面上就是「执行中…」一动不动（真机实测 31.9s），
+ * 用户会以为卡死并点取消。
+ */
+export const COMMAND_HEARTBEAT_MS = 15 * 1000;
 /** 时长上限的硬天花板 */
 export const MAX_WALL_CAP_MS = 60 * 60 * 1000;
 /** 进度台账占用的 token 上限 */
@@ -51,6 +57,14 @@ const READONLY_BASE = new Set([
   'nvidia-smi', 'journalctl', 'systemctl', 'service', 'docker', 'podman', 'kubectl', 'pip', 'pip3',
   'python3', 'python', 'node', 'npm', 'git', 'curl', 'wget', 'sqlite3', 'jq', 'awk', 'sed', 'sort',
   'uniq', 'cut', 'tr', 'column', 'watch', 'find', 'locate', 'readlink', 'realpath', 'md5sum', 'sha256sum',
+  // 纯文本比较/处理：只写 stdout，没有任何落盘口
+  'diff', 'cmp', 'comm', 'paste', 'nl', 'fold', 'fmt', 'rev', 'expand', 'unexpand',
+  'base64', 'seq', 'numfmt', 'xxd', 'od', 'hexdump', 'strings', 'sha1sum', 'sha512sum', 'cksum',
+  // 网络只读探测
+  'ping', 'ping6', 'dig', 'nslookup', 'host', 'traceroute', 'tracepath', 'mtr',
+  // 进程/账户信息
+  'pgrep', 'pidof', 'pstree', 'who', 'w', 'groups', 'getent', 'locale', 'timedatectl', 'cal',
+  'ulimit', 'printf', 'test', '[', 'true', 'false', 'sleep', 'yes', 'rg', 'ag', 'ack',
 ]);
 
 /** 危险操作：即使 autoRun 也必须人工确认 */
@@ -120,11 +134,72 @@ function stripFdRedirects(input) {
 }
 
 /**
+ * 抽出 shell 进程替换 `<(cmd)` / `>(cmd)`。
+ *
+ * 为什么必须单独处理：`diff - <(uname -a)` 里的 `<(uname -a)` 既不是重定向也不是普通参数，
+ * 切段后首 token 是 `diff`（只读），但 `<` 会被重定向判定误伤、内部命令也完全没被检查。
+ * 真机上表现为：一条纯只读的对比命令被判成 write，autoRun=false 时弹确认框打断只读任务。
+ *
+ * 语义按 shell 来：
+ *   · `<(cmd)` —— 把 cmd 的输出当文件读，**只读**（内部命令仍要逐个判定）；
+ *   · `>(cmd)` —— 把写入喂给 cmd，**是写操作**（无论 cmd 是什么）。
+ *
+ * @param {string} command
+ * @param {number} [depth] 递归深度守卫（嵌套进程替换）
+ * @returns {{ replaced: string, inner: string[], writeForm: boolean, unbalanced: boolean }}
+ */
+export function extractProcessSubstitutions(command, depth = 0) {
+  const s = String(command ?? '');
+  if (depth > 4) return { replaced: s, inner: [], writeForm: true, unbalanced: false };
+  let out = '';
+  const inner = [];
+  let writeForm = false;
+  let unbalanced = false;
+
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if ((ch === '<' || ch === '>') && s[i + 1] === '(') {
+      let level = 0;
+      let j = i + 1;
+      for (; j < s.length; j++) {
+        if (s[j] === '(') level += 1;
+        else if (s[j] === ')') { level -= 1; if (level === 0) break; }
+      }
+      // 括号不配对：语法都不成立，不能靠"首 token 只读"放行
+      if (j >= s.length) { unbalanced = true; out += ch; continue; }
+      if (ch === '>') writeForm = true;
+      inner.push(s.slice(i + 2, j));
+      out += ' PROC_SUBST ';
+      i = j;
+      continue;
+    }
+    out += ch;
+  }
+  return { replaced: out, inner, writeForm, unbalanced };
+}
+
+/**
  * 命令风险分级。
+ * @param {string} command
+ * @param {number} [depth] 递归深度（进程替换内部命令复用同一套判定）
  * @returns {{ risk: 'read'|'write'|'danger', reason?: string }}
  */
-export function classifyCommand(command) {
-  const cmd = String(command || '').trim();
+export function classifyCommand(command, depth = 0) {
+  const rawCmd = String(command || '').trim();
+  if (!rawCmd) return { risk: 'danger', reason: '空命令' };
+  if (depth > 4) return { risk: 'write', reason: '进程替换嵌套过深' };
+
+  // 进程替换先摘掉：`>( )` 直接写；`<( )` 递归判定内部命令
+  const procSub = extractProcessSubstitutions(rawCmd, depth);
+  if (procSub.unbalanced) return { risk: 'write', reason: '进程替换括号不配对' };
+  if (procSub.writeForm) return { risk: 'write', reason: '进程替换 >( ) 会把输出交给子命令' };
+  for (const body of procSub.inner) {
+    const verdict = classifyCommand(body, depth + 1);
+    if (verdict.risk !== 'read') {
+      return { risk: 'write', reason: `进程替换内的命令不是只读：${verdict.reason || body}` };
+    }
+  }
+  const cmd = procSub.replaced.trim();
   if (!cmd) return { risk: 'danger', reason: '空命令' };
 
   for (const rule of DANGER_RULES) {
@@ -447,6 +522,7 @@ export async function runAgent(opts) {
   const {
     serverId, text, history = [], skillContent = '', skillName = '',
     autoRun = true, maxSteps = MAX_STEPS, signal, send, callModel, execStream, confirm,
+    heartbeatMs = COMMAND_HEARTBEAT_MS,
     execContext = execStream,
     windowTokens,
     resume,
@@ -686,15 +762,31 @@ ${renderDigest(digest)}
         }
       }
 
-      // 5) 流式执行
+      // 5) 流式执行（带心跳：长命令不能只显示「执行中…」）
       send({ type: 'command_start', step, command: parsed.command });
       if (risk.risk !== 'read') ranMutating = true;
-      const result = await execStream(serverId, parsed.command, {
-        timeoutMs: COMMAND_TIMEOUT_MS,
-        signal,
-        onStdout: (chunk) => send({ type: 'command_output', step, stream: 'stdout', data: chunk }),
-        onStderr: (chunk) => send({ type: 'command_output', step, stream: 'stderr', data: chunk }),
-      });
+      const cmdStartedAt = Date.now();
+      const heartbeat = setInterval(() => {
+        send({
+          type: 'command_progress',
+          step,
+          command: parsed.command,
+          elapsedMs: Date.now() - cmdStartedAt,
+        });
+      }, heartbeatMs);
+      // 定时器不能拖住进程退出（测试/服务端关停时会挂住）
+      if (typeof heartbeat?.unref === 'function') heartbeat.unref();
+      let result;
+      try {
+        result = await execStream(serverId, parsed.command, {
+          timeoutMs: COMMAND_TIMEOUT_MS,
+          signal,
+          onStdout: (chunk) => send({ type: 'command_output', step, stream: 'stdout', data: chunk }),
+          onStderr: (chunk) => send({ type: 'command_output', step, stream: 'stderr', data: chunk }),
+        });
+      } finally {
+        clearInterval(heartbeat);
+      }
       if (signal?.aborted) return { status: 'cancelled', steps: step };
       const exitCode = result?.exitCode ?? (result?.success ? 0 : -1);
       send({ type: 'command_done', step, exitCode });
@@ -709,7 +801,12 @@ ${renderDigest(digest)}
         exitCode,
         lines: keyLines(result),
       });
-      send({ type: 'progress', step, digest: renderDigest(digest) });
+      send({
+        type: 'progress',
+        step,
+        message: `第 ${step} 步完成：${String(parsed.command).slice(0, 80)}`,
+        digest: renderDigest(digest),
+      });
     }
     // 步数用尽：保存进度，前端点「继续」可以从这里接着跑
     const historyText = digest.length

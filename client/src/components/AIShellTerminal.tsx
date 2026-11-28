@@ -21,6 +21,7 @@ import { compactTurnsForStorage, saveJsonSafe } from '../utils/conversationStora
 import ImageAttachBar from './ImageAttach';
 import { imageFilesFromClipboard, imageFilesFromDrop, filesToAttachments, type AttachedImage } from '../utils/imageAttach';
 import { sanitizeHtml } from '../utils/sanitize';
+import { elapsedText } from '../utils/elapsed';
 
 interface SkillBrief {
   id: string;
@@ -49,6 +50,10 @@ interface Step {
   status: 'thinking' | 'waiting_confirm' | 'running' | 'done' | 'rejected' | 'error';
   exitCode?: number;
   modelPreview?: string;
+  /** 长命令心跳：命令已运行多久（毫秒）。服务端每 COMMAND_HEARTBEAT_MS 推一次。 */
+  heartbeatMs?: number;
+  /** 进度台账更新提示（progress 事件的 message；没有就显示兜底文案） */
+  progressNote?: string;
 }
 
 interface Turn {
@@ -297,8 +302,18 @@ export default function AIShellTerminal({ server, onClose, onReady }: AIShellTer
             }),
           }));
           break;
+        case 'command_progress':
+          // 长命令心跳：只更新耗时，不碰输出（输出走 command_output 流式累积）
+          patchStep(turnId!, data.step, { heartbeatMs: data.elapsedMs });
+          break;
         case 'command_done':
-          patchStep(turnId!, data.step, { status: 'done', exitCode: data.exitCode });
+          patchStep(turnId!, data.step, { status: 'done', exitCode: data.exitCode, heartbeatMs: undefined });
+          break;
+        case 'progress':
+          // 服务端会带 message；旧版本/异常时兜底一句，避免渲染成空行
+          patchStep(turnId!, data.step, {
+            progressNote: data.message || (data.digest ? '进度台账已更新' : undefined),
+          });
           break;
         case 'command_error':
           patchStep(turnId!, data.step, { status: 'error', output: `${''}${data.error || ''}` });
@@ -796,7 +811,7 @@ export default function AIShellTerminal({ server, onClose, onReady }: AIShellTer
                             <Terminal className="w-3 h-3" /> 输出
                           </span>
                           <span className="text-[10px] flex items-center gap-1">
-                            {step.status === 'running' && <><Loader className="w-3 h-3 animate-spin text-yellow-400" /><span className="text-yellow-400">执行中</span></>}
+                            {step.status === 'running' && <><Loader className="w-3 h-3 animate-spin text-yellow-400" /><span className="text-yellow-400">执行中{elapsedText(step.heartbeatMs)}</span></>}
                             {step.status === 'done' && step.exitCode === 0 && <><Check className="w-3 h-3 text-green-400" /><span className="text-green-400">exit 0</span></>}
                             {step.status === 'done' && step.exitCode !== 0 && <span className="text-red-400">exit {step.exitCode}</span>}
                             {step.status === 'error' && <span className="text-red-400">失败</span>}
@@ -809,7 +824,12 @@ export default function AIShellTerminal({ server, onClose, onReady }: AIShellTer
                     )}
                     {step.status === 'running' && !step.output && (
                       <p className="mt-1 text-xs text-yellow-400 flex items-center gap-1.5">
-                        <Loader className="w-3 h-3 animate-spin" />执行中...
+                        <Loader className="w-3 h-3 animate-spin" />执行中{elapsedText(step.heartbeatMs)}...
+                      </p>
+                    )}
+                    {step.progressNote && (
+                      <p className="mt-1 text-[10px] text-dark-500 pl-1" data-testid="aishell-progress-note">
+                        {step.progressNote}
                       </p>
                     )}
                   </div>
