@@ -566,6 +566,17 @@ async function collectNodeGpuUsageSafe(nodes) {
       if (r?.error) throw new Error(r.error);
       return gpuModule.buildRemoteGPUPayload(r.stdout || '', '').devices;
     };
+    // 带 TTL / 单飞 / 超时：节点不可达时这一帧不等，后台跑完写缓存
+    if (typeof gpuUsageModule.collectNodeGpuUsageCached === 'function') {
+      const sampled = await gpuUsageModule.collectNodeGpuUsageCached({
+        nodes: Array.isArray(nodes) ? nodes : [],
+        servers,
+        deps: { getRemoteGPUs },
+        timeoutMs: 1500,
+        ttlMs: 3000,
+      });
+      return sampled.usage;
+    }
     return await gpuUsageModule.collectNodeGpuUsage({
       nodes: Array.isArray(nodes) ? nodes : [],
       servers,
@@ -629,6 +640,9 @@ async function buildDemoUsage() {
  * 与 GPU 实测一样按 node.internalIP 匹配远程服务器；拿不到就返回 available:false，
  * 不影响 /usage 的其它字段。
  */
+/** MFU 采集在请求路径上的预算：超过就跳过，不让整页等它。 */
+const MFU_BUDGET_MS = 1500;
+
 async function collectNodeMfuSafe(nodes) {
   const list = Array.isArray(nodes) ? nodes : [];
   const out = new Map();
@@ -651,7 +665,21 @@ async function collectNodeMfuSafe(nodes) {
     const server = servers.find((s) => s && s.host === ip);
     if (!server) return;
     try {
-      const res = await mfuModule.getRemoteMfu(server.id);
+      // MFU 是「锦上添花」的一半：冷采样要发现端点 + 隔 2s 取两次差分，
+      // 243 实测一次十几秒。接口不能为它把关 —— 超过 MFU_BUDGET_MS 就跳过，
+      // 在飞的那次继续跑，下次请求命中热采样窗口（一次 exec，不 sleep）。
+      const res = await Promise.race([
+        mfuModule.getRemoteMfu(server.id),
+        new Promise((resolve) => {
+          const timer = setTimeout(() => resolve({
+            available: false,
+            engines: [],
+            gpuMfu: {},
+            reason: `MFU 采样超过 ${Math.round(MFU_BUDGET_MS / 1000)}s，本次跳过（下次刷新会用已建立的采样窗口）`,
+          }), MFU_BUDGET_MS);
+          if (typeof timer?.unref === 'function') timer.unref();
+        }),
+      ]);
       if (!res) return;
       const perGpu = Object.entries(res.gpuMfu || {}).map(([index, item]) => ({
         index: Number(index),
