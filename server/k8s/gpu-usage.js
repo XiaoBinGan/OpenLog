@@ -137,6 +137,8 @@ export async function collectNodeGpuUsageCached({
   deps = {},
   ttlMs = 3000,
   timeoutMs = 1500,
+  /** 超时后的冷却：这段时间内不再为同一节点等预算（不可达节点的 SYN 会挂很久） */
+  failTtlMs = 60 * 1000,
   now = () => Date.now(),
 } = {}) {
   const usage = new Map();
@@ -148,6 +150,8 @@ export async function collectNodeGpuUsageCached({
     if (!name) continue;
     const key = nodeKey(node);
     const hit = usageCache.get(key);
+    // 冷却期内（上次超时/失败）直接当「未采到」，不再赔一个超时预算
+    if (hit?.failedUntil && now() < hit.failedUntil) continue;
     const fresh = hit && now() - hit.at < ttlMs;
 
     if (fresh && hit.promise) {
@@ -191,7 +195,11 @@ export async function collectNodeGpuUsageCached({
   }
 
   if (settled === '__timeout__') {
-    // 超时不取消在飞采集：它们跑完会写缓存，下一次调用直接命中
+    // 超时的那几个进冷却：不可达节点（如只有 Tailscale IP 的机器）TCP 会挂很久，
+    // 不冷却的话每次刷新都要重等一个 timeoutMs。
+    for (const entry of usageCache.values()) {
+      if (entry && entry.promise && !entry.value) entry.failedUntil = now() + failTtlMs;
+    }
     for (const [key, entry] of usageCache) {
       if (entry && entry.value) {
         const name = key.split('|')[0];

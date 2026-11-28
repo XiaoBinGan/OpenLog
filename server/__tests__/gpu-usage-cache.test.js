@@ -107,6 +107,27 @@ describe('collectNodeGpuUsageCached', () => {
     expect(getRemoteGPUs).toHaveBeenCalledTimes(1);
   });
 
+  it('超时后进入冷却：下一次不再等预算（不可达节点的 SYN 会挂很久）', async () => {
+    const getRemoteGPUs = vi.fn(() => new Promise(() => {})); // 永不 resolve，模拟黑洞
+    const opts = {
+      nodes: [node('node1', '10.0.0.9')],
+      servers: [server],
+      deps: { getRemoteGPUs },
+      ttlMs: 3000,
+      timeoutMs: 30,
+      failTtlMs: 5000,
+    };
+
+    const first = await collectNodeGpuUsageCached(opts);
+    expect(first.timedOut).toBe(true);
+
+    const started = Date.now();
+    const second = await collectNodeGpuUsageCached(opts);
+    expect(second.timedOut).toBe(false);
+    expect(second.usage.size).toBe(0);
+    expect(Date.now() - started).toBeLessThan(25);
+  });
+
   it('取不到服务器凭据（节点 IP 不匹配）→ 空 Map，不抛', async () => {
     const result = await collectNodeGpuUsageCached({
       nodes: [node('node9', '10.9.9.9')],
