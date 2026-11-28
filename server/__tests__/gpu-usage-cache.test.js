@@ -87,6 +87,26 @@ describe('collectNodeGpuUsageCached', () => {
     expect(elapsed).toBeLessThan(120);
   });
 
+  it('采集失败进负缓存：TTL 内不再重试，避免每次请求都白等超时预算', async () => {
+    const getRemoteGPUs = vi.fn(async () => { throw new Error('ECONNREFUSED'); });
+    const opts = {
+      nodes: [node('node1', '10.0.0.9')],
+      servers: [server],
+      deps: { getRemoteGPUs },
+      ttlMs: 3000,
+      timeoutMs: 1000,
+    };
+
+    const first = await collectNodeGpuUsageCached(opts);
+    expect(first.usage.size).toBe(0);
+    expect(getRemoteGPUs).toHaveBeenCalledTimes(1);
+
+    const second = await collectNodeGpuUsageCached(opts);
+    expect(second.usage.size).toBe(0);
+    // 关键：没有重试（否则每个刷新都赔一个 SSH 超时）
+    expect(getRemoteGPUs).toHaveBeenCalledTimes(1);
+  });
+
   it('取不到服务器凭据（节点 IP 不匹配）→ 空 Map，不抛', async () => {
     const result = await collectNodeGpuUsageCached({
       nodes: [node('node9', '10.9.9.9')],

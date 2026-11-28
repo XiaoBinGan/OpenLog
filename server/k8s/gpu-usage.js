@@ -157,6 +157,7 @@ export async function collectNodeGpuUsageCached({
     }
 
     // 过期或不存在：发起一条（并复用已在飞的那条）
+    // 负缓存（value 为 null）在 TTL 内同样命中：返回「未采到」而不是再等一次超时
     let entry = hit && hit.promise ? hit : null;
     if (!entry) {
       const promise = collectNodeGpuUsage({ nodes: [node], servers, deps })
@@ -166,7 +167,8 @@ export async function collectNodeGpuUsageCached({
           return value;
         })
         .catch(() => {
-          usageCache.delete(key);
+          // 失败也要写缓存（负缓存）：节点不可达时每次都重试，等于每次请求都白等一个超时预算
+          usageCache.set(key, { at: now(), value: null, promise: Promise.resolve(null) });
           return null;
         });
       entry = { at: now(), value: null, promise };

@@ -643,6 +643,14 @@ async function buildDemoUsage() {
 /** MFU 采集在请求路径上的预算：超过就跳过，不让整页等它。 */
 const MFU_BUDGET_MS = 1500;
 
+/**
+ * MFU 失败冷却：超时/不可达的服务器在这段时间内直接返回上次的原因，不再重试。
+ * 没有它，每刷新一次页面就要重新等一轮超时（243 上 node2 经 Tailscale 不可达，
+ * 每次白等 1.5s）。
+ */
+const MFU_COOLDOWN_MS = 60 * 1000;
+const mfuCooldown = new Map();
+
 async function collectNodeMfuSafe(nodes) {
   const list = Array.isArray(nodes) ? nodes : [];
   const out = new Map();
@@ -664,10 +672,22 @@ async function collectNodeMfuSafe(nodes) {
     if (!ip || !name) return;
     const server = servers.find((s) => s && s.host === ip);
     if (!server) return;
+    const cooled = mfuCooldown.get(server.id);
+    if (cooled && Date.now() < cooled.until) {
+      out.set(name, {
+        available: false,
+        percent: null,
+        engines: [],
+        perGpu: [],
+        reason: cooled.reason,
+      });
+      return;
+    }
     try {
       // MFU 是「锦上添花」的一半：冷采样要发现端点 + 隔 2s 取两次差分，
       // 243 实测一次十几秒。接口不能为它把关 —— 超过 MFU_BUDGET_MS 就跳过，
       // 在飞的那次继续跑，下次请求命中热采样窗口（一次 exec，不 sleep）。
+      const timeoutReason = `MFU 采样超过 ${MFU_BUDGET_MS}ms，本次跳过（${MFU_COOLDOWN_MS / 1000}s 内不再重试）`;
       const res = await Promise.race([
         mfuModule.getRemoteMfu(server.id),
         new Promise((resolve) => {
@@ -675,11 +695,16 @@ async function collectNodeMfuSafe(nodes) {
             available: false,
             engines: [],
             gpuMfu: {},
-            reason: `MFU 采样超过 ${Math.round(MFU_BUDGET_MS / 1000)}s，本次跳过（下次刷新会用已建立的采样窗口）`,
+            reason: timeoutReason,
+            __timedOut: true,
           }), MFU_BUDGET_MS);
           if (typeof timer?.unref === 'function') timer.unref();
         }),
       ]);
+      if (res?.__timedOut) {
+        mfuCooldown.set(server.id, { until: Date.now() + MFU_COOLDOWN_MS, reason: timeoutReason });
+      }
+      if (res && res.available === true) mfuCooldown.delete(server.id);
       if (!res) return;
       const perGpu = Object.entries(res.gpuMfu || {}).map(([index, item]) => ({
         index: Number(index),
