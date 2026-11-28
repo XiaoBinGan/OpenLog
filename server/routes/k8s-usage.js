@@ -640,16 +640,39 @@ async function buildDemoUsage() {
  * 与 GPU 实测一样按 node.internalIP 匹配远程服务器；拿不到就返回 available:false，
  * 不影响 /usage 的其它字段。
  */
-/** MFU 采集在请求路径上的预算：超过就跳过，不让整页等它。 */
-const MFU_BUDGET_MS = 1500;
-
 /**
- * MFU 失败冷却：超时/不可达的服务器在这段时间内直接返回上次的原因，不再重试。
- * 没有它，每刷新一次页面就要重新等一轮超时（243 上 node2 经 Tailscale 不可达，
- * 每次白等 1.5s）。
+ * MFU 不阻塞请求：它要发现引擎端点、隔 2s 取两次差分（243 实测一次 15s+）。
+ * 所以这里只做两件事：
+ *   1. **后台采样**：按 serverId 节流触发，跑完写进 `mfuState`；
+ *   2. **当帧返回上次结果**：有就返回（可能略旧），没有就返回「采样中」。
+ * 界面从「第一次刷新空、之后十几秒」变成「第一次刷新空、第二次就有」，/usage 恒在几十毫秒。
  */
-const MFU_COOLDOWN_MS = 60 * 1000;
-const mfuCooldown = new Map();
+const MFU_REFRESH_MS = 15 * 1000;
+/** serverId → { value, at, startedAt } */
+const mfuState = new Map();
+
+/** 测试用：清空 MFU 状态。 */
+export function _resetMfuState() {
+  mfuState.clear();
+}
+
+function shapeMfu(value) {
+  if (!value) return { available: false, percent: null, engines: [], perGpu: [], reason: '尚未采到 MFU' };
+  const perGpu = Object.entries(value.gpuMfu || {}).map(([index, item]) => ({
+    index: Number(index),
+    mfu: Number(item?.mfu) || 0,
+  }));
+  const values = perGpu.map((g) => g.mfu).filter((v) => v > 0);
+  return {
+    available: value.available === true,
+    percent: values.length
+      ? Math.round((values.reduce((a, b) => a + b, 0) / values.length) * 1000) / 10
+      : null,
+    engines: (value.engines || []).map((e) => e.name || e.engine || '').filter(Boolean).slice(0, 4),
+    perGpu,
+    reason: value.reason || null,
+  };
+}
 
 async function collectNodeMfuSafe(nodes) {
   const list = Array.isArray(nodes) ? nodes : [];
@@ -665,61 +688,40 @@ async function collectNodeMfuSafe(nodes) {
   }
   if (typeof mfuModule.getRemoteMfu !== 'function') return out;
   const servers = typeof remoteModule.getServers === 'function' ? remoteModule.getServers() : [];
+  const now = Date.now();
 
-  await Promise.all(list.map(async (node) => {
+  for (const node of list) {
     const ip = asLabel(node?.internalIP).trim();
     const name = asLabel(node?.name).trim();
-    if (!ip || !name) return;
+    if (!ip || !name) continue;
     const server = servers.find((s) => s && s.host === ip);
-    if (!server) return;
-    const cooled = mfuCooldown.get(server.id);
-    if (cooled && Date.now() < cooled.until) {
-      out.set(name, {
+    if (!server) continue;
+
+    const state = mfuState.get(server.id);
+
+    // 后台刷新：节流到 MFU_REFRESH_MS。失败也落一条（带原因），否则每次都要从零重来
+    if (!state || now - (state.startedAt || 0) > MFU_REFRESH_MS) {
+      mfuState.set(server.id, { ...(state || {}), startedAt: now });
+      Promise.resolve()
+        .then(() => mfuModule.getRemoteMfu(server.id))
+        .then((value) => mfuState.set(server.id, { value, at: Date.now(), startedAt: now }))
+        .catch((err) => mfuState.set(server.id, {
+          value: { available: false, engines: [], gpuMfu: {}, reason: `MFU 采集失败：${errorMessage(err)}` },
+          at: Date.now(),
+          startedAt: now,
+        }));
+    }
+
+    out.set(name, state?.value
+      ? shapeMfu(state.value)
+      : {
         available: false,
         percent: null,
         engines: [],
         perGpu: [],
-        reason: cooled.reason,
+        reason: state ? 'MFU 正在采样（首次需十几秒，稍后刷新可见）' : '尚未采到 MFU',
       });
-      return;
-    }
-    try {
-      // MFU 是「锦上添花」的一半：冷采样要发现端点 + 隔 2s 取两次差分，
-      // 243 实测一次十几秒。接口不能为它把关 —— 超过 MFU_BUDGET_MS 就跳过，
-      // 在飞的那次继续跑，下次请求命中热采样窗口（一次 exec，不 sleep）。
-      const timeoutReason = `MFU 采样超过 ${MFU_BUDGET_MS}ms，本次跳过（${MFU_COOLDOWN_MS / 1000}s 内不再重试）`;
-      const res = await Promise.race([
-        mfuModule.getRemoteMfu(server.id),
-        new Promise((resolve) => {
-          const timer = setTimeout(() => resolve({
-            available: false,
-            engines: [],
-            gpuMfu: {},
-            reason: timeoutReason,
-            __timedOut: true,
-          }), MFU_BUDGET_MS);
-          if (typeof timer?.unref === 'function') timer.unref();
-        }),
-      ]);
-      if (res?.__timedOut) {
-        mfuCooldown.set(server.id, { until: Date.now() + MFU_COOLDOWN_MS, reason: timeoutReason });
-      }
-      if (res && res.available === true) mfuCooldown.delete(server.id);
-      if (!res) return;
-      const perGpu = Object.entries(res.gpuMfu || {}).map(([index, item]) => ({
-        index: Number(index),
-        mfu: Number(item?.mfu) || 0,
-      }));
-      const values = perGpu.map((g) => g.mfu).filter((v) => v > 0);
-      out.set(name, {
-        available: res.available === true,
-        percent: values.length ? Math.round((values.reduce((a, b) => a + b, 0) / values.length) * 1000) / 10 : null,
-        engines: (res.engines || []).map((e) => e.name || e.engine || '').filter(Boolean).slice(0, 4),
-        perGpu,
-        reason: res.reason || null,
-      });
-    } catch { /* 单节点失败不影响其它节点 */ }
-  }));
+  }
 
   return out;
 }
