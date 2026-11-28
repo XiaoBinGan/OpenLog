@@ -773,9 +773,12 @@ export function createK8sUsageRouter({ ensureSettings } = {}) {
 
       // 实测数据是实时遥测：中间任何一层代理都不许缓存
       res.set('cache-control', 'no-store');
-      // 实测数据（nvidia-smi）在这里采集：handler 是 async，buildUsage 保持同步纯函数
-      const gpuUsage = await collectNodeGpuUsageSafe(nodes);
-const nodeMfu = await collectNodeMfuSafe(nodes);
+      // 实测（nvidia-smi）与 MFU 在这里采集：两者各自带预算，且**并行** ——
+      // 串行时最坏是两份预算相加（1.5 + 1.5），并行后整页只等最慢的那一份。
+      const [gpuUsage, nodeMfu] = await Promise.all([
+        collectNodeGpuUsageSafe(nodes),
+        collectNodeMfuSafe(nodes),
+      ]);
       res.json(buildUsage({ nodes, pods, rawNodes, rawPods, metrics, gpuUsage, nodeMfu }));
     } catch (err) {
       sendError(res, err, 502);
